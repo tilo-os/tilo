@@ -7209,6 +7209,35 @@ pub(crate) fn login_shell_from_passwd() -> Option<String> {
     }
 }
 
+/// A PTY master with no process behind it.
+struct NullMaster;
+impl MasterPty for NullMaster {
+    fn get_size(&self) -> Result<PtySize, anyhow::Error> {
+        Ok(PtySize::default())
+    }
+    fn resize(&self, _size: PtySize) -> Result<(), anyhow::Error> {
+        Ok(())
+    }
+    fn take_writer(&self) -> Result<Box<dyn Write + Send>, anyhow::Error> {
+        Ok(Box::new(std::io::sink()))
+    }
+    fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> {
+        Ok(Box::new(std::io::empty()))
+    }
+    #[cfg(unix)]
+    fn process_group_leader(&self) -> Option<i32> {
+        None
+    }
+    #[cfg(unix)]
+    fn as_raw_fd(&self) -> Option<i32> {
+        None
+    }
+    #[cfg(unix)]
+    fn tty_name(&self) -> Option<std::path::PathBuf> {
+        None
+    }
+}
+
 pub struct TerminalBackend {
     pub writer: Box<dyn Write + Send>,
     pub reader: Box<dyn Read + Send>,
@@ -7221,44 +7250,14 @@ pub struct TerminalBackend {
 }
 impl TerminalBackend {
     /// A backend with no process behind it — for tests of what opens where.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn for_test() -> Self {
-        struct Master;
-        impl MasterPty for Master {
-            fn get_size(&self) -> Result<PtySize, anyhow::Error> {
-                Ok(PtySize::default())
-            }
-            fn resize(&self, _size: PtySize) -> Result<(), anyhow::Error> {
-                Ok(())
-            }
-            fn take_writer(&self) -> Result<Box<dyn Write + Send>, anyhow::Error> {
-                Ok(Box::new(std::io::sink()))
-            }
-            fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> {
-                Ok(Box::new(std::io::empty()))
-            }
-            #[cfg(unix)]
-            fn process_group_leader(&self) -> Option<i32> {
-                None
-            }
-            #[cfg(unix)]
-            fn as_raw_fd(&self) -> Option<i32> {
-                None
-            }
-            #[cfg(unix)]
-            fn tty_name(&self) -> Option<std::path::PathBuf> {
-                None
-            }
-        }
         Self {
             writer: Box::new(std::io::sink()),
             reader: Box::new(std::io::empty()),
-            master: Box::new(Master),
+            master: Box::new(NullMaster),
             shell_name: "test".into(),
-            #[cfg(unix)]
             service_lifetime: None,
-            #[cfg(windows)]
-            child: unreachable!("tests of targets run on unix"),
         }
     }
 
@@ -7710,7 +7709,6 @@ fn ush_service_backend(
     ))
 }
 
-#[cfg(unix)]
 pub(crate) fn ush_request(
     program: &[String],
     target: &crate::target::SessionTarget,
@@ -7879,33 +7877,6 @@ impl TerminalWidget {
     /// reader, and a mock PTY master. A session is attached later with
     /// [`Self::attach_backend`].
     fn without_process(content: ContentStore) -> Self {
-        struct NullMaster;
-        impl MasterPty for NullMaster {
-            fn get_size(&self) -> Result<PtySize, anyhow::Error> {
-                Ok(PtySize::default())
-            }
-            fn resize(&self, _size: PtySize) -> Result<(), anyhow::Error> {
-                Ok(())
-            }
-            fn take_writer(&self) -> Result<Box<dyn Write + Send>, anyhow::Error> {
-                Ok(Box::new(std::io::sink()))
-            }
-            fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> {
-                Ok(Box::new(std::io::empty()))
-            }
-            #[cfg(unix)]
-            fn process_group_leader(&self) -> Option<i32> {
-                None
-            }
-            #[cfg(unix)]
-            fn as_raw_fd(&self) -> Option<i32> {
-                None
-            }
-            #[cfg(unix)]
-            fn tty_name(&self) -> Option<std::path::PathBuf> {
-                None
-            }
-        }
         let writer: Box<dyn Write + Send> = Box::new(std::io::sink());
         let (_tx, output_rx) = sync_channel(1);
         TerminalWidget::new(
@@ -8044,28 +8015,17 @@ impl TerminalWidget {
     ///
     /// # Errors
     ///
-    /// Returns an error if the host has no `ush` service to give it.
-    #[cfg(unix)]
+    /// Returns an error if the host has no `ush` service to give it (always,
+    /// where no hosted process-service transport exists).
     pub fn spawn_hosted(
         services: crate::HostedProcessServices,
     ) -> Result<Self, crate::HostedTerminalError> {
-        let stream = services
-            .ush
-            .ok_or(crate::HostedTerminalError::RequiredServiceMissing("ush"))?;
+        if !services.has_ush() {
+            return Err(crate::HostedTerminalError::RequiredServiceMissing("ush"));
+        }
         let mut widget = Self::without_process(ContentStore::for_app());
-        widget.sessions = crate::sessions::Sessions::hosted(stream);
+        widget.sessions = crate::sessions::Sessions::hosted(services);
         Ok(widget)
-    }
-
-    /// Construct a hosted terminal only when the host provides its service.
-    ///
-    /// # Errors
-    /// Windows currently has no Tilo hosted process-service transport.
-    #[cfg(windows)]
-    pub fn spawn_hosted(
-        _services: crate::HostedProcessServices,
-    ) -> Result<Self, crate::HostedTerminalError> {
-        Err(crate::HostedTerminalError::RequiredServiceMissing("ush"))
     }
 
     /// The standalone terminal. Its session opens at the first sync, on the

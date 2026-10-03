@@ -32,7 +32,6 @@ portable-pty = "0.9.0"
 runtime-portal = { path = "../../crates/runtime/runtime-portal" }
 # Where a session runs, and the environment records it can run in.
 tilo-environment = { path = "../../crates/runtime/environment" }
-collab-types = { path = "../../crates/collab/collab-types" }
 libc.workspace = true
 vte = "0.15.0"
 tracing.workspace = true
