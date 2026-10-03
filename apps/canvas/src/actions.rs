@@ -166,7 +166,7 @@ pub struct Draw {
 }
 
 /// One brush stroke.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NewStroke {
     pub id: Option<String>,
@@ -184,6 +184,26 @@ pub struct NewStroke {
     /// Medium parameter overrides for this stroke (`{"load": 0.2}` for dry
     /// brush).
     pub params: Option<BTreeMap<String, f64>>,
+    /// A limb that lifts to a point and forks this many times (1-6) into
+    /// ever thinner twigs: a branch or a bare tree in one stroke.
+    pub forks: Option<u32>,
+    /// With `forks`: how widely the twigs splay, in degrees (default 35).
+    pub spread: Option<f64>,
+    /// Instead of one line, this many short dabs (1-600) of `size`
+    /// scattered along the points: foliage, flowers, broken light.
+    pub dabs: Option<u32>,
+    /// With `dabs`: how far they stray either side of the path, in units
+    /// (default twice `size`).
+    pub scatter: Option<f64>,
+    /// With `dabs`: how long each is, in units (about `size` when absent);
+    /// much longer than `size`, each is a flick lifting to a point (grass).
+    pub dab_length: Option<f64>,
+    /// With `dabs`: the way they point, in degrees (-90 is up); along the
+    /// path when absent.
+    pub angle: Option<f64>,
+    /// Keep the paint inside this mark's shape, as a painter cuts in
+    /// against an edge: texture a rock or a crown within its silhouette.
+    pub clip: Option<String>,
 }
 
 /// Paint brush strokes, in order, on top of a layer: a passage of painting
@@ -723,13 +743,21 @@ impl Paint {
                     opacity: stroke.opacity,
                     wet: stroke.wet.unwrap_or(false),
                     params: stroke.params.clone().unwrap_or_default(),
+                    angle: stroke.angle,
                     ..Style::default()
                 };
                 let shape = Shape::Stroke {
                     points: stroke.points.clone(),
                     size: stroke.size,
+                    forks: stroke.forks,
+                    spread: stroke.spread,
+                    dabs: stroke.dabs,
+                    scatter: stroke.scatter,
+                    dab_length: stroke.dab_length,
                 };
-                placed(id, stroke.name.clone().unwrap_or_default(), shape, style)
+                let mut mark = placed(id, stroke.name.clone().unwrap_or_default(), shape, style);
+                mark.clip = stroke.clip.clone().unwrap_or_default();
+                mark
             })
             .collect();
         add_marks(doc, art, &layer, marks)

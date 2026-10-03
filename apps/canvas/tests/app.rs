@@ -21,6 +21,7 @@ fn stroke(colour: &str) -> NewStroke {
         opacity: None,
         wet: None,
         params: None,
+        ..NewStroke::default()
     }
 }
 
