@@ -260,16 +260,14 @@ fn history_label(entry: &HistoryEntry) -> String {
 }
 
 fn graph_label(kind: GraphKind, plot: &PlotFn) -> String {
-    let rhs = if plot.expr.trim().is_empty() {
-        "(empty)"
-    } else {
-        plot.expr.trim()
+    let (lhs, empty) = match kind {
+        GraphKind::Curve2d => ("y", "Empty function"),
+        GraphKind::Surface3d => ("z", "Empty surface"),
     };
-    let lhs = match kind {
-        GraphKind::Curve2d => "y",
-        GraphKind::Surface3d => "z",
-    };
-    clip(&format!("{lhs} = {rhs}"), 48)
+    if plot.expr.trim().is_empty() {
+        return empty.to_owned();
+    }
+    clip(&format!("{lhs} = {}", plot.expr.trim()), 48)
 }
 
 fn graph_search(kind: GraphKind, id: &str, plot: &PlotFn) -> ui::tilo_resource::SearchEntry {
@@ -304,7 +302,7 @@ fn graph_child(kind: GraphKind, id: &str, plot: &PlotFn) -> tilo_actions::Resour
         "edit",
         "Edit formula",
         "Formula",
-        "e.g. sin(x)…",
+        "For example, sin(x)",
         tilo_actions::ExecutionLocus::ClientLocal,
         move |text: &str| encode(&set_graph_expr_action(kind, edit_id.as_str(), text.trim())),
     ))

@@ -673,7 +673,7 @@ impl CalculatorApp {
             return;
         }
         if self.calc.scrim_at(p) {
-            // Tapping outside an open overlay drawer dismisses it (Adwaita).
+            // Tapping outside an open overlay drawer dismisses it.
             self.calc.close_sidebar();
             return;
         }
@@ -2709,7 +2709,7 @@ mod tests {
         }
     }
 
-    /// The semantic tree exposes the topbar, keypad, expression and graph
+    /// The semantic tree exposes the header, keypad, expression and graph
     /// formula controls, and activating/setting them through
     /// `perform_semantic_action` drives the model. Fresh app per phase.
     #[test]
@@ -2725,14 +2725,14 @@ mod tests {
         use ui::a11y::Action;
         use ui::widget::Widget as _;
 
-        // phase accessibility_exposes_and_activates_topbar_controls
+        // phase accessibility_exposes_and_activates_header_controls
         {
             let mut app = CalculatorApp::new();
             let tree = app.accessibility().expect("calculator semantics");
             assert_eq!(
                 tree.name.as_deref(),
                 Some("Calculator"),
-                "topbar: root name"
+                "header: root name"
             );
             let mode_bar = &tree.children[0].children[0];
             fn siblings_are_consistently_keyed(nodes: &[ui::a11y::AccessNode]) -> bool {
@@ -2751,7 +2751,7 @@ mod tests {
                     node.action_target.as_deref() == Some("calculator.mode:1")
                         && node.name.as_deref() == Some("Graph 2D")
                 }),
-                "topbar: Graph 2D mode control exposed"
+                "header: Graph 2D mode control exposed"
             );
 
             let mut doc = AutoCommit::new();
@@ -2762,9 +2762,9 @@ mod tests {
                     &mut doc,
                     &automerge::ROOT,
                 ),
-                "topbar: mode activate handled"
+                "header: mode activate handled"
             );
-            assert_eq!(app.model.mode, Mode::Graph2d, "topbar: mode switched");
+            assert_eq!(app.model.mode, Mode::Graph2d, "header: mode switched");
             assert!(
                 app.perform_semantic_action(
                     "calculator.angle:degrees",
@@ -2772,9 +2772,9 @@ mod tests {
                     &mut doc,
                     &automerge::ROOT,
                 ),
-                "topbar: angle toggle handled"
+                "header: angle toggle handled"
             );
-            assert!(app.model.deg, "topbar: degrees on");
+            assert!(app.model.deg, "header: degrees on");
         }
 
         // phase accessibility_exposes_keypad_and_graph_formula_controls
@@ -2964,6 +2964,49 @@ mod tests {
             app.relayout();
             assert!(!app.seg_short, "re-widening must restore the full labels");
         }
+    }
+
+    /// The canvas hint teaches navigation only while the pointer is over a
+    /// plot the person has not navigated yet; the trace follows the pointer
+    /// over Graph 2D only.
+    #[test]
+    fn navigation_hint_shows_over_an_unnavigated_plot_only() {
+        let mut app = wide(CalculatorApp::seeded()); // Graph 2D
+        let over_plot = app.g2.canvas.center();
+        app.mouse = over_plot;
+        let pointer = app.plot_pointer();
+        assert!(pointer.hint.is_some(), "hint over a fresh plot");
+        assert_eq!(
+            pointer.trace,
+            Some(over_plot),
+            "Graph 2D traces the pointer"
+        );
+
+        app.mouse = Point::new(10.0, app.g2.canvas.y0 + 10.0);
+        let pointer = app.plot_pointer();
+        assert!(
+            pointer.hint.is_none() && pointer.trace.is_none(),
+            "no hint over the panel"
+        );
+
+        app.mouse = over_plot;
+        app.on_drag(Vec2::new(5.0, 0.0));
+        assert!(
+            app.plot_pointer().hint.is_none(),
+            "no hint once the person has panned"
+        );
+
+        let mut app = wide(CalculatorApp::seeded());
+        app.set_mode(Mode::Graph3d);
+        app.relayout();
+        app.mouse = app.g3.canvas.center();
+        let pointer = app.plot_pointer();
+        assert!(pointer.hint.is_some(), "hint over a fresh surface plot");
+        assert!(pointer.trace.is_none(), "only Graph 2D traces");
+
+        app.set_mode(Mode::Calc);
+        app.relayout();
+        assert!(app.plot_pointer().hint.is_none(), "no plot in Calculator");
     }
 
     /// A scenario stages the view a capture shows: the mode, the expression
@@ -3331,7 +3374,7 @@ mod tests {
     }
 
     /// Calculator-mode pointer path: keycaps append, a history row recalls,
-    /// Clear empties history, memory keys accumulate/clear, and the RAD/DEG
+    /// Clear empties history, memory keys accumulate/clear, and the angle-unit
     /// toggle changes trig output. Fresh app + state per phase.
     #[test]
     fn calc_pointer_clicks_drive_keypad_history_memory_and_angle() {
@@ -3453,7 +3496,7 @@ mod tests {
 
     /// Graph-mode pointer path: drag pans / orbits and the wheel zooms the 2D and
     /// 3D views, the narrow Functions drawer opens from its toggle, and the row
-    /// visibility dot and delete button act on the tapped row. Fresh app + state
+    /// visibility toggle and delete button act on the tapped row. Fresh app + state
     /// per phase.
     #[test]
     #[allow(
@@ -3595,7 +3638,7 @@ mod tests {
 
         // phase vis_dot_click_toggles_function_visibility
         {
-            // on_press_g2 → vis_at → funcs[i].visible flips, via the real dot rect.
+            // on_press_g2 → vis_at → funcs[i].visible flips, via the real toggle rect.
             let mut app = CalculatorApp::seeded(); // Graph2d, 4 visible funcs
             app.set_mode(Mode::Graph2d);
             let mut st = ui::State::new();
@@ -3607,12 +3650,15 @@ mod tests {
             // — the second tap then panics inside Automerge's transaction open.
             app.sync(&mut st.doc, &st.root);
             let mut app = wide(app); // docked panel
-            assert!(app.model.funcs[0].visible, "vis dot: starts visible");
-            let dot = app.g2.vis_center(0).expect("row 0 visibility dot laid out");
+            assert!(app.model.funcs[0].visible, "vis toggle: starts visible");
+            let dot = app
+                .g2
+                .vis_center(0)
+                .expect("row 0 visibility toggle laid out");
             tap(&mut app, &mut st, dot);
             assert!(
                 !app.model.funcs[0].visible,
-                "tapping the dot must hide the function"
+                "tapping the toggle must hide the function"
             );
             tap(&mut app, &mut st, dot);
             assert!(app.model.funcs[0].visible, "tapping again must show it");
