@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use crate::grid::float;
 use crate::*;
 
 fn canvas(texture: Texture) -> Canvas {
@@ -345,6 +346,91 @@ fn an_oil_glaze_filters_the_paint_beneath_once_per_coat() {
         (column(&one_coat, 10) - column(&plain, 10)).abs() < 1.0,
         "outside it is untouched"
     );
+}
+
+/// How unevenly the light falls across a stroke's middle, relative to its
+/// colour: the ridges the light picks out, whatever the paint's value.
+fn ridging(pixels: &[u8]) -> f32 {
+    let values: Vec<f32> = (50..70)
+        .flat_map(|y| (40..120).map(move |x| (x, y)))
+        .map(|(x, y)| rgb(pixels, x, y).iter().map(|v| f32::from(*v)).sum::<f32>())
+        .collect();
+    let mean = values.iter().sum::<f32>() / float(values.len());
+    let spread = values.iter().map(|v| (v - mean).abs()).sum::<f32>() / float(values.len());
+    spread / mean
+}
+
+/// Lights are mixed with body (lead white) and stand up in ridges; darks
+/// go on lean and lie flat, so the light finds less in them.
+#[test]
+fn oil_lights_stand_up_in_ridges_and_darks_lie_lean() {
+    let ridges = |colour: &str| {
+        let pixels = painter("oil", Texture::Smooth)
+            .paint(&[Painted::new(
+                "a",
+                stroke(&[(20.0, 60.0), (140.0, 60.0)], 30.0, colour, false),
+            )])
+            .to_vec();
+        ridging(&pixels)
+    };
+    let (light, dark) = (ridges("#f0e8d8"), ridges("#3a4050"));
+    assert!(light > dark * 1.3, "light {light} vs dark {dark}");
+}
+
+/// The row where a fill's top edge first covers, per column.
+fn top_edge(pixels: &[u8]) -> Vec<usize> {
+    (30..130)
+        .map(|x| (5..40).find(|y| alpha(pixels, x, *y) > 128).unwrap_or(40))
+        .collect()
+}
+
+/// A broken edge wanders in and out of the drawn contour, as a loaded
+/// brush leaves it, instead of following it like a ruler.
+#[test]
+fn an_oil_fill_breaks_its_edge_when_asked() {
+    let edge = |amount: f32| {
+        let pixels = painter("oil", Texture::Panel)
+            .paint(&[Painted::new(
+                "a",
+                with(region("#30343a"), &[("edge", amount)]),
+            )])
+            .to_vec();
+        let rows = top_edge(&pixels);
+        let mean = float(rows.iter().sum::<usize>()) / float(rows.len());
+        rows.iter()
+            .map(|row| (float(*row) - mean).abs())
+            .sum::<f32>()
+            / float(rows.len())
+    };
+    let (clean, broken) = (edge(0.0), edge(1.0));
+    assert!(broken > clean + 0.5, "clean {clean} vs broken {broken}");
+}
+
+/// A gessoed panel has tooth but no weave: shifted along a row, it never
+/// lines up with itself the way woven linen does at its thread pitch.
+#[test]
+fn a_panel_ground_has_tooth_but_no_repeating_weave() {
+    let difference = |field: &Heightfield, shift: usize| {
+        let (mut sum, mut count) = (0.0, 0_usize);
+        for y in 0..field.height {
+            for x in 0..field.width - shift {
+                sum += (field.at(x, y) - field.at(x + shift, y)).abs();
+                count += 1;
+            }
+        }
+        sum / float(count)
+    };
+    let closest = |texture: Texture| {
+        let field = Heightfield::new(160, 120, texture, 1.0, 7);
+        let far = difference(&field, 64);
+        assert!(far > 0.02, "{texture:?} has tooth: {far}");
+        (3..40)
+            .map(|shift| difference(&field, shift) / far)
+            .fold(f32::MAX, f32::min)
+    };
+    let (panel, linen) = (closest(Texture::Panel), closest(Texture::Linen));
+    assert!(panel > 0.8, "panel repeats: {panel}");
+    assert!(linen < panel, "linen {linen} vs panel {panel}");
 }
 
 #[test]
