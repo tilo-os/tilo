@@ -1863,22 +1863,24 @@ struct FrameBuilderControlState<'a> {
 impl FrameBuilderControlState<'_> {
     /// Which windows each display holds, in the order they are laid out,
     /// and which display has focus: the per-device partition as the person
-    /// sees it. Empty on a single display.
+    /// sees it. Lists every connected display, a single one included.
     fn displays_json(&self) -> Vec<serde_json::Value> {
-        if !self.fb.host().is_partitioned() {
-            return Vec::new();
-        }
         let summary = self.fb.host().display_partition_summary();
         let chrome = self.fb.chrome();
         let tree = chrome.tree();
         let partition = &tree.desktop.outputs;
+        // An unpartitioned desktop (one display, ever) lists just that one.
+        let primary = partition
+            .primary()
+            .or_else(|| summary.first().map(|(id, _)| *id));
+        let focused = partition.focused_display().or(primary);
         let displays = summary
             .into_iter()
             .map(|(id, groups)| {
                 serde_json::json!({
                     "id": id,
-                    "primary": partition.primary() == Some(id),
-                    "focused": partition.focused_display() == Some(id),
+                    "primary": primary == Some(id),
+                    "focused": focused == Some(id),
                     "groups": groups,
                 })
             })
@@ -13248,6 +13250,90 @@ mod tests {
         let summoned = &state.chrome_state_json()["wheel_summon"];
         assert_eq!(summoned["x"].as_f64(), Some(1180.0));
         assert_eq!(summoned["y"].as_f64(), Some(450.0));
+    }
+
+    /// `chrome.displays` names what is painted: every connected display and
+    /// the groups on it, including the one display left after an unplug.
+    #[test]
+    fn state_dump_lists_the_remaining_display_after_an_unplug() {
+        use crate::compositor::backend::{combined_geometry, headless, output_geometry};
+        use crate::shell::state::{
+            AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+            WorkspaceId, WorkspaceTree,
+        };
+
+        let group = |id: u64| WindowGroup {
+            id,
+            tabs: vec![Tab {
+                id: id + 100,
+                title: format!("W{id}"),
+                tile: TileContent::Stub {
+                    kind: AppKind::Other("Test".into()),
+                    label: format!("W{id}"),
+                },
+            }],
+            active_tab: id + 100,
+            width: WindowWidth::Fraction(600),
+            maximized: false,
+        };
+        let ws_id = WorkspaceId(7);
+        let strip = StripId(77);
+        let mut ws = Workspace::new(ws_id, "Desk");
+        ws.strips = vec![Strip {
+            id: strip,
+            name: "Main".into(),
+            window_groups: vec![group(1), group(2)],
+        }];
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.workspaces = vec![ws];
+        tree.desktop.active = ws_id;
+        tree.desktop.active_strip.insert(ws_id, strip);
+
+        let outputs = headless::output_fixture("docked-laptop").expect("fixture");
+        let mut fb = FrameBuilder::with_tree(tree, combined_geometry(&outputs));
+        fb.set_output_geometry(output_geometry(&outputs));
+        fb.relayout();
+        assert!(
+            fb.chrome_handle()
+                .borrow()
+                .tree_mut()
+                .move_group_to_display(2, 1),
+            "group 2 moves to the second display"
+        );
+        fb.relayout();
+        let displays = |fb: &FrameBuilder| {
+            FrameBuilderControlState {
+                fb,
+                doc: None,
+                shares: None,
+                lock: None,
+            }
+            .chrome_state_json()["displays"]
+                .clone()
+        };
+        let both = displays(&fb);
+        assert_eq!(both[0]["groups"], serde_json::json!([1]), "{both:#}");
+        assert_eq!(both[1]["groups"], serde_json::json!([2]), "{both:#}");
+
+        // Unplug the second display: its group moves onto the first, and the
+        // dump says so although the desktop is no longer partitioned.
+        fb.set_output_geometry(output_geometry(&outputs[..1]));
+        fb.relayout();
+        let one = displays(&fb);
+        assert_eq!(
+            one,
+            serde_json::json!([{"id": 0, "primary": true, "focused": true, "groups": [1, 2]}]),
+            "the remaining display holds every group"
+        );
+
+        // A device that has only ever had one display carries no partition;
+        // its display still holds the whole strip.
+        let mut single = FrameBuilder::new((1600, 900));
+        single.set_output_geometry(output_geometry(&outputs[..1]));
+        single.relayout();
+        let only = displays(&single);
+        assert_eq!(only.as_array().map(Vec::len), Some(1), "{only:#}");
+        assert_eq!(only[0]["primary"], true, "{only:#}");
     }
 
     #[test]
