@@ -1409,6 +1409,7 @@ impl App {
     ) -> Result<FirstBootSurface, CliError> {
         let deadline = after(TARGET_BOOT);
         let mut typed = 0_u32;
+        let mut next_unlock = Instant::now();
         while Instant::now() < deadline {
             if let Ok(state) = console.state()
                 && state.get("app").and_then(Value::as_str) == Some("greeter")
@@ -1452,14 +1453,15 @@ impl App {
                     plan,
                 ));
             }
-            if unlock_prompt && typed < UNLOCK_ATTEMPTS {
+            if unlock_prompt && typed < UNLOCK_ATTEMPTS && Instant::now() >= next_unlock {
                 piped(plan, &["type", "-"], secret.expose())?;
                 let _ = self.runner.output(&plan.vm(&["keys", "ret"]));
                 typed = typed.saturating_add(1);
-                std::thread::sleep(Duration::from_secs(15));
-            } else {
-                std::thread::sleep(Duration::from_secs(5));
+                next_unlock = after(Duration::from_secs(15));
             }
+            // Keep observing startup while the retry delay elapses: a fast
+            // successful unlock should not incur a fixed fifteen-second wait.
+            std::thread::sleep(Duration::from_secs(1));
         }
         Err(failed(
             "first-boot",
