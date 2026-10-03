@@ -18,7 +18,8 @@
 //!     quarantined/
 //!         <urlencoded-pkg-id>.json   # entries removed from public visibility
 //!     snapshots/
-//!         <sequence>-<hash>.json     # immutable owner-signed history
+//!         <sequence>-<hash>.json     # newest owner-signed history, bounded
+//!         compacted.json             # chain head of the pruned prefix
 //!     published-snapshot.json        # atomic current channel pointer
 //!     staged-artifacts/
 //!         <blake3>.root              # collected tapp, rebuilt from its thin
@@ -56,6 +57,34 @@ use registry_types::{
 };
 
 use crate::allowlist::PublisherAllowlist;
+
+/// Signed snapshots kept on disk, newest first. Older members are pruned
+/// behind a [`HistoryCompaction`] record; the oldest retained member's signed
+/// predecessor hash commits to everything pruned.
+pub const SNAPSHOT_HISTORY_RETAINED: usize = 16;
+
+/// The pruned prefix of the snapshot history: every sequence up to and
+/// including `through_sequence` was removed, and `through_snapshot_hash_hex`
+/// is that member's hash, which the next retained snapshot signs as its
+/// predecessor. No sequence at or below it may be published or archived again.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoryCompaction {
+    pub through_sequence: u64,
+    pub through_snapshot_hash_hex: String,
+}
+
+/// What [`SnapshotLock::compact_history`] did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct HistoryCompactionReport {
+    /// Members removed by this run.
+    pub pruned: usize,
+    /// Members left on disk.
+    pub retained: usize,
+    /// Highest pruned sequence so far, 0 when nothing was ever pruned.
+    pub through_sequence: u64,
+    /// Bytes of retained members.
+    pub retained_bytes: u64,
+}
 
 /// Directory + on-disk file layout for one registry.
 #[derive(Clone)]
@@ -628,8 +657,15 @@ impl Storage {
     }
 
     fn archive_snapshot(&self, snapshot: &SignedRegistrySnapshot) -> Result<(), StorageError> {
-        let body =
-            serde_json::to_vec_pretty(snapshot).map_err(|e| StorageError::Encode(e.to_string()))?;
+        if let Some(compaction) = self.history_compaction()?
+            && snapshot.sequence <= compaction.through_sequence
+        {
+            return Err(StorageError::Parse(format!(
+                "snapshot sequence {} lies in history compacted through sequence {}",
+                snapshot.sequence, compaction.through_sequence
+            )));
+        }
+        let body = serde_json::to_vec(snapshot).map_err(|e| StorageError::Encode(e.to_string()))?;
         let hash = registry_types::snapshot_hash(snapshot)
             .map_err(|e| StorageError::Encode(e.to_string()))?;
         let archive = self.snapshot_history_path(snapshot.sequence, &hash)?;
@@ -710,6 +746,58 @@ impl Storage {
                 "multiple snapshot history entries exist for sequence {sequence}"
             ))),
         }
+    }
+
+    fn history_compaction_path(&self) -> PathBuf {
+        self.root.join("snapshots").join("compacted.json")
+    }
+
+    /// The record of the pruned history prefix, if any was pruned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the record cannot be read or decoded.
+    pub fn history_compaction(&self) -> Result<Option<HistoryCompaction>, StorageError> {
+        load_json(
+            &self.history_compaction_path(),
+            "snapshot history compaction",
+        )
+    }
+
+    /// Archived members by sequence, from their filenames only.
+    fn history_members(&self) -> Result<BTreeMap<u64, (PathBuf, u64)>, StorageError> {
+        let mut members = BTreeMap::new();
+        for item in std::fs::read_dir(self.root.join("snapshots"))
+            .map_err(|e| StorageError::Io(format!("read snapshot history: {e}")))?
+        {
+            let item =
+                item.map_err(|e| StorageError::Io(format!("read snapshot history entry: {e}")))?;
+            let path = item.path();
+            let Some((sequence, hash)) = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.strip_suffix(".json"))
+                .and_then(|name| name.split_once('-'))
+            else {
+                continue;
+            };
+            let Ok(sequence) = sequence.parse::<u64>() else {
+                continue;
+            };
+            if !is_hex_digest(hash) {
+                continue;
+            }
+            let len = item
+                .metadata()
+                .map_err(|e| StorageError::Io(format!("stat {}: {e}", path.display())))?
+                .len();
+            if members.insert(sequence, (path, len)).is_some() {
+                return Err(StorageError::Parse(format!(
+                    "multiple snapshot history entries exist for sequence {sequence}"
+                )));
+            }
+        }
+        Ok(members)
     }
 
     fn snapshot_history_path(&self, sequence: u64, hash: &str) -> Result<PathBuf, StorageError> {
@@ -1402,6 +1490,120 @@ impl<'a> SnapshotLock<'a> {
         Ok(report)
     }
 
+    /// Bound the snapshot history to the newest [`SNAPSHOT_HISTORY_RETAINED`]
+    /// members. Before anything is removed, the pruned members and the oldest
+    /// retained one must form one contiguous hash chain from the previous
+    /// compaction record (or the first archived member), so the signed
+    /// predecessor hash of the oldest retained snapshot commits to all of it.
+    /// The new record is written before any file is removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the published pointer is missing or would be
+    /// pruned, the chain is broken, or a file cannot be read or removed.
+    pub fn compact_history(&self) -> Result<HistoryCompactionReport, StorageError> {
+        let storage = self.storage;
+        let previous = storage.history_compaction()?;
+        let mut members = storage.history_members()?;
+        let mut leftovers = 0_usize;
+        if let Some(previous) = &previous {
+            // Members a crashed run already committed to but did not remove.
+            let stale: Vec<u64> = members
+                .range(..=previous.through_sequence)
+                .map(|(sequence, _)| *sequence)
+                .collect();
+            for sequence in stale {
+                if let Some((path, _)) = members.remove(&sequence) {
+                    remove_file(&path)?;
+                    leftovers = leftovers.saturating_add(1);
+                }
+            }
+        }
+        let excess = members.len().saturating_sub(SNAPSHOT_HISTORY_RETAINED);
+        let mut report = HistoryCompactionReport {
+            pruned: leftovers,
+            retained: members.len(),
+            through_sequence: previous
+                .as_ref()
+                .map_or(0, |record| record.through_sequence),
+            retained_bytes: members.values().map(|(_, len)| *len).sum(),
+        };
+        if excess == 0 {
+            sync_dir(&storage.root.join("snapshots"));
+            return Ok(report);
+        }
+        let current = self.current()?.ok_or_else(|| {
+            StorageError::Parse("refusing to compact history without a published snapshot".into())
+        })?;
+        let pruned: Vec<u64> = members.keys().take(excess).copied().collect();
+        let through_sequence = pruned.last().copied().unwrap_or_default();
+        if current.sequence <= through_sequence {
+            return Err(StorageError::Parse(
+                "refusing to compact history past the published snapshot".into(),
+            ));
+        }
+        let oldest_retained = members
+            .keys()
+            .nth(excess)
+            .copied()
+            .ok_or_else(|| StorageError::Parse("snapshot history vanished".into()))?;
+        let mut link = previous.as_ref().map(|record| {
+            (
+                record.through_sequence,
+                record.through_snapshot_hash_hex.clone(),
+            )
+        });
+        for sequence in pruned.iter().copied().chain([oldest_retained]) {
+            let member = storage.load_snapshot_sequence(sequence)?.ok_or_else(|| {
+                StorageError::Parse(format!("snapshot history member {sequence} vanished"))
+            })?;
+            let linked = match &link {
+                Some((before, hash)) => {
+                    before.checked_add(1) == Some(sequence)
+                        && member.previous_snapshot_hash_hex == *hash
+                }
+                None => sequence != 1 || member.previous_snapshot_hash_hex.is_empty(),
+            };
+            if !linked {
+                return Err(StorageError::Parse(format!(
+                    "snapshot history chain is broken at sequence {sequence}; refusing to compact"
+                )));
+            }
+            if sequence == oldest_retained {
+                break;
+            }
+            let hash = registry_types::snapshot_hash(&member)
+                .map_err(|error| StorageError::Parse(error.to_string()))?;
+            link = Some((sequence, hash));
+        }
+        let through_snapshot_hash_hex = link.map(|(_, hash)| hash).unwrap_or_default();
+        save_json(
+            &storage.history_compaction_path(),
+            &HistoryCompaction {
+                through_sequence,
+                through_snapshot_hash_hex,
+            },
+        )?;
+        for sequence in &pruned {
+            if let Some((path, len)) = members.remove(sequence) {
+                remove_file(&path)?;
+                report.retained_bytes = report.retained_bytes.saturating_sub(len);
+            }
+        }
+        sync_dir(&storage.root.join("snapshots"));
+        report.pruned = report.pruned.saturating_add(pruned.len());
+        report.retained = members.len();
+        report.through_sequence = through_sequence;
+        tracing::info!(
+            pruned = report.pruned,
+            retained = report.retained,
+            through_sequence,
+            retained_bytes = report.retained_bytes,
+            "compacted snapshot history"
+        );
+        Ok(report)
+    }
+
     fn complete(&self, snapshot: &SignedRegistrySnapshot) -> Result<(), StorageError> {
         self.validate_transition(snapshot)?;
         self.storage.archive_snapshot(snapshot)?;
@@ -1431,6 +1633,14 @@ impl<'a> SnapshotLock<'a> {
                 }
             }
             None => {
+                if let Some(compaction) = self.storage.history_compaction()? {
+                    return Err(StorageError::Parse(format!(
+                        "published snapshot is missing but history was compacted through \
+                         sequence {}; restore published-snapshot.json instead of restarting \
+                         the channel",
+                        compaction.through_sequence
+                    )));
+                }
                 if snapshot.sequence != 1 || !snapshot.previous_snapshot_hash_hex.is_empty() {
                     return Err(StorageError::Parse(
                         "first snapshot transaction must be sequence 1 without a predecessor"
@@ -1460,6 +1670,12 @@ fn list_digests(dir: &Path, extension: &str) -> Result<Vec<String>, StorageError
         }
     }
     Ok(digests)
+}
+
+fn sync_dir(dir: &Path) {
+    if let Ok(directory) = std::fs::File::open(dir) {
+        let _result = directory.sync_all();
+    }
 }
 
 fn remove_file(path: &Path) -> Result<(), StorageError> {
@@ -2066,5 +2282,92 @@ mod tests {
             assert_eq!(writer.current().unwrap(), Some(second));
             drop(writer);
         }
+    }
+
+    #[test]
+    fn compaction_keeps_a_bounded_linked_suffix_and_refuses_broken_chains() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let writer = storage.lock_snapshot().unwrap();
+        let mut chain = Vec::new();
+        let mut previous = String::new();
+        for sequence in 1..=20_u64 {
+            let next = snapshot(sequence, previous, "so.tilo.chain");
+            previous = registry_types::snapshot_hash(&next).unwrap();
+            chain.push(next);
+        }
+        // A history whose links do not match is never pruned.
+        for member in &chain {
+            let mut member = member.clone();
+            if member.sequence == 3 {
+                member.previous_snapshot_hash_hex = "ee".repeat(32);
+            }
+            storage.archive_snapshot(&member).unwrap();
+        }
+        atomic_write(
+            &storage.snapshot_path(),
+            &serde_json::to_vec(&chain[19]).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            writer.compact_history(),
+            Err(StorageError::Parse(message)) if message.contains("broken at sequence 3")
+        ));
+        assert_eq!(storage.history_members().unwrap().len(), 20);
+        assert!(storage.history_compaction().unwrap().is_none());
+
+        // A linked history keeps exactly the newest members.
+        for entry in std::fs::read_dir(storage.root.join("snapshots")).unwrap() {
+            std::fs::remove_file(entry.unwrap().path()).unwrap();
+        }
+        for member in &chain {
+            storage.archive_snapshot(member).unwrap();
+        }
+        let report = writer.compact_history().unwrap();
+        assert_eq!(report.pruned, 20 - SNAPSHOT_HISTORY_RETAINED);
+        assert_eq!(report.retained, SNAPSHOT_HISTORY_RETAINED);
+        let through = u64::try_from(20 - SNAPSHOT_HISTORY_RETAINED).unwrap();
+        assert_eq!(report.through_sequence, through);
+        let record = storage.history_compaction().unwrap().unwrap();
+        let pruned_head = &chain[usize::try_from(through - 1).unwrap()];
+        assert_eq!(
+            record.through_snapshot_hash_hex,
+            registry_types::snapshot_hash(pruned_head).unwrap()
+        );
+        assert_eq!(
+            record.through_snapshot_hash_hex,
+            chain[usize::try_from(through).unwrap()].previous_snapshot_hash_hex
+        );
+        assert!(storage.load_snapshot_sequence(through).unwrap().is_none());
+        assert!(
+            storage
+                .load_snapshot_sequence(through + 1)
+                .unwrap()
+                .is_some()
+        );
+        // A pruned sequence can never be archived again.
+        assert!(storage.archive_snapshot(&chain[0]).is_err());
+
+        // A run that crashed after writing its record finishes removal.
+        let stale = &chain[usize::try_from(through - 1).unwrap()];
+        let hash = registry_types::snapshot_hash(stale).unwrap();
+        atomic_write(
+            &storage
+                .snapshot_history_path(stale.sequence, &hash)
+                .unwrap(),
+            &serde_json::to_vec(stale).unwrap(),
+        )
+        .unwrap();
+        let report = writer.compact_history().unwrap();
+        assert_eq!(report.pruned, 1);
+        assert_eq!(report.retained, SNAPSHOT_HISTORY_RETAINED);
+
+        // Without the pointer the channel cannot restart at sequence 1.
+        std::fs::remove_file(storage.snapshot_path()).unwrap();
+        assert!(matches!(
+            writer.publish(&snapshot(1, String::new(), "so.tilo.restart")),
+            Err(StorageError::Parse(message)) if message.contains("compacted through")
+        ));
+        drop(writer);
     }
 }
