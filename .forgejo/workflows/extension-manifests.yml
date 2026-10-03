@@ -12,14 +12,16 @@ name: Release / System extension manifests
 # The resolver runs inside each image on its native architecture: the image's
 # own rpm database is the base and its own dnf5 and rpmkeys fetch and check the
 # upstream packages. That lane holds no signing credentials. A separate job
-# signs each manifest with the OS release key and publishes it, only from main.
+# signs each manifest with the extension-manifest key and publishes it, only
+# from main.
 #
 # Triggers:
 #   schedule           daily: mirrors drop superseded builds and publishers ship
 #                      updates, so every published channel is resolved again;
 #                      a resolution that changes nothing publishes nothing
 #   workflow_dispatch  the images to resolve; Release / OS requests this for
-#                      each image it publishes. Dispatched from another ref it
+#                      each release it promotes (development images wait for
+#                      the daily run). Dispatched from another ref it
 #                      resolves and keeps the manifests as artifacts only.
 #
 # Release / OS starts this by dispatch rather than as a reusable workflow:
@@ -218,13 +220,19 @@ jobs:
           fi
       - name: Sign and publish each resolved manifest
         env:
-          COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
-          AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
+          # The extension-manifest key, not the OS release key: devices verify
+          # manifests only against keys/extensions.pub. The role trusts only
+          # tilo/tilo main with this audience, which no other workflow requests.
+          COSIGN_KEY_REF: awskms:///arn:aws:kms:us-east-1:125650147312:key/60953e72-5a65-4651-af19-cb4b9e10572d
+          AWS_SIGNING_ROLE_ARN: arn:aws:iam::125650147312:role/TiloForgejoExtensionManifestSigner
+          TILO_SIGNING_AUDIENCE: tilo-extension-manifests
           TILO_PACKAGE_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
           TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}
         run: |
           set -euo pipefail
-          os/dev/require-cosign-authority.sh
+          . os/dev/configure-cosign-kms.sh
+          cosign public-key --key "$COSIGN_KEY_REF" | cmp --silent keys/extensions.pub - \
+            || { echo '::error::the KMS extension-manifest key does not match keys/extensions.pub'; exit 1; }
           mapfile -t manifests < <(find extension-manifests -type f -name '*.json' -print 2>/dev/null | LC_ALL=C sort)
           [[ ${#manifests[@]} -gt 0 ]] || { echo '::error::no lane resolved a manifest'; exit 1; }
           failed=0

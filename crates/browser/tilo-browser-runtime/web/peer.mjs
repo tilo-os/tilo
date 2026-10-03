@@ -33,7 +33,8 @@ import {idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {currentIdentity, IdentityError} from './root-identity.mjs';
 
 export {
-  addPasskey, certifyDevice, createIdentity, currentIdentity, IdentityError, installNodeCertificate, unlockIdentity,
+  addPasskey, certifyDevice, createIdentity, currentIdentity, IdentityError, installNode, installNodeCertificate, nodeInstallInfo,
+  unlockIdentity,
 } from './root-identity.mjs';
 
 const CERTIFICATE = 'certificate';

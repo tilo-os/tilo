@@ -839,6 +839,29 @@ jobs:
           RPMS_REF="$(./os/dev/resolve-rpm-snapshot.sh)"
           echo "RPMS_REF=$RPMS_REF" >> "$GITHUB_ENV"
 
+      # The env-runtime environment image the system app store ships, resolved
+      # by the fingerprint of os/Containerfile.env-runtime and Cosign-verified.
+      # Until build-env-runtime.yml has published that definition the image
+      # ships no runtime and environments fetch one on first use.
+      - name: Resolve ENV_RUNTIME_REF (env-runtime image)
+        run: |
+          set -euo pipefail
+          status=0
+          ENV_RUNTIME_REF="$(./os/dev/resolve-env-runtime.sh)" || status=$?
+          case $status in
+            0) ;;
+            1)
+              if ./os/dev/resolve-env-runtime.sh --exists; then
+                echo "::error::the published env-runtime does not verify"
+                exit 1
+              fi
+              echo "::warning::no env-runtime is published for os/Containerfile.env-runtime yet; this image ships none"
+              ENV_RUNTIME_REF=scratch
+              ;;
+            *) exit "$status" ;;
+          esac
+          echo "ENV_RUNTIME_REF=$ENV_RUNTIME_REF" >> "$GITHUB_ENV"
+
       # Branch/PR runs validate the OS integration boundary. Browser engine
       # compilation has its own signed snapshot workflow and is exercised by
       # an OS release; rebuilding it on every OS patch adds roughly 45 minutes
@@ -1469,6 +1492,8 @@ jobs:
             TILO_WINDOWS_ARCH=${{ matrix.arch }}
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
+            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
+            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
@@ -1598,6 +1623,8 @@ jobs:
             TILO_WINDOWS_ARCH=${{ matrix.arch }}
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
+            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
+            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
@@ -1661,6 +1688,8 @@ jobs:
             TILO_WINDOWS_ARCH=${{ matrix.arch }}
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
+            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
+            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
@@ -1721,6 +1750,8 @@ jobs:
             TILO_WINDOWS_ARCH=${{ matrix.arch }}
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
+            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
+            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
@@ -1793,6 +1824,8 @@ jobs:
             TILO_WINDOWS_ARCH=${{ matrix.arch }}
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
+            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
+            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
@@ -1882,6 +1915,8 @@ jobs:
             TILO_WINDOWS_ARCH=${{ matrix.arch }}
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
+            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
+            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
@@ -2008,6 +2043,8 @@ jobs:
             TILO_WINDOWS_ARCH=${{ matrix.arch }}
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
+            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
+            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
@@ -2292,6 +2329,8 @@ jobs:
             TILO_WINDOWS_ARCH=${{ matrix.arch }}
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
+            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
+            ENV_RUNTIME_REF=${{ env.ENV_RUNTIME_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
@@ -3650,24 +3689,6 @@ jobs:
           fi
           skopeo copy --multi-arch index-only --preserve-digests "docker://$repository@$digest" "docker://$moving"
           echo "::notice::$moving -> $source ($digest)"
-      # A dev VM of this commit downloads its media codecs only through a
-      # signed manifest resolved for exactly its base (extension-manifests.yml).
-      - name: Request the system extension manifests for this commit's dev images
-        if: steps.lanes.outputs.both == 'true'
-        continue-on-error: true
-        env:
-          FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
-        run: |
-          set -euo pipefail
-          source="registry.tilo.so/tilo/tilo-vm:main-${GITHUB_SHA:0:7}-ci"
-          digest="sha256:$(skopeo inspect --raw "docker://$source" | sha256sum | awk '{print $1}')"
-          image="registry.tilo.so/tilo/tilo-vm@$digest"
-          curl --fail-with-body --silent --show-error -X POST \
-            -H "Authorization: token ${FORGEJO_TOKEN}" \
-            -H 'Content-Type: application/json' \
-            "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/actions/workflows/extension-manifests.yml/dispatches" \
-            --data "$(jq -cn --arg images "$image" '{ref:"main",inputs:{images:$images}}')"
-          echo "::notice::requested extension manifests for $image ($source)"
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         if: steps.lanes.outputs.both == 'true'
         with:

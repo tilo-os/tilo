@@ -9,6 +9,8 @@ pub mod action_groups;
 pub mod child_resources;
 #[path = "control_custody_raw_holder.rs"]
 pub mod control_custody_raw_holder;
+#[path = "effects.rs"]
+pub mod effects;
 #[path = "framework.rs"]
 pub mod framework;
 #[path = "history_actions.rs"]

@@ -2,15 +2,18 @@
 //! resource: collaboration, history, undo, permissions and the action door.
 
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::hash::Hash;
+use std::rc::{Rc, Weak};
 use ui_core::widget::{AppModel, ModelPath};
 
-use tilo_resource::Resource;
-use ui_core::PresencePayload;
+use tilo_resource::{Effect, NoEffect, Resource};
+use ui_core::automerge::{AutoCommit, ObjId};
 use ui_core::presence::PresenceKey;
-use ui_core::widget::{Decorator, Widget};
+use ui_core::widget::{Decorator, ResourceOperation, ResourceOperationStart, Widget};
+use ui_core::{PresencePayload, WakeHandle};
 
 use super::dispatch::Dispatcher;
+use super::effect::{EffectAnswer, EffectCx, EffectRunner, EffectStatus, Effects};
 use super::live::Live;
 
 /// A custom widget or renderer — a timeline, a canvas, a GPU viewport, a page
@@ -51,7 +54,14 @@ use super::live::Live;
 ///   the toolkit's `Widget::presence_payload` (one line:
 ///   `selection.presence::<R>(app_id)`), and draw collaborators from the
 ///   `PresenceCtx` every draw receives, under the same keys.
-pub trait ResourceSurface<R: Resource>: Widget {
+/// * **Effects** — work with no document delta (back up now, connect, run a
+///   query) is the surface's effect vocabulary `E`, a `#[derive(Effect)]`
+///   enum: implement `ResourceSurface<R, E>` and answer each effect in
+///   [`effect`](Self::effect) with `&mut self`, starting a job through the
+///   [`EffectCx`] when it takes time. Every caller — a button
+///   ([`Dispatcher::effect`]), the palette, an agent — reaches it the same
+///   way; [`effects`](Self::effects) says which are unavailable right now.
+pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
     /// The resource state to show.
     fn present(&mut self, state: &Rc<R::State>);
 
@@ -79,12 +89,40 @@ pub trait ResourceSurface<R: Resource>: Widget {
     fn stage(&mut self, scenario: Option<&str>) {
         let _ = scenario;
     }
+
+    /// Answer `effect`, invoked by a control, the palette, an agent or a
+    /// script: finish now ([`Effected::done`](super::Effected::done)), or
+    /// start a job with [`EffectCx::thread`], [`EffectCx::spawn`] or
+    /// [`EffectCx::reply`] and answer [`Effected::Pending`](super::Effected::Pending)
+    /// (only for an effect declared `job`). A job's completion runs on the
+    /// UI thread with `&mut self` again, and changes the document through
+    /// the context's dispatcher. Never called in History mode.
+    ///
+    /// # Errors
+    /// Returns why the effect failed, which its caller is told.
+    fn effect(&mut self, effect: E, cx: &mut EffectCx<R, Self>) -> EffectAnswer
+    where
+        Self: Sized,
+    {
+        let _ = cx;
+        Err(format!("`{}` has no handler", effect.id()))
+    }
+
+    /// The effects that differ from their declaration right now, as the
+    /// surface's state says: unavailable while the engine is offline,
+    /// relabelled while recording. Read after every sync, so the published
+    /// actions follow the surface.
+    fn effects(&self) -> Vec<EffectStatus> {
+        Vec::new()
+    }
 }
 
 /// What a surface receives when attached.
 pub struct SurfaceCx<R: Resource> {
     pub(crate) dispatch: Dispatcher<R>,
     pub(crate) live: Live<R>,
+    pub(crate) effects: Effects<R>,
+    pub(crate) alive: Weak<()>,
 }
 
 impl<R: Resource> SurfaceCx<R> {
@@ -129,6 +167,28 @@ impl<R: Resource> SurfaceCx<R> {
     pub fn app_id(&self) -> &'static str {
         self.dispatch.app_id()
     }
+
+    /// Wakes the app from another thread — a worker's result, a socket's
+    /// message — so the surface syncs and draws it without waiting for
+    /// input.
+    pub fn waker(&self) -> WakeHandle {
+        self.effects
+            .env()
+            .map_or_else(WakeHandle::new, |env| env.wake.clone())
+    }
+
+    /// Drain a projection the resource's actions queue, as
+    /// [`ViewCx::drain`](super::ViewCx::drain).
+    pub fn drain<K, T>(
+        &self,
+        pending: impl Fn(&R::State) -> Vec<(K, T)> + 'static,
+        run: impl FnMut(T, &mut EffectCx<R>) -> EffectAnswer + 'static,
+    ) where
+        K: Eq + Hash + Clone + 'static,
+        T: 'static,
+    {
+        self.effects.drain(self.alive.clone(), pending, run);
+    }
 }
 
 /// Where a participant is inside a resource, in the resource's own terms, so
@@ -170,15 +230,21 @@ impl ResourceSelection {
     }
 }
 
-/// Presents resource changes to a hosted surface and otherwise stays out of
-/// its way: layout, drawing and input are the surface's own.
-pub(crate) struct SurfaceHost<R: Resource, S> {
+/// Presents resource changes to a hosted surface, routes its effects to it,
+/// and otherwise stays out of its way: layout, drawing and input are the
+/// surface's own.
+pub(crate) struct SurfaceHost<R: Resource, S, E> {
     live: Live<R>,
     presented: u64,
     dispatch: Dispatcher<R>,
     read_only: bool,
     /// A scenario to stage on the next sync.
     staging: Staging,
+    /// Runs the surface's effects; `None` in History mode, where they never
+    /// run.
+    effects: Option<EffectRunner<R, S, E>>,
+    /// What the surface last said of its effects, which the root publishes.
+    statuses: Rc<RefCell<Vec<EffectStatus>>>,
     surface: S,
 }
 
@@ -186,14 +252,30 @@ pub(crate) struct SurfaceHost<R: Resource, S> {
 /// to stage, inner `None` is a plain `--shots`.
 pub(crate) type Staging = Rc<RefCell<Option<Option<String>>>>;
 
-impl<R: Resource, S: ResourceSurface<R>> SurfaceHost<R, S> {
-    pub(crate) fn new(live: Live<R>, dispatch: Dispatcher<R>, surface: S) -> Self {
+impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceHost<R, S, E> {
+    pub(crate) fn new(
+        live: Live<R>,
+        dispatch: Dispatcher<R>,
+        effects: &Effects<R>,
+        alive: Weak<()>,
+        surface: S,
+    ) -> Self {
+        let statuses = Rc::new(RefCell::new(surface.effects()));
+        let runner = effects.env().map(|env| EffectRunner::new(env.clone()));
+        if runner.is_some() && !E::declarations().is_empty() {
+            let published = Rc::clone(&statuses);
+            effects.publish::<E>(alive, move || {
+                super::effect::published_specs::<E>(&published.borrow())
+            });
+        }
         Self {
             presented: live.revision(),
             live,
             read_only: dispatch.read_only(),
             dispatch,
             staging: Staging::default(),
+            effects: runner,
+            statuses,
             surface,
         }
     }
@@ -203,9 +285,12 @@ impl<R: Resource, S: ResourceSurface<R>> SurfaceHost<R, S> {
     }
 }
 
-// The host adds one thing to the surface — presenting new resource state
-// before the surface syncs — and forwards everything else to it.
-impl<R: Resource, S: ResourceSurface<R>> Decorator for SurfaceHost<R, S> {
+// The host adds three things to the surface — presenting new resource state
+// before the surface syncs, answering its effects, and publishing what it
+// says of them — and forwards everything else to it.
+impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> Decorator
+    for SurfaceHost<R, S, E>
+{
     type Inner = S;
 
     fn inner(&self) -> &S {
@@ -231,5 +316,43 @@ impl<R: Resource, S: ResourceSurface<R>> Decorator for SurfaceHost<R, S> {
             self.surface.stage(scenario.as_deref());
         }
         self.surface.sync(state, path);
+        if self.effects.is_some() {
+            let now = self.surface.effects();
+            if *self.statuses.borrow() != now {
+                *self.statuses.borrow_mut() = now;
+            }
+        }
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ResourceOperationStart>, String> {
+        if let Some(runner) = self.effects.as_mut()
+            && let Some(started) = runner.start(op, &mut self.surface, |surface, effect, cx| {
+                surface.effect(effect, cx)
+            })?
+        {
+            return Ok(Some(started));
+        }
+        self.surface.start_operation(op, doc, path)
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        cancellation_requested: bool,
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        if let Some(runner) = self.effects.as_mut()
+            && let Some(update) = runner.poll(invocation, cancellation_requested, &mut self.surface)
+        {
+            return Some(update);
+        }
+        self.surface
+            .poll_resource_operation(invocation, cancellation_requested, doc, path)
     }
 }
