@@ -3,8 +3,8 @@
 //! The process table and resource gauges are a host projection — they never
 //! enter Automerge. What *does* sync is the collaborative view: which tab is
 //! showing, how the table is sorted, tree vs flat, the process filter, and
-//! which PID is selected. Device observation prefs (cadence, kernel threads,
-//! confirm-kill) stay on [`crate::prefs::Prefs`].
+//! which PID is selected. The person's preferences (cadence, kernel threads,
+//! confirm-kill) are [`crate::prefs::MonitorPreferences`], a personal setting.
 //!
 //! ```text
 //! root

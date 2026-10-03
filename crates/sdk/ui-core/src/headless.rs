@@ -503,6 +503,8 @@ pub mod test_support;
 
 pub struct FrameHarness {
     control_domain: crate::ControlDomain,
+    /// Pen samples on their way to the pointer events they describe.
+    pen: crate::pen::PenInput,
     caller_palette: caller_palette::CallerPalette,
     system_search: system_search::SystemSearch,
     component_wake: Option<ComponentRunnerWakeState>,
@@ -1317,6 +1319,7 @@ impl FrameHarness {
         control_domain.finish_initial_installation();
         let mut d = Self {
             control_domain,
+            pen: crate::pen::PenInput::default(),
             caller_palette: Default::default(),
             system_search: Default::default(),
             component_wake,
@@ -4562,6 +4565,11 @@ impl FrameHarness {
     /// Deliver platform input including host keyboard policy. Browser/native adapters
     /// forward real events here; synthetic helpers use the same path.
     pub fn send_host_event(&mut self, event: &WindowEvent) {
+        // A pen's sample is no event of its own: widgets read it while they
+        // handle the pointer event it precedes.
+        let Some(_pen) = self.pen.route(event) else {
+            return;
+        };
         self.last_send_skipped_relayout = false;
         if let WindowEvent::ModifiersChanged(modifiers) = event {
             // DOM key capture and Winit can publish the same snapshot repeatedly.
@@ -4662,6 +4670,9 @@ impl FrameHarness {
 
     /// Deliver one event through the production dispatch path.
     pub fn send(&mut self, event: &WindowEvent) {
+        let Some(_pen) = self.pen.route(event) else {
+            return;
+        };
         self.send_with_host_navigation(event, false);
     }
 
@@ -12721,6 +12732,9 @@ pub(crate) mod legacy_control_feedback_tests {
 
 #[cfg(test)]
 mod portable_host_tests;
+
+#[cfg(test)]
+mod pen_tests;
 
 #[cfg(test)]
 mod framed_tests {

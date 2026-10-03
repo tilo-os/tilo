@@ -36,8 +36,8 @@ class RegistryMetadataTests(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 entries = sorted(output.glob("*.json"))
-                self.assertEqual(len(entries), 57)
-                self.assertEqual(len(list(media.glob("*"))), 81)
+                self.assertEqual(len(entries), 56)
+                self.assertEqual(len(list(media.glob("*"))), 80)
                 for path in entries:
                     entry = json.loads(path.read_text(encoding="utf-8"))
                     with self.subTest(app=path.stem):
@@ -55,7 +55,7 @@ class RegistryMetadataTests(unittest.TestCase):
             result = self.run_tool("audit")
             self.assertEqual(result.returncode, 0, result.stderr)
             report = json.loads(result.stdout)
-            self.assertEqual(report["count"], 57)
+            self.assertEqual(report["count"], 56)
             self.assertNotIn("browser", report["apps"])
 
 

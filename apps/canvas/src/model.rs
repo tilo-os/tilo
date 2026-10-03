@@ -41,7 +41,11 @@ impl Default for Ground {
 }
 
 /// One layer of the artwork.
-#[derive(Clone, Debug, PartialEq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "shown, held still, an inverted mask and clipped are independent settings"
+)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Layer {
     pub id: String,
     pub name: String,
@@ -57,6 +61,43 @@ pub struct Layer {
     pub texture: f64,
     /// Held still: the pointer passes through its marks to those beneath.
     pub locked: bool,
+    /// The layer this layer masks, or empty for an ordinary layer. A mask's
+    /// marks are drawn in greys: where it is light that layer shows, where
+    /// it is dark it is hidden. Hiding the mask turns it off.
+    pub mask_of: String,
+    /// A mask's grey before any mark, `0..=1`: 1 shows all of its layer,
+    /// 0 hides all of it.
+    pub base: f64,
+    /// A mask that hides where it is light and shows where it is dark.
+    pub invert: bool,
+    /// Clipped to the layer below: it shows only where that layer has paint.
+    pub clip: bool,
+}
+
+impl Layer {
+    /// Whether this layer is another layer's mask.
+    pub fn is_mask(&self) -> bool {
+        !self.mask_of.is_empty()
+    }
+}
+
+/// The area selected for the next edit: a region of the artwork, kept with
+/// it like the reference picture and never drawn into it. Fills, masks and
+/// copies take its shape; its feather softens their edge.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Selection {
+    /// SVG path data in artwork units, filled non-zero.
+    pub d: String,
+    /// How far its edge fades, in units.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub feather: f64,
+}
+
+impl Selection {
+    /// The selected area.
+    pub fn region(&self) -> crate::region::Region {
+        crate::region::Region::of_path(&BezPath::from_svg(&self.d).unwrap_or_default())
+    }
 }
 
 /// A point of a stroke: `[x, y]` or `[x, y, pressure]` with pressure `0..=1`.
@@ -179,10 +220,15 @@ pub struct Style {
     /// `0..=1`; absent is opaque.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opacity: Option<f64>,
-    /// On a painted layer: the width of the brush that lays a filled shape
+    /// A brush stroke's preset on a plain layer (`pen`, `pencil`, `marker`,
+    /// `airbrush`, `charcoal`, `calligraphy`), or `eraser` on any layer;
+    /// a round ink brush when absent. See [`crate::brushes`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brush: Option<String>,
+    /// On a painted layer: the size of the brush that lays a filled shape
     /// in, in units.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub brush: Option<f64>,
+    pub brush_size: Option<f64>,
     /// On a painted layer: the direction of the brushwork, in degrees.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub angle: Option<f64>,
@@ -191,7 +237,8 @@ pub struct Style {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub wet: bool,
     /// On a painted layer: overrides of the medium's parameters for this
-    /// mark (`{"load": 0.3}`).
+    /// mark (`{"load": 0.3}`). On a plain layer's stroke: the brush's
+    /// `flow`, `hardness`, `spacing`, `smoothing` and `taper`, each `0..=1`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub params: BTreeMap<String, f64>,
     /// Outline dash pattern, `[on, off, …]` in units.
@@ -331,6 +378,7 @@ pub struct Artwork {
     /// Media presets saved in this artwork, by id.
     pub media: BTreeMap<String, crate::media::MediumSpec>,
     pub reference: Option<Reference>,
+    pub selection: Option<Selection>,
 }
 
 impl Default for Artwork {
@@ -344,6 +392,7 @@ impl Default for Artwork {
             marks: Vec::new(),
             media: BTreeMap::new(),
             reference: None,
+            selection: None,
         }
     }
 }
@@ -355,6 +404,17 @@ impl Artwork {
 
     pub fn mark(&self, id: &str) -> Option<&Mark> {
         self.marks.iter().find(|mark| mark.id == id)
+    }
+
+    /// The layer new marks go on when none is named: the top layer that is
+    /// not a mask.
+    pub fn top_layer(&self) -> Option<&Layer> {
+        self.layers.iter().rev().find(|layer| !layer.is_mask())
+    }
+
+    /// The mask of `layer`, if it has one.
+    pub fn mask_of(&self, layer: &str) -> Option<&Layer> {
+        self.layers.iter().find(|mask| mask.mask_of == layer)
     }
 
     /// The marks of `layer`, bottom to top.
@@ -372,7 +432,8 @@ impl Artwork {
     pub fn mark_at(&self, point: Point) -> Option<&Mark> {
         self.marks.iter().rev().find(|mark| {
             self.layer(&mark.layer)
-                .is_some_and(|layer| layer.visible && !layer.locked)
+                .is_some_and(|layer| layer.visible && !layer.locked && !layer.is_mask())
+                && mark.inked()
                 && mark.hit(point)
                 && self.clip_of(mark).is_none_or(|clip| clip.hit(point))
         })
@@ -982,6 +1043,20 @@ fn polyline(points: &[[f64; 2]], closed: bool) -> BezPath {
 }
 
 impl Mark {
+    /// Whether the mark puts down any colour: a mark with none only cuts
+    /// others to its shape.
+    pub fn inked(&self) -> bool {
+        let style = &self.style;
+        style.fill.is_some() || style.stroke.is_some() || style.gradient.is_some()
+    }
+
+    /// Whether the mark is an eraser: it takes paint off its layer and has
+    /// none of its own to pick.
+    pub fn erases(&self) -> bool {
+        matches!(self.shape, Shape::Stroke { .. })
+            && crate::brushes::Preset::of(&self.style) == crate::brushes::Preset::Eraser
+    }
+
     pub fn affine(&self) -> Affine {
         self.transform.map_or(Affine::IDENTITY, Affine::new)
     }
@@ -1053,7 +1128,7 @@ impl Mark {
     /// Whether `point` lands on the mark: inside a filled shape, or near a
     /// line or stroke.
     pub fn hit(&self, point: Point) -> bool {
-        if !self.bounds().contains(point) {
+        if self.erases() || !self.bounds().contains(point) {
             return false;
         }
         let local = self.affine().inverse() * point;

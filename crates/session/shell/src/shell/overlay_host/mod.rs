@@ -16050,6 +16050,11 @@ impl Widget for ShellOverlayHost {
                 self.onboarding = None;
                 self.onboarding_released = true;
                 self.onboarding_focus_reset = true;
+                if let Some(chrome) = self.chrome.as_ref()
+                    && let Some(account) = std::env::var("USER").ok().filter(|a| !a.is_empty())
+                {
+                    chrome.borrow_mut().adopt_provisioned_identity(&account);
+                }
             }
             return;
         }

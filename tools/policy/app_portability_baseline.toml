@@ -86,9 +86,6 @@ D2 = 3
 [apps.hex-editor]
 D2 = 1
 
-[apps.image-editor]
-D2 = 2
-
 [apps.imager]
 D1 = 6
 D2 = 9

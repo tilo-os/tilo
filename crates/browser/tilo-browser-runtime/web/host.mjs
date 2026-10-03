@@ -13,6 +13,7 @@ import {createCrashQuarantine,crashAction} from './app-crash.mjs';
 import {createDesktopNavigation} from './desktop-navigation.mjs';
 import {createLiveCursors} from './live-cursors.mjs';
 import {createLegacyWindows} from './legacy-windows.mjs';
+import {createNodeApps} from './node-apps.mjs';
 import {isWebKit,webgpuRefusal} from './webgpu-safety.mjs';
 // Page host for the Tilo browser runtime. Ported from the Tilo browser runtime
 // (PR 541) without its desktop host and action palette.
@@ -83,7 +84,7 @@ export async function mountDesktop(target,options={}) {
   // The desktop offers Invite only when the page takes it.
   config.invite=typeof options.onInvite==='function';delete config.onInvite;
   let unsubscribeDesktopCommits;
-  let liveOverlay,liveCursors,liveCarets,legacyWindows;
+  let liveOverlay,liveCursors,liveCarets,legacyWindows,nodeApps;
   // The room's live layer as this mount publishes through it (a certified
   // peer's `live` view: only the mount acted in last speaks), else the peer's.
   const liveLayer=()=>typeof options.live==='function'?options.live():options.peer?.live;
@@ -164,7 +165,7 @@ export async function mountDesktop(target,options={}) {
     lastState=retainStatus(lastState,state);report(state);
     if(state.phase==='suspended'){surface.inert=true;editor.disabled=true;inputScope.capture();}
 
-    if(state.phase==='presented'){surface.inert=false;editor.disabled=false;liveOverlay?.wake();const layer=liveLayer();if(!liveCursors&&layer){liveCursors=createLiveCursors({layer,surface,windows:()=>{const shown=runtime.desktop_record_windows?.(id);return shown?JSON.parse(shown):undefined;}});liveCarets=followRemoteCarets(layer,()=>id,active);}if(!legacyWindows&&layer&&typeof options.peer?.legacyInput==='function'&&runtime.desktop_set_peer_windows&&runtime.desktop_peer_windows(id)!==undefined)legacyWindows=createLegacyWindows({surface,live:liveLayer,windows:()=>{const shown=active()&&runtime.desktop_peer_windows(id);return shown?JSON.parse(shown):[];},setWindows:list=>{if(active())runtime.desktop_set_peer_windows(id,JSON.stringify(list));},sendInput:(publisher,stream,events)=>options.peer.legacyInput(publisher,stream,events),onError:error=>report({legacyWindowError:String(error)})});legacyWindows?.wake();}
+    if(state.phase==='presented'){surface.inert=false;editor.disabled=false;liveOverlay?.wake();const layer=liveLayer();if(!liveCursors&&layer){liveCursors=createLiveCursors({layer,surface,windows:()=>{const shown=runtime.desktop_record_windows?.(id);return shown?JSON.parse(shown):undefined;}});liveCarets=followRemoteCarets(layer,()=>id,active);}if(!legacyWindows&&layer&&typeof options.peer?.legacyInput==='function'&&runtime.desktop_set_peer_windows&&runtime.desktop_peer_windows(id)!==undefined)legacyWindows=createLegacyWindows({surface,live:liveLayer,windows:()=>{const shown=active()&&runtime.desktop_peer_windows(id);return shown?JSON.parse(shown):[];},setWindows:list=>{if(active())runtime.desktop_set_peer_windows(id,JSON.stringify(list));},sendInput:(publisher,stream,events)=>options.peer.legacyInput(publisher,stream,events),dismissed:()=>active()&&runtime.desktop_dismissed_peer_windows?JSON.parse(runtime.desktop_dismissed_peer_windows(id)):[],onError:error=>report({legacyWindowError:String(error)})});legacyWindows?.wake();if(!nodeApps&&typeof options.peer?.nodeSession==='function'&&options.peer.agents&&runtime.desktop_set_node_apps)nodeApps=createNodeApps({room:config.room,nodeSession:()=>options.peer.nodeSession(),actions:device=>options.peer.agents.actions(device),setApps:apps=>{if(active())runtime.desktop_set_node_apps(id,JSON.stringify(apps));},takeRequests:()=>active()?JSON.parse(runtime.desktop_take_node_app_requests(id)):[],onError:error=>report({nodeAppsError:String(error)})});}
     surface.dataset.phase=state.phase;surface.dataset.frames=String(state.frames??0);
     if(state.phase==='failed'){readyReject(Error(state.error));for(const waiter of presentationWaiters)waiter.reject(Error(state.error));presentationWaiters.clear();}
     if(state.phase==='presented'){for(const waiter of [...presentationWaiters])if((state.frames??0)>waiter.after){presentationWaiters.delete(waiter);waiter.resolve();}}
@@ -245,7 +246,7 @@ export async function mountDesktop(target,options={}) {
   const cleanup=recoverableClose({
     begin(){
       crashListeners.delete(onCrash);
-      media?.close();liveOverlay?.close();liveOverlay=undefined;liveCursors?.close();liveCursors=undefined;liveCarets?.();liveCarets=undefined;legacyWindows?.close();legacyWindows=undefined;unsubscribeDesktopCommits?.();navigationFocus.close();navigation?.close();actionPalette?.close();desktopCommands?.close();desktopSpeculation?.close();semantic.close();closed=true;for(const waiter of presentationWaiters)waiter.reject(Error('mount disposed'));presentationWaiters.clear();listeners.abort();readyReject(Error('mount disposed'));
+      media?.close();liveOverlay?.close();liveOverlay=undefined;liveCursors?.close();liveCursors=undefined;liveCarets?.();liveCarets=undefined;legacyWindows?.close();legacyWindows=undefined;nodeApps?.close();nodeApps=undefined;unsubscribeDesktopCommits?.();navigationFocus.close();navigation?.close();actionPalette?.close();desktopCommands?.close();desktopSpeculation?.close();semantic.close();closed=true;for(const waiter of presentationWaiters)waiter.reject(Error('mount disposed'));presentationWaiters.clear();listeners.abort();readyReject(Error('mount disposed'));
       if(id!==undefined)closeWrites=Array.from(runtime.close(id));
       surface.remove();
     },
