@@ -26,62 +26,36 @@ use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui::widget::Widget;
 
 const WIDE_VIEWPORT: (u32, u32) = (1280, 800);
-const NARROW_VIEWPORT: (u32, u32) = (680, 860);
+const NARROW_VIEWPORT: (u32, u32) = (800, 600);
 
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
-
-#[allow(
-    clippy::disallowed_methods,
-    reason = "only reached from the screenshot entry points on the main thread, before \
-              the widget that reads these variables is built and before any app worker \
-              thread exists"
-)]
-fn prepare_shot(narrow: bool, scenario: Option<&str>) -> Box<dyn Widget> {
-    // An explicit repository is the only way screenshots may inspect the
-    // surrounding checkout; otherwise use the deterministic sample fixture.
-    if std::env::var_os("GIT_CLIENT_REPO").is_none() {
-        unsafe { std::env::set_var("GIT_CLIENT_SAMPLE", "1") };
-    }
-    if narrow {
-        unsafe { std::env::set_var("GIT_CLIENT_FLAP_OPEN", "1") };
-    }
-    git_client::app_root_shot(scenario)
-}
 
 #[allow(
     clippy::unnecessary_wraps,
     reason = "signature is fixed by ui::launch::ShotFactory"
 )]
 fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    Ok(prepare_shot(false, args.scenario.as_deref()))
+    // An explicit repository is the only way screenshots may inspect the
+    // surrounding checkout; otherwise they show the deterministic sample.
+    let sample = std::env::var_os("GIT_CLIENT_REPO").is_none();
+    Ok(git_client::app_root_shot(args.scenario.as_deref(), sample))
+}
+
+/// A narrow scenario is captured in a narrow window.
+fn shot_viewport(args: &LaunchArgs) -> (u32, u32) {
+    match args.scenario.as_deref() {
+        Some("drawer") => NARROW_VIEWPORT,
+        _ => WIDE_VIEWPORT,
+    }
 }
 
 fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
-    if let Some(message) = args.value("--stage-commit") {
-        stage_and_commit(message)?;
-        return Ok(true);
-    }
-    let Some(out) = args.value("--shots-narrow") else {
+    let Some(message) = args.value("--stage-commit") else {
         return Ok(false);
     };
-    render(
-        args,
-        prepare_shot(true, args.scenario.as_deref()),
-        NARROW_VIEWPORT,
-        std::path::Path::new(out),
-    );
-    // Preserve the old behavior where both screenshot flags render both files.
-    Ok(args.shots.is_none())
-}
-
-fn render(args: &LaunchArgs, root: Box<dyn Widget>, viewport: (u32, u32), out: &std::path::Path) {
-    // The same palette / text-scale / motion policy as `--shots`, so the
-    // narrow capture honours `TILO_SHOTS_THEME` and `TILO_SHOTS_TEXT_SCALE`.
-    let theme = ui::launch::shot_theme(args);
-    ui::headless::FrameHarness::new_with_theme(ui::State::new(), root, viewport, theme)
-        .render_png(out);
-    println!("git_client: wrote shot to {}", out.display());
+    stage_and_commit(message)?;
+    Ok(true)
 }
 
 fn stage_and_commit(message: &str) -> Result<(), LaunchError> {
@@ -114,7 +88,6 @@ fn wants_standalone() -> bool {
             "--responsive-matrix",
             "--native-audit",
             "--headless",
-            "--shots-narrow",
             "--stage-commit",
         ]
         .iter()
@@ -125,19 +98,19 @@ fn wants_standalone() -> bool {
 fn shot_spec() -> LaunchSpec {
     LaunchSpec::new("so.tilo.git-client", git_client::app_root)
         .shot_root(shot_root)
-        .shot_viewport(|_| WIDE_VIEWPORT)
+        .shot_viewport(shot_viewport)
         .scenarios(git_client::SCENARIOS)
-        .allowed_live_options(&["--stage-commit", "--shots-narrow"])
+        .allowed_live_options(&["--stage-commit"])
         .command_handler(command)
         .configure_app(|app| {
-            app.set_window_title(Some("Git Client".into()));
+            app.set_window_title(Some("Git".into()));
             git_client::actions::register(app.action_registry_mut());
         })
 }
 
 pub fn main() {
     if let Err(error) = install_locales() {
-        eprintln!("Git Client locale initialization failed: {error}");
+        eprintln!("Git locale initialization failed: {error}");
         std::process::exit(1);
     }
     if wants_standalone() {
