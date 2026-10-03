@@ -14,10 +14,9 @@ aarch64 = "aarch64"
 # Pictures an agent looks at or exports are kept in the app's content store;
 # an SVG or picture may be named by a path the sandbox lets it read, or
 # chosen in the file chooser.
-# Marks are copied and pasted through the clipboard. Grading a picture's
-# pixels spreads over a few threads.
+# Marks are copied and pasted through the clipboard.
 [capabilities]
-optional = ["clipboard", "app-files", "files.open", "files.paths", "files.save", "threads"]
+optional = ["clipboard", "app-files", "files.open", "files.paths", "files.save"]
 
 [publisher]
 identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

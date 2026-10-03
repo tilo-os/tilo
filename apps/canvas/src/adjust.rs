@@ -5,7 +5,8 @@
 //! The per-pixel steps are prepared once into a [`Grade`]: a tone table per
 //! channel (white balance, exposure, levels, contrast, curve), the tone
 //! shift of highlights and shadows, one colour matrix (hue, saturation,
-//! grayscale), vibrance and inversion. Blur and sharpen work on pixels
+//! grayscale), vibrance and inversion, run over a picture's pixels in bands
+//! on the toolkit's compute threads. Blur and sharpen work on pixels
 //! only; a vignette is drawn over what it darkens, so it is the same on
 //! pictures, paint and vector art.
 #![allow(
@@ -487,39 +488,34 @@ pub fn grade_pixels(pixels: &mut [u8], grades: &[Grade]) {
 }
 
 /// Run `work` over `pixels` split into bands of whole units of `stride`
-/// bytes, on as many threads as help.
+/// bytes, on the toolkit's compute threads (the caller's alone where there
+/// are none), returning when every band is done. The bands do not depend on
+/// how many threads there are, so the result is the same everywhere.
 fn bands(pixels: &mut [u8], stride: usize, work: impl Fn(&mut [u8]) + Sync) {
     let units = pixels.len() / stride.max(1);
-    let threads = threads().min(units / 4096).max(1);
-    if threads == 1 {
-        work(pixels);
+    let per = units.div_ceil(BANDS).max(BAND_UNITS) * stride.max(1);
+    let chunks: Vec<&mut [u8]> = pixels.chunks_mut(per).collect();
+    each(chunks, &work);
+}
+
+/// How many bands a picture is split into for its threads.
+const BANDS: usize = 16;
+/// The fewest units a band holds: a smaller one costs more to hand over
+/// than to do.
+const BAND_UNITS: usize = 4096;
+
+/// `work` on each of `parts`, on the toolkit's compute threads, returning
+/// when all are done.
+fn each<T: Send>(parts: Vec<T>, work: &(impl Fn(T) + Sync)) {
+    if parts.len() <= 1 {
+        parts.into_iter().for_each(work);
         return;
     }
-    let per = units.div_ceil(threads) * stride;
-    run_split(pixels.chunks_mut(per).collect(), &work);
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn run_split(chunks: Vec<&mut [u8]>, work: &(impl Fn(&mut [u8]) + Sync)) {
-    std::thread::scope(|scope| {
-        for chunk in chunks {
-            scope.spawn(move || work(chunk));
+    ui::rt::cpu_pool().scope(|scope| {
+        for part in parts {
+            scope.spawn(move |_| work(part));
         }
     });
-}
-
-#[cfg(target_arch = "wasm32")]
-fn run_split(chunks: Vec<&mut [u8]>, work: &(impl Fn(&mut [u8]) + Sync)) {
-    for chunk in chunks {
-        work(chunk);
-    }
-}
-
-fn threads() -> usize {
-    if cfg!(target_arch = "wasm32") {
-        return 1;
-    }
-    std::thread::available_parallelism().map_or(1, |count| count.get().min(8))
 }
 
 /// An RGBA picture blurred like a gaussian `radius` pixels wide (three box
@@ -613,7 +609,7 @@ fn box_columns(pixels: &mut [u8], width: usize, height: usize, reach: usize) {
             .get(y * row_bytes..(y + 1) * row_bytes)
             .unwrap_or(&[])
     };
-    let rows_per = height.div_ceil(threads().max(1)).max(1);
+    let rows_per = height.div_ceil(BANDS).max(1);
     let chunks: Vec<&mut [u8]> = pixels.chunks_mut(rows_per * row_bytes).collect();
     let work = |(band, chunk): (usize, &mut [u8])| {
         let first = band * rows_per;
@@ -640,17 +636,7 @@ fn box_columns(pixels: &mut [u8], width: usize, height: usize, reach: usize) {
             }
         }
     };
-    #[cfg(not(target_arch = "wasm32"))]
-    std::thread::scope(|scope| {
-        for (band, chunk) in chunks.into_iter().enumerate() {
-            let work = &work;
-            scope.spawn(move || work((band, chunk)));
-        }
-    });
-    #[cfg(target_arch = "wasm32")]
-    for item in chunks.into_iter().enumerate() {
-        work(item);
-    }
+    each(chunks.into_iter().enumerate().collect(), &work);
 }
 
 /// An RGBA picture sharpened by `amount` (0-1): its difference from a

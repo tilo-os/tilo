@@ -417,6 +417,39 @@ fn prepare_definition(
     definition: &ApplicationDefinition,
     args: &LaunchArgs,
 ) -> Result<PreparedComponentInputs, LaunchError> {
+    /// Hand the instance the file it was launched with (the one positional
+    /// argument), when the app opens files of its type. The launch granted
+    /// the read; a file that cannot be read is left out and said so.
+    fn hand_over(
+        definition: &ApplicationDefinition,
+        args: &LaunchArgs,
+        prepared: &mut PreparedComponentInputs,
+    ) {
+        let Some(path) = args.positionals().first().map(std::path::Path::new) else {
+            return;
+        };
+        let Some(media_type) = ui_core::dnd::mime_for_path(path)
+            .filter(|media_type| definition.opens_media_type(media_type))
+        else {
+            tracing::warn!(target: "tilo_app::open", path = %path.display(), "the app does not open files of this type");
+            return;
+        };
+        let name = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        let file = tilo_files::file_at(path)
+            .and_then(|(dir, file)| tilo_files::blocking::read(&dir, &file))
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| ui_core::application::OpenFile::new(&name, media_type, bytes));
+        match file {
+            Ok((file, _receipt)) => prepared.context.provide_open_file(file),
+            Err(error) => {
+                tracing::warn!(target: "tilo_app::open", path = %path.display(), %error, "the file could not be handed over");
+            }
+        }
+    }
+
     let inputs = ComponentRunnerInputs::from_native_process();
     // Captures, audits and headless driving never touch the user's profile:
     // they run on a private one removed with the process, unless a headless
@@ -476,39 +509,6 @@ fn prepare_definition(
     )?;
     hand_over(definition, args, &mut prepared);
     Ok(prepared)
-}
-
-/// Hand the instance the file it was launched with (the one positional
-/// argument), when the app opens files of its type. The launch granted
-/// the read; a file that cannot be read is left out and said so.
-#[cfg(not(target_arch = "wasm32"))]
-fn hand_over(
-    definition: &ApplicationDefinition,
-    args: &LaunchArgs,
-    prepared: &mut PreparedComponentInputs,
-) {
-    let Some(path) = args.positionals().first().map(std::path::Path::new) else {
-        return;
-    };
-    let Some(media_type) = ui_core::dnd::mime_for_path(path)
-        .filter(|media_type| definition.opens_media_type(media_type))
-    else {
-        tracing::warn!(target: "tilo_app::open", path = %path.display(), "the app does not open files of this type");
-        return;
-    };
-    let name = path.file_name().map_or_else(
-        || path.display().to_string(),
-        |name| name.to_string_lossy().into_owned(),
-    );
-    let file = std::fs::read(path)
-        .map_err(|error| error.to_string())
-        .and_then(|bytes| ui_core::application::OpenFile::new(&name, media_type, bytes));
-    match file {
-        Ok((file, _receipt)) => prepared.context.provide_open_file(file),
-        Err(error) => {
-            tracing::warn!(target: "tilo_app::open", path = %path.display(), %error, "the file could not be handed over");
-        }
-    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
