@@ -534,15 +534,15 @@ fn data_rows_centre_their_text_and_scale_once() {
             let view = rect(find(&cap.harness.inspection().root, "SearchResultsView"));
             // The bands the view resolves from the theme: a one-line row holds
             // the `base` title line plus `s3`, a two-line row the title, `s1` and
-            // the `sm` subtitle plus `s3`, the caption band its `xs` line plus two
-            // `s1` insets. All three are the pinned constants at 1x.
+            // the `sm` subtitle plus `s3`, the section header its `Subheading`
+            // line plus two `s1` insets. All three are the pinned constants at 1x.
             let theme = Theme::dark().with_text_scale(scale);
             let typography = &theme.tokens.typography;
             let s1 = f64::from(theme.tokens.spacing.s1);
             let s3 = f64::from(theme.tokens.spacing.s3);
             let header_h = band(
                 SEARCH_HEADER_H,
-                line(typography, TextRole::Caption),
+                line(typography, TextRole::Subheading),
                 2.0 * s1,
             );
             let one_line = band(SEARCH_ROW_ONE_LINE, line(typography, TextRole::Body), s3);

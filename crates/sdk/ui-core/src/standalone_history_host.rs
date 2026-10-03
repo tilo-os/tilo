@@ -34,30 +34,7 @@ use crate::theme::Theme;
 use crate::widget::layout::CompositionFocus;
 use crate::widget::{Button, HistoryEntryId, TaffyTreeExt, Widget};
 
-pub(crate) const SEARCH_OPERATION: &str = "tilo.host.search.view";
-pub(crate) const SEARCH_RESOURCE: &str = "tilo.host:search";
-
-#[expect(
-    clippy::expect_used,
-    reason = "fixed nullary View payload serializes infallibly"
-)]
-pub(crate) fn search_resource() -> Resource {
-    Resource::new(
-        SEARCH_RESOURCE,
-        "tilo.host.search",
-        I18nManager::lookup_plain("standalone-search-title"),
-    )
-    .with_action(
-        ActionSpec::operation(
-            "open",
-            I18nManager::lookup_plain("standalone-search-title"),
-            OperationKind::View,
-            SEARCH_OPERATION,
-            &(),
-        )
-        .expect("unit Search operation serializes"),
-    )
-}
+use crate::search::search_resource;
 
 pub(crate) const HISTORY_OPERATION: &str = "tilo.host.history.view";
 pub(crate) const HISTORY_RESOURCE: &str = "tilo.host:history";
@@ -1539,7 +1516,10 @@ mod tests {
             .into_iter()
             .map(|resource| resource.id.as_str().to_owned())
             .collect();
-        assert_eq!(ids, [HISTORY_RESOURCE, SEARCH_RESOURCE]);
+        assert_eq!(
+            ids,
+            [HISTORY_RESOURCE, crate::search::request::SEARCH_RESOURCE]
+        );
 
         let mut app = Text::new("app");
         let mut tree = TaffyTree::new();

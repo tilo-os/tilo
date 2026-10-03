@@ -1883,7 +1883,7 @@ impl ChromeState {
 
     /// The tab's canonical app id — see
     /// [`tilo_desktop_model::apps::canonical_app_id`].
-    fn tab_app_id(
+    pub(crate) fn tab_app_id(
         &self,
         strip_id: StripId,
         group_id: GroupId,
