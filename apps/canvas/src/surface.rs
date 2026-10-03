@@ -36,6 +36,9 @@ use crate::render::{Options, Renderer};
 use crate::resource::{ArtworkResource, VIEW_TYPE, ViewOp};
 use crate::view_ops;
 
+/// The largest SVG `export-svg` also answers inline, in bytes.
+const MAX_INLINE_SVG: usize = 48 * 1024;
+
 /// What the pointer does on the canvas.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tool {
@@ -290,7 +293,7 @@ impl CanvasSurface {
             Drag::Move { start, now, ids } => {
                 let (dx, dy) = (now.x - start.x, now.y - start.y);
                 if dx.hypot(dy) > 0.5 {
-                    self.dispatch(&CanvasAction::EditMarks(EditMarks {
+                    self.dispatch(&CanvasAction::edit(EditMarks {
                         ids,
                         move_by: Some([dx, dy]),
                         ..EditMarks::default()
@@ -347,18 +350,8 @@ impl CanvasSurface {
                 self.dispatch(&CanvasAction::Draw(Draw {
                     layer,
                     marks: vec![NewMark {
-                        id: None,
-                        name: None,
-                        shape,
                         fill: Some(self.tools.hex()),
-                        gradient: None,
-                        stroke: None,
-                        stroke_width: None,
-                        opacity: None,
-                        brush: None,
-                        angle: None,
-                        wet: None,
-                        params: None,
+                        ..NewMark::new(shape)
                     }],
                 }));
             }
@@ -395,7 +388,7 @@ impl CanvasSurface {
                 ..EditMarks::default()
             }
         };
-        self.dispatch(&CanvasAction::EditMarks(edit));
+        self.dispatch(&CanvasAction::edit(edit));
     }
 
     fn key(&mut self, key: &Key, modifiers: ui::winit::keyboard::ModifiersState) -> bool {
@@ -413,7 +406,7 @@ impl CanvasSurface {
         };
         match key {
             _ if step.is_some() && !self.selection.is_empty() => {
-                self.dispatch(&CanvasAction::EditMarks(EditMarks {
+                self.dispatch(&CanvasAction::edit(EditMarks {
                     ids: self.selection.clone(),
                     move_by: step,
                     ..EditMarks::default()
@@ -447,47 +440,176 @@ impl CanvasSurface {
             .to_owned()
     }
 
-    fn answer(&mut self, op: &ViewOp, doc: &mut AutoCommit) -> Result<ActionOutput, String> {
-        let art = crate::doc::read(doc);
-        let revision = Self::revision(doc);
-        let picture =
-            |result: Result<(view_ops::Picture, Value), String>| -> Result<ActionOutput, String> {
-                let (picture, mut info) = result?;
-                let hash = tilo_content::ContentStore::for_app()
-                    .put(&picture.bytes)
-                    .map_err(|error| format!("the picture could not be stored: {error}"))?;
-                let address = tilo_actions::content_resource(&hash)
-                    .ok_or_else(|| "the picture has no content address".to_owned())?;
-                if let Value::Object(fields) = &mut info {
-                    fields.insert("revision".into(), revision.clone().into());
-                    fields.insert("content".into(), address.clone().into());
-                }
-                Ok(ActionOutput {
-                    value: Some(info),
-                    resources: vec![address],
-                })
+    /// The artwork at `version` (a change id or a checkpoint name), its
+    /// revision and the version's name; now when `version` is absent.
+    fn at_version(
+        doc: &mut AutoCommit,
+        version: Option<&str>,
+    ) -> Result<(Artwork, String, Option<String>), String> {
+        let Some(version) = version else {
+            return Ok((crate::doc::read(doc), Self::revision(doc), None));
+        };
+        let heads = ui::history_source::steps::resolve(doc, version)?;
+        let mut past = doc
+            .fork_at(&heads)
+            .map_err(|error| format!("version {version:?} is not in this artwork: {error}"))?;
+        let name = ui::framework::history::version_name(&heads);
+        Ok((
+            crate::doc::read(&past),
+            Self::revision(&mut past),
+            Some(name),
+        ))
+    }
+
+    /// The two versions a diff compares; `to` is now when absent.
+    fn versions(
+        doc: &mut AutoCommit,
+        now: &Artwork,
+        diff: &crate::resource::Diff,
+    ) -> Result<view_ops::Versions, String> {
+        let (before, _, from) = Self::at_version(doc, Some(&diff.from))?;
+        let (after, to) = match &diff.to {
+            Some(to) => {
+                let (after, _, to) = Self::at_version(doc, Some(to))?;
+                (after, to)
+            }
+            None => (now.clone(), None),
+        };
+        Ok(view_ops::Versions {
+            before,
+            after,
+            from: from.unwrap_or_default(),
+            to: to.unwrap_or_else(|| "now".into()),
+        })
+    }
+
+    fn export_svg(&mut self, art: &Artwork, revision: &str) -> Result<ActionOutput, String> {
+        let text = self.look_text.get_or_insert_with(TextRenderer::new);
+        let renderer = &mut self.renderer;
+        let svg = crate::svg::export(art, |layer| {
+            let options = Options {
+                layers: Some(vec![layer.id.clone()]),
+                bare: true,
+                ..Options::default()
             };
+            view_ops::render(renderer, text, art, (art.bounds(), 1.0), &options, false)
+                .ok()
+                .map(|picture| picture.bytes)
+        });
+        let address = crate::resource::store(svg.as_bytes())?;
+        let mut value = json!({
+            "format": "svg",
+            "bytes": svg.len(),
+            "content": address,
+            "revision": revision,
+        });
+        if svg.len() <= MAX_INLINE_SVG
+            && let Value::Object(fields) = &mut value
+        {
+            fields.insert("svg".into(), svg.into());
+        }
+        Ok(ActionOutput {
+            value: Some(value),
+            resources: vec![address],
+        })
+    }
+
+    /// The reference picture as `inspect` reports it, when there is one.
+    fn reference_info(&mut self, art: &Artwork) -> Option<Value> {
+        let reference = art.reference.as_ref()?;
+        let frame = self.renderer.reference_frame(art);
+        let pixels = self
+            .renderer
+            .reference_image(art)
+            .map(|image| [image.width, image.height]);
+        Some(json!({
+            "image": reference.image,
+            "frame": frame.map(|frame| [frame.x0, frame.y0, frame.width(), frame.height()]),
+            "pixels": pixels,
+            "opacity": reference.opacity,
+            "visible": reference.visible,
+        }))
+    }
+
+    fn answer(&mut self, op: &ViewOp, doc: &mut AutoCommit) -> Result<ActionOutput, String> {
+        let version = match op {
+            ViewOp::Look(look) => look.version.as_deref(),
+            ViewOp::Inspect(inspect) => inspect.version.as_deref(),
+            _ => None,
+        };
+        let (art, revision, shown) = Self::at_version(doc, version)?;
+        let stamp = |info: &mut Value| {
+            if let Value::Object(fields) = info {
+                fields.insert("revision".into(), revision.clone().into());
+                if let Some(shown) = &shown {
+                    fields.insert("version".into(), shown.clone().into());
+                }
+            }
+        };
+        let picture = |result: Result<(Option<view_ops::Picture>, Value), String>| -> Result<ActionOutput, String> {
+            let (picture, mut info) = result?;
+            stamp(&mut info);
+            let Some(picture) = picture else {
+                return Ok(ActionOutput {
+                    value: Some(info),
+                    resources: Vec::new(),
+                });
+            };
+            let hash = tilo_content::ContentStore::for_app()
+                .put(&picture.bytes)
+                .map_err(|error| format!("the picture could not be stored: {error}"))?;
+            let address = tilo_actions::content_resource(&hash)
+                .ok_or_else(|| "the picture has no content address".to_owned())?;
+            if let Value::Object(fields) = &mut info {
+                fields.insert("content".into(), address.clone().into());
+            }
+            Ok(ActionOutput {
+                value: Some(info),
+                resources: vec![address],
+            })
+        };
+        let some = |result: Result<(view_ops::Picture, Value), String>| {
+            result.map(|(picture, info)| (Some(picture), info))
+        };
         let text = self.look_text.get_or_insert_with(TextRenderer::new);
         match op {
-            ViewOp::Look(look) => picture(view_ops::look(&mut self.renderer, text, &art, look)),
-            ViewOp::Export(export) => {
-                picture(view_ops::export(&mut self.renderer, text, &art, export))
+            ViewOp::Look(look) => {
+                picture(some(view_ops::look(&mut self.renderer, text, &art, look)))
             }
+            ViewOp::Export(export) => picture(some(view_ops::export(
+                &mut self.renderer,
+                text,
+                &art,
+                export,
+            ))),
+            ViewOp::Diff(diff) => {
+                let versions = Self::versions(doc, &art, diff)?;
+                let look = diff.look.unwrap_or(false);
+                picture(view_ops::diff(&mut self.renderer, text, &versions, look))
+            }
+            ViewOp::Compare(compare) => picture(some(view_ops::compare(
+                &mut self.renderer,
+                text,
+                &art,
+                compare,
+            ))),
+            ViewOp::ExportSvg => self.export_svg(&art, &revision),
             ViewOp::Inspect(inspect) => {
                 let mut value = view_ops::inspect(&art, inspect)?;
-                if let Value::Object(fields) = &mut value {
-                    fields.insert("revision".into(), revision.into());
+                stamp(&mut value);
+                if let Value::Object(fields) = &mut value
+                    && shown.is_none()
+                {
                     fields.insert("selected".into(), json!(self.selection));
+                    if let Some(reference) = self.reference_info(&art) {
+                        fields.insert("reference".into(), reference);
+                    }
                 }
                 Ok(ActionOutput {
                     value: Some(value),
                     resources: Vec::new(),
                 })
             }
-            ViewOp::History(view) => Ok(ActionOutput {
-                value: Some(view_ops::history(doc, view)),
-                resources: Vec::new(),
-            }),
             ViewOp::Media => Ok(ActionOutput {
                 value: Some(view_ops::media(&art)),
                 resources: Vec::new(),
@@ -660,13 +782,16 @@ impl Widget for CanvasSurface {
             None,
             &(board + ui::vello::kurbo::Vec2::new(3.0 / zoom, 4.0 / zoom)),
         );
-        self.renderer.draw(
-            &self.art,
-            scene,
-            to_screen,
-            text_renderer,
-            &Options::default(),
-        );
+        let options = Options {
+            reference: self
+                .art
+                .reference
+                .as_ref()
+                .is_some_and(|reference| reference.visible),
+            ..Options::default()
+        };
+        self.renderer
+            .draw(&self.art, scene, to_screen, text_renderer, &options);
         scene.stroke(
             &Stroke::new(1.0 / zoom),
             to_screen,

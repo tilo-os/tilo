@@ -31,7 +31,14 @@ blake3.workspace = true
 uuid.workspace = true
 # Exports are PNGs; looks are JPEGs unless a caller asks for PNG.
 png = "0.18"
-image = { workspace = true, features = ["jpeg"] }
+# Reference pictures to work from are PNGs or JPEGs.
+image = { workspace = true, features = ["png", "jpeg"] }
+# SVG import; without its font stack, text is read by hand.
+usvg = { version = "0.47", default-features = false }
+# SVG export embeds a painted layer's picture.
+base64.workspace = true
+# An SVG or reference picture named by a path is read where files have one.
+tilo-files = { path = "../../crates/platform/tilo-files" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

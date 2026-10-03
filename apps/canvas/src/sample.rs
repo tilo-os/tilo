@@ -8,17 +8,8 @@ use crate::model::{Gradient, Shape};
 fn mark(id: &str, shape: Shape, fill: &str) -> NewMark {
     NewMark {
         id: Some(id.into()),
-        name: None,
-        shape,
         fill: Some(fill.into()),
-        gradient: None,
-        stroke: None,
-        stroke_width: None,
-        opacity: None,
-        brush: None,
-        angle: None,
-        wet: None,
-        params: None,
+        ..NewMark::new(shape)
     }
 }
 
@@ -167,6 +158,12 @@ pub fn landscape() -> Vec<CanvasAction> {
                     y: 860.0,
                     text: "Evening, three media".into(),
                     size: 36.0,
+                    font: Some("serif".into()),
+                    weight: None,
+                    italic: true,
+                    align: None,
+                    line_height: None,
+                    width: None,
                 },
                 "#2a1d14",
             ),

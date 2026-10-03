@@ -43,6 +43,7 @@ pub mod run_undo;
 pub mod runs;
 pub mod schema_ops;
 pub mod seen;
+pub mod steps;
 pub use authors::{
     AuthorDirectory, UNKNOWN_AUTHOR_NAME, actor_handle, agent_display_label, agent_principal_name,
     author_coloured, author_for_identity, local_identity_author, participant_display_label,

@@ -277,16 +277,26 @@ fn param(param: &ActionParam) -> String {
         text.push_str(&range);
     }
     if param.schema.is_some() && matches!(param.ty, ParamType::Object | ParamType::Array) {
-        text.push_str(" (schema: tilo_resolve)");
+        text.push('*');
     }
     text
 }
 
 /// A numeric schema's bounds as `1..64`, `1..` or `..64`: a caller that
-/// guesses past one fails a whole call.
+/// guesses past one fails a whole call. Bounds that only restate an integer
+/// type's limits (`0..4294967295`) say nothing a caller would reach.
 fn range(schema: &Value) -> Option<String> {
-    let bound = |key: &str| schema.get(key).filter(|value| value.is_number());
-    let (minimum, maximum) = (bound("minimum"), bound("maximum"));
+    let bound = |key: &str| {
+        schema.get(key).filter(|value| {
+            value
+                .as_f64()
+                .is_some_and(|value| value.abs() < f64::from(i32::MAX))
+        })
+    };
+    let (mut minimum, maximum) = (bound("minimum"), bound("maximum"));
+    if maximum.is_none() && minimum.and_then(Value::as_u64) == Some(0) {
+        minimum = None;
+    }
     if minimum.is_none() && maximum.is_none() {
         return None;
     }

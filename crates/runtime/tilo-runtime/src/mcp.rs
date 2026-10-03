@@ -908,28 +908,36 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             return Ok(());
         }
         for resource in matched {
-            let listed = self
-                .ask(CatalogueQuery {
-                    parent_resource: Some(resource.clone()),
-                    needle: String::new(),
-                    revision: None,
-                    cursor: Vec::new(),
-                    max_results: 128,
-                    ..query.clone()
-                })
-                .await?;
-            for row in listed.rows {
-                let new = row.resource.id == resource
-                    && row.action.as_ref().is_some_and(|action| {
-                        !page.rows.iter().any(|seen| {
-                            seen.resource.id == resource
-                                && seen.action.as_ref().map(|a| &a.address.action)
-                                    == Some(&action.address.action)
-                        })
-                    });
-                if new {
-                    page.rows.push(row);
+            let mut listing = CatalogueQuery {
+                parent_resource: Some(resource.clone()),
+                needle: String::new(),
+                revision: None,
+                cursor: Vec::new(),
+                max_results: 128,
+                ..query.clone()
+            };
+            // The host's byte budget counts whole contracts, so one
+            // resource's actions can span pages its compact rows would not.
+            for _ in 0..EVERY_ACTION_PAGES {
+                let listed = self.ask(listing.clone()).await?;
+                for row in listed.rows {
+                    let new = row.resource.id == resource
+                        && row.action.as_ref().is_some_and(|action| {
+                            !page.rows.iter().any(|seen| {
+                                seen.resource.id == resource
+                                    && seen.action.as_ref().map(|a| &a.address.action)
+                                        == Some(&action.address.action)
+                            })
+                        });
+                    if new {
+                        page.rows.push(row);
+                    }
                 }
+                if listed.exhausted || listed.next_cursor.is_empty() {
+                    break;
+                }
+                listing.revision = Some(listed.revision);
+                listing.cursor = listed.next_cursor;
             }
         }
         Ok(())
@@ -1030,7 +1038,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                 }
                 page.rows
                     .first()
-                    .map(|row| json!({"row":row_json(row)}))
+                    .map(|row| json!({"row":resolved_row_json(row)}))
                     .ok_or_else(|| "NotFound".into())
             }
             "tilo_invoke" => self.invoke(parse(args)?).await,
@@ -1856,6 +1864,8 @@ const DEFAULT_PAGE: u32 = 64;
 const EXPANDED_RESOURCES: usize = 3;
 /// Host pages one multi-word needle reads before answering with none.
 const WORD_FILTER_PAGES: usize = 8;
+/// The most host pages read to list every action of one found resource.
+const EVERY_ACTION_PAGES: usize = 4;
 /// Words of a needle no row matches whole that are searched one by one,
 /// and the shortest searched: "as" or "to" would match nearly everything.
 const SOME_WORDS_SEARCHED: usize = 6;
@@ -2005,6 +2015,38 @@ fn browsed_row_json(row: &CatalogueRow) -> Value {
     }
     value
 }
+/// [`row_json`] without what it says twice: the descriptor's resource,
+/// kind and label are the row's, a parent that is the resource itself, and
+/// a visibility that is the action's own contract. Every resolve pays for
+/// them, and the schema is what the agent came for.
+fn resolved_row_json(row: &CatalogueRow) -> Value {
+    let mut value = row_json(row);
+    let own_visibility = value.get("visibility_action") == value.get("action")
+        && value.get("visibility_contract") == value.pointer("/descriptor/contract");
+    let Some(fields) = value.as_object_mut() else {
+        return value;
+    };
+    if fields.get("parent_resource") == fields.get("resource") {
+        fields.remove("parent_resource");
+    }
+    if own_visibility {
+        fields.remove("visibility_action");
+        fields.remove("visibility_contract");
+    }
+    let row_fields = [
+        ("resource", fields.get("resource").cloned()),
+        ("resource_kind", fields.get("resource_kind").cloned()),
+        ("resource_label", fields.get("resource_label").cloned()),
+    ];
+    if let Some(Value::Object(descriptor)) = fields.get_mut("descriptor") {
+        for (key, row_value) in row_fields {
+            if descriptor.get(key) == row_value.as_ref() {
+                descriptor.remove(key);
+            }
+        }
+    }
+    value
+}
 fn row_json(row: &CatalogueRow) -> Value {
     let descriptor = row.action.as_ref().map(|action| {
         json!({"resource":action.address.resource,"action":action.address.action,"resource_kind":action.resource_kind,"resource_label":action.resource_label,"action_label":action.action_label,"description":action.description,"operation_kind":action.kind,"params":action.params,"contract":action.contract})
@@ -2054,7 +2096,7 @@ fn tool_definitions() -> Vec<Value> {
     let read = json!({"readOnlyHint":true,"openWorldHint":false});
     let mut tools: Vec<Value> = [
         ("tilo_list_apps","Running apps (peer_id, app_id). workspace: true in the other tools addresses the workspace instead: tilo_query it for installed apps, tilo_invoke {workspace: true, resource: \"app.<app_id>\", action: \"open\", arguments: {path?}} starts one, opens path in it, and returns its peer_id, directory (its resources and all their actions, so no tilo_query is needed) and, for a path, content: the document's first page as the app reads it (so no read is needed); app.host:<desktop-id> opens a host application, such as a browser, driven with the computer tool",json!({"after_peer":integer,"max_results":integer}),json!([]),read.clone()),
-        ("tilo_query","Find actions. needle: words in an action or resource name, e.g. \"save as\"; rows matching every word, else those matching most (partial_match). Each resource found lists all its actions as id: \"Label (params)\" (p? optional, p:type, a|b choices, 1..64 range). An app's long resource ids appear as handles such as r3, accepted wherever a resource is named. parent_resource lists a resource's children; pass next_cursor to continue; detail: \"full\" gives whole contracts",json!({"peer_id":integer,"app_id":app_id,"workspace":boolean,"needle":string,"parent_resource":string,"cursor":string,"revision":string,"max_results":integer,"detail":{"enum":["compact","full"]}}),json!([]),read.clone()),
+        ("tilo_query","Find actions. needle: words in an action or resource name, e.g. \"save as\"; rows matching every word, else those matching most (partial_match). Each resource found lists all its actions as id: \"Label (params)\" (p? optional, p:type, a|b choices, 1..64 range, p* schema via tilo_resolve). An app's long resource ids appear as handles such as r3, accepted wherever a resource is named. parent_resource lists a resource's children; pass next_cursor to continue; detail: \"full\" gives whole contracts",json!({"peer_id":integer,"app_id":app_id,"workspace":boolean,"needle":string,"parent_resource":string,"cursor":string,"revision":string,"max_results":integer,"detail":{"enum":["compact","full"]}}),json!([]),read.clone()),
         ("tilo_resolve","An action's full contract and parameter schemas",target,json!(["resource","action"]),read.clone()),
         ("tilo_invoke","One action (resource, action, arguments), or calls: [{resource, action, arguments}, …] in order, stopping at the first failure (results; stopped is that index): batch the steps you already know, e.g. several edits and then a look, into one call. Waits wait_ms (default 5000); if still running, poll tilo_status. Omit revision. Same invocation_id never runs twice. Calling confirms, destructive ones included. An image this session was already shown is not sent again: unchanged names the invocation that showed it",invoke,json!([]),json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true})),
         ("tilo_status","An invocation's latest update",json!({"invocation_id":string}),json!(["invocation_id"]),read),

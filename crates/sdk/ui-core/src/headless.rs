@@ -5010,7 +5010,23 @@ impl FrameHarness {
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
         self.pump_component_wakes();
-        self.invoke_bound_action_checked(address, arguments, false)
+        self.invoke_bound_action_checked(address, arguments, false, None)
+            .map_err(crate::bound_dispatch::BoundActionError::into_door)
+    }
+
+    /// [`Self::invoke_bound_action`] within `ambient`, the context a caller's
+    /// connection gives every invocation it makes (an agent's run).
+    ///
+    /// # Errors
+    /// As [`Self::invoke_bound_action`].
+    pub fn invoke_bound_action_within(
+        &mut self,
+        address: &crate::bound_dispatch::BoundActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        ambient: &tilo_actions::ActionContext,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        self.pump_component_wakes();
+        self.invoke_bound_action_checked(address, arguments, false, Some(ambient))
             .map_err(crate::bound_dispatch::BoundActionError::into_door)
     }
 
@@ -5025,7 +5041,7 @@ impl FrameHarness {
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
         self.pump_component_wakes();
-        self.invoke_bound_action_checked(address, arguments, true)
+        self.invoke_bound_action_checked(address, arguments, true, None)
             .map_err(crate::bound_dispatch::BoundActionError::into_door)
     }
 
@@ -5084,6 +5100,7 @@ impl FrameHarness {
         address: &crate::bound_dispatch::BoundActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         confirmed: bool,
+        ambient: Option<&tilo_actions::ActionContext>,
     ) -> Result<crate::widget::ResourceOperationStart, crate::bound_dispatch::BoundActionError>
     {
         let snapshots = crate::bound_dispatch::discover_bound_resources(
@@ -5110,7 +5127,7 @@ impl FrameHarness {
                 confirmed,
                 broker_admitted: false,
                 invocation,
-                ambient: None,
+                ambient,
                 scope: None,
             },
         )?;

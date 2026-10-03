@@ -841,6 +841,7 @@ fn execute_owned(
                 if let Some(ambient) = input.ambient {
                     context = context.enriched_by(ambient);
                 }
+                let context = context.with_args_from_payload(&encoded.payload);
                 let dispatched = execute_document(
                     doc,
                     action.as_ref(),
