@@ -30,9 +30,9 @@ portable-pty = "0.9.0"
 # The application runtime the terminal hosts. Only its client half is used:
 # the service protocol and the descriptor-passing helper.
 runtime-portal = { path = "../../crates/runtime/runtime-portal" }
-# The environment record kind this app declares, and the target a session
-# asks the supervisor for.
+# Where a session runs, and the environment records it can run in.
 tilo-environment = { path = "../../crates/runtime/environment" }
+collab-types = { path = "../../crates/collab/collab-types" }
 libc.workspace = true
 vte = "0.15.0"
 tracing.workspace = true

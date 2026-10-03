@@ -111,9 +111,38 @@ One line of JSON out, one line plus a descriptor back:
 `record` is a record key (`[A-Za-z0-9._-]`, at most 64 bytes); the owning app
 and the room are fixed by the supervisor, never taken from the request. The
 answer is `{"result":"session","session":…,"environment":…}` with the pty
-master attached, or `{"result":"denied","reason":…}`. `{"kind":"host"}` — your
-own login shell — is part of the vocabulary and is refused here with
-`not available`: this supervisor builds environments only.
+master attached, or `{"result":"denied","reason":…}`.
+
+### The Host target
+
+`{"kind":"host"}` is the device's own login shell: the account's shell from
+the passwd database, on a pty, in the supervisor's session environment, with
+no namespace, filter or Landlock ruleset. It is answered only when all of
+these hold (`crates/runtime/ush/src/host.rs`):
+
+1. **The caller is Terminal.** `tilo-launcher` writes `QUS1`, a little-endian
+   `u32` length and `{"protocol":1,"app_id":…}` on a sandboxed app's
+   connection before the app holds it; any other app id is refused. A
+   connection without that preamble comes from outside every app sandbox —
+   the shell hosting Terminal in-process.
+2. **No agent asked.** The request carries `"requested_by":"agent"` whenever
+   the session was asked for through Terminal's published actions (by an
+   agent, another app, or a collaborator); that is always refused.
+3. **The device owner is signed in.** The owner's root key
+   (`/var/lib/tilo/user-identity/pubkey.bin`) must be the session's default
+   identity (`$XDG_CONFIG_HOME/tilo/identity/registry.json`).
+4. **The person allowed it once.** A `CapOverride` granting
+   `Scope::Device("host-shell")` to `so.tilo.terminal`, in the store's
+   `host-shell.json`. Without it the answer is
+   `{"result":"host-not-allowed",…}`; a shell-hosted Terminal tab then raises
+   the shell's permission prompt, which records the answer there.
+
+### Environments
+
+`{"op":"list-environments"}`, `{"op":"create-environment","name":…}` and
+`{"op":"environment-action","record":…,"action":"rename","args":{"name":…}}`
+answer `{"result":"environments","environments":[{"key","name","tools",
+"grants"}…]}` — what Terminal's target picker and environments panel show.
 
 The request connection is the session's lifetime in both directions: Terminal
 closing it ends the guest, and the guest exiting closes it.

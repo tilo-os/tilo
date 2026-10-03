@@ -21,6 +21,8 @@ const TERMINAL_ACTION_TYPE: &str = "terminal.action";
 pub struct SessionState {
     pub title: String,
     pub pane_id: String,
+    /// Where this session runs. `None` until the first open records one.
+    pub target: Option<crate::target::SessionTarget>,
 }
 
 /// Document mutations for the session record (title / scrollback attribution).
@@ -39,6 +41,10 @@ pub enum TerminalAction {
     RegisterLink { id: u16, url: String },
     /// Write the shared pane id when no peer has claimed it yet.
     ClaimPane { pane_id: String },
+    /// Record where this session runs (an encoded
+    /// [`SessionTarget`](crate::target::SessionTarget)). The target outlives
+    /// every process that runs in it, so reopening goes back to it.
+    SetTarget { target: String },
     /// Record one content-addressed image placement on the shared session.
     PlaceImage {
         hash: String,
@@ -121,6 +127,13 @@ impl Action for TerminalAction {
                     let _ = doc.delete(&parent, key);
                 }
                 doc.put(&parent, "terminal_local_session", session_id.as_str())?;
+            }
+            Self::SetTarget { target } => {
+                if crate::target::SessionTarget::decode(target).is_none() {
+                    return Err(ActionError::Refused("session target is invalid".into()));
+                }
+                let parent = session_parent(doc)?;
+                doc.put(&parent, crate::target::TARGET_KEY, target.as_str())?;
             }
             Self::RegisterLink { id, url } => {
                 if *id == 0 || url.is_empty() || url.len() > 2 * 1024 {
@@ -421,6 +434,9 @@ impl Resource for Terminal {
         Ok(SessionState {
             title: read_string(doc, "terminal_title").unwrap_or_else(|| "Terminal".into()),
             pane_id: read_string(doc, "terminal_pane_id").unwrap_or_default(),
+            target: read_string(doc, crate::target::TARGET_KEY)
+                .as_deref()
+                .and_then(crate::target::SessionTarget::decode),
         })
     }
 
@@ -470,6 +486,7 @@ impl Resource for Terminal {
             .privileged()
             .retry_policy(RetryPolicy::AtMostOnce),
         ];
+        ops.extend(target_operations());
         for (id, label, type_id) in [
             ("interrupt", "Interrupt process", "terminal.control"),
             ("clear", "Clear screen", "terminal.control"),
@@ -514,6 +531,101 @@ impl Resource for Terminal {
     }
 }
 
+/// Where the session runs and the environments it can run in: effects an
+/// agent can invoke as well as the person. The device's own shell is never
+/// an agent's to choose; the handler refuses it.
+#[allow(
+    clippy::expect_used,
+    reason = "string payloads for target effects always encode"
+)]
+fn target_operations() -> Vec<ActionSpec> {
+    let mut out = Vec::new();
+    out.push(
+        ActionSpec::typed_operation(
+            "open-in",
+            "Open in…",
+            "target",
+            OperationKind::Effect,
+            "terminal.target",
+            vec![ActionParam::required(
+                "target",
+                ParamType::Text,
+                "Where the session runs: `environment` (the default environment), \
+                     `environment:<record>`, or `legacy:<vm>`. The device's own shell \
+                     (`host`) can only be chosen by the person.",
+            )],
+            |args| {
+                EncodedAction::encode_operation(
+                    "terminal.target",
+                    &args.text("target").unwrap_or_default(),
+                )
+                .expect("a borrowed string always serializes")
+            },
+        )
+        .with_description(
+            "Restarts this session in another environment and records it as the session's target.",
+        )
+        .privileged()
+        .retry_policy(RetryPolicy::AtMostOnce),
+    );
+    out.push(
+        ActionSpec::typed_operation(
+            "create-environment",
+            "New environment",
+            "name",
+            OperationKind::Effect,
+            "terminal.environment",
+            vec![ActionParam::required(
+                "name",
+                ParamType::Text,
+                "What to call the new environment",
+            )],
+            |args| {
+                EncodedAction::encode_operation(
+                    "terminal.environment",
+                    &serde_json::json!({
+                        "op": "create",
+                        "name": args.text("name").unwrap_or_default(),
+                    })
+                    .to_string(),
+                )
+                .expect("a borrowed string always serializes")
+            },
+        )
+        .with_description("Creates an environment on the default runtime with nothing added.")
+        .privileged()
+        .retry_policy(RetryPolicy::AtMostOnce),
+    );
+    out.push(
+        ActionSpec::typed_operation(
+            "rename-environment",
+            "Rename environment",
+            "name",
+            OperationKind::Effect,
+            "terminal.environment",
+            vec![
+                ActionParam::required("record", ParamType::Text, "The environment's record"),
+                ActionParam::required("name", ParamType::Text, "The new name"),
+            ],
+            |args| {
+                EncodedAction::encode_operation(
+                    "terminal.environment",
+                    &serde_json::json!({
+                        "op": "rename",
+                        "record": args.text("record").unwrap_or_default(),
+                        "name": args.text("name").unwrap_or_default(),
+                    })
+                    .to_string(),
+                )
+                .expect("a borrowed string always serializes")
+            },
+        )
+        .privileged()
+        .retry_policy(RetryPolicy::AtMostOnce),
+    );
+    out
+}
+
 /// Framework app: the terminal widget is the surface over [`Terminal`].
 pub struct TerminalShell;
 
@@ -551,6 +663,9 @@ impl ResourceApp for TerminalShell {
             "empty",
             "empty-menu",
             "ended",
+            "targets",
+            "environments",
+            "host",
         ]
     }
 }
