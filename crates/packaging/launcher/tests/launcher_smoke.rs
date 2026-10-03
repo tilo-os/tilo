@@ -701,6 +701,7 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
         let plan = launcher::sandbox::DBusBindPlan {
             host_socket: guard.socket_path().to_path_buf(),
             sandbox_path: launcher::dbus_proxy::sandbox_bus_path(1234),
+            atspi: None,
         };
 
         // The proxy child exists.

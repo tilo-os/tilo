@@ -7441,6 +7441,7 @@ dependencies = [
  "uuid",
  "wire-frame",
  "workspace-hack",
+ "zbus",
 ]
 
 [[package]]
