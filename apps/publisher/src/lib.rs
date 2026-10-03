@@ -13,8 +13,10 @@ pub const APP_TITLE: &str = "App Publisher";
 
 pub mod locales;
 
+/// Install the catalog once per process, before the first view reads it.
 fn install_catalog() {
-    locales::install();
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
+    INSTALLED.call_once(locales::install);
 }
 
 use std::sync::mpsc::Sender;
@@ -27,6 +29,7 @@ use ui::tilo_actions::{
     OperationKind, PermissionRequirement, ResultSpec, RiskLevel,
 };
 use ui::widget::resource_actions::OPERATION_TYPE;
+use ui::widget::{Actions as ButtonGroup, ButtonRole, Field, Form, FormSection};
 
 /// What to apply for, and where. Stored, synced and undoable; the key is not
 /// part of it.
@@ -53,7 +56,7 @@ impl Default for Publisher {
     }
 }
 
-#[resource(kind = "so.tilo.publisher.profile", label = "Publisher")]
+#[resource(kind = "so.tilo.publisher.profile", label = "App Publisher")]
 impl Publisher {
     /// Change the registry to publish to.
     #[action]
@@ -139,12 +142,103 @@ impl Notice {
     }
 }
 
+/// The part of the page an operation belongs to, and so where its progress and
+/// outcome show.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Scope {
+    Key,
+    Namespaces,
+}
+
+impl Scope {
+    fn of(op: &str) -> Self {
+        match op {
+            "apply" | "check-status" => Self::Namespaces,
+            _ => Self::Key,
+        }
+    }
+}
+
 /// View state: never stored, synced or undone.
 #[derive(Clone, Debug, PartialEq)]
 struct Pane {
     key: KeyState,
     busy: bool,
     notice: Option<Notice>,
+    scope: Scope,
+}
+
+impl Pane {
+    fn new(key: KeyState) -> Self {
+        Self {
+            key,
+            busy: false,
+            notice: None,
+            scope: Scope::Key,
+        }
+    }
+
+    /// The progress and outcome of the last operation, when it belongs to
+    /// `scope`.
+    fn outcome(&self, scope: Scope) -> Element {
+        let mut column = Column::new().with_no_padding().with_intrinsic_height();
+        if self.scope == scope {
+            if self.busy {
+                column = column.push(Box::new(Spinner::new()));
+            }
+            if let Some(notice) = &self.notice {
+                if notice.error {
+                    column = column.push(Box::new(Banner::error(ui::i18n::I18nManager::format(
+                        "publisher-failed-title",
+                        &[],
+                    ))));
+                }
+                column = column.push(Box::new(
+                    Text::new(notice.message)
+                        .with_arg("detail", notice.detail.clone())
+                        .with_id("notice"),
+                ));
+            }
+        }
+        Box::new(column)
+    }
+}
+
+/// What each scenario of `--shots --scenario NAME` shows of the key and the
+/// last outcome; the claims it stages are in [`App::scenario`].
+fn staged(scenario: Option<&str>) -> Pane {
+    const PUBLIC: &str = "c3f1a7d2e94b58601fa2d7c9be3048d5a6e1b27f9c4d8350e6a1f72b9d04c8e3";
+    let present = KeyState::Present {
+        public: PUBLIC.to_owned(),
+    };
+    let mut pane = Pane::new(present);
+    match scenario {
+        Some("no-key") => pane.key = KeyState::Missing,
+        Some("unreadable") => {
+            pane.key = KeyState::Unreadable(
+                "publisher-key.json is not a publisher key: expected 64 hexadecimal characters"
+                    .to_owned(),
+            );
+        }
+        Some("applied") => {
+            pane.scope = Scope::Namespaces;
+            pane.notice = Some(Notice::info(
+                "publisher-status",
+                "pending (lovelace.dev, codeberg:ada)",
+            ));
+        }
+        Some("failed") => {
+            pane.scope = Scope::Namespaces;
+            pane.notice = Some(Notice::error(
+                "could not reach https://apps.tilo.so: connection timed out",
+            ));
+        }
+        Some("copied") => {
+            pane.notice = Some(Notice::info("publisher-proof-copied", proof_token(PUBLIC)));
+        }
+        _ => {}
+    }
+    pane
 }
 
 const OPERATIONS: [(&str, &str); 5] = [
@@ -283,32 +377,40 @@ struct Bindings {
     create: tilo_actions::ActionBinding<()>,
     copy_proof: tilo_actions::ActionBinding<()>,
     copy_secret: tilo_actions::ActionBinding<()>,
-    check_status: tilo_actions::ActionBinding<()>,
 }
 
+/// The key section's body: what the key is and what you can do with it, or how
+/// to make one, then the outcome of the last operation.
 fn key_section(pane: &Pane, bindings: &Bindings) -> Element {
-    let mut column = Column::new().with_no_padding().push(Box::new(
-        Text::new("publisher-key-heading").with_role(TextRole::Heading),
-    ));
+    let mut column = Column::new().with_no_padding().with_intrinsic_height();
     match &pane.key {
         KeyState::Missing => {
             column = column
                 .push(Box::new(Text::new("publisher-no-key")))
-                .push(Box::new(
+                .push(Box::new(ui::row![
                     Button::new("create-key", "publisher-create-key", None)
-                        .on_action(bindings.create.clone()),
-                ));
+                        .on_action(bindings.create.clone())
+                ]));
         }
         KeyState::Present { public } => {
             column = column
-                .push(Box::new(Text::new("publisher-public-key-label")))
+                .push(Box::new(
+                    Text::new("publisher-public-key-label").with_role(TextRole::Label),
+                ))
                 .push(Box::new(
                     Text::new("publisher-verbatim")
                         .with_arg("text", public.clone())
                         .with_role(TextRole::Code)
                         .with_id("public-key"),
                 ))
-                .push(Box::new(Text::new("publisher-proof-label")))
+                .push(Box::new(
+                    Text::new("publisher-proof-label").with_role(TextRole::Label),
+                ))
+                .push(Box::new(
+                    Text::new("publisher-proof-help")
+                        .with_role(TextRole::Caption)
+                        .dimmed(),
+                ))
                 .push(Box::new(
                     Text::new("publisher-verbatim")
                         .with_arg("text", proof_token(public))
@@ -320,31 +422,47 @@ fn key_section(pane: &Pane, bindings: &Bindings) -> Element {
                         .on_action(bindings.copy_proof.clone()),
                     Button::new("copy-secret", "publisher-copy-secret", None)
                         .on_action(bindings.copy_secret.clone()),
-                    Button::new("check-status", "publisher-check-status", None)
-                        .on_action(bindings.check_status.clone()),
                 ]));
         }
         KeyState::Unreadable(reason) => {
             column = column.push(Box::new(Banner::error(reason.clone())));
         }
     }
-    if pane.busy {
-        column = column.push(Box::new(Spinner::new()));
-    }
-    if let Some(notice) = &pane.notice {
-        if notice.error {
-            column = column.push(Box::new(Banner::error(ui::i18n::I18nManager::format(
-                "publisher-failed-title",
-                &[],
-            ))));
-        }
-        column = column.push(Box::new(
-            Text::new(notice.message)
-                .with_arg("detail", notice.detail.clone())
-                .with_id("notice"),
-        ));
-    }
-    Box::new(column)
+    Box::new(column.push(pane.outcome(Scope::Key)))
+}
+
+/// The namespaces to claim and the registry to claim them from, then the
+/// outcome of the last application.
+fn namespaces_section(cx: &ViewCx<Publisher>, outcome: Element) -> FormSection {
+    let registry = cx
+        .input(|profile| profile.registry.clone(), Publisher::SET_REGISTRY)
+        .with_id("registry-input");
+    let domain = cx
+        .input(|profile| profile.domain.clone(), Publisher::SET_DOMAIN)
+        .with_id("domain-input")
+        .with_placeholder("publisher-domain-placeholder");
+    let forge = cx
+        .input(
+            |profile| profile.forge_account.clone(),
+            Publisher::SET_FORGE_ACCOUNT,
+        )
+        .with_id("forge-input")
+        .with_placeholder("publisher-forge-placeholder");
+    let contact = cx
+        .input(|profile| profile.contact.clone(), Publisher::SET_CONTACT)
+        .with_id("contact-input")
+        .with_placeholder("publisher-contact-placeholder");
+    FormSection::new("publisher-namespace-heading")
+        .content(Box::new(
+            Text::new("publisher-namespace-help")
+                .with_role(TextRole::Caption)
+                .dimmed(),
+        ))
+        .field(Field::new("publisher-domain-label", domain))
+        .field(Field::new("publisher-forge-label", forge))
+        .field(Field::new("publisher-contact-label", contact))
+        .field(Field::new("publisher-registry-label", registry))
+        .content(outcome)
 }
 
 /// The app: the key on this machine, and an application for namespaces.
@@ -354,6 +472,24 @@ impl ResourceApp for App {
     type Resource = Publisher;
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
+    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+
+    fn scenarios() -> &'static [&'static str] {
+        &["no-key", "unreadable", "applied", "failed", "copied"]
+    }
+
+    /// A capture never reads this machine's key file or settings: the claims
+    /// are filled in here, the key and the last outcome in [`staged`].
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Publisher>> {
+        if name == Some("no-key") {
+            return Vec::new();
+        }
+        vec![
+            Publisher::SET_DOMAIN.with("lovelace.dev".into()),
+            Publisher::SET_FORGE_ACCOUNT.with("codeberg:ada".into()),
+            Publisher::SET_CONTACT.with("ada@lovelace.dev".into()),
+        ]
+    }
 
     #[expect(
         clippy::expect_used,
@@ -361,25 +497,6 @@ impl ResourceApp for App {
     )]
     fn view(cx: &mut ViewCx<Publisher>) -> Element {
         crate::install_catalog();
-        let registry = cx
-            .input(|profile| profile.registry.clone(), Publisher::SET_REGISTRY)
-            .with_id("registry-input");
-        let domain = cx
-            .input(|profile| profile.domain.clone(), Publisher::SET_DOMAIN)
-            .with_id("domain-input")
-            .with_placeholder("publisher-domain-placeholder");
-        let forge = cx
-            .input(
-                |profile| profile.forge_account.clone(),
-                Publisher::SET_FORGE_ACCOUNT,
-            )
-            .with_id("forge-input")
-            .with_placeholder("publisher-forge-placeholder");
-        let contact = cx
-            .input(|profile| profile.contact.clone(), Publisher::SET_CONTACT)
-            .with_id("contact-input")
-            .with_placeholder("publisher-contact-placeholder");
-
         let resource = key_resource();
         let bind = |id: &str| {
             tilo_actions::ActionBinding::unit_for(&resource, id)
@@ -389,30 +506,34 @@ impl ResourceApp for App {
             create: bind("create-key"),
             copy_proof: bind("copy-proof"),
             copy_secret: bind("copy-secret"),
-            check_status: bind("check-status"),
         };
-        let apply_button = Button::new("apply", "publisher-apply", None).on_action(bind("apply"));
+        let apply_button = Button::new("apply", "publisher-apply", None)
+            .role(ButtonRole::Primary)
+            .on_action(bind("apply"));
+        let check_button = Button::new("check-status", "publisher-check-status", None)
+            .on_action(bind("check-status"));
 
-        let task = LatestTask::new(Pane {
-            key: KeyState::load(),
-            busy: false,
-            notice: None,
-        });
+        let task = LatestTask::new(Pane::new(KeyState::load()));
         let pane = task.state();
+        let staged_pane = pane.clone();
+        cx.on_stage(move |scenario| staged_pane.set(staged(scenario)));
         let key = ModelView::from_state_by(&pane, Clone::clone, move |pane| {
             key_section(pane, &bindings)
         });
+        let outcome =
+            ModelView::from_state_by(&pane, Clone::clone, |pane| pane.outcome(Scope::Namespaces));
 
-        let root = Box::new(ui::column![
-            key,
-            Text::new("publisher-namespace-heading").with_role(TextRole::Heading),
-            Text::new("publisher-namespace-help"),
-            labeled_field("publisher-domain-label", domain),
-            labeled_field("publisher-forge-label", forge),
-            labeled_field("publisher-contact-label", contact),
-            labeled_field("publisher-registry-label", registry),
-            apply_button,
-        ]);
+        let form = Form::new()
+            .section(FormSection::new("publisher-key-heading").content(Box::new(key)))
+            .section(namespaces_section(cx, Box::new(outcome)))
+            .with_actions(ButtonGroup::new(apply_button).secondary(check_button));
+        let root = Box::new(
+            Scrollable::new_vertical().with_child(Box::new(
+                Container::new()
+                    .with_centered_max_width(720.0)
+                    .with_child(Box::new(form)),
+            )),
+        );
         let live = cx.live().clone();
         ui::widget::resource_actions::background(root, resource, move |payload| {
             let (sender, receiver) = std::sync::mpsc::channel();
@@ -420,12 +541,14 @@ impl ResourceApp for App {
                 .ok()
                 .and_then(|value| value.get("op")?.as_str().map(str::to_owned))
                 .unwrap_or_default();
-            if op == "apply" || op == "check-status" {
+            let scope = Scope::of(&op);
+            if scope == Scope::Namespaces {
                 let profile = live.with(Clone::clone);
                 let current = pane.get();
                 let completion = task.begin(Pane {
                     busy: true,
                     notice: None,
+                    scope,
                     ..current
                 });
                 std::thread::spawn(move || {
@@ -442,6 +565,7 @@ impl ResourceApp for App {
                         key: KeyState::load(),
                         busy: false,
                         notice: Some(result.unwrap_or_else(Notice::error)),
+                        scope,
                     });
                 });
             } else {
@@ -451,6 +575,7 @@ impl ResourceApp for App {
                     key: KeyState::load(),
                     busy: false,
                     notice: Some(result.unwrap_or_else(Notice::error)),
+                    scope,
                 });
             }
             Ok(receiver)
