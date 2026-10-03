@@ -407,8 +407,6 @@ const CARD_GAP: f32 = 12.0;
 /// Breathing room around the card on compact displays. The card itself can
 /// narrow to the remaining width rather than extending beyond the viewport.
 const VIEWPORT_PADDING: f32 = 16.0;
-/// Reserved lane for the always-visible compact-view scrollbar.
-const SCROLLBAR_GUTTER: f32 = 14.0;
 /// Height of the install status log box.
 const STATUS_LOG_HEIGHT: f32 = 200.0;
 
@@ -2415,7 +2413,6 @@ impl InstallerApp {
         Box::new(
             Scrollable::new_vertical()
                 .fill_parent_height()
-                .with_content_gutter(SCROLLBAR_GUTTER)
                 .with_persisted_offset(Rc::clone(&self.viewport_offset))
                 .always_visible()
                 .with_child(Box::new(ViewportStage::new(card))),

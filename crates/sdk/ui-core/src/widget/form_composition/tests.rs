@@ -197,7 +197,13 @@ fn form_page_edges_and_resize_match_fresh_layout() {
             let mut sections = Vec::new();
             collect(&snapshot.root, "FormSection", &mut sections);
             assert!(forms[0].rect[2] <= 720.0);
-            assert!((forms[0].rect[0] * 2.0 + forms[0].rect[2] - f64::from(width)).abs() < 1.0);
+            // Centred in the page's viewport, which keeps the scroll bar's
+            // gutter on its trailing edge.
+            let gutter = f64::from(Theme::dark().tokens.metrics.scrollbar_gutter);
+            assert!(
+                (forms[0].rect[0] * 2.0 + forms[0].rect[2] - (f64::from(width) - gutter)).abs()
+                    < 1.0
+            );
             for section in sections {
                 assert_eq!(section.rect[0], forms[0].rect[0]);
             }

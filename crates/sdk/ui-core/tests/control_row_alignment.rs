@@ -265,12 +265,11 @@ fn fixed_controls_keep_their_size_and_labels_beside_fluid_fields() {
         }
     }
 
-    // Case `default_buttons_hold_their_label_at_two_x_and_stay_120_by_40_at_one_x`.
-    // The default `Button::new` face is exactly 120×40 at 1× and grows — not
-    // clips — at 2× text: the 28 px label's 35 px line no longer fits a 40 px
-    // face, so the face follows the line, and both default buttons in the row
-    // agree on the new height. This is the settings "Add account" defect,
-    // measured on the production layout path.
+    // Case `default_buttons_are_regular_controls_that_grow_with_their_label`.
+    // A default `Button::new` is a Regular control: 32 px tall at 1×, as wide
+    // as its label (at least twice its height). At 2× text the label's line
+    // no longer fits, so the face follows the line, and both buttons in the
+    // row agree on the new height — measured on the production layout path.
     {
         let at = |scale: f32| {
             let harness = FrameHarness::new_with_theme(
@@ -283,21 +282,14 @@ fn fixed_controls_keep_their_size_and_labels_beside_fluid_fields() {
             (rects[0].1, rects[1].1)
         };
         let (save, delete) = at(1.0);
-        assert_eq!(
-            (save.width(), save.height()),
-            (120.0, 40.0),
-            "1× default: {save:?}"
-        );
-        assert_eq!(
-            (delete.width(), delete.height()),
-            (120.0, 40.0),
-            "1× outlined: {delete:?}"
-        );
+        assert_eq!(save.height(), 32.0, "1× default: {save:?}");
+        assert_eq!(delete.height(), 32.0, "1× destructive: {delete:?}");
+        assert!(save.width() >= 64.0 && delete.width() >= 64.0);
 
         let (save, delete) = at(2.0);
-        let scaled_line = 14.0 * 2.0 * 1.25;
+        let scaled_line = 13.0 * 2.0 * 1.3;
         assert!(
-            save.height() > scaled_line && save.height() > 40.0,
+            save.height() > scaled_line && save.height() > 32.0,
             "2× default height {} must exceed the {scaled_line} px label line",
             save.height()
         );
@@ -306,7 +298,6 @@ fn fixed_controls_keep_their_size_and_labels_beside_fluid_fields() {
             delete.height(),
             "both default buttons share one height"
         );
-        assert!(save.width() >= 120.0 && delete.width() >= 120.0);
     }
 }
 
