@@ -41,6 +41,9 @@ pub enum TlsSource {
         certificate_chain: PathBuf,
         /// PKCS#8, PKCS#1 or SEC1 private key.
         private_key: PathBuf,
+        /// The name the certificate is for, which browsers dial. Needed for
+        /// addresses the host hands out when it listens on every address.
+        host: Option<String>,
     },
     /// ACME inside the host (not implemented).
     Managed {
@@ -78,6 +81,7 @@ impl Identity {
             TlsSource::Files {
                 certificate_chain,
                 private_key,
+                ..
             } => {
                 let chain = CertificateDer::pem_file_iter(certificate_chain)
                     .map_err(|error| format!("certificate chain: {error}"))?
