@@ -236,6 +236,36 @@ fn media_are_named_pigments_resolve_and_saved_media_can_be_used() {
     );
 }
 
+/// `media` lists each palette once and every medium names its palette, with
+/// parameters to two decimals: the agent reads it whole before painting.
+#[test]
+fn media_list_each_palette_once() {
+    let mut art = Replica::<ArtworkResource>::new();
+    art.apply(ArtworkResource::ADD_LAYER.with(("Sky".into(), "oil".into())))
+        .unwrap();
+    let listed = canvas::view_ops::media(&art.state().unwrap());
+    let media = listed["media"].as_array().unwrap();
+    let palettes = listed["palettes"].as_object().unwrap();
+    assert!(palettes.len() < media.len(), "{listed}");
+    for medium in media {
+        let palette = medium["palette"].as_str().unwrap();
+        assert!(palettes.contains_key(palette), "{medium}");
+        for value in medium["params"].as_object().unwrap().values() {
+            let value = value.as_f64().unwrap();
+            assert_eq!(value, (value * 100.0).round() / 100.0, "{medium}");
+        }
+    }
+    let oil = media.iter().find(|medium| medium["id"] == "oil").unwrap();
+    assert!(
+        palettes[oil["palette"].as_str().unwrap()]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|pigment| pigment.as_str().unwrap().starts_with("ultramarine #")),
+        "{listed}"
+    );
+}
+
 /// The generic `apply` publishes the whole vocabulary's schema, so an agent
 /// reads every edit's shape from the descriptor; a typed value with a
 /// misspelt field is refused by name rather than half-applied.
