@@ -1314,9 +1314,12 @@ dist/rpm/build-rpm.sh
 ```
 
 Builds `shell`, `tilo-launcher` and `tilo-unlock-helper` in release, stages them
-with the session entries and PAM stack, and runs `rpmbuild` (in the build
-container, since an image-based host has no `rpm-build`). Two packages land in
-`dist/rpm/build/RPMS/x86_64/`:
+with the session entries and PAM stack, and runs `rpmbuild`. Compiling always
+goes through the `cargo` on your `PATH`; on an image-based host without
+`rpm-build`, only `rpmbuild` runs in the container named by `.build-container`
+(see "If you build in a container"), found from any worktree of the checkout.
+Without either, the script stops before compiling and says what to set up. Two
+packages land in `dist/rpm/build/RPMS/x86_64/`:
 
 ```console
 $ rpm -qlp dist/rpm/build/RPMS/x86_64/tilo-session-0.1.0-1.fc43.x86_64.rpm
@@ -1362,6 +1365,11 @@ dist/rpm/host-update.sh               # build HEAD and stage it for the next boo
 dist/rpm/host-update.sh --apply-live  # also make it the running /usr; just log out
 dist/rpm/host-update.sh --no-cargo    # repackage binaries already in target/release
 ```
+
+Each step reruns on its own: after a failure, rerun the same command. The app
+collection (`dist/rpm/build/app-release`) is kept while it was built from the
+same commit and uncommitted changes, and rebuilt otherwise, `--no-cargo`
+included.
 
 `--apply-live` refuses while a Tilo session is running on the machine. Builds go
 through the `cargo` on your `PATH`, so any cargo drop-in on it is used.

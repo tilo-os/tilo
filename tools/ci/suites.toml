@@ -304,10 +304,12 @@ suites = [
   "dist/ci/tests/test_package_source_transfer.py",
   "dist/dev/tests/fedora44-vm-iterate-test.sh",
   "dist/local-models/smolvlm2-500m/contract-test.sh",
+  "dist/rpm/test-app-collection.sh",
   "dist/rpm/test-app-store-stage.sh",
   "dist/rpm/test-build-target-dir.sh",
   "dist/rpm/test-host-update.sh",
   "dist/rpm/test-rename-contract.sh",
+  "dist/rpm/test-rpmbuild-route.sh",
 ]
 
 [[group]]
