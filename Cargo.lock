@@ -6414,25 +6414,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "image-editor"
-version = "0.1.0"
-dependencies = [
- "image",
- "runtime-dylib",
- "serde",
- "serde_json",
- "tempfile",
- "tilo-actions",
- "tilo-app",
- "tilo-automerge",
- "tilo-automerge-fork",
- "tilo-files",
- "tilo-paths",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
 name = "image-webp"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -14611,7 +14592,6 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "image-editor",
  "iroh",
  "iroh-base",
  "maps",
@@ -16752,7 +16732,6 @@ dependencies = [
  "ebook",
  "feeds",
  "hex-editor",
- "image-editor",
  "maps",
  "music",
  "notes",
