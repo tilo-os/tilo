@@ -46,7 +46,7 @@ use crate::widget::checkbox::{Checkbox, CheckboxFace};
 use crate::widget::modal_dialog::{self, ModalAction, ModalLayout, ModalSpec};
 use crate::widget::qr::QrWidget;
 use crate::widget::text_input::TextInput;
-use crate::widget::toggle_group::{SegmentedFace, SegmentedStyle, ToggleGroup};
+use crate::widget::toggle_group::{SegmentedFace, ToggleGroup};
 
 /// Widest a ceremony card with a form in it is drawn — HIG §9.6's "560 for a
 /// sheet with a form in it".
@@ -623,10 +623,7 @@ pub(super) fn paint_segments(
     selected: usize,
     hovered: Option<usize>,
 ) {
-    let face = SegmentedFace::new(segments, labels, selected)
-        .style(SegmentedStyle::Solid)
-        .radius(f64::from(theme.tokens.radii.control))
-        .hovered(hovered);
+    let face = SegmentedFace::new(segments, labels, selected).hovered(hovered);
     ToggleGroup::paint(scene, transform, text_renderer, theme, &face);
 }
 

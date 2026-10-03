@@ -44,14 +44,22 @@ impl ControlSize {
     }
 
     /// The control's height in `theme`, already grown by its UI scale.
+    ///
+    /// At a large text scale the height grows with the label's line once the
+    /// line and `spacing.s1` above and below it outgrow the metric, so a
+    /// label never overflows its control; on a stock theme, and under a
+    /// uniform UI scale, it is exactly the metric.
     #[must_use]
     pub fn height(self, theme: &Theme) -> f64 {
         let metrics = &theme.tokens.metrics;
-        f64::from(match self {
+        let height = f64::from(match self {
             Self::Small => metrics.bar_control_height,
             Self::Regular => metrics.min_pointer_target,
             Self::Large => metrics.bar_height,
-        })
+        });
+        let grown = f64::from(self.label_style(theme).line_height_px())
+            + 2.0 * f64::from(theme.tokens.spacing.s1);
+        if grown > height { grown.ceil() } else { height }
     }
 }
 

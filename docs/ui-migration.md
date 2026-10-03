@@ -722,6 +722,195 @@ for row in &self.rows {
 
 ## Controls
 
+A control takes what it is and how big it is, never how it looks. Buttons
+take a `ButtonRole` and a `ControlSize`; segmented strips a `SegmentedStyle`
+and a `ControlSize`; chips and badges a `ChipStyle`. Colour, radius, height,
+padding and label size come from the theme. Apply the steps below in order.
+
+### Choosing a button role
+
+| The button… | Role |
+|---|---|
+| is the one main action of the view or sheet ("Save", "Send", "Create") | `ButtonRole::Primary` (at most one per view) |
+| deletes, removes, revokes, leaves or discards something | `ButtonRole::Destructive` |
+| is any other action ("Cancel", "Edit", "Add account") | `ButtonRole::Secondary` (the default) |
+| is an inline text action, a toolbar glyph, a close or overflow glyph, a link-like action in a row | `ButtonRole::Plain` |
+
+A destructive button is a neutral control lettered in danger ink. The filled
+danger face exists only in the confirmation step, and the toolkit gives it
+there: `ModalDialog::with_destructive(true)` and a painted modal action made with
+`ModalAction::danger(label)`. An app never asks for a filled danger button.
+
+### Choosing a size
+
+| Old height | `ControlSize` |
+|---|---|
+| ≤ 30 (toolbars, dense rows, inline row actions) | `Small` (28) |
+| 31–38, or the old default (40) | `Regular` (32), the default: write nothing |
+| the one prominent action of onboarding, a lock or login screen, a sheet's confirmation | `Large` (40) |
+
+### Buttons: replace
+
+| Old | New |
+|---|---|
+| `ButtonStyle` (type) | `ButtonRole` |
+| `.primary()` | `.role(ButtonRole::Primary)` |
+| `.danger()`, `.danger_outline()` | `.role(ButtonRole::Destructive)` |
+| `.ghost()` | `.role(ButtonRole::Plain)` |
+| `.with_style(ButtonStyle::Neutral)` / `.style(ButtonStyle::Neutral)` | delete (Secondary is the default) |
+| `.with_style(ButtonStyle::X)`, `ButtonFace::style(ButtonStyle::X)`, `set_style` | `.role(ButtonRole::Y)`, `set_role` (Neutral → Secondary, Primary → Primary, Danger / DangerOutline → Destructive, Ghost → Plain) |
+| `.fit_content(h)`, `.content_sized()` | delete; a button is as wide as its label. `h ≤ 30` → `.control_size(ControlSize::Small)` |
+| `.with_size(w, h)` | delete; for a button that should span its column `.fill_width()`; `h ≤ 30` → `ControlSize::Small` |
+| `.fill_width(h)` | `.fill_width()` |
+| `.with_min_height(h)` | delete; pick the `ControlSize` |
+| `ButtonFace::radius(r)`, `ButtonFace::wrap_label()` | delete |
+| `Button::new(id, "", None).with_icon(i).with_accessible_name(n)` (+ `.tooltip(n)`, `.ghost()`, `.with_size(s, s)`) | `Button::icon_only(id, i, n)` (square, named, tooltip, Plain) |
+| `ButtonFace::new(r, "").icon(i).accessible_name(n)` | `ButtonFace::icon_only(r, i, n)` |
+| a label with a shortcut glued on ("Run ⌘↵", "Send (Ctrl+Enter)") | the label alone plus `.shortcut_hint(Shortcut::command("Enter"))`; the hint is spelled in the platform's keycaps, never `⌘` off macOS |
+| `UndoButton::with_style(s)`, `UndoButton::with_size(w, h)` | `UndoButton::role(r)`, `UndoButton::control_size(size)` |
+| ui-graph `UiButtonStyle::{Neutral, Primary, Danger, Ghost}`, field `style` | `UiButtonRole::{Secondary, Primary, Destructive, Plain}`, field `role` |
+
+### Buttons: hand-drawn patterns
+
+| Hand-drawn | Replace with |
+|---|---|
+| `draw_*_button(...)` + `rect.contains(point)` in a retained view | a `Button` (role, size, `on_click` / `on_action`) |
+| a painted button in a canvas app | `Button::paint(scene, t, text, theme, &ButtonFace::new(rect, label).role(..).hovered(..).pressed(..).focused(..).disabled(..))`; size the rect with `ButtonFace::height(size, theme)` and `face.intrinsic_width(text, theme)`; hit-test with `face.contains(theme, point)` (grown to the pointer target) |
+| a text glyph used as a button (`"×"`, `"+"`, `"‹"`, `"⋯"`) | `Button::icon_only` / `ButtonFace::icon_only` with `ui::icons::Icon::{X, Plus, ChevronLeft, MoreHorizontal}` |
+| a fixed-width button that truncates its label | delete the width; buttons size to their label and never elide while the parent has room |
+| a solid red "Delete" next to "Cancel" | `ButtonRole::Destructive`; the filled face appears only in the `ModalDialog` that confirms it |
+| an accent/blue primary | `ButtonRole::Primary` (inverted: primary ink fill, content-surface label) |
+
+### Segmented controls and tabs
+
+| Old | New |
+|---|---|
+| `ToggleGroup::with_flexible_width()` | `.fill()`; without it the strip is as wide as its widest label needs |
+| `ToggleGroup::underline()`, `SegmentedStyle::Underline` | `.with_style(SegmentedStyle::Tabs)` / `.style(SegmentedStyle::Tabs)` |
+| `SegmentedStyle::Solid` | delete (`SegmentedStyle::Segmented` is the default) |
+| `SegmentedStyle::Pill`, `SegmentedFace::pill()` | `SegmentedStyle::Quiet` (a refinement under a primary choice) |
+| `SegmentedFace::radius(r)`, `SegmentedFace::left_labels(pad)` | delete |
+| a segment label that does not fit ("Wednesday" in a narrow week strip) | `Segment::new("Wednesday").short("Wed")` |
+| segment rects sized by hand | `SegmentedFace::height(size, theme)` × `SegmentedFace::intrinsic_width(labels, size, text, theme)`, split equally |
+| accent-filled selected segment, a selected segment painted by the app | `ToggleGroup` / `SegmentedFace`: the chosen segment is a lift thumb |
+| hand-drawn tab row with an accent underline | `ToggleGroup::new(..).with_style(SegmentedStyle::Tabs)` (2 px primary-ink underline) |
+| `TriStateControl` | `ToggleGroup` with three segments |
+
+### Switches, sliders, checkboxes
+
+| Old | New |
+|---|---|
+| `ToggleFace::on_color(c)` | delete; on is always the inverted fill |
+| `toggle_face_colors(..)` / `face.colors(theme)` returning `(track, knob, border, width)` | returns `ToggleColors { track, knob, knob_edge, edge, edge_width }` |
+| `CheckboxFace::transparent_unchecked()` | delete; an unchecked box always has its raised face and edge |
+| a non-square checkbox rect | nothing: the face paints the largest square in it |
+| a slider squeezed to a knob in a row | nothing: a `Slider` keeps six knob widths of track |
+
+### Menus and dropdowns
+
+| Old | New |
+|---|---|
+| `MenuItem::checked_action(label, checked, f)` | `MenuItem::action(label, f).with_checked(checked)` |
+| a "✓ " prefixed menu label | `.with_checked(true)` |
+| leading, trailing or doubled `MenuItem::separator()` | leave them; the menu shows a separator only between two rows. Delete any code that trims them |
+| a row highlighted by hand while its context menu is open | `menu.anchor_row(row_rect)` before `open_*` |
+| a hand-drawn caption above a dropdown ("Level" over a filter) | `Dropdown::new(..).caption("Level")` and delete the caption text |
+| a hand-drawn `▾` / chevron path on a dropdown-like field | `Dropdown` |
+| `Dropdown` at a fixed 40 px | nothing: it is a `Regular` control; `.control_size(ControlSize::Small)` in a toolbar |
+| `NumberInput::with_size(w, h)` | delete; `.control_size(size)`. The width is measured to hold every value in range |
+| a hand-drawn `− value +` stepper (zoom, page, point size, copies) | `NumberInput::new(v).with_range(..).with_step(..).with_suffix("%").compact()` |
+
+### Chips and badges
+
+One family, styled by `ChipStyle`: `Neutral` (quiet, raised; a selected chip
+is a lift), `Tinted(Tone)` (a status or a person, a faint wash with neutral
+ink) and `Live` (the one filled pill: live, recording, an unread count).
+`Tone` is the shared `ui::widget::Tone`: `Neutral`, `Info`, `Success`,
+`Warning`, `Danger`, or a person with `Tone::of_identity(id)` /
+`Tone::Presence(hue)` (yourself: `Tone::Presence(colors.you)`).
+
+| Old | New |
+|---|---|
+| `Chip::draw_at(scene, t, rect, label, lead, style, theme, text)` | `ChipFace::new(rect, label).lead(lead).style(style).selected(b).hovered(b).paint(scene, t, text, theme)` |
+| `Chip::natural_width_at(label, h, lead, theme, text)` | `ChipFace::intrinsic_width(label, lead, removable, text, theme)`; the height is `ChipFace::height(theme)` |
+| `ChipStyle::quiet()`, `ChipStyle::default()` | `ChipStyle::Neutral` |
+| `ChipStyle::tinted(colors.intent.inverted)` (a chosen chip) | `ChipStyle::Neutral` plus `.selected(true)` |
+| `ChipStyle::tinted(colors.intent.you)` | `ChipStyle::Tinted(Tone::Presence(colors.you))` |
+| `ChipStyle::tinted(<a person's colour>)` | `ChipStyle::Tinted(Tone::of_identity(id))` |
+| `ChipStyle::tinted(colors.semantic.*)` | `ChipStyle::Tinted(Tone::Success / Warning / Danger / Info)` |
+| `ChipStyle::ghost()` | delete the empty-slot chip; show the action as a `Button` |
+| `ChipStyle::bare(..)` | `ChipFace::bare()` |
+| `ChipStyle::measured(TintedChip { .. })` | the matching `ChipStyle`; delete the colour computation |
+| `.with_alpha(a)` on a chip style | `ChipFace::opacity(a)` (transitions only) |
+| `Chip::with_dot(color)` | `Chip::with_lead(ChipLead::Dot(color))` |
+| `Badge::pill(label, color)`, `Badge::text(s).with_tint(color)` | `Badge::text(label).style(ChipStyle::Tinted(tone))` |
+| `Badge::semantic_pill(label, BadgeTone::Success / Warning / Neutral / Accent)` | `Badge::text(label).style(ChipStyle::Tinted(Tone::Success / Warning / Neutral))`; `Accent` → `ChipStyle::Neutral` |
+| `Badge::count(n)`, `Badge::dot()` | unchanged (`Live` by default) |
+| `Badge::paint_at(scene, t, rect, label, tint, text, theme)` | `BadgeFace::new(rect, label).style(style).paint(scene, t, text, theme)`; size with `BadgeFace::intrinsic_width(label, text, theme)` × `BadgeFace::height(theme)` |
+| `surface::pill(scene, t, rect, fill, edge, radius)` + a label drawn on it | `ChipFace` (interactive or a tag) or `BadgeFace` (a status) |
+| `surface::chip_colors(theme, selected)` | `ChipStyle::Neutral.colors(theme, ground, selected, hovered)` |
+| a hand-drawn status pill (tint fill, tint edge, coloured label) | `BadgeFace` / `Badge::text(..)` with `ChipStyle::Tinted(tone)` |
+| a chip whose label size follows its rect | nothing: chip labels are `Label`, badge labels `Caption`, and pills grow with the text scale |
+
+### Toolbars
+
+| Old | New |
+|---|---|
+| `ui::chrome::toolbar::{ToolbarItem, LabelCue, item_rects, draw, draw_with_metrics, metrics, hit, ToolbarMetrics, TOOLBAR_HEIGHT}`, `ui::{LabelCue, ToolbarItem}` | `ui::widget::Toolbar` (retained), or `Toolbar::lay_out_in(rect, text, theme)` inside a painted widget, then its ordinary `draw` / `handle_event` |
+| `ToolbarItem::new(label, w).active(true)` | `Toolbar::push_toggle(label, active, f)`; `set_active(index, on)` from the model |
+| `ToolbarItem::new(label, w).group_start(true)` | `.push_separator()` before the group |
+| `ToolbarItem::new(label, w).cue(..)` | delete (labels are `Label`) |
+| an icon-only toolbar command | `.push_icon(icon, name, f)` |
+| `chrome::paint_bar(scene, t, theme, rect)` | `ui::widget::toolbar::paint_band(scene, t, theme, rect)` (no fill, a bottom hairline) |
+| `chrome::bar_padding(theme)` | `ui::widget::toolbar::band_padding(theme)` |
+| a toolbar that wraps or clips commands on a narrow window | `Toolbar`: commands that do not fit go to its More menu |
+
+### Scrolling
+
+| Old | New |
+|---|---|
+| `Scrollable::with_content_gutter(px)` | delete; a vertical `Scrollable` reserves `metrics.scrollbar_gutter` on its trailing edge |
+| content padded by hand so the scroll bar does not cover it | delete the padding |
+| a hand-drawn scroll thumb | `Scrollbar::draw(scene, t, track, metrics, theme, focused)` (thumb ink from `scrollbar::thumb_color`) |
+
+### Swatches
+
+| Old | New |
+|---|---|
+| `ColorSwatchPicker::new()`, `with_palette(Vec<u32>, cols)`, `DEFAULT_PALETTE`, `packed_color` | `ColorSwatchPicker::new(swatches, columns)` with `ColorSwatch::named(color, "Blue")` (content colours: `colors.presence.series(i)` or the document's own) |
+| `with_accessible_labels(..)` | the swatch names |
+| `picker.color_at(i)` | `picker.swatch(i).map(|s| s.color)` |
+| `ui::widget::color_picker::ColorSwatch` | `ui::widget::ColorSwatch` (same type, now in `color_swatch`) |
+
+### Delete
+
+- Every colour, radius, size, padding and border width passed to a control.
+- `ButtonStyle`, `TriStateControl`, `SegmentTone`, `BadgeTone`, the
+  `ChipStyle` struct fields, `chrome::toolbar`, `surface::pill`,
+  `surface::chip_colors`.
+- Module constants for button, chip, badge, menu-row or toolbar geometry.
+- Text glyphs used as button icons and "✓" prefixes in menu labels.
+
+### New API
+
+| API | Use |
+|---|---|
+| `ButtonRole::{Primary, Secondary, Destructive, Plain}`, `Button::role`, `set_role`, `ButtonFace::role` | What a button does |
+| `Button::icon_only(id, icon, label)`, `ButtonFace::icon_only(rect, icon, label)` | Icon-only buttons |
+| `Button::shortcut_hint(Shortcut)`, `ButtonFace::shortcut_hint` | Trailing keyboard shortcut |
+| `Button::fill_width()` | Span the parent's width |
+| `ButtonFace::{height, intrinsic_width, hit_rect, contains}` | Canvas hosts |
+| `ToggleGroup::{fill, control_size}`, `Segment::short`, `SegmentedStyle::{Segmented, Tabs, Quiet}`, `SegmentedFace::{focused, control_size, height, intrinsic_width}` | Segmented strips |
+| `ToggleColors` | A switch face's resolved colours |
+| `MenuItem::with_checked`, `ContextMenu::anchor_row` | State rows; the row a menu acts on |
+| `Dropdown::{caption, control_size}` | Stacked caption; size |
+| `NumberInput::{compact, control_size}` | Inline stepper; size |
+| `ChipStyle::{Neutral, Tinted(Tone), Live}`, `ChipFace`, `BadgeFace`, `ChipColors`, `Chip::{style, with_lead}`, `Badge::style` | Chips and badges |
+| `Toolbar::{push_icon, push_toggle, set_active, lay_out_in}`, `toolbar::{paint_band, band_padding}` | Toolbars |
+| `Metrics::{menu_row_height, scrollbar_gutter}` | Menu rows; scroll bar gutter |
+| `ColorSwatch`, `ColorSwatchPicker::new(swatches, columns)`, `ColorSwatchFace::{of, focused}` | Swatches |
+| `InputHint::keycap_height(theme)` | Centring a row of keycaps |
+
 ## Content widgets
 
 The patterns every app drew by hand are library widgets. Each comes in two

@@ -135,6 +135,7 @@ use tilo_desktop::workspace_settings::overlay::{
     EventOutcome as WorkspaceSettingsOutcome, MemberSheetKey, WorkspaceSettingsOverlay,
 };
 use tilo_desktop::workspace_settings::{CapEdit, EXPIRY_CHOICES};
+use ui::widget::ButtonRole;
 
 #[derive(Debug)]
 struct SessionActionResult {
@@ -21356,14 +21357,12 @@ impl ShellOverlayHost {
         // painter wearing button colours): Cancel neutral, the commit
         // primary, both at the Control radius. Was `surfaces.base` /
         // `accent[5]` pills at a literal 14 px until 2026-09-17 (S1-26).
-        let button_radius = ui::chrome::ChromeRole::Control.radius(theme, layout.cancel.height());
         Button::paint(
             scene,
             transform,
             text_renderer,
             theme,
             &ButtonFace::new(layout.cancel, &view.cancel_label())
-                .radius(button_radius)
                 .hovered(self.last_cursor.is_some_and(|p| layout.cancel.contains(p))),
         );
         Button::paint(
@@ -21372,8 +21371,7 @@ impl ShellOverlayHost {
             text_renderer,
             theme,
             &ButtonFace::new(layout.confirm, &view.confirm_label())
-                .primary()
-                .radius(button_radius)
+                .role(ButtonRole::Primary)
                 .hovered(self.last_cursor.is_some_and(|p| layout.confirm.contains(p))),
         );
     }
@@ -21922,7 +21920,7 @@ impl ShellOverlayHost {
         card: &tilo_desktop::overview::RoomCard,
         name_size: f32,
     ) {
-        use ui::widget::{Chip, ChipLead, ChipStyle};
+        use ui::widget::{ChipFace, ChipLead, ChipStyle, Tone};
 
         let (scene, transform, text_renderer, theme) =
             (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
@@ -21953,7 +21951,7 @@ impl ShellOverlayHost {
         let chip_h = m.chip_h;
         let here_label = t("overview-you-are-here");
         let chip_w =
-            Chip::natural_width_at(&here_label, chip_h, ChipLead::None, theme, text_renderer);
+            ChipFace::intrinsic_width(&here_label, ChipLead::None, false, text_renderer, theme);
         let anchor = (faces_left - s4, here_rect.y0 + m.name_lh / 2.0);
         let marks_left =
             Self::draw_overview_app_marks(scene, transform, theme, anchor, &card.apps());
@@ -21976,9 +21974,7 @@ impl ShellOverlayHost {
             TextWeight::Bold,
         );
         let chip_x0 = content.x0 + f64::from(name_w) + s3;
-        Chip::draw_at(
-            scene,
-            transform,
+        ChipFace::new(
             Rect::new(
                 chip_x0,
                 here_rect.y0 + f64::from(name_h) / 2.0 - chip_h / 2.0,
@@ -21986,11 +21982,9 @@ impl ShellOverlayHost {
                 here_rect.y0 + f64::from(name_h) / 2.0 + chip_h / 2.0,
             ),
             &here_label,
-            ChipLead::None,
-            ChipStyle::tinted(colors.intent.you),
-            theme,
-            text_renderer,
-        );
+        )
+        .style(ChipStyle::Tinted(Tone::Presence(colors.you)))
+        .paint(scene, transform, text_renderer, theme);
 
         let access = tilo_desktop::overview::room_access_label(card);
         text_renderer.draw_style(
@@ -22556,7 +22550,6 @@ impl ShellOverlayHost {
                 text_renderer,
                 theme,
                 &ButtonFace::new(detach_rect, &t("follow-stop"))
-                    .radius(f64::from(theme.tokens.radii.detail))
                     .hovered(self.last_cursor.is_some_and(|p| detach_rect.contains(p))),
             );
             // The cross is the primary detach affordance; the word keeps the
@@ -24146,7 +24139,7 @@ impl ShellOverlayHost {
                 .disabled(!enabled)
                 .accessible_name(&accessible);
             if selected_row {
-                face = face.primary();
+                face = face.role(ButtonRole::Primary);
             }
             Button::paint(scene, transform, text_renderer, theme, &face);
             let tethering_consent = matches!(
@@ -24231,7 +24224,7 @@ impl ShellOverlayHost {
                     text_renderer,
                     theme,
                     &ButtonFace::new(allow, "")
-                        .ghost()
+                        .role(ButtonRole::Plain)
                         .icon(ui::icons::Icon::Check)
                         .hovered(self.last_cursor.is_some_and(|point| allow.contains(point)))
                         .accessible_name(&match item {
@@ -24259,7 +24252,7 @@ impl ShellOverlayHost {
                     text_renderer,
                     theme,
                     &ButtonFace::new(decline, "")
-                        .ghost()
+                        .role(ButtonRole::Plain)
                         .icon(ui::icons::Icon::X)
                         .hovered(
                             self.last_cursor
@@ -24298,7 +24291,7 @@ impl ShellOverlayHost {
                         text_renderer,
                         theme,
                         &ButtonFace::new(rect, "")
-                            .ghost()
+                            .role(ButtonRole::Plain)
                             .icon(icon)
                             .hovered(self.last_cursor.is_some_and(|point| rect.contains(point)))
                             .accessible_name(&name),
@@ -24334,7 +24327,7 @@ impl ShellOverlayHost {
                         text_renderer,
                         theme,
                         &ButtonFace::new(rect, "")
-                            .ghost()
+                            .role(ButtonRole::Plain)
                             .icon(icon)
                             .hovered(
                                 device.online
@@ -24351,7 +24344,7 @@ impl ShellOverlayHost {
                     t("a11y-control-allow")
                 };
                 let mut control_face = ButtonFace::new(control, "")
-                    .ghost()
+                    .role(ButtonRole::Plain)
                     .icon(ui::icons::Icon::Mouse)
                     .hovered(
                         device.online
@@ -24362,7 +24355,7 @@ impl ShellOverlayHost {
                     .disabled(device.is_local || !device.online)
                     .accessible_name(&control_name);
                 if device.controls_local {
-                    control_face = control_face.primary();
+                    control_face = control_face.role(ButtonRole::Primary);
                 }
                 Button::paint(scene, transform, text_renderer, theme, &control_face);
             }
@@ -24964,7 +24957,6 @@ impl ShellOverlayHost {
             text_renderer,
             theme,
             &ButtonFace::new(cancel, &t("portal-cancel"))
-                .radius(10.0)
                 .hovered(self.last_cursor.is_some_and(|point| cancel.contains(point))),
         );
         Button::paint(
@@ -24980,8 +24972,7 @@ impl ShellOverlayHost {
                     t("portal-connect")
                 },
             )
-            .primary()
-            .radius(10.0)
+            .role(ButtonRole::Primary)
             .disabled(!prompt.can_submit())
             .hovered(
                 self.last_cursor

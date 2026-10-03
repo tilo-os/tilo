@@ -2163,7 +2163,7 @@ pub use layout::{
 };
 
 mod button;
-pub use button::{Button, ButtonFace, ButtonInteract, ButtonStyle, face_colors};
+pub use button::{Button, ButtonFace, ButtonInteract, ButtonRole, face_colors};
 mod control_size;
 pub use control_size::ControlSize;
 mod checkbox;
@@ -2190,7 +2190,9 @@ pub use manual::{
 mod row;
 pub use row::Row;
 mod toggle;
-pub use toggle::{Toggle, ToggleFace, ToggleInteract, toggle_accessibility, toggle_face_colors};
+pub use toggle::{
+    Toggle, ToggleColors, ToggleFace, ToggleInteract, toggle_accessibility, toggle_face_colors,
+};
 mod stack;
 pub use stack::Stack;
 mod container;
@@ -2223,10 +2225,6 @@ pub use document_viewport::{
 };
 mod floating_window;
 pub use floating_window::{FloatingWindow, MIN_HEIGHT, MIN_WIDTH, TITLE_BAR_HEIGHT};
-mod segmented;
-pub use segmented::{
-    ColorSwatchPicker, DEFAULT_PALETTE, SegmentTone, TriStateControl, packed_color,
-};
 mod text;
 pub use text::Text;
 mod spacer;
@@ -2353,8 +2351,8 @@ pub mod time_picker;
 pub use time_picker::{TimePicker, TimeValue};
 pub mod color_picker;
 pub mod color_swatch;
-pub use color_picker::{ColorPicker, ColorPickerOutcome, ColorSwatch};
-pub use color_swatch::ColorSwatchFace;
+pub use color_picker::{ColorPicker, ColorPickerOutcome};
+pub use color_swatch::{ColorSwatch, ColorSwatchFace, ColorSwatchPicker};
 pub mod popover;
 pub use crate::standalone_history_host::history_button;
 pub use popover::{Popover, PopoverSide};
@@ -2376,7 +2374,7 @@ pub use breadcrumb::Breadcrumb;
 pub mod avatar;
 pub use avatar::{Avatar, AvatarFace, AvatarSize, initials_for_name};
 pub mod badge;
-pub use badge::{Badge, BadgeTone};
+pub use badge::{Badge, BadgeContent, BadgeFace};
 pub mod icon;
 pub use icon::IconWidget;
 pub mod chart;
@@ -2502,7 +2500,7 @@ pub use stat_tile::{StatGroup, StatTile, StatTileFace, Trend};
 pub mod banner;
 pub use banner::{Banner, BannerContent, BannerKind};
 pub mod chip;
-pub use chip::{Chip, ChipLead, ChipStyle};
+pub use chip::{Chip, ChipColors, ChipFace, ChipLead, ChipStyle};
 pub mod card;
 mod tone;
 pub use tone::Tone;

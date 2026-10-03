@@ -246,10 +246,7 @@ pub fn search_button(request: SearchRequest) -> crate::widget::Button {
         Some(scope) => format!("{label} {}", scope.label),
         None => label,
     };
-    crate::widget::Button::new(&id, "", None)
-        .with_icon(crate::icons::Icon::Search)
-        .ghost()
-        .tooltip(name)
+    crate::widget::Button::icon_only(&id, crate::icons::Icon::Search, &name)
         .on_action(open_search_binding(&request))
 }
 

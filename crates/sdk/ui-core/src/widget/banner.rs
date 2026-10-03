@@ -173,12 +173,9 @@ fn paint_banner(
             x1,
             rect.center().y + m.dismiss / 2.0,
         );
-        let face = crate::widget::ButtonFace::new(dr, "")
-            .ghost()
-            .icon(Icon::X)
+        let face = crate::widget::ButtonFace::icon_only(dr, Icon::X, "Dismiss")
             .control_size(crate::widget::control_size::ControlSize::Small)
-            .hovered(dr.contains(hover))
-            .accessible_name("Dismiss");
+            .hovered(dr.contains(hover));
         crate::widget::Button::paint(ctx.scene, transform, ctx.text, &on_well, &face);
         dr
     } else {

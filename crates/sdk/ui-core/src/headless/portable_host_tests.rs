@@ -14,9 +14,11 @@ fn encoded_color_positions(scene: &Scene, color: vello::peniko::Color) -> Vec<us
         .enumerate()
         .filter_map(|(position, tag)| {
             let found = (*tag == vello_encoding::DrawTag::COLOR
-                && encoding.draw_data[data_offset] == expected)
-                .then_some(position);
-            data_offset += usize::try_from(tag.info_size()).expect("draw info size fits usize");
+                && encoding.draw_data.get(data_offset) == Some(&expected))
+            .then_some(position);
+            // The scene data a tag carries (the shader's `scene_offset`), which
+            // differs from its info size for images and blurred rects.
+            data_offset += usize::try_from((tag.0 >> 2) & 0x07).expect("draw data size fits usize");
             found
         })
         .collect()
@@ -77,11 +79,16 @@ fn portable_frame_composites_real_dropdown_overlay_above_later_siblings() {
         .into_iter()
         .next()
         .expect("the later sibling paints its fixture color");
-    // The open list paints the panel ground (HIG §9.5), not the raised field.
-    let overlay_position = encoded_color_positions(scene, crate::chrome::panel_ground(&theme))
+    // The open list is the floating material (HIG §9.2): the panel ground,
+    // opaque or as the tint over a blurred backdrop.
+    let ground = crate::chrome::panel_ground(&theme);
+    let tint = ground.with_alpha(theme.tokens.colors.surfaces.material_opacity);
+    let overlay_position = encoded_color_positions(scene, ground)
         .into_iter()
-        .rfind(|position| *position > blocker_position)
-        .expect("the real open dropdown paints its raised menu after the later sibling");
+        .chain(encoded_color_positions(scene, tint))
+        .filter(|position| *position > blocker_position)
+        .max()
+        .expect("the real open dropdown paints its menu after the later sibling");
 
     assert!(
         overlay_position > blocker_position,

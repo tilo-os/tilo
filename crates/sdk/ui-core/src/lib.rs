@@ -335,7 +335,7 @@ pub use text_break::discretionary_hyphen_breaks;
 pub use theme::{AppearanceIntent, ContentSurface, Theme, resolve_theme_layers, workspace_hue};
 pub use ui_graph::{
     LIVE_GRAPH_DIR_ENV, LIVE_GRAPH_OPERATION, LiveUi, UI_GRAPH_VERSION, UiBuildContext,
-    UiButtonStyle, UiComponentRequest, UiDocument, UiDocumentExt, UiGraphEdit, UiGraphEditor,
+    UiButtonRole, UiComponentRequest, UiDocument, UiDocumentExt, UiGraphEdit, UiGraphEditor,
     UiGraphError, UiGraphHandle, UiNavigation, UiNode, UiTextRole, UiTextSource,
     parse_ui_graph_edits,
 };
@@ -429,7 +429,6 @@ pub use widget::channel_browser::{ChannelBrowser, ChannelEntry};
 // Conflict toolkit — see `widget/merge_strategy.rs` module doc-comment for
 // the design intent and convention for declaring a merge strategy on a
 // CRDT-bound widget.
-pub use chrome::{LabelCue, ToolbarItem};
 pub use gesture::{DragSelect, Granularity};
 pub use richtext::{BaselineShift, FontFamily, RichSpan, RichTextLayout, TextAlign};
 pub use status_bubble::StatusBubble;

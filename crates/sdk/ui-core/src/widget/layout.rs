@@ -966,8 +966,9 @@ mod tests {
         }
 
         fn ordinary_hosts_keep_default_pixel_rounding() {
-            use crate::widget::Button;
-            let mut widget = Button::new("ordinary", "Ordinary", None).with_size(100.25, 40.25);
+            let mut widget = crate::widget::Container::new()
+                .with_no_padding()
+                .with_size(100.25, 40.25);
             let mut tree = TaffyTree::new();
             let mut nodes = HashMap::new();
             let root = widget.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);

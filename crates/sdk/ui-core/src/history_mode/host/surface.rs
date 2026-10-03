@@ -40,7 +40,7 @@ impl HistoryHost {
             && let Ok(style) = tree.style(toolbar)
         {
             let mut style = style.clone();
-            style.padding = crate::chrome::bar_padding(theme);
+            style.padding = crate::widget::toolbar::band_padding(theme);
             let _ = tree.set_style(toolbar, style);
         }
         self.toolbar_node = Some(toolbar);

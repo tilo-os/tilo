@@ -218,11 +218,11 @@ impl ConflictBanner {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         rect: Rect,
-        (label, style): (&str, crate::widget::ButtonStyle),
+        (label, role): (&str, crate::widget::ButtonRole),
         hovered: bool,
     ) {
         let face = crate::widget::ButtonFace::new(rect, label)
-            .style(style)
+            .role(role)
             .control_size(crate::widget::control_size::ControlSize::Small)
             .hovered(hovered);
         crate::widget::Button::paint(scene, transform, text_renderer, theme, &face);
@@ -345,7 +345,7 @@ impl Widget for ConflictBanner {
                 text_renderer,
                 theme,
                 rect,
-                ("Review", crate::widget::ButtonStyle::Neutral),
+                ("Review", crate::widget::ButtonRole::Secondary),
                 self.review_hovered,
             );
         }
@@ -356,7 +356,7 @@ impl Widget for ConflictBanner {
                 text_renderer,
                 theme,
                 rect,
-                ("Dismiss", crate::widget::ButtonStyle::Neutral),
+                ("Dismiss", crate::widget::ButtonRole::Secondary),
                 self.dismiss_hovered,
             );
         }

@@ -24,10 +24,11 @@ use crate::color_compat::ColorCompat;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::ButtonRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::{AppModel, ModelPath};
-use crate::widget::{Button, ButtonFace, ColorSwatchFace};
+use crate::widget::{Button, ButtonFace, ColorSwatch, ColorSwatchFace};
 use crate::widget::{TextInput, TextInputKind};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -75,35 +76,6 @@ const BUTTON_WIDTH: f64 = token(SPACE.s16) + token(SPACE.s6);
 const BUTTON_GAP: f64 = token(SPACE.s2);
 /// Hue stops the strip's gradient passes through (every 60°).
 const HUE_STOPS: usize = 7;
-
-/// One quick pick in a picker's swatch palette.
-#[derive(Clone, Debug)]
-pub struct ColorSwatch {
-    pub color: Color,
-    /// Spoken name; `None` speaks the `#RRGGBB` hex.
-    pub name: Option<String>,
-}
-
-impl ColorSwatch {
-    #[must_use]
-    pub fn new(color: Color) -> Self {
-        Self { color, name: None }
-    }
-
-    #[must_use]
-    pub fn named(color: Color, name: impl Into<String>) -> Self {
-        Self {
-            color,
-            name: Some(name.into()),
-        }
-    }
-
-    fn spoken_name(&self) -> String {
-        self.name
-            .clone()
-            .unwrap_or_else(|| crate::color::to_hex(self.color))
-    }
-}
 
 /// How a confirming picker closed (see [`ColorPicker::confirming`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -920,7 +892,7 @@ impl ColorPicker {
             text_renderer,
             theme,
             &ButtonFace::new(self.done_rect, "Done")
-                .primary()
+                .role(ButtonRole::Primary)
                 .hovered(self.done_rect.contains(self.last_cursor)),
         );
     }

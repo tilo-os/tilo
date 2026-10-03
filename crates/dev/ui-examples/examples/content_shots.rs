@@ -13,6 +13,7 @@ use tilo_ui::headless::FrameHarness;
 use tilo_ui::icons::Icon;
 use tilo_ui::text_render::TextKind;
 use tilo_ui::theme::Theme;
+use tilo_ui::widget::ButtonRole;
 use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use tilo_ui::widget::{
     Actions, Button, Card, CardGrid, CardWidth, Column, DropZone, Element, EmptyState, ListRow,
@@ -118,7 +119,7 @@ fn cards() -> Element {
                     "A terminal that follows you between devices.",
                 )))
                 .with_title("Terminal")
-                .with_footer(Actions::new(Button::new("open-terminal", "Open", None).primary()))
+                .with_footer(Actions::new(Button::new("open-terminal", "Open", None).role(ButtonRole::Primary)))
                 .on_activate("terminal", || {}),
             ),
             Box::new(
@@ -138,7 +139,7 @@ fn cards() -> Element {
                 )))
                 .with_title("Nightly backup")
                 .leading_stripe(Tone::Danger)
-                .with_footer(Actions::new(Button::new("retry", "Retry backup", None).primary())),
+                .with_footer(Actions::new(Button::new("retry", "Retry backup", None).role(ButtonRole::Primary))),
             ),
         ])
         .with_card_width(CardWidth::Regular),

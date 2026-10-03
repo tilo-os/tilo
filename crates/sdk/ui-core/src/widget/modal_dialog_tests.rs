@@ -533,11 +533,17 @@ fn modal_ink_and_action_labels_are_legible_on_every_theme() {
         );
         assert!(contrast_ratio(dim, ground) >= 3.0, "{name}");
         for style in [
-            ButtonStyle::Primary,
-            ButtonStyle::Neutral,
-            ButtonStyle::Danger,
+            ButtonRole::Primary,
+            ButtonRole::Secondary,
+            ButtonRole::Destructive,
         ] {
-            let face = ButtonFace::new(Rect::new(0.0, 0.0, 100.0, 32.0), "Create").style(style);
+            let face = ButtonFace::new(Rect::new(0.0, 0.0, 100.0, 32.0), "Create").role(style);
+            // A modal's destructive action is its confirmation step: filled.
+            let face = if style == ButtonRole::Destructive {
+                face.confirming()
+            } else {
+                face
+            };
             let (bg, _border, painted) = face.colors(&theme);
             assert!(contrast_ratio(painted, bg) >= 4.5, "{name}/{style:?}");
         }

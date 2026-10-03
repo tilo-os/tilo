@@ -224,12 +224,12 @@ impl UiDocument {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum UiButtonStyle {
-    #[default]
-    Neutral,
+pub enum UiButtonRole {
     Primary,
-    Danger,
-    Ghost,
+    #[default]
+    Secondary,
+    Destructive,
+    Plain,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -327,7 +327,7 @@ pub enum UiNode {
         #[serde(default = "default_true")]
         enabled: bool,
         #[serde(default)]
-        style: UiButtonStyle,
+        role: UiButtonRole,
     },
     TextInput {
         id: String,
@@ -805,7 +805,7 @@ mod tests {
                         click_value: None,
                         navigate: None,
                         enabled: true,
-                        style: UiButtonStyle::Primary,
+                        role: UiButtonRole::Primary,
                     },
                 )
                 .unwrap();
@@ -893,7 +893,7 @@ mod tests {
                             route: "settings".into(),
                         }),
                         enabled: true,
-                        style: UiButtonStyle::Neutral,
+                        role: UiButtonRole::Secondary,
                     },
                 )
                 .unwrap();

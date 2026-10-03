@@ -1082,7 +1082,7 @@ impl EmojiPicker {
             text_renderer,
             theme,
             &SegmentedFace::new(&g.tabs, &icons, self.group)
-                .style(SegmentedStyle::Underline)
+                .style(SegmentedStyle::Tabs)
                 .hovered(hovered_tab),
         );
 
