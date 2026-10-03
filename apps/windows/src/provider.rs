@@ -239,10 +239,21 @@ impl SampleProvider {
         };
         Self { catalogue: Catalogue {
             apps: vec![
-                WindowsApp { id: "adobe-reader".into(), name: "Adobe Acrobat Reader".into(), publisher: "Adobe".into(), route: Route::Wine, recommended_route: Route::Wine, runner: "Wine 11.0 (Tilo pinned)".into(), capsule: "Adobe Reader".into(), prefix: "capsules/adobe-reader".into(), catalogue_source: "Tilo compatibility catalogue".into(), confidence: Confidence::Verified, reason: "Verified desktop-app recipe; isolated Wine capsule is the smallest compatible layer.".into(), status: AppStatus::Ready, grants: grants(&[("Downloads", "Read and write", true), ("Clipboard", "On demand", true), ("Camera", "Not granted", false)]), fallback_detail: "Repair this private capsule or use its own supported route.".into(), launch_available: true, launch_unavailable_reason: None, portal_file_open_available: false, portal_file_open_unavailable_reason: Some("Open file is available only for published Windows guest applications.".into()), route_override_available: true, route_override_unavailable_reason: None, can_retry_install: false, can_escalate_install_to_vm: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: true, can_publish_vm_candidate: false, installation_detail: Some("Installed in a private capsule.".into()), vm_fallback_available: false, vm_fallback_unavailable_reason: Some("Open in Windows VM is available only for published Windows guest applications.".into()) },
-                WindowsApp { id: "cyberpunk-2077".into(), name: "Cyberpunk 2077".into(), publisher: "CD PROJEKT RED".into(), route: Route::Proton, recommended_route: Route::Proton, runner: "UMU-Proton 10.0-3".into(), capsule: "Steam · Cyberpunk 2077".into(), prefix: "games/cyberpunk-2077".into(), catalogue_source: "Steam + ProtonDB recipe".into(), confidence: Confidence::Community, reason: "Game route uses Steam Runtime and UMU-Proton, including the game's known compatibility fixups.".into(), status: AppStatus::Running, grants: grants(&[("Games library", "Read and write", true), ("Controller", "Connected devices", true), ("Microphone", "Not granted", false)]), fallback_detail: "Use the catalogue-selected Proton repair route.".into(), launch_available: true, launch_unavailable_reason: None, portal_file_open_available: false, portal_file_open_unavailable_reason: Some("Open file is available only for published Windows guest applications.".into()), route_override_available: true, route_override_unavailable_reason: None, can_retry_install: false, can_escalate_install_to_vm: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: true, can_publish_vm_candidate: false, installation_detail: Some("Installed in a private capsule.".into()), vm_fallback_available: false, vm_fallback_unavailable_reason: Some("Open in Windows VM is available only for published Windows guest applications.".into()) },
-                WindowsApp { id: "visual-studio".into(), name: "Visual Studio".into(), publisher: "Microsoft".into(), route: Route::Vm, recommended_route: Route::Vm, runner: "Managed Windows appliance · app-focused SPICE".into(), capsule: "Shared Windows appliance".into(), prefix: "Guest storage · host path hidden".into(), catalogue_source: "Authenticated guest catalogue".into(), confidence: Confidence::Fallback, reason: "Requires Windows services not safely reproduced in a Wine capsule; it opens in the single managed fallback appliance.".into(), status: AppStatus::Ready, grants: grants(&[("Audio playback", "Available through an isolated output", true), ("Host files", "Unavailable in focused SPICE", false), ("Clipboard", "Unavailable in focused SPICE", false), ("Microphone and network", "Unavailable in focused SPICE", false)]), fallback_detail: "Normal launch focuses this application and suppresses Explorer. The full desktop is only for owner-authorised setup or recovery.".into(), launch_available: true, launch_unavailable_reason: None, portal_file_open_available: false, portal_file_open_unavailable_reason: Some("Open file is unavailable in app-focused SPICE because this presentation has no portal file bridge.".into()), route_override_available: false, route_override_unavailable_reason: Some("Route changes need a trusted Tilo policy action and are disabled in this session API.".into()), can_retry_install: false, can_escalate_install_to_vm: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: false, can_publish_vm_candidate: false, installation_detail: Some("Published by the managed Windows appliance.".into()), vm_fallback_available: true, vm_fallback_unavailable_reason: None },
-            ], vm: ApplianceState { ready: true, detail: "Managed Windows workspace · suspended when idle · 2 guest apps available".into(), running_apps: 0, shared_session_active: false, shared_session_grants: Vec::new(), shared_session_contributors: Vec::new() }, vm_install_confirmation: None } }
+                WindowsApp { id: "adobe-reader".into(), name: "Adobe Acrobat Reader".into(), publisher: "Adobe".into(), route: Route::Wine, recommended_route: Route::Wine, runner: "Wine 11.0 (Tilo pinned)".into(), capsule: "Adobe Reader".into(), prefix: "capsules/adobe-reader".into(), catalogue_source: "Tilo compatibility catalogue".into(), confidence: Confidence::Verified, reason: "A verified recipe runs Reader in Wine, the lightest way to open it in isolation.".into(), status: AppStatus::Ready, grants: grants(&[("Downloads", "Read and write", true), ("Clipboard", "On demand", true), ("Camera", "Not granted", false)]), fallback_detail: "Reader sees only the folders and devices listed above.".into(), launch_available: true, launch_unavailable_reason: None, portal_file_open_available: false, portal_file_open_unavailable_reason: Some("Open file is available only for apps in the Windows appliance.".into()), route_override_available: true, route_override_unavailable_reason: None, can_retry_install: false, can_escalate_install_to_vm: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: true, can_publish_vm_candidate: false, installation_detail: Some("Installed 12 June 2026".into()), vm_fallback_available: false, vm_fallback_unavailable_reason: Some("Open in Windows VM is available only for apps in the Windows appliance.".into()) },
+                WindowsApp { id: "cyberpunk-2077".into(), name: "Cyberpunk 2077".into(), publisher: "CD PROJEKT RED".into(), route: Route::Proton, recommended_route: Route::Proton, runner: "UMU-Proton 10.0-3".into(), capsule: "Steam library".into(), prefix: "games/cyberpunk-2077".into(), catalogue_source: "Steam + ProtonDB recipe".into(), confidence: Confidence::Community, reason: "Games run best in Proton with the Steam Runtime, which includes the fixes this game is known to need.".into(), status: AppStatus::Running, grants: grants(&[("Games library", "Read and write", true), ("Controller", "Connected devices", true), ("Microphone", "Not granted", false)]), fallback_detail: "The game sees only its library and connected controllers.".into(), launch_available: true, launch_unavailable_reason: None, portal_file_open_available: false, portal_file_open_unavailable_reason: Some("Open file is available only for apps in the Windows appliance.".into()), route_override_available: true, route_override_unavailable_reason: None, can_retry_install: false, can_escalate_install_to_vm: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: true, can_publish_vm_candidate: false, installation_detail: Some("Installed 3 May 2026".into()), vm_fallback_available: false, vm_fallback_unavailable_reason: Some("Open in Windows VM is available only for apps in the Windows appliance.".into()) },
+                WindowsApp { id: "visual-studio".into(), name: "Visual Studio".into(), publisher: "Microsoft".into(), route: Route::Vm, recommended_route: Route::Vm, runner: "Windows 11 appliance".into(), capsule: "Shared Windows appliance".into(), prefix: "Inside Windows".into(), catalogue_source: "Windows appliance".into(), confidence: Confidence::Fallback, reason: "Visual Studio needs Windows services that Wine can't provide, so it runs in the Windows appliance.".into(), status: AppStatus::Ready, grants: grants(&[("Audio playback", "Allowed", true), ("Files on this computer", "Not shared", false), ("Clipboard", "Not shared", false), ("Microphone and network", "Not shared", false)]), fallback_detail: "Visual Studio opens in its own window; the Windows desktop stays hidden.".into(), launch_available: true, launch_unavailable_reason: None, portal_file_open_available: false, portal_file_open_unavailable_reason: Some("This app window can't receive files from this computer yet.".into()), route_override_available: false, route_override_unavailable_reason: Some("Only an administrator can change how this app opens.".into()), can_retry_install: false, can_escalate_install_to_vm: false, can_remove_launcher: true, can_vendor_uninstall: true, can_delete_data: false, can_publish_vm_candidate: false, installation_detail: Some("Installed 21 April 2026".into()), vm_fallback_available: true, vm_fallback_unavailable_reason: None },
+            ], vm: ApplianceState { ready: true, detail: "The Windows appliance is ready.".into(), running_apps: 0, shared_session_active: false, shared_session_grants: Vec::new(), shared_session_contributors: Vec::new() }, vm_install_confirmation: None } }
+    }
+
+    /// An inspected installer waiting for the person to choose where it goes.
+    pub(crate) fn seed_install_confirmation(&mut self) {
+        self.catalogue.vm_install_confirmation = Some(crate::model::VmInstallConfirmation {
+            display_name: "Notepad++ 8.6.4".into(),
+            detail:
+                "A signed installer from Don Ho. The Tilo catalogue has a verified recipe for it."
+                    .into(),
+            recommended_route: Route::Wine,
+        });
     }
 
     pub(crate) fn seed_setup_failure(&mut self) {
@@ -250,11 +261,11 @@ impl SampleProvider {
             first.status = AppStatus::Failed;
             first.launch_available = false;
             first.launch_unavailable_reason =
-                Some("The compatibility service could not repair this capsule.".into());
+                Some("Setup has to finish before Reader can open.".into());
             first.can_retry_install = true;
             first.can_escalate_install_to_vm = true;
             first.installation_detail = Some(
-                "Setup stopped before the application was published. Your private data was retained."
+                "The installer stopped before Reader was ready. Its data is kept, so you can retry or continue in the Windows appliance."
                     .into(),
             );
         }
@@ -296,7 +307,7 @@ impl CompatibilityProvider for SampleProvider {
             recommended_route: Route::Wine,
             runner: "Wine 11.0 (Tilo pinned)".into(),
             capsule: "imported-sample".into(),
-            prefix: "Private capsule · host path hidden".into(),
+            prefix: "Private capsule".into(),
             catalogue_source: "Tilo safe default".into(),
             confidence: Confidence::Heuristic,
             reason: "The installer is being validated and run in a private capsule.".into(),
@@ -623,7 +634,7 @@ impl CompatibilityProvider for LiveProvider {
             recommended_route: Route::Wine,
             runner: "Selecting from catalogue…".into(),
             capsule: "Pending private capsule".into(),
-            prefix: "Private capsule · host path hidden".into(),
+            prefix: "Private capsule".into(),
             catalogue_source: "Inspecting exact installer digest".into(),
             confidence: Confidence::Heuristic,
             reason: "Tilo is validating the selected file and choosing its compatibility recipe."
@@ -750,17 +761,11 @@ impl CompatibilityProvider for LiveProvider {
     }
 
     fn set_route_override(&mut self, _app_id: &str, _route: Route) -> Result<(), String> {
-        Err(
-            "Route changes need a trusted Tilo policy action; this session API is launch-only."
-                .into(),
-        )
+        Err("Only an administrator can change how this app opens.".into())
     }
 
     fn reset_route_override(&mut self, _app_id: &str) -> Result<(), String> {
-        Err(
-            "Route changes need a trusted Tilo policy action; this session API is launch-only."
-                .into(),
-        )
+        Err("Only an administrator can change how this app opens.".into())
     }
 }
 
@@ -1285,7 +1290,7 @@ fn app_from_vm_candidate(candidate: &compat_service::VmInstallCandidate) -> Wind
         recommended_route: Route::Vm,
         runner: "Windows managed installer".into(),
         capsule: "Shared Windows appliance".into(),
-        prefix: "Not published yet · no host capsule".into(),
+        prefix: "Not added yet".into(),
         catalogue_source: "Authenticated Windows setup discovery".into(),
         confidence: Confidence::Verified,
         reason: candidate.version.as_ref().map_or_else(
@@ -1425,16 +1430,16 @@ fn app_from_managed(
                 .unwrap_or_else(|| "Unavailable private capsule".into())
         },
         prefix: if route == Route::Vm {
-            "Guest-managed application data · no host capsule".into()
+            "Inside Windows (no capsule on this computer)".into()
         } else {
-            "Private capsule · host path hidden".into()
+            "Private capsule".into()
         },
         catalogue_source: if route == Route::Vm {
             "Authenticated Windows guest catalogue".into()
         } else {
             explanation.catalogue_record.as_deref().map_or_else(
                 || "Tilo safe default".to_string(),
-                |id| format!("Tilo recipe · {id}"),
+                |id| format!("Tilo recipe {id}"),
             )
         },
         confidence: match explanation.match_reason {
@@ -1475,8 +1480,7 @@ fn app_from_managed(
         portal_file_open_unavailable_reason,
         route_override_available: false,
         route_override_unavailable_reason: Some(
-            "Route changes need a trusted Tilo policy action and are disabled in this session API."
-                .into(),
+            "Only an administrator can change how this app opens.".into(),
         ),
         can_retry_install: installation.is_some_and(|item| item.can_retry),
         can_escalate_install_to_vm: installation.is_some_and(can_escalate_install_to_vm),
@@ -1502,7 +1506,7 @@ fn app_from_installation(installation: &ManagedInstallation) -> WindowsApp {
         recommended_route: route,
         runner: installation.runner.clone(),
         capsule: installation.capsule_id.clone(),
-        prefix: "Private capsule · host path hidden".into(),
+        prefix: "Private capsule".into(),
         catalogue_source: "Portal import".into(),
         confidence: Confidence::Heuristic,
         reason: "Tilo retained this setup transaction so it can be retried or removed safely."
@@ -1635,7 +1639,7 @@ mod tests {
                     .any(|grant| grant.label == "Audio output" && !grant.enabled)
             );
             assert_eq!(app.capsule, "Shared Windows appliance");
-            assert!(app.prefix.contains("no host capsule"));
+            assert!(app.prefix.contains("no capsule on this computer"));
             assert_eq!(
                 app.catalogue_source,
                 "Authenticated Windows guest catalogue"

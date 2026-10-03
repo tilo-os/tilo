@@ -35,9 +35,9 @@ impl Route {
     pub const fn security_summary(self) -> &'static str {
         match self {
             Self::Wine | Self::Proton => {
-                "Private capsule; only granted files and devices are visible."
+                "A private capsule that sees only the files and devices you allow"
             }
-            Self::Vm => "Single managed VM; files arrive through its exchange portal.",
+            Self::Vm => "Shared with the other Windows apps; files arrive only when you open them",
         }
     }
 }
@@ -79,7 +79,7 @@ impl AppStatus {
             Self::Installing => "Installing",
             Self::Uninstalling => "Uninstalling",
             Self::Failed => "Setup failed",
-            Self::Uninstalled => "Uninstalled · data retained",
+            Self::Uninstalled => "Uninstalled, data kept",
         }
     }
 }
