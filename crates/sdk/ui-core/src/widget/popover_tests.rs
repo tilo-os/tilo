@@ -259,6 +259,25 @@ fn menu_semantics_focus_and_reopen() {
 }
 
 #[test]
+fn text_content_is_laid_out_on_one_line() {
+    let theme = Theme::light();
+    let mut tr = TextRenderer::new();
+    let label = "Shared with Ana, Ben and Chloé";
+    let mut p = Popover::with_content(crate::widget::Text::new(label))
+        .anchored(Rect::new(640.0, 150.0, 760.0, 182.0))
+        .with_viewport(WINDOW)
+        .open(true);
+    p.place(&mut tr, &theme);
+    let (w, h) = tr.measure_style(label, None, &theme.text(crate::tokens::TextRole::Body));
+    let content = p.content().get_rect();
+    assert!(
+        content.width() >= f64::from(w) - 0.5 && content.height() < f64::from(h) * 1.5,
+        "one line: content {content:?}, text {w}x{h}, panel {:?}",
+        p.rect()
+    );
+}
+
+#[test]
 fn placement_flips_and_stays_in_the_window() {
     let theme = Theme::dark();
     let mut tr = TextRenderer::new();
@@ -279,8 +298,8 @@ fn placement_flips_and_stays_in_the_window() {
         assert!(p.rect().y0 > anchor.y1 && (p.rect().x0 - anchor.x0).abs() < 1e-9);
         let pad = f64::from(theme.tokens.spacing.s4);
         assert!(
-            (p.rect().width() - (120.0 + pad * 2.0)).abs() < 0.5,
-            "hugs content"
+            (p.rect().width() - (121.0 + pad * 2.0)).abs() < 0.5,
+            "hugs content (plus the pixel of rounding slack)"
         );
         let content = p.content().get_rect();
         assert!(

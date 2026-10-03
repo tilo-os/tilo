@@ -1232,7 +1232,11 @@ impl VideoPlayer {
             bar.x0 + pad + icon,
             mid_y + icon * 0.5,
         );
-        self.play_button_rect = play;
+        let target = |glyph: Rect| {
+            let side = icon.max(MIN_TARGET);
+            Rect::from_center_size(glyph.center(), (side, side))
+        };
+        self.play_button_rect = target(play);
         self.draw_play_glyph(scene, transform, play, colors.text_primary);
         let fs = Rect::new(
             bar.x1 - pad - icon,
@@ -1240,7 +1244,7 @@ impl VideoPlayer {
             bar.x1 - pad,
             mid_y + icon * 0.5,
         );
-        self.fullscreen_button_rect = fs;
+        self.fullscreen_button_rect = target(fs);
         draw_fullscreen_glyph(scene, transform, fs, colors.text_primary, self.fullscreen);
         self.setting_icon_rects.clear();
         self.gear_entries.clear();
@@ -1259,10 +1263,14 @@ impl VideoPlayer {
             } else {
                 colors.text_primary
             };
-            Icon::Settings2.draw(scene, transform, inset_rect(rect, 5.0), tint);
+            Icon::Settings2.draw(scene, transform, rect, tint);
             rect
         };
-        self.gear_button_rect = gear;
+        self.gear_button_rect = if gear.width() > 0.0 {
+            target(gear)
+        } else {
+            gear
+        };
         (
             play,
             mid_y,
@@ -2186,11 +2194,6 @@ impl VideoPlayer {
             );
         }
     }
-}
-
-/// Shrink `r` by `d` on every side (used to breathe a glyph inside its button).
-fn inset_rect(r: Rect, d: f64) -> Rect {
-    Rect::new(r.x0 + d, r.y0 + d, r.x1 - d, r.y1 - d)
 }
 
 /// Millisecond timestamps here are bounded by realistic media durations —

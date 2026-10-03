@@ -1123,7 +1123,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                 let p = self.last_cursor;
                 let hit = self.layout.as_ref().and_then(|l| l.hit(p));
                 match hit {
-                    Some(ModalHit::Close) => self.dismiss(),
+                    Some(ModalHit::Close | ModalHit::Scrim) | None => self.dismiss(),
                     Some(ModalHit::Action(i)) => {
                         if let Some(slot) = self.slots.get(i).copied() {
                             self.activate(slot);
@@ -1139,7 +1139,6 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                             ctx.focus_target,
                         );
                     }
-                    Some(ModalHit::Scrim) | None => self.dismiss(),
                 }
                 *ctx.handled = true;
             }
