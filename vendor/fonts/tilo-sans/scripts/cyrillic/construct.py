@@ -308,11 +308,11 @@ def Ya(c):
 def round_e(c, name, centre, bar_t, reverse, share):
     """Э Є э є from C or c: the terminals shortened along their own curves
     so both openings next to the bar stay at least 0.65 of the bar's
-    thickness, the bar inside the counter from the inner side to under the
-    terminals (`share` of the width from the open side, at least clear of
-    the tips). Reversed in the italic, the upright C or c is mirrored and
-    the whole slanted, so the stress follows the italic O's and not a
-    backward-leaning mirror of the italic C."""
+    thickness. The bar runs from the closed side into the counter and stops
+    `share` of the width short of the open side, clear of the terminal
+    tips. Reversed in the italic, the upright C or c is mirrored and the
+    whole slanted, so the stress leans with the italic and not backwards as
+    a mirrored italic C would."""
     src = c.roman if (reverse and c.italic) else c
     con = src.g(name)
     assert len(con) == 1, f"{name} topology changed"
@@ -499,7 +499,9 @@ def Che(c):
     V = m["V"]
     u = c.g("u")
     l = c.lc
-    W = 0.92 * m["W"]
+    # H's width less a little, plus half the weight the stems gain, so the
+    # counter under the arm stays open in the bold masters as H's does
+    W = 0.92 * m["W"] + 0.5 * (V - light_V(c, False))
     stem_r = W - m["lsb"]
     ub = G.bounds([u[0]])
     ycuts([u[0]], (l["Lx0"] + l["Lx1"]) / 2)  # bowl bottom outer/inner under the left stroke? use measured
@@ -1153,7 +1155,9 @@ def hardsign(c):
 @glyph("yeru-cy", 0x044B)
 def yeru(c):
     l = c.lc
-    cons = [lc_stem(c), soft_lc(c, l["Lx1"], 0.8)]
+    # the bowl narrows with weight: ы carries a second stem, and with ь's
+    # bowl it widened twice as fast as n
+    cons = [lc_stem(c), soft_lc(c, l["Lx1"], 0.8 - 0.15 * c.wt)]
     b = G.bounds(cons)
     gap = l["lsb"] * 1.05
     stem = G.rect(b[2] + gap, 0, b[2] + gap + l["V"], 510)
@@ -1861,7 +1865,7 @@ def write_master(master, c, built):
 # Refs: n / H = the n / H counter, o / O = the o / O counter's width, xh = 510.
 PROBES = {
     "softsign-cy": [("y", 150, 1, "n", 0.8)], "hardsign-cy": [("y", 150, 1, "n", 0.8)],
-    "yeru-cy": [("y", 150, 2, "n", 0.25), ("y", 150, 1, "n", 0.7)],
+    "yeru-cy": [("y", 150, 2, "n", 0.25), ("y", 150, 1, "n", 0.62)],
     "nje-cy": [("y", 440, 1, "n", 0.85), ("y", 150, 2, "n", 0.75)],
     "lje-cy": [("y", 360, 1, "n", 0.7), ("y", 150, 2, "n", 0.7)],
     "Softsign-cy": [("y", 200, 1, "H", 0.75)], "Hardsign-cy": [("y", 200, 1, "H", 0.75)],
