@@ -156,6 +156,7 @@ pub mod topbar_chrome;
 pub mod trusted_ui;
 pub mod uri_open;
 pub mod window_actions;
+pub mod window_appearance;
 pub mod window_previews;
 pub mod window_transfer;
 #[cfg(target_os = "linux")]
