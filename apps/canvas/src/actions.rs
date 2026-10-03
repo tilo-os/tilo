@@ -68,6 +68,8 @@ pub struct EditLayer {
     pub medium: Option<String>,
     pub opacity: Option<f64>,
     pub visible: Option<bool>,
+    /// Locked marks are not picked by the pointer.
+    pub locked: Option<bool>,
     /// `front`, `back`, `forward` or `backward` among the layers.
     pub to: Option<String>,
     /// `0..=1`: let the ground's tooth show through the layer's marks.
@@ -1268,6 +1270,7 @@ fn add_layer(doc: &mut Doc, art: &Artwork, add: &AddLayer) -> Result<(), ActionE
             opacity: add.opacity.unwrap_or(1.0),
             visible: true,
             texture: add.texture.unwrap_or(0.0),
+            locked: false,
         },
     )?;
     Ok(())
@@ -1298,6 +1301,9 @@ fn edit_layer(doc: &mut Doc, art: &Artwork, edit: &EditLayer) -> Result<(), Acti
     check_unit(edit.texture, "texture")?;
     if let Some(texture) = edit.texture {
         layer.texture = texture;
+    }
+    if let Some(locked) = edit.locked {
+        layer.locked = locked;
     }
     if let Some(to) = &edit.to {
         let all: Vec<(String, String)> = art

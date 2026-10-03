@@ -802,6 +802,9 @@ pub fn inspect(art: &Artwork, inspect: &Inspect) -> Result<Value, String> {
                 if layer.texture > 0.0 {
                     fields.insert("texture".into(), layer.texture.into());
                 }
+                if layer.locked {
+                    fields.insert("locked".into(), true.into());
+                }
             }
             entry
         })

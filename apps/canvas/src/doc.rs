@@ -3,7 +3,7 @@
 //! ```text
 //! title, width, height      scalars
 //! ground                    JSON of Ground
-//! layers.<id>               { name, order, medium, opacity, visible, texture }
+//! layers.<id>               { name, order, medium, opacity, visible, texture, locked }
 //! marks.<id>                { layer, order, body: JSON of MarkBody }
 //! media.<id>                JSON of MediumSpec
 //! reference                 JSON of Reference, when there is one
@@ -103,6 +103,7 @@ pub fn read(doc: &Doc) -> Artwork {
                 opacity: number(doc, &obj, "opacity").unwrap_or(1.0),
                 visible: flag(doc, &obj, "visible").unwrap_or(true),
                 texture: number(doc, &obj, "texture").unwrap_or(0.0),
+                locked: flag(doc, &obj, "locked").unwrap_or(false),
                 id,
             })
         })
@@ -192,6 +193,9 @@ pub fn write_layer(doc: &mut Doc, layer: &Layer) -> Result<(), AutomergeError> {
     let texture = number(doc, &obj, "texture");
     if texture != Some(layer.texture) && (texture.is_some() || layer.texture > 0.0) {
         doc.put(&obj, "texture", layer.texture)?;
+    }
+    if flag(doc, &obj, "locked").unwrap_or(false) != layer.locked {
+        doc.put(&obj, "locked", layer.locked)?;
     }
     Ok(())
 }

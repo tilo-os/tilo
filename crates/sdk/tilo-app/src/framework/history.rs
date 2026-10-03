@@ -365,6 +365,132 @@ pub(crate) fn entry(
     Value::Object(entry)
 }
 
+/// One version of the resource as an in-app history list shows it: what
+/// was done, by whom, and whether it was taken back or named.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HistoryVersion {
+    /// The change id: what `restore`, `diff` and a view's `version` take.
+    pub change: String,
+    /// What was done: the action's label.
+    pub action: String,
+    /// Who did it: the person's handle, or the agent run's label.
+    pub author: String,
+    /// The agent run that made it, when an agent did: what `undo` takes as
+    /// `run` to take the whole run back.
+    pub run: Option<String>,
+    /// Milliseconds since the Unix epoch; 0 when unknown.
+    pub time_ms: i64,
+    /// Taken back by an undo.
+    pub undone: bool,
+    /// The names of the checkpoints at this version.
+    pub checkpoints: Vec<String>,
+    /// Housekeeping about the document (naming a checkpoint), not a change
+    /// to what it holds.
+    pub housekeeping: bool,
+}
+
+/// The kind of work unit an agent's run groups its actions under.
+const AGENT_RUN: &str = "agent-run";
+
+/// The last `last` versions, oldest first, as [`HistoryVersion`]s.
+pub(crate) fn recent(doc: &mut AutoCommit, last: usize) -> Vec<HistoryVersion> {
+    let versions = tilo_resource::history::versions(doc);
+    let undone = steps::undone(doc);
+    let checkpoints = steps::checkpoints(doc);
+    let total = versions.len();
+    versions
+        .iter()
+        .skip(total.saturating_sub(last))
+        .filter(|version| !steps::is_schema_genesis(version))
+        .map(|version| {
+            let context = version.context.as_ref();
+            let run = context
+                .and_then(|context| context.group.as_ref())
+                .filter(|group| group.kind == AGENT_RUN);
+            HistoryVersion {
+                change: steps::short(&version.hash),
+                action: context
+                    .map(|context| context.action_label.clone())
+                    .filter(|label| !label.is_empty())
+                    .or_else(|| version.summary())
+                    .unwrap_or_default(),
+                author: run.map_or_else(|| by(version), |run| run.label.clone()),
+                run: run.map(|run| run.id.clone()),
+                time_ms: version.time_ms,
+                undone: undone.contains(&version.hash.to_string()),
+                checkpoints: checkpoints
+                    .iter()
+                    .filter(|checkpoint| checkpoint.heads.contains(&version.hash))
+                    .map(|checkpoint| checkpoint.name.clone())
+                    .collect(),
+                housekeeping: context.is_some_and(|context| !context.change.is_content()),
+            }
+        })
+        .collect()
+}
+
+/// The history lists views follow ([`ViewCx::history`](super::ViewCx::history)),
+/// brought up to date when the document moves.
+#[derive(Clone, Default)]
+pub(crate) struct HistoryFeeds(std::rc::Rc<std::cell::RefCell<FeedList>>);
+
+type Feed = (
+    std::rc::Weak<()>,
+    usize,
+    ui_core::LocalState<Vec<HistoryVersion>>,
+);
+
+#[derive(Default)]
+struct FeedList {
+    feeds: Vec<Feed>,
+    /// The heads the feeds last showed; empty forces a refresh.
+    heads: Vec<ChangeHash>,
+}
+
+impl HistoryFeeds {
+    pub(crate) fn follow(
+        &self,
+        alive: std::rc::Weak<()>,
+        last: usize,
+    ) -> ui_core::LocalState<Vec<HistoryVersion>> {
+        let state = ui_core::LocalState::new(Vec::new());
+        let mut registry = self.0.borrow_mut();
+        registry.feeds.push((alive, last, state.clone()));
+        registry.heads.clear();
+        state
+    }
+
+    /// Show the versions up to `doc`'s heads, when they moved.
+    pub(crate) fn refresh(&self, doc: &mut AutoCommit) {
+        let mut list = self.0.borrow_mut();
+        list.feeds.retain(|(alive, _, _)| alive.strong_count() > 0);
+        if list.feeds.is_empty() {
+            return;
+        }
+        let heads = doc.get_heads();
+        if list.heads == heads {
+            return;
+        }
+        let most = list
+            .feeds
+            .iter()
+            .map(|(_, last, _)| *last)
+            .max()
+            .unwrap_or(0);
+        let versions = recent(doc, most);
+        for (_, last, state) in &list.feeds {
+            let shown = versions
+                .get(versions.len().saturating_sub(*last)..)
+                .unwrap_or_default()
+                .to_vec();
+            if state.with(|current| *current != shown) {
+                state.set(shown);
+            }
+        }
+        list.heads = heads;
+    }
+}
+
 /// Leaves out of each version the author and time it shares with the one
 /// before: a run of forty steps names its run once, not forty times.
 fn carry_over(listed: &mut [Value]) {

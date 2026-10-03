@@ -55,6 +55,8 @@ pub struct Layer {
     /// `0..=1`: how much of the ground's tooth shows through the layer's
     /// marks, like ink printed on paper.
     pub texture: f64,
+    /// Held still: the pointer passes through its marks to those beneath.
+    pub locked: bool,
 }
 
 /// A point of a stroke: `[x, y]` or `[x, y, pressure]` with pressure `0..=1`.
@@ -365,10 +367,12 @@ impl Artwork {
         Rect::new(0.0, 0.0, self.width, self.height)
     }
 
-    /// The topmost visible mark under `point`, for hit-testing.
+    /// The topmost visible mark of an unlocked layer under `point`, for
+    /// hit-testing.
     pub fn mark_at(&self, point: Point) -> Option<&Mark> {
         self.marks.iter().rev().find(|mark| {
-            self.layer(&mark.layer).is_some_and(|layer| layer.visible)
+            self.layer(&mark.layer)
+                .is_some_and(|layer| layer.visible && !layer.locked)
                 && mark.hit(point)
                 && self.clip_of(mark).is_none_or(|clip| clip.hit(point))
         })
