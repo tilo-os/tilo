@@ -11,7 +11,9 @@
     uv run vendor/fonts/tilo-sans/build.py --fast     # skip the slower checks while iterating
 
 Output: vendor/fonts/tilo-sans/fonts/TiloSans[wdth,wght].ttf and
-TiloSans-Italic[wdth,wght].ttf (ignored by git).
+TiloSans-Italic[wdth,wght].ttf (ignored by git), with everything in the
+sources; then scripts/release.py writes fonts/default/ (what Tilo ships:
+held-back scripts and features removed) and fonts/full/ (for review).
 
 What the build fills in, so a new glyph needs only its .glif files (one per
 master), its contents.plist entry, and its feature/kerning code:
@@ -66,6 +68,7 @@ from ufo2ft.filters.propagateAnchors import PropagateAnchorsFilter
 sys.path.insert(0, str(Path(__file__).resolve().parent / "scripts"))
 import components  # noqa: E402
 import pairs  # noqa: E402
+import release  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent
 SOURCES = ROOT / "sources"
@@ -388,6 +391,9 @@ def compile_family(family: Family, ds: DesignSpaceDocument) -> Path:
         optimizeGvar=True,
     )
     fix_stat(vf, family.italic)
+    if family.italic:
+        # the variations PostScript name prefix, as upstream's italic has it
+        vf["name"].setName("TiloSansItalic", 25, 3, 1, 0x409)
     fix_unhinted(vf)
     drop_unused_names(vf)
     FONTS.mkdir(parents=True, exist_ok=True)
@@ -442,6 +448,8 @@ def main() -> int:
         out = compile_family(family, ds)
         print(f"[{key}] {out.relative_to(ROOT)}  ({time.monotonic() - started:.1f}s)")
         compiled.append(key)
+    if compiled:
+        release.main()
     if compiled and not args.fast:
         collisions = pairs.run(families=compiled, quiet=True)
         for line in collisions:

@@ -152,6 +152,7 @@
       <string>Itilde.ss13</string>
       <string>Ihookabove.ss13</string>
       <string>Idotbelow.ss13</string>
+      <string>Idotbelow.ss01.ss13</string>
     </array>
     <key>public.kern1.KO_Iacute</key>
     <array>
@@ -1242,6 +1243,7 @@
       <string>Itilde.ss13</string>
       <string>Ihookabove.ss13</string>
       <string>Idotbelow.ss13</string>
+      <string>Idotbelow.ss01.ss13</string>
     </array>
     <key>public.kern2.KO_J</key>
     <array>

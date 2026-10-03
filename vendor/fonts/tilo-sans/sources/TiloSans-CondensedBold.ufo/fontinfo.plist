@@ -34,7 +34,7 @@
     <key>openTypeHheaLineGap</key>
     <integer>0</integer>
     <key>openTypeNameDescription</key>
-    <string>Tilo Sans extends Instrument Sans by Rodrigo Fuenzalida and Jordan Egstad (https://github.com/Instrument/instrument-sans) with additional scripts and forms for the Tilo desktop. Licensed under the SIL Open Font License 1.1.</string>
+    <string>Tilo Sans extends Instrument Sans by Rodrigo Fuenzalida and Jordan Egstad with more scripts and forms for the Tilo desktop. SIL Open Font License 1.1.</string>
     <key>openTypeNameDesigner</key>
     <string>Rodrigo Fuenzalida, Jordan Egstad (Instrument Sans); The Tilo Sans Project Authors</string>
     <key>openTypeNameDesignerURL</key>
