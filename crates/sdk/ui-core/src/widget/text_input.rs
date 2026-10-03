@@ -183,6 +183,8 @@ pub struct TextInput {
     path: Vec<PathSegment>,
     rect: Rect,
     is_hovered: bool,
+    /// The form marked the value invalid ([`Widget::set_invalid`]).
+    invalid: bool,
     is_focused: bool,
     /// Paint-only suppression for drag previews; focus, selection and IME remain intact.
     caret_paint_suppressed: bool,
@@ -430,6 +432,7 @@ impl TextInput {
             path,
             rect: Rect::ZERO,
             is_hovered: false,
+            invalid: false,
             is_focused: false,
             caret_paint_suppressed: false,
             text: String::new(),
@@ -4382,6 +4385,9 @@ impl Widget for TextInput {
     fn is_focusable(&self) -> bool {
         !self.effectively_disabled()
     }
+    fn set_invalid(&mut self, invalid: bool) {
+        self.invalid = invalid;
+    }
     fn set_focus(&mut self, focused: bool) {
         self.is_focused = focused;
         if focused {
@@ -4461,6 +4467,7 @@ impl Widget for TextInput {
                 disabled: self.effectively_disabled(),
                 protected: self.secret,
                 multiline: self.multiline,
+                invalid: self.invalid,
                 ..Default::default()
             });
         if !self.id.is_empty() {
@@ -4812,8 +4819,12 @@ impl TextInput {
     ) {
         let disabled = self.effectively_disabled();
         let rest = theme.tokens.colors.surfaces.raised;
+        // Hover is a half lift of the field, focus the whole lift plus your
+        // colour: rest, hover, focus and disabled each look different.
         let bg_color = if self.is_focused && !disabled {
             theme.tokens.colors.lift_on(rest, 1.0)
+        } else if self.is_hovered && !disabled {
+            theme.tokens.colors.lift_on(rest, 0.5)
         } else {
             rest
         };
@@ -4836,9 +4847,21 @@ impl TextInput {
             None,
             shape,
         );
-        // Rest edge derived from the field fill; focus keeps `border_focus`.
+        // Rest edge derived from the field fill; focus keeps `border_focus`;
+        // a value the form rejected edges the field in danger ink, the one
+        // status colour a field takes.
+        let colors = &theme.tokens.colors;
         let (border_w, border_color) = if self.is_focused && !disabled {
-            (2.0, theme.tokens.colors.border_focus)
+            (2.0, colors.border_focus)
+        } else if self.invalid && !disabled {
+            (
+                1.5,
+                colors.ink_on_any(
+                    &[bg_color, colors.surfaces.content],
+                    colors.semantic.danger,
+                    crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+                ),
+            )
         } else {
             (1.0, crate::surface::edge_on(rest))
         };

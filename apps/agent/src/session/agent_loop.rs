@@ -3217,7 +3217,7 @@ mod tests {
         assert!(!first.contains("Earlier in this conversation"), "{first}");
         assert!(second.contains("Earlier in this conversation"), "{second}");
         assert!(second.contains("Person: post hello"), "{second}");
-        assert!(second.contains("You did: Type text · Brief"), "{second}");
+        assert!(second.contains("You did: Type text: Brief"), "{second}");
         assert!(second.contains("Hello chat."), "{second}");
         assert!(second.contains("You replied: Posted hello."), "{second}");
         assert!(second.ends_with("what did you just do?"), "{second}");

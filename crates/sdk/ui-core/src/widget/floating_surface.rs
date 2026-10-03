@@ -58,6 +58,42 @@ pub fn paint_faded(scene: &mut Scene, transform: Affine, rect: Rect, alpha: f32,
     scene.pop_layer();
 }
 
+/// How far a menu's rows sit inside its Panel, on every side: the `s2`
+/// step. Popover menus, dropdown lists and context menus share it, so the
+/// armed row's corners run concentric with the panel in all of them.
+#[must_use]
+pub fn menu_inset(theme: &Theme) -> f64 {
+    f64::from(theme.tokens.spacing.s2)
+}
+
+/// Paint the armed row of a menu, the row Enter or a click activates: an
+/// inverted control concentric inside the panel (HIG §9.3). `row` is the
+/// row already inset by [`menu_inset`]. Returns the ink for the row's label
+/// and glyphs.
+pub fn paint_armed_row(
+    scene: &mut Scene,
+    transform: Affine,
+    row: Rect,
+    theme: &Theme,
+) -> vello::peniko::Color {
+    let radii = &theme.tokens.radii;
+    // `menu_inset` is the `s2` step; the radius follows it.
+    let radius = f64::from(radii.concentric(radii.panel, theme.tokens.spacing.s2));
+    let colors = &theme.tokens.colors;
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        colors.intent.inverted,
+        None,
+        &vello::kurbo::RoundedRect::from_rect(row, radius),
+    );
+    colors.ink_on_any(
+        &[colors.intent.inverted],
+        colors.intent.on_inverted,
+        crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+    )
+}
+
 /// A Panel's content laid out in its own tree: a floating Panel is placed
 /// against an anchor or the window, never by its parent's flexbox, so its
 /// content has no parent tree to be laid out in. The tree is kept so events

@@ -562,31 +562,24 @@ impl DatePicker {
             &text_style,
         );
 
-        // Drawn as text glyphs so we don't need a vector path.
-        let (lw, lh) = text_renderer.measure_style("\u{2039}", None, &text_style);
-        let (rw, rh) = text_renderer.measure_style("\u{203A}", None, &text_style);
-        text_renderer.draw_style(
-            scene,
-            "\u{2039}",
-            text_color,
-            transform.pre_translate(Vec2::new(
-                self.prev_button_rect.center().x - f64::from(lw) / 2.0,
-                centered_text_top(self.prev_button_rect.y0, HEADER_HEIGHT, f64::from(lh)),
-            )),
-            None,
-            &text_style,
-        );
-        text_renderer.draw_style(
-            scene,
-            "\u{203A}",
-            text_color,
-            transform.pre_translate(Vec2::new(
-                self.next_button_rect.center().x - f64::from(rw) / 2.0,
-                centered_text_top(self.next_button_rect.y0, HEADER_HEIGHT, f64::from(rh)),
-            )),
-            None,
-            &text_style,
-        );
+        // Month steps are chevrons from the one icon set, centred on the
+        // header band.
+        let edge = f64::from(tokens.metrics.icon_sm);
+        for (button, icon) in [
+            (self.prev_button_rect, crate::icons::Icon::ChevronLeft),
+            (self.next_button_rect, crate::icons::Icon::ChevronRight),
+        ] {
+            let centre =
+                vello::kurbo::Point::new(button.center().x, self.rect.y0 + HEADER_HEIGHT / 2.0);
+            crate::icons::draw_icon(
+                scene,
+                transform,
+                Rect::from_center_size(centre, (edge, edge)),
+                icon,
+                text_color,
+                crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
+        }
     }
 
     /// The Mo/Tu/We/… row above the day grid. Split out of `draw` to keep
@@ -861,7 +854,8 @@ mod tests {
                 &PresenceCtx::default(),
             );
             let style = theme.text(TextRole::Caption);
-            // Draw order: header label, ‹, ›, seven weekday labels, then day cells.
+            // Draw order: header label, seven weekday labels, then day cells;
+            // the month steps are icons, not glyph runs.
             let header_band = (rect.y0, HEADER_HEIGHT);
             let weekday_band = (rect.y0 + HEADER_HEIGHT, WEEKDAY_HEIGHT);
             let first_cell = picker
@@ -870,7 +864,6 @@ mod tests {
                 .map(|(_, r)| *r)
                 .expect("day cells");
             let expectations: Vec<(&str, (f64, f64))> = std::iter::once(("May 2026", header_band))
-                .chain([("\u{2039}", header_band), ("\u{203A}", header_band)])
                 .chain(WEEKDAY_LABELS.iter().map(|label| (*label, weekday_band)))
                 .chain(std::iter::once((
                     "27",
