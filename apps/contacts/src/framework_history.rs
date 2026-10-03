@@ -9,12 +9,15 @@ use ui::history_mode::{
     PreviewAccessibility, PreviewInput, PreviewNavigation, PreviewView,
 };
 use ui::paint::PaintCtx;
-use ui::{TextRenderer, Theme};
+use ui::widget::{AvatarFace, PropertyListFace, PropertyRow};
+use ui::{TextRenderer, TextRole, Theme};
 use vello::{
     Scene,
-    kurbo::{Affine, Rect},
+    kurbo::{Affine, Point, Rect},
     peniko::{BlendMode, Fill},
 };
+
+use crate::detail::kind_label;
 pub static HISTORY: HistoryDefinition = HistoryDefinition {
     app_id: "so.tilo.contacts",
     scopes: &[HistoryScopeDefinition {
@@ -149,7 +152,6 @@ impl HistoryPreview for ContactsPreview {
         Ok(())
     }
     fn draw(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        scene.fill(Fill::NonZero, t, theme.bg_primary, None, &self.bounds);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1., t, &self.bounds);
         // Page gutter `s6`, avatar `s16`, avatar ↔ first field `s3` (HIG §7b).
         let sp = &theme.tokens.spacing;
@@ -158,58 +160,62 @@ impl HistoryPreview for ContactsPreview {
         let x = self.bounds.x0 + gutter;
         let x1 = self.bounds.x1 - gutter;
         let mut y = self.bounds.y0 + gutter - self.view.scroll.1;
+        let ctx = &mut PaintCtx::new(scene, t, tr, theme);
         if let Some(c) = self
             .contacts
             .iter()
             .find(|c| Some(c.id.to_string()) == self.view.page)
         {
-            crate::app::draw_avatar(
-                scene,
-                t,
-                tr,
-                theme,
-                Rect::new(x, y, x + avatar, y + avatar),
-                &c.initials(),
-            );
+            let name = c.display_name();
+            let identity = c.id.to_string();
+            AvatarFace::new(&name, &identity).paint(ctx, Rect::new(x, y, x + avatar, y + avatar));
             y += avatar + f64::from(sp.s3);
-            let ctx = &mut PaintCtx::new(scene, t, tr, theme);
-            crate::app::detail_field(ctx, x, x1, &mut y, "Name", &c.display_name());
-            crate::app::detail_field(ctx, x, x1, &mut y, "Title", &c.title);
-            crate::app::detail_field(ctx, x, x1, &mut y, "Company", &c.org);
-            crate::app::detail_field(
-                ctx,
-                x,
-                x1,
-                &mut y,
-                "Favorite",
-                if c.favorite { "Yes" } else { "No" },
-            );
-            for g in &c.groups {
-                crate::app::detail_field(ctx, x, x1, &mut y, "Group", &g.value);
-            }
-            for (label, rows) in [("PHONE", &c.phones), ("EMAIL", &c.emails)] {
-                if !rows.is_empty() {
-                    crate::app::detail_section(ctx, x, &mut y, label);
-                }
-                for row in rows {
-                    crate::app::detail_field(ctx, x, x1, &mut y, &row.label, &row.value);
-                }
-            }
-            for a in &c.addresses {
-                crate::app::detail_field(ctx, x, x1, &mut y, &a.label, &a.one_line());
-            }
+            let favorite = if c.favorite { "Yes" } else { "No" };
+            let mut owned: Vec<(String, String)> = vec![
+                ("Name".into(), name.clone()),
+                ("Job title".into(), c.title.clone()),
+                ("Organization".into(), c.org.clone()),
+                ("Favorite".into(), favorite.into()),
+            ];
+            owned.extend(c.groups.iter().map(|g| ("Group".into(), g.value.clone())));
+            owned.extend(c.phones.iter().map(|row| {
+                (
+                    format!("{} phone", kind_label(&row.label)),
+                    row.value.clone(),
+                )
+            }));
+            owned.extend(c.emails.iter().map(|row| {
+                (
+                    format!("{} email", kind_label(&row.label)),
+                    row.value.clone(),
+                )
+            }));
+            owned.extend(c.addresses.iter().map(|a| {
+                (
+                    format!("{} address", kind_label(&a.label)),
+                    crate::detail::address_lines(a),
+                )
+            }));
             if let Some(b) = c.birthday {
-                crate::app::detail_field(ctx, x, x1, &mut y, "Birthday", &b.pretty());
+                owned.push(("Birthday".into(), b.pretty()));
             }
-            crate::app::detail_field(ctx, x, x1, &mut y, "Website", &c.website);
-            crate::app::detail_field(ctx, x, x1, &mut y, "Notes", &c.notes);
+            owned.push(("Website".into(), c.website.clone()));
+            owned.push(("Notes".into(), c.notes.clone()));
+            let rows: Vec<PropertyRow<'_>> = owned
+                .iter()
+                .filter(|(_, value)| !value.trim().is_empty())
+                .map(|(label, value)| PropertyRow::new(label, value))
+                .collect();
+            let face = PropertyListFace::new(&rows);
+            let width = (x1 - x).max(0.0);
+            let height = face.height(ctx.text, theme, width);
+            face.paint(ctx, Rect::new(x, y, x1, y + height));
         } else {
-            tr.draw_text(
-                scene,
-                "No contacts in this historical version",
-                18.,
+            ctx.text_role(
+                "No contacts in this version",
+                TextRole::Body,
                 theme.tokens.colors.text_dim,
-                t * Affine::translate((x, y)),
+                Point::new(x, y),
                 Some((x1 - x) as f32),
             );
         }
@@ -229,7 +235,7 @@ impl HistoryPreview for ContactsPreview {
             .iter()
             .find(|c| Some(c.id.to_string()) == self.view.page)
             .map_or_else(
-                || "No contacts in this historical version".into(),
+                || "No contacts in this version".into(),
                 |c| {
                     let mut rows = vec![
                         c.display_name(),

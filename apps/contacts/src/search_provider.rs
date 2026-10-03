@@ -500,7 +500,7 @@ mod tests {
     use crate::model::{Contact, ContactStore, sample_contacts};
     use ui::search::testing::{LATE_HIT_NEEDLE, assert_late_hit_reachable};
     use ui::search::{DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT};
-    use ui::search::{SearchProvider, SearchRegistry};
+    use ui::search::{SearchProvider, SearchQuery, SearchRegistry};
     use uuid::Uuid;
 
     fn store_with_samples() -> ContactStore {
@@ -738,7 +738,7 @@ mod tests {
                 3_000,
             );
             assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
-            let page = provider.search_page(LATE_HIT_NEEDLE, None, 4, 1);
+            let page = provider.search_page(&SearchQuery::new(LATE_HIT_NEEDLE), None, 4, 1);
             assert_eq!(page.inspected, 1, "rare postings avoid scanning the book");
             assert_eq!(page.results.len(), 1, "one bounded result is materialised");
             assert!(page.next.is_none(), "the unique match is exhausted");
@@ -762,7 +762,12 @@ mod tests {
                 })
                 .collect();
             let provider = ContactSearchProvider::new(&ContactStore { contacts });
-            let page = provider.search_page("common bounded", None, usize::MAX, usize::MAX);
+            let page = provider.search_page(
+                &SearchQuery::new("common bounded"),
+                None,
+                usize::MAX,
+                usize::MAX,
+            );
             assert!(
                 page.inspected <= DEFAULT_SEARCH_CANDIDATE_LIMIT,
                 "a caller cannot force unbounded candidate inspection"
@@ -789,13 +794,13 @@ mod tests {
                 .collect();
             let provider = ContactSearchProvider::new(&ContactStore { contacts });
 
-            let first = provider.search_page("CAFÉ", None, 1, 1);
+            let first = provider.search_page(&SearchQuery::new("CAFÉ"), None, 1, 1);
             assert_eq!(first.results.len(), 1);
             assert_eq!(first.inspected, 1);
             let cursor = first.next.expect("two matching resources remain");
             // The cursor deliberately stays opaque. Supplying an NFC spelling of
             // the equivalent query continues the same canonical query page.
-            let second = provider.search_page("Café", Some(&cursor), 1, 1);
+            let second = provider.search_page(&SearchQuery::new("Café"), Some(&cursor), 1, 1);
             assert_eq!(second.results.len(), 1);
             assert_ne!(second.results[0].action_id, first.results[0].action_id);
             assert_eq!(second.inspected, 1);
@@ -813,7 +818,7 @@ mod tests {
         {
             let store = store_with_samples();
             let provider = ContactSearchProvider::new(&store);
-            let first = provider.search_page("", None, 1, 1);
+            let first = provider.search_page(&SearchQuery::new(""), None, 1, 1);
             let cursor = first.next.expect("the sample book has more than one row");
             let before = provider.search("grace");
 
@@ -845,7 +850,7 @@ mod tests {
             let mut store = store_with_samples();
             let provider = ContactSearchProvider::new(&store);
             let cursor = provider
-                .search_page("", None, 1, 1)
+                .search_page(&SearchQuery::new(""), None, 1, 1)
                 .next
                 .expect("the sample book has another browse result");
             store.contacts[0].first = "Updated Ada".into();
