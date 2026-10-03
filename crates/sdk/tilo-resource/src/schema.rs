@@ -5,8 +5,8 @@
 //! implements it from the type's definition and its serde attributes, so the
 //! schema is the type: a new variant or field is described the moment it is
 //! written. [`Resource::action_schema`](crate::Resource::action_schema) is
-//! what the generic [`APPLY`](crate::APPLY) and [`GROUP`](crate::GROUP)
-//! operations publish as their parameters' schema.
+//! what the generic [`APPLY`](crate::APPLY) operation publishes as its
+//! parameter's schema, less what the named actions already publish.
 //!
 //! Schemas stay within the vocabulary `tilo-actions` validates and publishes
 //! (`type`, `const`, `enum`, `properties`, `required`,
@@ -341,17 +341,9 @@ pub fn undescribed(schema: &Value) -> Value {
     }
 }
 
-/// How a parameter's value is read: by [`tilo_actions::ActionArgs::bind`],
-/// which refuses `null` unless the parameter is nullable, or by serde, which
-/// reads `null` into an optional field.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Reading {
-    Bound,
-    Serde,
-}
-
-/// The schema of one declared parameter's value.
-pub(crate) fn param_schema(param: &ActionParam, reading: Reading) -> Value {
+/// The schema of one declared parameter's value as serde reads it: `null`
+/// reads into an optional field.
+pub(crate) fn param_schema(param: &ActionParam) -> Value {
     let base = match param.ty {
         ParamType::Text | ParamType::Secret | ParamType::Resource => json!({"type": "string"}),
         ParamType::DateTime => json!({"type": "string", "format": "date-time"}),
@@ -359,12 +351,9 @@ pub(crate) fn param_schema(param: &ActionParam, reading: Reading) -> Value {
         ParamType::Number => json!({"type": "number"}),
         ParamType::Boolean => json!({"type": "boolean"}),
         ParamType::Array => json!({"type": "array"}),
-        // Binding checks the kind; serde reads whatever the field's type is,
-        // which a declaration does not record.
-        ParamType::Object => match reading {
-            Reading::Bound => json!({"type": "object"}),
-            Reading::Serde => json!({}),
-        },
+        // Serde reads whatever the field's type is, which a declaration
+        // does not record.
+        ParamType::Object => json!({}),
     };
     let mut schema = match (&param.schema, base) {
         (Some(Value::Object(declared)), Value::Object(base)) => {
@@ -391,27 +380,200 @@ pub(crate) fn param_schema(param: &ActionParam, reading: Reading) -> Value {
         schema.insert("enum".into(), Value::Array(choices));
     }
     let schema = describe(Value::Object(schema), &param.description);
-    let null = match reading {
-        Reading::Bound => param.nullable,
-        Reading::Serde => param.nullable || !param.required,
-    };
-    if null { nullable(schema) } else { schema }
+    if param.nullable || !param.required {
+        nullable(schema)
+    } else {
+        schema
+    }
 }
 
-/// The arguments object of a declaration.
-pub(crate) fn args_schema(params: &[ActionParam], reading: Reading) -> Value {
+/// The arguments object of a declaration, as serde reads it.
+pub(crate) fn args_schema(params: &[ActionParam]) -> Value {
     object(
         params
             .iter()
-            .map(|param| {
-                (
-                    param.name.as_ref(),
-                    param_schema(param, reading),
-                    param.required,
-                )
+            .map(|param| (param.name.as_ref(), param_schema(param), param.required))
+            .collect(),
+    )
+}
+
+/// `schema` with every alternative that only restates a declared action
+/// folded into one that names those actions, so `apply` does not publish a
+/// second copy of what each named action already publishes. `declared` maps
+/// an action id to its arguments object as serde reads it. An alternative
+/// folds when it is `{"action": id, ..fields}` or `{"action": id, "args":
+/// fields}` with exactly the declaration's fields; the folded alternative
+/// is permissive, and [`declared_invocation`] checks the fields against
+/// the declaration, so binding refuses nothing it refused before.
+pub(crate) fn fold_declared(schema: &Value, declared: &BTreeMap<&str, Value>) -> Value {
+    match schema {
+        Value::Object(object) => {
+            let mut out = Map::new();
+            for (key, value) in object {
+                let value = match (key.as_str(), value) {
+                    ("oneOf", Value::Array(alternatives)) => {
+                        Value::Array(fold_alternatives(alternatives, declared))
+                    }
+                    _ => fold_declared(value, declared),
+                };
+                out.insert(key.clone(), value);
+            }
+            Value::Object(out)
+        }
+        Value::Array(values) => Value::Array(
+            values
+                .iter()
+                .map(|value| fold_declared(value, declared))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn fold_alternatives(alternatives: &[Value], declared: &BTreeMap<&str, Value>) -> Vec<Value> {
+    let (mut internal, mut adjacent, mut kept) = (Vec::new(), Vec::new(), Vec::new());
+    for alternative in alternatives {
+        match restated(alternative, declared) {
+            Some((id, false)) => internal.push(id),
+            Some((id, true)) => adjacent.push(id),
+            None => kept.push(fold_declared(alternative, declared)),
+        }
+    }
+    let names = |ids: &[&str]| json!({"type": "string", "enum": ids});
+    if !internal.is_empty() {
+        kept.push(json!({
+            "type": "object",
+            "required": ["action"],
+            "properties": {"action": names(&internal)},
+            "description": "A named action: `action` is its id, the other fields its parameters",
+        }));
+    }
+    if !adjacent.is_empty() {
+        kept.push(json!({
+            "type": "object",
+            "required": ["action", "args"],
+            "properties": {"action": names(&adjacent), "args": {"type": "object"}},
+            "additionalProperties": false,
+            "description": "A named action: `action` is its id, `args` its parameters",
+        }));
+    }
+    kept
+}
+
+/// The declared id an alternative restates, and whether its fields sit
+/// under `args`.
+fn restated<'a>(
+    alternative: &Value,
+    declared: &BTreeMap<&'a str, Value>,
+) -> Option<(&'a str, bool)> {
+    let properties = alternative.get("properties")?.as_object()?;
+    let tag = properties.get("action")?.get("const")?.as_str()?;
+    let (id, args) = declared.get_key_value(tag)?;
+    let args = shape(args);
+    if properties.len() == 2
+        && let Some(nested) = properties.get("args")
+        && shape(nested) == args
+    {
+        return Some((id, true));
+    }
+    let mut fields = undescribed(alternative);
+    if let Some(Value::Object(properties)) = fields.get_mut("properties") {
+        properties.remove("action");
+    }
+    if let Some(Value::Array(required)) = fields.get_mut("required") {
+        required.retain(|name| name != "action");
+        if required.is_empty() {
+            fields.as_object_mut()?.remove("required");
+        }
+    }
+    (shape(&fields) == args).then_some((id, false))
+}
+
+/// A schema as compared for sameness: no descriptions, `required` in order,
+/// and no `null`: a declaration and serde may differ in whether a field
+/// takes `null`, and serde still reads the folded value strictly.
+fn shape(schema: &Value) -> Value {
+    let mut schema = non_null(&undescribed(schema));
+    sort_required(&mut schema);
+    schema
+}
+
+fn non_null(schema: &Value) -> Value {
+    let Value::Object(object) = schema else {
+        return match schema {
+            Value::Array(values) => Value::Array(values.iter().map(non_null).collect()),
+            other => other.clone(),
+        };
+    };
+    if let Some(Value::Array(alternatives)) = object.get("oneOf") {
+        let rest: Vec<&Value> = alternatives
+            .iter()
+            .filter(|alternative| **alternative != json!({"type": "null"}))
+            .collect();
+        if object.len() == 1
+            && let [only] = rest.as_slice()
+        {
+            return non_null(only);
+        }
+    }
+    Value::Object(
+        object
+            .iter()
+            .map(|(key, value)| {
+                let value = match (key.as_str(), value) {
+                    ("type", Value::Array(types)) => {
+                        let types: Vec<&Value> =
+                            types.iter().filter(|name| *name != "null").collect();
+                        match types.as_slice() {
+                            [only] => (*only).clone(),
+                            _ => Value::Array(types.into_iter().cloned().collect()),
+                        }
+                    }
+                    _ => non_null(value),
+                };
+                (key.clone(), value)
             })
             .collect(),
     )
+}
+
+fn sort_required(schema: &mut Value) {
+    match schema {
+        Value::Object(object) => {
+            for (key, value) in object.iter_mut() {
+                if key == "required"
+                    && let Value::Array(names) = value
+                {
+                    names.sort_by(|a, b| a.as_str().cmp(&b.as_str()));
+                } else {
+                    sort_required(value);
+                }
+            }
+        }
+        Value::Array(values) => values.iter_mut().for_each(sort_required),
+        _ => {}
+    }
+}
+
+/// The declared action a JSON action value names and its fields, in either
+/// form [`fold_declared`] folds.
+pub(crate) fn declared_invocation<'a>(
+    value: &'a Value,
+    declared: &[&str],
+) -> Option<(&'a str, Map<String, Value>)> {
+    let value = value.get("op").unwrap_or(value);
+    let id = value.get("action")?.as_str()?;
+    if !declared.contains(&id) {
+        return None;
+    }
+    let fields = if let Some(Value::Object(args)) = value.get("args") {
+        args.clone()
+    } else {
+        let mut fields = value.as_object()?.clone();
+        fields.remove("action");
+        fields
+    };
+    Some((id, fields))
 }
 
 /// The replayable action of a `#[resource]` record, as the generic
@@ -423,7 +585,7 @@ pub fn record_action_schema<R: crate::Resource>() -> Value {
         .map(|decl| {
             let variant = object(vec![
                 ("action", constant(decl.id), true),
-                ("args", args_schema(&decl.params, Reading::Serde), true),
+                ("args", args_schema(&decl.params), true),
             ]);
             describe(variant, decl.description.as_deref().unwrap_or(&decl.label))
         })
