@@ -223,6 +223,18 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         dyn crate::undo::UndoPoints
     );
 
+    /// Forward the per-frame update pass to both panes, so a pane that
+    /// polls a model (a data table, a pending image) keeps updating.
+    fn update(
+        &mut self,
+        state: &mut crate::widget::AppModel,
+        path: &crate::widget::ModelPath,
+    ) -> bool {
+        let left = self.left.update(state, path);
+        let right = self.right.update(state, path);
+        left | right
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -563,15 +575,30 @@ mod tests {
     /// Bare-minimum `Widget` for use as a `ResizableSplit` child in tests.
     struct TestLeaf {
         rect: Rect,
+        updates: usize,
+        changes: bool,
     }
 
     impl TestLeaf {
         fn new() -> Self {
-            Self { rect: Rect::ZERO }
+            Self {
+                rect: Rect::ZERO,
+                updates: 0,
+                changes: false,
+            }
         }
     }
 
     impl Widget for TestLeaf {
+        fn update(
+            &mut self,
+            _state: &mut crate::widget::AppModel,
+            _path: &crate::widget::ModelPath,
+        ) -> bool {
+            self.updates += 1;
+            self.changes
+        }
+
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -675,6 +702,17 @@ mod tests {
                 taffy: &tree,
             },
         );
+    }
+
+    #[test]
+    fn both_panes_receive_the_update_pass() {
+        let mut s = split_at(0.0, 0.0, 400.0, 300.0, SplitOrientation::Horizontal);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        assert!(!s.update(&mut doc, &root), "nothing changed");
+        s.right.changes = true;
+        assert!(s.update(&mut doc, &root), "a pane's change is the split's");
+        assert_eq!((s.left.updates, s.right.updates), (2, 2));
     }
 
     #[test]

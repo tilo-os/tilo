@@ -14,17 +14,25 @@
  * - the room's calls (`peer.voice`, `voice-peer.mjs`): the session holds the
  *   participation, the page's voice carrier follows its grants.
  *
- * The page holds one device key (`device-custody.mjs`) and no user root.
+ * The page holds one device key (`device-custody.mjs`). A page that also
+ * holds the user root (`root-identity.mjs`, `options.identity`) certifies
+ * that key itself instead of waiting for an approver.
  * `getSnapshot()` returns `PeerSnapshot` with `SessionHealth` v1.
  */
 import {createActions} from './actions.mjs';
 import {createAgents} from './agents.mjs';
+import {openChannelVault} from './channel-vault.mjs';
 import {createPresencePublisher, createRemotePresence} from './live-presence.mjs';
 import {createFallbackTransport, createLiveCarriers} from './live-fallback.mjs';
 import {createSpeakers} from './live-speakers.mjs';
 import {createLiveTransport, LIVE_PATH, LIVE_ROOT} from './live-transport.mjs';
 import {createPeerVoice} from './voice-peer.mjs';
 import {WEBKIT_WEBGPU_REFUSAL} from './webgpu-safety.mjs';
+import {idbStorage, openDeviceCustody} from './device-custody.mjs';
+
+export {
+  addPasskey, certifyDevice, createIdentity, currentIdentity, IdentityError, installNodeCertificate, unlockIdentity,
+} from './root-identity.mjs';
 
 const CERTIFICATE = 'certificate';
 /** A member's cursor colour, from its device key: the same on every page. */
@@ -55,6 +63,12 @@ export function profileStore(runtime, profile, device) {
   };
 }
 const PEER_RECORD = 'peer-record';
+/** Whether a stored `{cert}` expires within a day (a page holding the root
+ * then certifies itself anew). */
+function expiresWithinADay(stored) {
+  const expires = JSON.parse(stored)?.cert?.expires_at_ns;
+  return typeof expires === 'number' && expires / 1e6 < Date.now() + 86_400_000;
+}
 /** Ask for a new live grant this long before the current one expires. */
 const GRANT_RENEW_MS = 60_000;
 const LIVE_RETRY_MS = [250, 1000, 3000, 10_000];
@@ -497,6 +511,9 @@ export function createLiveLayer(peer, runtime, room, {
  * @param options.device         device namespace of `profile`
  * @param options.store          `{get, put, delete}` for public peer state;
  *                               defaults to the profile's storage
+ * @param options.vaultStorage   `{get, put}` for the profile's wrapped channel
+ *                               vault (`channel-vault.mjs`); defaults to the
+ *                               device custody's IndexedDB
  * @param options.displayName    the person's name for history and presence
  * @param options.runtime        the wasm module (`certifyDevice`, `WasmPeer`, live codec)
  * @param options.fetch          defaults to `globalThis.fetch`
@@ -504,13 +521,28 @@ export function createLiveLayer(peer, runtime, room, {
  * @param options.desktop        `{mountDesktop(target, options)}`; defaults to `host.mjs`
  * @param options.live           `false`: join no live plane
  * @param options.onPairingCode  shown while an approver decides
+ * @param options.identity       an unlocked root (`root-identity.mjs`): the
+ *                               page certifies its own device with it, no
+ *                               approver; `userPublicKey` defaults to its key,
+ *                               `profile` to one per identity, `custody` to
+ *                               that profile's device key and `runtime` to
+ *                               the page host's
  */
 export async function connectPeer({
-  origin, userPublicKey, label = 'Browser', room, custody, store, runtime,
-  profile, device = 'tilo-browser-device', displayName = '',
+  origin, userPublicKey, label = 'Browser', room, custody, store, runtime, identity,
+  profile, device = 'tilo-browser-device', displayName = '', vaultStorage,
   fetch: fetcher, liveCarriers, desktop, signal, onStatus, onPairingCode, live: liveEnabled = true,
   voice: voiceOptions = {},
 }) {
+  userPublicKey ??= identity?.userPublicKey;
+  if (identity && userPublicKey !== identity.userPublicKey) {
+    throw new TypeError('userPublicKey must be the unlocked identity\'s');
+  }
+  if (identity) {
+    if (!store) profile ??= `tilo-identity:${identity.userPublicKey}`;
+    custody ??= await openDeviceCustody({profile: profile ?? `tilo-identity:${identity.userPublicKey}`, storage: idbStorage()});
+    runtime ??= await (desktop ?? await import('./host.mjs')).loadRuntime?.();
+  }
   if (!origin || !userPublicKey || !custody || !(store || profile) || !runtime) {
     throw new TypeError('origin, userPublicKey, custody, store or profile, and runtime are required');
   }
@@ -523,6 +555,10 @@ export async function connectPeer({
     storage = await surface.openProfileStorage(profile, device);
     store ??= profileStore(runtime, profile, device);
   }
+  // Seals the channel state the runtime keeps in the profile's storage.
+  const channelVault = storage
+    ? await openChannelVault({profile: `${profile}/${device}`, userPublicKey, storage: vaultStorage ?? idbStorage()})
+    : undefined;
   const post = httpsPost(origin, fetcher);
   const custodyForWasm = custody.kind === 'sealed-seed' ? await custody.unseal() : custody;
   const custodyKeyHex = () => [...(custodyForWasm.publicKey ?? [])].map(b => b.toString(16).padStart(2, '0')).join('');
@@ -681,9 +717,10 @@ export async function connectPeer({
 
   async function certificate() {
     const existing = await store.get(CERTIFICATE);
-    if (existing) return existing;
-    const issued = await runtime.certifyDevice(post, userPublicKey, label, custodyForWasm,
-      code => onPairingCode?.(code));
+    if (existing && !(identity && expiresWithinADay(existing))) return existing;
+    const issued = identity
+      ? await runtime.certifyWithRoot(post, identity, custodyForWasm, label)
+      : await runtime.certifyDevice(post, userPublicKey, label, custodyForWasm, code => onPairingCode?.(code));
     await store.put(CERTIFICATE, issued);
     return issued;
   }
@@ -698,6 +735,7 @@ export async function connectPeer({
       storage ? undefined : (record ?? undefined),
       storage ? undefined : bytes => { store.put(PEER_RECORD, bytes).catch(() => {}); },
       post,
+      channelVault,
     );
     peer.subscribe(publish);
     if (room) {

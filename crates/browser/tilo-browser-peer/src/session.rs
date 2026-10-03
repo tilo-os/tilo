@@ -430,12 +430,16 @@ impl PeerHandle {
         let mut channels = crate::channels::Channels::new(
             config.cert.device_public_key,
             config.cert.user_public_key,
+            store.channel_vault().unwrap_or_else(rand::random),
         );
         let saved = store
             .load_channels()
-            .and_then(|bytes| postcard::from_bytes::<SavedPeerChannels>(&bytes).ok())
+            .and_then(|bytes| SavedPeerChannels::decode(&bytes))
             .unwrap_or_default();
-        channels.restore(saved.channels);
+        match saved.channels {
+            StoredChannels::Current(saved) => channels.restore(saved),
+            StoredChannels::Legacy(legacy) => channels.restore_legacy(legacy),
+        }
         let task = Task {
             config,
             signer,
@@ -2054,8 +2058,8 @@ impl Task {
                 .map(|(route, frames)| (route.clone(), frames.clone()))
                 .collect(),
         };
-        let result = postcard::to_stdvec(&saved)
-            .map_err(|error| error.to_string())
+        let result = saved
+            .encode()
             .and_then(|bytes| self.store.save_channels(&bytes));
         if let Err(error) = result {
             self.fail_on(FailureSubject::Storage, "storage-transaction-failed", error);
@@ -2140,6 +2144,59 @@ impl Task {
 struct SavedPeerChannels {
     channels: crate::channels::SavedChannels,
     held: Vec<(DocumentRoute, Vec<Vec<u8>>)>,
+}
+
+/// [`SavedPeerChannels`] as pages stored it with its vault inside.
+#[derive(serde::Deserialize)]
+struct LegacySavedPeerChannels {
+    channels: crate::channels::LegacySavedChannels,
+    held: Vec<(DocumentRoute, Vec<Vec<u8>>)>,
+}
+
+/// Stored channel state in either form.
+enum StoredChannels {
+    Current(crate::channels::SavedChannels),
+    Legacy(crate::channels::LegacySavedChannels),
+}
+
+impl Default for StoredChannels {
+    fn default() -> Self {
+        Self::Current(crate::channels::SavedChannels::default())
+    }
+}
+
+#[derive(Default)]
+struct LoadedChannels {
+    channels: StoredChannels,
+    held: Vec<(DocumentRoute, Vec<Vec<u8>>)>,
+}
+
+/// Opens stored channel state that keeps its vault apart. State stored
+/// before starts with 32 random vault bytes instead, which match this only
+/// by a 2^-192 chance.
+const SAVED_CHANNELS_TAG: &[u8] = b"tilo.browser-channels.v2";
+
+impl SavedPeerChannels {
+    fn encode(&self) -> Result<Vec<u8>, String> {
+        let mut bytes = SAVED_CHANNELS_TAG.to_vec();
+        postcard::to_io(self, &mut bytes).map_err(|error| error.to_string())?;
+        Ok(bytes)
+    }
+
+    fn decode(bytes: &[u8]) -> Option<LoadedChannels> {
+        if let Some(current) = bytes.strip_prefix(SAVED_CHANNELS_TAG) {
+            let saved: Self = postcard::from_bytes(current).ok()?;
+            return Some(LoadedChannels {
+                channels: StoredChannels::Current(saved.channels),
+                held: saved.held,
+            });
+        }
+        let legacy: LegacySavedPeerChannels = postcard::from_bytes(bytes).ok()?;
+        Some(LoadedChannels {
+            channels: StoredChannels::Legacy(legacy.channels),
+            held: legacy.held,
+        })
+    }
 }
 
 /// Sign a governance message with the device key and wrap it for the host,

@@ -4,9 +4,12 @@
 //! [`DeviceSigner`] (a non-extractable `WebCrypto` key in the page, a
 //! `SigningKey` natively). A [`PeerStore`] keeps only public material — the
 //! device's certificate, the pinned host certificate — and the commit outbox
-//! that must survive a reload. There is no root key, no self-issued
-//! certificate and no enrollment state machine: [`certify`] signs one request
-//! and waits for a root holder to answer it through the host.
+//! that must survive a reload. There is no enrollment state machine:
+//! [`certify`] signs one request and waits for a root holder to answer it
+//! through the host. A page that holds the user root itself (behind another
+//! [`DeviceSigner`]) certifies its own device with [`certify_with_root`] and
+//! other devices, such as the node that hosts its workspaces, with
+//! [`issue_device_cert`].
 
 use std::sync::Mutex;
 
@@ -77,11 +80,23 @@ pub trait PeerStore: tilo_relay_client::MaybeSendSync {
     fn save_channels(&self, _bytes: &[u8]) -> Result<(), String> {
         Ok(())
     }
+    /// The key channel state is sealed under at rest, kept apart from that
+    /// state: in the page, wrapped by a non-extractable `WebCrypto` key. A
+    /// store without one seals channel state under a key of the session's
+    /// own, so stored state does not open in the next session.
+    fn channel_vault(&self) -> Option<[u8; 32]> {
+        None
+    }
 }
 
 /// An in-memory [`PeerStore`] for native peers and tests.
-#[derive(Default)]
-pub struct MemoryPeerStore(Mutex<Option<PeerRecord>>, Mutex<Option<Vec<u8>>>);
+pub struct MemoryPeerStore(Mutex<Option<PeerRecord>>, Mutex<Option<Vec<u8>>>, [u8; 32]);
+
+impl Default for MemoryPeerStore {
+    fn default() -> Self {
+        Self(Mutex::default(), Mutex::default(), rand::random())
+    }
+}
 
 impl PeerStore for MemoryPeerStore {
     fn load(&self) -> Option<PeerRecord> {
@@ -112,6 +127,10 @@ impl PeerStore for MemoryPeerStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(bytes.to_vec());
         Ok(())
+    }
+
+    fn channel_vault(&self) -> Option<[u8; 32]> {
+        Some(self.2)
     }
 }
 
@@ -206,6 +225,110 @@ pub async fn certify(
     }
 }
 
+/// What a certificate a page's root issues lets its device do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IssuedRole {
+    /// A browser: [`CertificationPolicy::browser`] (a member, 30 days).
+    Browser,
+    /// A native node that hosts and governs the person's workspaces: it
+    /// relays, pins and reads them and owns their rooms, but admits no
+    /// devices. One year.
+    Node,
+}
+
+/// How long a node's certificate lasts.
+pub const NODE_CERT_LIFETIME_NS: u64 = 365 * 24 * 60 * 60 * 1_000_000_000;
+
+impl IssuedRole {
+    /// The capabilities granted.
+    pub fn capabilities(self) -> DeviceCapabilities {
+        match self {
+            Self::Browser => CertificationPolicy::browser().ceiling,
+            Self::Node => tilo_user_identity::cloud_enrollment::host_capabilities(),
+        }
+    }
+
+    fn lifetime_ns(self) -> u64 {
+        match self {
+            Self::Browser => CertificationPolicy::browser().lifetime_ns,
+            Self::Node => NODE_CERT_LIFETIME_NS,
+        }
+    }
+}
+
+/// Have `root` (the user root the page holds) certify `device_public_key`
+/// as `role`, issued now. Never certifies the root itself.
+///
+/// # Errors
+///
+/// Returns [`CertifyError::Request`] for the root's own key or when signing
+/// fails or does not verify.
+pub async fn issue_device_cert(
+    root: &dyn DeviceSigner,
+    device_public_key: [u8; 32],
+    label: &str,
+    role: IssuedRole,
+) -> Result<DeviceCert, CertifyError> {
+    let user_public_key = root.device_public_key();
+    if device_public_key == user_public_key {
+        return Err(CertifyError::Request(
+            "the root certifies devices, never itself".into(),
+        ));
+    }
+    let now = crate::clock::now_ns();
+    let mut cert = DeviceCert {
+        user_public_key,
+        device_public_key,
+        device_label: label.to_owned(),
+        capabilities: role.capabilities(),
+        issued_at_ns: now,
+        expires_at_ns: Some(now.saturating_add(role.lifetime_ns())),
+        signature: [0; 64],
+    };
+    let request = |error: &dyn std::fmt::Display| CertifyError::Request(error.to_string());
+    let digest = tilo_user_identity::device_cert_signing_digest(&cert).map_err(|e| request(&e))?;
+    cert.signature = root
+        .sign(digest.to_vec())
+        .await
+        .map_err(|error| CertifyError::Request(error.0))?;
+    verify_device_cert_at(&cert, now).map_err(|e| request(&e))?;
+    Ok(cert)
+}
+
+/// Certify the device behind `signer` with the root the page holds, for the
+/// host at `client`: the host's certificate must be a host of the same
+/// root. Returns the device certificate and the host certificate to pin, as
+/// [`certify`] does.
+///
+/// # Errors
+///
+/// Returns [`CertifyError::Transport`] when the host is not reached,
+/// [`CertifyError::Denied`] when it is not a host of this root, or the
+/// errors of [`issue_device_cert`].
+pub async fn certify_with_root(
+    client: &dyn crate::HttpClient,
+    root: &dyn DeviceSigner,
+    signer: &dyn DeviceSigner,
+    label: &str,
+) -> Result<(DeviceCert, DeviceCert), CertifyError> {
+    let host_cert = crate::carrier::host_info(client).await?.host_cert;
+    check_host(&host_cert, root.device_public_key())?;
+    let cert =
+        issue_device_cert(root, signer.device_public_key(), label, IssuedRole::Browser).await?;
+    Ok((cert, host_cert))
+}
+
+fn check_host(host_cert: &DeviceCert, user_public_key: [u8; 32]) -> Result<(), CertifyError> {
+    verify_device_cert_at(host_cert, crate::clock::now_ns())
+        .map_err(|error| CertifyError::Denied(format!("host certificate refused: {error}")))?;
+    if host_cert.user_public_key != user_public_key || !host_cert.capabilities.can_act_as_host {
+        return Err(CertifyError::Denied(
+            "host certificate is not a host of this user".into(),
+        ));
+    }
+    Ok(())
+}
+
 async fn signed_request(
     user_public_key: [u8; 32],
     label: &str,
@@ -265,21 +388,47 @@ fn check_issued(
         checked_at(now, cert.issued_at_ns),
     )
     .map_err(|error| refused(format!("issued certificate refused: {error}")))?;
-    verify_device_cert_at(host_cert, now)
-        .map_err(|error| refused(format!("host certificate refused: {error}")))?;
-    if host_cert.user_public_key != request.user_public_key
-        || !host_cert.capabilities.can_act_as_host
-    {
-        return Err(refused(
-            "host certificate is not a host of this user".into(),
-        ));
-    }
-    Ok(())
+    check_host(host_cert, request.user_public_key)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::SigningKey;
+    use tilo_user_identity::verify_device_cert;
+
+    #[tokio::test]
+    async fn a_page_root_issues_browser_and_node_certificates_but_never_its_own() {
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let device = SigningKey::from_bytes(&[2; 32]).verifying_key().to_bytes();
+
+        let browser = issue_device_cert(&root, device, "Browser", IssuedRole::Browser)
+            .await
+            .unwrap();
+        verify_device_cert(&browser).unwrap();
+        assert_eq!(browser.user_public_key, root.verifying_key().to_bytes());
+        assert_eq!(browser.capabilities, DeviceCapabilities::member());
+        let lifetime = browser.expires_at_ns.unwrap() - browser.issued_at_ns;
+        assert_eq!(lifetime, CertificationPolicy::browser().lifetime_ns);
+
+        let node = issue_device_cert(&root, device, "Company node", IssuedRole::Node)
+            .await
+            .unwrap();
+        verify_device_cert(&node).unwrap();
+        let caps = node.capabilities;
+        assert!(caps.can_act_as_host && caps.can_own_workspaces && caps.can_read_all_workspaces);
+        assert!(!caps.can_admit_devices && !caps.foreign);
+        assert_eq!(
+            node.expires_at_ns.unwrap() - node.issued_at_ns,
+            NODE_CERT_LIFETIME_NS
+        );
+
+        let own = root.verifying_key().to_bytes();
+        assert!(matches!(
+            issue_device_cert(&root, own, "Root", IssuedRole::Node).await,
+            Err(CertifyError::Request(_))
+        ));
+    }
 
     #[test]
     fn a_certificate_issued_just_ahead_of_the_page_clock_is_checked_at_its_issue() {

@@ -327,3 +327,81 @@ fn first_sentence(text: &str) -> String {
     let cut = cut.rsplit_once(' ').map_or(cut.as_str(), |(head, _)| head);
     format!("{cut}…")
 }
+
+/// The running app `name` means: its exact id, else the one id among
+/// `running` whose last dotted part is `name` (`canvas` for
+/// `so.tilo.canvas`), so an agent may use the name it sees in the window.
+pub fn app_named(name: &str, running: &[&str]) -> Result<String, String> {
+    if running.contains(&name) {
+        return Ok(name.to_owned());
+    }
+    let mut by_tail = running
+        .iter()
+        .filter(|id| {
+            id.rsplit('.')
+                .next()
+                .is_some_and(|tail| tail.eq_ignore_ascii_case(name))
+        })
+        .collect::<Vec<_>>();
+    by_tail.dedup();
+    match by_tail.as_slice() {
+        [one] => Ok((**one).to_owned()),
+        [] => Err(not_running(name, running)),
+        many => Err(format!(
+            "{name} names several running apps: {}; name one",
+            many.iter().map(|id| **id).collect::<Vec<_>>().join(", ")
+        )),
+    }
+}
+
+/// Why `app_id` cannot be addressed: what is running instead, and how to
+/// start it.
+pub fn not_running(app_id: &str, running: &[&str]) -> String {
+    let mut ids = running.to_vec();
+    ids.sort_unstable();
+    ids.dedup();
+    let listed = if ids.is_empty() {
+        "no app is running".to_owned()
+    } else {
+        format!("running: {}", ids.join(", "))
+    };
+    format!(
+        "{app_id} is not running ({listed}); start it with tilo_invoke {{workspace: true, resource: \"app.<app_id>\", action: \"open\"}}"
+    )
+}
+
+/// The resource `name` means among `rows` (a provider's resources): one
+/// whose kind or label is `name`, when exactly one is. `None` when `name`
+/// is no kind or label there, so it is taken as a resource id.
+pub fn resource_named(name: &str, rows: &[CatalogueRow]) -> Option<Result<String, String>> {
+    if rows.iter().any(|row| row.resource.id == name) {
+        return None;
+    }
+    let mut found = Vec::<&CatalogueRow>::new();
+    for row in rows
+        .iter()
+        .filter(|row| row.resource.kind == name || row.resource.label.eq_ignore_ascii_case(name))
+    {
+        if !found.iter().any(|seen| seen.resource.id == row.resource.id) {
+            found.push(row);
+        }
+    }
+    match found.as_slice() {
+        [] => None,
+        [one] => Some(Ok(one.resource.id.clone())),
+        many => Some(Err(format!(
+            "{name} names {} resources ({}); name one by its label",
+            many.len(),
+            many.iter()
+                .map(|row| row.resource.label.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
+}
+
+/// Whether `name` has the shape of a session handle (`r12`).
+pub fn looks_like_handle(name: &str) -> bool {
+    name.strip_prefix('r')
+        .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+}
