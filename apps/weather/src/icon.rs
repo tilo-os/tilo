@@ -1,20 +1,25 @@
-//! Vector weather icons drawn directly into the Vello scene.
+//! Vector weather glyphs drawn directly into the Vello scene.
 //!
-//! We draw our own glyphs (sun, moon, cloud, rain, snow, fog, lightning)
-//! rather than depend on an emoji font so they (a) always render headless
-//! in `--shots`, (b) scale crisply at any size, and (c) tint from the
-//! active [`Theme`] so they match the OS look. Every icon fits inside the
-//! supplied square-ish `rect`.
+//! The glyphs (sun, moon, cloud, rain, snow, fog, lightning) are content: they
+//! depict the forecast, the way a chart depicts its series. They are drawn
+//! here rather than taken from an emoji font so they render headless in
+//! `--shots`, scale crisply at any size, and take every colour from the
+//! active [`Theme`]: the sun and the rain from the theme's data palette (the
+//! presence hues, equal in lightness and legible on both grounds), clouds,
+//! moon and snow from its ink tiers. Every glyph fits inside the supplied
+//! square-ish `rect` and is cut out of nothing, so it sits on any ground.
 
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Shape, Stroke};
+use vello::peniko::{BlendMode, Color, Compose, Fill, Mix};
 
+use ui::color::Oklch;
 use ui::theme::Theme;
+use ui::tokens::colors::PresenceHue;
 
 use crate::wxcode::Sky;
 
-/// Palette pulled from the theme for icon strokes/fills.
+/// Palette pulled from the theme for glyph strokes and fills.
 struct IconPalette {
     sun: Color,
     moon: Color,
@@ -28,14 +33,34 @@ struct IconPalette {
 fn palette(theme: &Theme) -> IconPalette {
     let c = &theme.tokens.colors;
     IconPalette {
-        sun: c.semantic.warning,
-        moon: c.neutral[8],
-        cloud: c.neutral[7],
-        cloud_dark: c.neutral[5],
-        rain: c.semantic.info,
-        snow: c.neutral[9],
-        bolt: c.semantic.warning,
+        sun: sun_colour(theme),
+        moon: c.text_dim,
+        cloud: c.text_tertiary,
+        cloud_dark: c.text_dim,
+        rain: rain_colour(theme),
+        snow: c.text_dim,
+        bolt: sun_colour(theme),
     }
+}
+
+/// The colour precipitation is drawn in: the rain of the glyphs, and the
+/// drop that marks a chance of rain beside a reading.
+pub fn rain_colour(theme: &Theme) -> Color {
+    theme.tokens.colors.presence.hue(PresenceHue::Sky)
+}
+
+/// The sun's colour: the theme's amber data hue, lifted halfway from its
+/// lightness to white. Yellow only reads as yellow when it is light, so the
+/// sun keeps the data palette's hue and chroma but never darkens into brown
+/// on a light ground.
+pub fn sun_colour(theme: &Theme) -> Color {
+    let presence = &theme.tokens.colors.presence;
+    Oklch::new(
+        f32::midpoint(presence.lightness, 1.0),
+        presence.chroma,
+        PresenceHue::Amber.degrees(),
+    )
+    .to_color()
 }
 
 /// Draw the icon for a sky family into `rect`. `is_day` swaps the sun for
@@ -58,7 +83,7 @@ pub fn draw_icon(
             if is_day {
                 draw_sun(scene, transform, Point::new(cx, cy), s * 0.30, &p);
             } else {
-                draw_moon(scene, transform, Point::new(cx, cy), s * 0.32, &p, theme);
+                draw_moon(scene, transform, Point::new(cx, cy), s * 0.32, &p);
             }
         }
         Sky::PartlyCloudy => {
@@ -67,7 +92,7 @@ pub fn draw_icon(
             if is_day {
                 draw_sun(scene, transform, orb, s * 0.20, &p);
             } else {
-                draw_moon(scene, transform, orb, s * 0.20, &p, theme);
+                draw_moon(scene, transform, orb, s * 0.20, &p);
             }
             draw_cloud(scene, transform, rect, &p, p.cloud);
         }
@@ -105,56 +130,87 @@ fn draw_sun(scene: &mut Scene, t: Affine, center: Point, r: f64, p: &IconPalette
     scene.fill(Fill::NonZero, t, p.sun, None, &Circle::new(center, r));
 }
 
-fn draw_moon(scene: &mut Scene, t: Affine, center: Point, r: f64, p: &IconPalette, theme: &Theme) {
-    // Full disc, then carve a crescent by overpainting an offset disc in
-    // the surrounding card colour.
-    scene.fill(Fill::NonZero, t, p.moon, None, &Circle::new(center, r));
-    let carve = Point::new(center.x + r * 0.55, center.y - r * 0.18);
-    scene.fill(
-        Fill::NonZero,
-        t,
-        theme.tokens.colors.surfaces.raised,
-        None,
-        &Circle::new(carve, r * 0.92),
+fn draw_moon(scene: &mut Scene, t: Affine, center: Point, r: f64, p: &IconPalette) {
+    // Full disc, then cut the crescent out of it with an offset disc, inside
+    // a layer of its own so the cut never reaches the ground beneath.
+    let disc = Circle::new(center, r);
+    let bounds = Rect::from_center_size(center, (2.0 * r, 2.0 * r));
+    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &bounds);
+    scene.fill(Fill::NonZero, t, p.moon, None, &disc);
+    let carve = Circle::new(
+        Point::new(center.x + r * 0.55, center.y - r * 0.18),
+        r * 0.92,
     );
+    scene.push_layer(
+        Fill::NonZero,
+        BlendMode::new(Mix::Normal, Compose::DestOut),
+        1.0,
+        t,
+        &bounds,
+    );
+    scene.fill(Fill::NonZero, t, p.moon, None, &carve);
+    scene.pop_layer();
+    scene.pop_layer();
 }
 
-/// A rounded cloud built from three lobes + a base capsule.
+/// A raindrop filling `rect`: the mark beside a chance of precipitation.
+pub fn draw_drop(scene: &mut Scene, t: Affine, rect: Rect, theme: &Theme) {
+    let s = rect.width().min(rect.height());
+    let cx = rect.center().x;
+    let r = s * 0.30;
+    let cy = rect.y0 + s * 0.62;
+    let tip = Point::new(cx, cy - s * 0.52);
+    let mut path = BezPath::new();
+    path.move_to(tip);
+    path.curve_to(
+        Point::new(cx + r * 0.35, cy - r * 1.05),
+        Point::new(cx + r, cy - r * 0.55),
+        Point::new(cx + r, cy),
+    );
+    path.curve_to(
+        Point::new(cx + r, cy + r * 0.56),
+        Point::new(cx + r * 0.56, cy + r),
+        Point::new(cx, cy + r),
+    );
+    path.curve_to(
+        Point::new(cx - r * 0.56, cy + r),
+        Point::new(cx - r, cy + r * 0.56),
+        Point::new(cx - r, cy),
+    );
+    path.curve_to(
+        Point::new(cx - r, cy - r * 0.55),
+        Point::new(cx - r * 0.35, cy - r * 1.05),
+        tip,
+    );
+    path.close_path();
+    scene.fill(Fill::NonZero, t, rain_colour(theme), None, &path);
+}
+
+/// A rounded cloud: one outline, the union of a base capsule and three
+/// lobes, filled once.
 fn draw_cloud(scene: &mut Scene, t: Affine, rect: Rect, _p: &IconPalette, fill: Color) {
     let s = rect.width().min(rect.height());
     let cx = rect.x0 + rect.width() / 2.0;
     let base_y = rect.y0 + rect.height() * 0.62;
-    // Base capsule.
-    let base = RoundedRect::new(
+    let tolerance = 0.1;
+    let mut cloud = RoundedRect::new(
         cx - s * 0.34,
         base_y - s * 0.12,
         cx + s * 0.34,
         base_y + s * 0.12,
         s * 0.12,
-    );
-    scene.fill(Fill::NonZero, t, fill, None, &base);
-    // Lobes.
-    scene.fill(
-        Fill::NonZero,
-        t,
-        fill,
-        None,
-        &Circle::new(Point::new(cx - s * 0.18, base_y - s * 0.05), s * 0.16),
-    );
-    scene.fill(
-        Fill::NonZero,
-        t,
-        fill,
-        None,
-        &Circle::new(Point::new(cx + s * 0.02, base_y - s * 0.14), s * 0.20),
-    );
-    scene.fill(
-        Fill::NonZero,
-        t,
-        fill,
-        None,
-        &Circle::new(Point::new(cx + s * 0.22, base_y - s * 0.04), s * 0.15),
-    );
+    )
+    .to_path(tolerance);
+    for (dx, dy, r) in [
+        (-0.18, -0.05, 0.16),
+        (0.02, -0.14, 0.20),
+        (0.22, -0.04, 0.15),
+    ] {
+        cloud.extend(
+            Circle::new(Point::new(cx + s * dx, base_y + s * dy), s * r).path_elements(tolerance),
+        );
+    }
+    scene.fill(Fill::NonZero, t, fill, None, &cloud);
 }
 
 fn draw_rain(scene: &mut Scene, t: Affine, rect: Rect, p: &IconPalette, heavy: bool) {
