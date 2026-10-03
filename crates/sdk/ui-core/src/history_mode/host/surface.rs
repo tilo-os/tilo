@@ -19,24 +19,28 @@ impl HistoryHost {
     }
     fn build_presentation(
         &mut self,
-        live: Option<&mut dyn Widget>,
+        mut live: Option<&mut dyn Widget>,
         tree: &mut TaffyTree<()>,
         theme: &Theme,
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.admit_composition();
+        // Closed, the History control stands in the app's header row; open,
+        // the live app is inert, so the control moves into this bar.
+        let control = (self.open_button && !self.open && !self.invalid_owner)
+            .then_some(crate::widget::window_header::HistoryControl::Closed);
         let presents = live
-            .as_deref()
-            .is_some_and(crate::standalone_history_host::presents_history_button);
+            .as_deref_mut()
+            .is_some_and(|live| crate::widget::window_header::offer_history_control(live, control));
         if presents != self.app_presents_button {
             self.app_presents_button = presents;
             self.rebuild_toolbar();
         }
         let toolbar = self.toolbar.build_layout(tree, theme, nodes);
-        // Open History lays out its own navigation rows edge to edge; only
-        // the closed strip is inset like a bar.
+        // A selected change lays out its own navigation rows edge to edge;
+        // the strip holding the History control is inset like a bar.
         if self.has_toolbar_controls()
-            && !self.open
+            && self.selected.is_empty()
             && let Ok(style) = tree.style(toolbar)
         {
             let mut style = style.clone();

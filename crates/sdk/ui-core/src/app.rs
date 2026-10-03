@@ -656,6 +656,9 @@ struct AppConstructionInputs {
     local_author: ConstructionValue<crate::permissions::UserId>,
     presence_ctx: ConstructionValue<PresenceCtx>,
     screen_reader: fn() -> Option<crate::screen_reader::ScreenReader>,
+    /// The person's colour before a host says it: the stored choice where
+    /// this process may read the person's settings, `None` elsewhere.
+    your_colour: fn() -> Option<crate::tokens::PresenceHue>,
     high_contrast: fn() -> bool,
     reduce_motion: fn() -> bool,
     text_scale: fn() -> f32,
@@ -721,6 +724,7 @@ impl AppConstructionInputs {
             debug_mode: || false,
             theme_store_stamp: || None,
             screen_reader: || None,
+            your_colour: || None,
             high_contrast: || false,
             reduce_motion: || false,
             text_scale: || 1.0,
@@ -762,6 +766,7 @@ impl AppConstructionInputs {
                     None
                 }
             },
+            your_colour: App::stored_your_colour,
             high_contrast: || crate::host::environment().accessibility.high_contrast,
             reduce_motion: || crate::host::environment().accessibility.reduce_motion,
             text_scale: || {
@@ -808,6 +813,7 @@ impl AppConstructionInputs {
                 presence
             }),
             screen_reader: || None,
+            your_colour: || None,
             high_contrast: || false,
             reduce_motion: || false,
             text_scale: || 1.0,
@@ -1425,6 +1431,9 @@ impl App {
             inputs.pending_continuation_restore = || None;
             inputs.floating_surface_client = || None;
             inputs.startup_presence_scope = || None;
+            // An ephemeral identity wears the default colour, not the
+            // person's.
+            inputs.your_colour = || None;
             inputs
         })
     }
@@ -1526,10 +1535,15 @@ impl App {
                 self.text_renderer
                     .set_text_scale(self.accessibility.text_scale);
                 self.accessibility.text_scale = self.text_renderer.text_scale();
+                let base = self
+                    .accessibility
+                    .base_theme
+                    .clone()
+                    .in_window(&self.accessibility.window);
                 let base = if self.accessibility.a11y.high_contrast {
-                    self.accessibility.base_theme.clone().with_high_contrast()
+                    base.with_high_contrast()
                 } else {
-                    self.accessibility.base_theme.clone()
+                    base
                 };
                 let theme = base
                     .with_component_scales(
@@ -1540,11 +1554,16 @@ impl App {
                 self.accessibility.ui_scale = theme.ui_scale;
                 theme
             }
-            PaletteSource::Owned { .. } => self.accessibility.base_theme.clone().with_a11y(
-                &self.accessibility.a11y,
-                self.accessibility.text_scale,
-                self.accessibility.ui_scale,
-            ),
+            PaletteSource::Owned { .. } => self
+                .accessibility
+                .base_theme
+                .clone()
+                .in_window(&self.accessibility.window)
+                .with_a11y(
+                    &self.accessibility.a11y,
+                    self.accessibility.text_scale,
+                    self.accessibility.ui_scale,
+                ),
         };
         self.text_renderer
             .set_ui_face(&self.theme.tokens.typography.sans_family);
@@ -1890,6 +1909,34 @@ impl App {
             return false;
         };
         self.apply_appearance_intent(intent)
+    }
+
+    /// The person's stored colour (`identity.colour`) in the settings
+    /// document this process reads, if they chose one. The shell's
+    /// appearance message replaces it with the colour it resolved.
+    fn stored_your_colour() -> Option<crate::tokens::PresenceHue> {
+        crate::tokens::PresenceHue::chosen_in(&serde_json::Value::Object(settings_store::load()))
+    }
+
+    /// Where and for whom this window is shown, as the shell said it over
+    /// the shell-ui channel: the workspace's temperature and the person's
+    /// colour. A window the shell never told stays neutral and keeps the
+    /// colour it started with. Returns whether the theme changed.
+    pub fn set_window_appearance(&mut self, appearance: crate::theme::WindowAppearance) -> bool {
+        if appearance == self.accessibility.window {
+            return false;
+        }
+        self.accessibility.window = appearance;
+        self.rebuild_theme();
+        self.layout.layout_dirty = true;
+        self.layout.structure_dirty = true;
+        true
+    }
+
+    /// What the host said about where and for whom this window is shown.
+    #[must_use]
+    pub fn window_appearance(&self) -> crate::theme::WindowAppearance {
+        self.accessibility.window
     }
 
     /// What a standalone app read from its host OS, through the same door as
