@@ -32,9 +32,9 @@ use tilo_ui::widget::toggle_group::Segment;
 use tilo_ui::widget::toolbar::Orientation as ToolbarOrientation;
 use tilo_ui::widget::tree_view::TreeNode;
 use tilo_ui::widget::{
-    Avatar, Badge, Breadcrumb, ColorPicker, DatePicker, ImageViewer, ModalDialog, Popover,
-    PopoverSide, ProgressBar, ResizableSplit, Spinner, TimePicker, ToggleGroup, Toolbar, TreeView,
-    VideoPlayer, Widget,
+    Avatar, AvatarSize, Badge, Breadcrumb, ColorPicker, DatePicker, ImageViewer, ModalDialog,
+    Popover, PopoverSide, ProgressBar, ResizableSplit, Spinner, TimePicker, ToggleGroup, Toolbar,
+    TreeView, VideoPlayer, Widget,
 };
 
 /// Narrows a small gallery layout dimension (well under f32's 2^24
@@ -320,9 +320,11 @@ fn draw_row2(ctx: &mut GalleryCtx<'_>, y: f64) -> f64 {
 
 /// Row 3: `Avatar` variants.
 fn draw_row3(ctx: &mut GalleryCtx<'_>, y: f64) -> f64 {
-    let mut av_qd = Avatar::from_initials("QD", 48.0);
-    let mut av_al = Avatar::from_initials("AL", 48.0);
-    let mut av_img = Avatar::new(placeholder_image(), 48.0);
+    let mut av_qd = Avatar::person("Quinn Daley", "quinn.daley").size(AvatarSize::Large);
+    let mut av_al = Avatar::person("Ada Lovelace", "ada.lovelace").size(AvatarSize::Large);
+    let mut av_img = Avatar::person("Sam Okafor", "sam.okafor")
+        .with_image(placeholder_image())
+        .size(AvatarSize::Large);
     place(
         ctx,
         0,

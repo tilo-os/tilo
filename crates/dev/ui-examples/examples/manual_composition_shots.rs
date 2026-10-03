@@ -197,7 +197,6 @@ fn surface(child: Element) -> Element {
         Container::new()
             .with_no_padding()
             .filling()
-            .with_fill(shot_theme().tokens.colors.surfaces.content)
             .with_child(Box::new(Scrollable::new_vertical().with_child(child))),
     )
 }

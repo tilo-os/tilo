@@ -373,6 +373,8 @@ impl Widget for NotesApp {
                 self.rect,
                 &EmptyStateContent {
                     icon: Some(Icon::PenTool),
+                    illustration: None,
+                    error: false,
                     title: &crate::shell::i18n::t("notes-empty-title"),
                     message: Some(body.as_str()),
                     action_label: Some(action.as_str()),

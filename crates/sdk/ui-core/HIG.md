@@ -317,14 +317,43 @@ empty, and a mid-interaction state), then inspect the output. When a pattern
 recurs (a media/participant grid, a stat tile, a huddle overlay, a segmented
 control), promote it to a `ui` primitive so the shared version is the default.
 
+Promoted so far, each as a retained widget and a `*Face` painter with the
+same geometry (`docs/ui-migration.md`, "Content widgets", maps the app code
+each replaces):
+
+| Pattern | Primitive |
+|---|---|
+| A row of a content list (message, contact, request, setting) | `ListRow` / `ListRowFace`, listed in a `Section` |
+| Labelled values (details, metadata, fields) | `PropertyList` / `PropertyListFace` |
+| A titled group with a count and one action | `Section` + `SectionHeader` |
+| Settings rows | `FormSection::grouped()` |
+| An object (app, document, comment, connection) | `Card` / `CardFace` in a `CardGrid` |
+| A number and what it measures | `StatTile` / `StatTileFace` in a `StatGroup` |
+| Covers, thumbnails, album art, photos | `MediaCard` / `MediaCardFace` in a `MediaGrid` (`justified_rows` for photos) |
+| A file drop target | `DropZone` / `DropZoneFace` |
+| Content still loading | `Skeleton` / `SkeletonFace` |
+| A countdown, progress or level ring | `ProgressRing` / `ProgressRingFace` |
+| Wizard steps | `Stepper` / `StepperFace` |
+| Nothing here yet, or something failed | `EmptyState` (`EmptyState::error`) |
+| A person's picture or initials | `Avatar` / `AvatarFace` |
+| A whole tile that opens something | `Container::interactive` |
+| Tabular data | `DataTable` |
+| A mark that means a status or a person | `Tone` |
+
+A card is only for an object: settings groups, form sections and stats sit on
+the ground in a `Section`, separated by space.
+
 ### 7a. Let content determine ordinary layout
 
 Choose a shared composition by what the region contains:
 
 | Region | Starting point | Decisions supplied by the framework |
 |---|---|---|
-| Account or settings form | `FormPage`, `Form`, `Section`, `Field` | One page gutter, readable width, related-field spacing, measured label placement, wrapping and scrolling |
-| Card with a title, content and actions | `Card::composed` with a header and footer | Content height, consistent card gutter, footer containment and alignment |
+| Account or settings form | `FormPage`, `Form`, `FormSection`, `Field` | One page gutter, readable width, related-field spacing, measured label placement, wrapping and scrolling |
+| A titled group of content | `Section` with a `SectionHeader` | Heading role, count, one trailing action, `related` gap to the items and `sibling` between them |
+| A list of things | `ListRow`s in a `Section` | Measured row heights, leading column alignment, inset separators hidden beside the selection, hover actions |
+| An object with a title, content and actions | `Card::new(body).with_title(..).with_footer(Actions)` in a `CardGrid` | Content height, consistent card gutter, footer containment and alignment, rows as tall as their tallest card |
+| Statistics | `StatTile`s in a `StatGroup` | Label, value and unit roles, value elision, 4 → 2 → 1 reflow |
 | Small primary/secondary action group | `Actions` | Measured unspecified button sizes, wrapping and trailing alignment |
 | Long command strip | `Toolbar` | Measured command sizes, bounded overflow menu, keyboard navigation and accessible command bounds |
 | Main writing surface | `Scrollable::with_content_min_viewport_height()` | Short auto-height content fills the viewport; long content retains its intrinsic scroll extent |
@@ -773,8 +802,8 @@ every material.
 rows' hover and selection through `ui::chrome::paint_row_selection(scene,
 transform, rect, state, ground, theme)`: the row inset `s2` from the list's
 edges, at `radii.item` (6), primary ink, no border, no hue, no leading bar or
-stripe. `TreeView`, `NavList` and `paint_nav_row` use it; a painted list
-calls it. A private `selected_on` / `row_tier_on` / `selection_fill` is a
+stripe. `TreeView`, `NavList`, `paint_nav_row`, `ListRow`, `VirtualList` and
+`DataTable` use it; a painted list calls it. A private `selected_on` / `row_tier_on` / `selection_fill` is a
 defect.
 
 **The armed row of a menu is inverted, not lifted.** The row Enter or a click
@@ -885,7 +914,7 @@ focus is `border_focus` (your colour); disabled is the rest face under
 | Control | Rest fill | Rest edge |
 |---|---|---|
 | Button Neutral / Disabled, Dropdown field | `surfaces.raised` | `edge_on(raised)` |
-| Card / Container / ContentCard (objects only) | as today | `edge_on(fill)`; a section inside a card gets space, not a second edge |
+| Card / Container (objects only) | `surfaces.raised`; a pressable one lifts on hover and press | `edge_on(fill)`; a section inside a card gets space, not a second edge |
 | TextInput / NumberInput / SearchField | field fill | `edge_on(fill)`; focus `border_focus` |
 | Popover, ModalDialog, Toast, StatusBubble, video controls | the floating Panel body (`widget::floating_surface::paint`): `radii.panel`, the blurred material, `elevation.floating` | `panel_border`, `floating_edge` on dark |
 | Dropdown list, ContextMenu, SlashMenu, Autocomplete, LinkPopover, CommandPalette, FilePicker, PermissionPrompt | `panel_ground` (or `surfaces.overlay` where already used) | `panel_border`, `floating_edge` on dark; separators `separator(.., s3, ..)`, never full-bleed |
@@ -896,8 +925,12 @@ focus is `border_focus` (your colour); disabled is the rest face under
 | Toggle | off `lift(1.0)`, on `intent.inverted` | `edge_on(track)`; the knob is the glyph of its track: `on_inverted` on, `text_dim` off |
 | Slider | unfilled `lift(1.0)`, filled `intent.inverted` | `edge_on(unfilled)`; thumb contrasts against both halves |
 | Checkbox | unchecked `surfaces.raised`, checked `intent.inverted` | `edge_on(raised)` |
-| Table / DataTable rules | — | `edge_on(table_fill)`, never into a rounded corner |
+| DataTable header and rules | the region's ground (no fill of its own) | `edge_on(ground)` under the header and, with `.ruled()`, between columns |
+| StatTile, PropertyList, Section | the ground | none: separated by space |
+| MediaCard art | the art | a seated `hairline_on(ground)` inside the art's outline; badges over the art use the floating material |
+| DropZone | the ground | dashed `edge_on(ground)`; your colour only while a drag hovers |
 | TreeView / NavList / VirtualList rows | transparent | none; selection is a lift inside the `s2` inset at `radii.item` (`paint_row_selection`) |
+| ListRow | transparent | as the rows above; separators are inset `edge_on(ground)`, hidden beside the selection |
 | Divider | — | `border_standard` only between two equal surfaces; `Divider::on(surface)` elsewhere |
 | App chrome Toolbar | as today | `chrome_hairline` |
 | StatusBar, History bar | none: the region's ground | `edge_on(ground)` where the bar meets the content |

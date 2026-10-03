@@ -641,7 +641,7 @@ pub struct BlockEditor {
     /// fenced block. Source remains an ordinary CRDT-backed code line.
     formula_preview_rects: Vec<Option<Rect>>,
     table_preview_rects: Vec<Option<Rect>>,
-    table_editors: HashMap<String, crate::widget::table::Table>,
+    table_editors: HashMap<String, crate::widget::block_editor_table::DocumentTable>,
     table_mode_controls: HashMap<String, TableModeControl>,
     image_preview_rects: Vec<Option<Rect>>,
     image_store: Option<crate::ImageStore>,
@@ -1754,7 +1754,7 @@ impl BlockEditor {
         let saved_table_caret = saved_table_cell
             .as_ref()
             .and_then(|(id, _, _)| self.table_editors.get(id))
-            .and_then(super::table::Table::projected_caret);
+            .and_then(super::block_editor_table::DocumentTable::projected_caret);
         let saved_caret = self
             .focused
             .and_then(|i| self.blocks.get(i))
@@ -1838,7 +1838,7 @@ impl BlockEditor {
         self.blocks.iter().find_map(|block| {
             self.table_editors
                 .get(&block.id)
-                .and_then(super::table::Table::projected_focus)
+                .and_then(super::block_editor_table::DocumentTable::projected_focus)
                 .map(|(row, column)| (block.id.clone(), row, column))
         })
     }
@@ -2175,7 +2175,12 @@ impl BlockEditor {
             let table = self
                 .table_editors
                 .entry(block.id.clone())
-                .or_insert_with(|| crate::widget::table::Table::new(format!("table-{}", block.id)));
+                .or_insert_with(|| {
+                    crate::widget::block_editor_table::DocumentTable::new(format!(
+                        "table-{}",
+                        block.id
+                    ))
+                });
             table.project_cells(&rows);
             table.focus_projected_cell(row, column);
             for block in &mut self.blocks {
@@ -7581,10 +7586,9 @@ impl Widget for BlockEditor {
             if matches!(b.kind, BlockKind::Table { visual: true })
                 && let Some(Some(rect)) = self.table_preview_rects.get(idx)
             {
-                let table = self
-                    .table_editors
-                    .entry(b.id.clone())
-                    .or_insert_with(|| crate::widget::table::Table::new(format!("table-{}", b.id)));
+                let table = self.table_editors.entry(b.id.clone()).or_insert_with(|| {
+                    crate::widget::block_editor_table::DocumentTable::new(format!("table-{}", b.id))
+                });
                 let rows: Vec<Vec<String>> = markdown_table_data_rows(b.text())
                     .into_iter()
                     .map(|row| row.into_iter().map(decode_table_cell).collect())
@@ -8191,7 +8195,7 @@ impl Widget for BlockEditor {
         if let Some(rect) = self
             .table_editors
             .get(&block.id)
-            .and_then(super::table::Table::projected_ime_rect)
+            .and_then(super::block_editor_table::DocumentTable::projected_ime_rect)
         {
             return Some(rect);
         }
@@ -8711,7 +8715,7 @@ impl Widget for BlockEditor {
                 let (row, column) = self
                     .table_editors
                     .get(id)
-                    .and_then(super::table::Table::projected_focus)
+                    .and_then(super::block_editor_table::DocumentTable::projected_focus)
                     .unwrap_or((0, 0));
                 self.begin_action_intercept();
                 let changed = self.edit_table_structure(index, row, column, command);
@@ -10278,7 +10282,11 @@ impl BlockEditor {
             let table = self
                 .table_editors
                 .entry(block_id.clone())
-                .or_insert_with(|| crate::widget::table::Table::new(format!("table-{block_id}")));
+                .or_insert_with(|| {
+                    crate::widget::block_editor_table::DocumentTable::new(format!(
+                        "table-{block_id}"
+                    ))
+                });
             let decoded: Vec<Vec<String>> = rows
                 .into_iter()
                 .map(|row| {
@@ -10398,7 +10406,7 @@ impl BlockEditor {
             let (row, column) = self
                 .table_editors
                 .get(&id)
-                .and_then(super::table::Table::projected_focus)
+                .and_then(super::block_editor_table::DocumentTable::projected_focus)
                 .unwrap_or((0, 0));
             self.edit_table_structure(
                 index,
