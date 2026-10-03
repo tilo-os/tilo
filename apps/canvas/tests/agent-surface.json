@@ -173,6 +173,41 @@
             {
               "type": "object",
               "required": [
+                "action",
+                "src",
+                "pixels",
+                "title"
+              ],
+              "properties": {
+                "src": {
+                  "type": "string",
+                  "description": "The picture's content address."
+                },
+                "pixels": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 4294967295
+                  },
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "description": "Its size in pixels."
+                },
+                "title": {
+                  "type": "string"
+                },
+                "action": {
+                  "type": "string",
+                  "const": "open-picture"
+                }
+              },
+              "additionalProperties": false,
+              "description": "Start a new artwork from a picture: sized to it, the picture its first mark (`picture`) on its one layer. Everything the artwork held before is replaced, as one step."
+            },
+            {
+              "type": "object",
+              "required": [
                 "action"
               ],
               "properties": {
@@ -382,7 +417,7 @@
     "action": "draw",
     "resource_kind": "canvas.artwork",
     "label": "Draw shapes",
-    "description": "Draw shapes on a layer in one step: rect, ellipse, polygon, line, path (SVG d), text or stroke, each with fill, gradient, stroke and opacity. Give ids to address marks later. On a painted layer filled shapes are laid in with the brush: paint a building or small figure as filled planes (lit and shadow side) with a small brush, not as many strokes.",
+    "description": "Draw shapes on a layer in one step: rect, ellipse, polygon, line, path (SVG d), text, stroke or image (src: a file path, content address or data: URI; a unit per pixel unless sized), each with fill, gradient, stroke and opacity. Give ids to address marks later. On a painted layer filled shapes are laid in with the brush: paint a building or small figure as filled planes (lit and shadow side) with a small brush, not as many strokes.",
     "operation": "Document",
     "params": [
       {
@@ -710,6 +745,59 @@
                     },
                     "additionalProperties": false,
                     "description": "A brush stroke: a smooth curve through `points`, `size` wide. Points are `[x, y]` or `[x, y, pressure]`; a handful of points is enough, the stroke is smoothed through them."
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "src",
+                      "x",
+                      "y"
+                    ],
+                    "properties": {
+                      "src": {
+                        "type": "string",
+                        "description": "An absolute file path, a content address or a `data:` URI; kept by its content."
+                      },
+                      "x": {
+                        "type": "number"
+                      },
+                      "y": {
+                        "type": "number"
+                      },
+                      "width": {
+                        "type": "number",
+                        "description": "Units; when absent a unit per pixel, or the aspect kept when the other side is given."
+                      },
+                      "height": {
+                        "type": "number"
+                      },
+                      "crop": {
+                        "type": [
+                          "array",
+                          "null"
+                        ],
+                        "items": {
+                          "type": "number"
+                        },
+                        "minItems": 4,
+                        "maxItems": 4,
+                        "description": "`[x, y, w, h]` as fractions (0-1) of the picture: the part the frame shows. The whole picture when absent."
+                      },
+                      "straighten": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "Degrees the picture turns inside its frame, enlarged just enough that no corner shows: level a horizon."
+                      },
+                      "kind": {
+                        "type": "string",
+                        "const": "image"
+                      }
+                    },
+                    "additionalProperties": false,
+                    "description": "A picture (PNG, JPEG or WebP) shown in the frame `x, y, width, height`."
                   }
                 ],
                 "description": "The geometry: `{\"kind\": \"rect\", \"x\": 0, \"y\": 0, \"width\": 10, \"height\": 10}`, `ellipse` (cx, cy, rx, ry), `polygon`/`line` (points), `path` (d: SVG path data), `text` (x, y, text, size) or `stroke` (points, size)."
@@ -942,7 +1030,7 @@
                   "string",
                   "null"
                 ],
-                "description": "Cut to this mark's shape (opacity 0 hides that mark)."
+                "description": "Cut to this mark's or group's shape (opacity 0 hides it)."
               },
               "transform": {
                 "type": [
@@ -970,7 +1058,7 @@
     "action": "edit-layer",
     "resource_kind": "canvas.artwork",
     "label": "Edit layer",
-    "description": "Rename a layer, change its medium, opacity, visibility or lock, or move it to the front, back, forward or backward.",
+    "description": "Rename a layer, change its medium, opacity, visibility, lock or adjustments (grading all its marks), or move it to the front, back, forward or backward.",
     "operation": "Document",
     "params": [
       {
@@ -1077,6 +1165,149 @@
           "description": "`0..=1`: let the ground's tooth show through the layer's marks."
         },
         "nullable": true
+      },
+      {
+        "name": "adjust",
+        "ty": "object",
+        "required": false,
+        "description": "Colour and tone of everything on it; given steps replace.",
+        "schema": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "exposure": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Stops, -5 to 5. Others -1 to 1 unless noted."
+            },
+            "contrast": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "highlights": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "shadows": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "saturation": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "vibrance": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Saturation sparing strong colours."
+            },
+            "hue": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Degrees, -180 to 180."
+            },
+            "temperature": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Warmer +."
+            },
+            "tint": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Magenta +."
+            },
+            "levels": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "number"
+              },
+              "minItems": 3,
+              "maxItems": 3,
+              "description": "`[black, white, gamma]`: input points 0-1, gamma 0.1-10."
+            },
+            "curve": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "description": "Tone curve `[[in, out], …]`, 0-1."
+            },
+            "grayscale": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "invert": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "blur": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Radius in units, 0-200 (pictures and paint)."
+            },
+            "sharpen": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "0-1."
+            },
+            "vignette": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Edges darker +, lighter -."
+            },
+            "reset": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "Clear the others first."
+            }
+          },
+          "additionalProperties": false,
+          "description": "Colour and tone of everything on it; given steps replace."
+        },
+        "nullable": true
       }
     ]
   },
@@ -1085,7 +1316,7 @@
     "action": "edit-marks",
     "resource_kind": "canvas.artwork",
     "label": "Edit marks",
-    "description": "Change marks by id: colours, opacity, name, move_by [dx,dy], scale and rotate about their centre, or move them to another layer.",
+    "description": "Change marks by id: colours, opacity, name, move_by [dx,dy], scale, rotate and flip about their centre, or move them to another layer. Pictures: crop, straighten (level a horizon) and adjust (exposure, contrast, white balance, …; look to judge).",
     "operation": "Document",
     "params": [
       {
@@ -1410,6 +1641,59 @@
                   },
                   "additionalProperties": false,
                   "description": "A brush stroke: a smooth curve through `points`, `size` wide. Points are `[x, y]` or `[x, y, pressure]`; a handful of points is enough, the stroke is smoothed through them."
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "kind",
+                    "src",
+                    "x",
+                    "y"
+                  ],
+                  "properties": {
+                    "src": {
+                      "type": "string",
+                      "description": "An absolute file path, a content address or a `data:` URI; kept by its content."
+                    },
+                    "x": {
+                      "type": "number"
+                    },
+                    "y": {
+                      "type": "number"
+                    },
+                    "width": {
+                      "type": "number",
+                      "description": "Units; when absent a unit per pixel, or the aspect kept when the other side is given."
+                    },
+                    "height": {
+                      "type": "number"
+                    },
+                    "crop": {
+                      "type": [
+                        "array",
+                        "null"
+                      ],
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 4,
+                      "maxItems": 4,
+                      "description": "`[x, y, w, h]` as fractions (0-1) of the picture: the part the frame shows. The whole picture when absent."
+                    },
+                    "straighten": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "description": "Degrees the picture turns inside its frame, enlarged just enough that no corner shows: level a horizon."
+                    },
+                    "kind": {
+                      "type": "string",
+                      "const": "image"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "description": "A picture (PNG, JPEG or WebP) shown in the frame `x, y, width, height`."
                 }
               ]
             }
@@ -1592,13 +1876,13 @@
         "name": "clip",
         "ty": "text",
         "required": false,
-        "description": "Cut to this mark's shape; empty uncuts.",
+        "description": "Cut to this mark's or group's shape; empty uncuts.",
         "schema": {
           "type": [
             "string",
             "null"
           ],
-          "description": "Cut to this mark's shape; empty uncuts."
+          "description": "Cut to this mark's or group's shape; empty uncuts."
         },
         "nullable": true
       },
@@ -1851,6 +2135,194 @@
           "description": "An affine `[a, b, c, d, e, f]` in artwork units applied after the rest, to all the marks as one: a stretch or turn about any point."
         },
         "nullable": true
+      },
+      {
+        "name": "flip",
+        "ty": "text",
+        "required": false,
+        "description": "`horizontal` or `vertical`: mirror about each centre.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`horizontal` or `vertical`: mirror about each centre."
+        },
+        "nullable": true
+      },
+      {
+        "name": "crop",
+        "ty": "array",
+        "required": false,
+        "description": "Images: `[x, y, w, h]` fractions of the picture to show; the picture stays put, its frame follows. `[]` shows it whole.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number"
+          },
+          "description": "Images: `[x, y, w, h]` fractions of the picture to show; the picture stays put, its frame follows. `[]` shows it whole."
+        },
+        "nullable": true
+      },
+      {
+        "name": "straighten",
+        "ty": "number",
+        "required": false,
+        "description": "Images: degrees to turn the picture in its frame (-45 to 45).",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Images: degrees to turn the picture in its frame (-45 to 45)."
+        },
+        "nullable": true
+      },
+      {
+        "name": "adjust",
+        "ty": "object",
+        "required": false,
+        "description": "Colour and tone; given steps replace.",
+        "schema": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "exposure": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Stops, -5 to 5. Others -1 to 1 unless noted."
+            },
+            "contrast": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "highlights": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "shadows": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "saturation": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "vibrance": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Saturation sparing strong colours."
+            },
+            "hue": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Degrees, -180 to 180."
+            },
+            "temperature": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Warmer +."
+            },
+            "tint": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Magenta +."
+            },
+            "levels": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "number"
+              },
+              "minItems": 3,
+              "maxItems": 3,
+              "description": "`[black, white, gamma]`: input points 0-1, gamma 0.1-10."
+            },
+            "curve": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "description": "Tone curve `[[in, out], …]`, 0-1."
+            },
+            "grayscale": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "invert": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "blur": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Radius in units, 0-200 (pictures and paint)."
+            },
+            "sharpen": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "0-1."
+            },
+            "vignette": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "Edges darker +, lighter -."
+            },
+            "reset": {
+              "type": [
+                "boolean",
+                "null"
+              ],
+              "description": "Clear the others first."
+            }
+          },
+          "additionalProperties": false,
+          "description": "Colour and tone; given steps replace."
+        },
+        "nullable": true
       }
     ]
   },
@@ -1858,21 +2330,51 @@
     "resource": "canvas.artwork",
     "action": "export",
     "resource_kind": "canvas.artwork",
-    "label": "Export PNG",
-    "description": "Render the artwork at full size as a PNG and answer with its content address.",
+    "label": "Export picture",
+    "description": "Render the artwork at full size (or scaled) as a PNG, JPEG or WebP and answer with its content address.",
     "operation": "Effect",
     "params": [
       {
         "name": "scale",
         "ty": "number",
         "required": false,
-        "description": "Pixels per artwork unit, 0.25 to 4 (default 1).",
+        "description": "Pixels per artwork unit, 0.05 to 4 (default 1).",
         "schema": {
           "type": [
             "number",
             "null"
           ],
-          "description": "Pixels per artwork unit, 0.25 to 4 (default 1)."
+          "description": "Pixels per artwork unit, 0.05 to 4 (default 1)."
+        },
+        "nullable": true
+      },
+      {
+        "name": "format",
+        "ty": "text",
+        "required": false,
+        "description": "`png` (default), `jpeg` or `webp` (lossless).",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`png` (default), `jpeg` or `webp` (lossless)."
+        },
+        "nullable": true
+      },
+      {
+        "name": "quality",
+        "ty": "integer",
+        "required": false,
+        "description": "JPEG quality, 1 to 100 (default 90).",
+        "schema": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 255,
+          "description": "JPEG quality, 1 to 100 (default 90)."
         },
         "nullable": true
       }
@@ -1958,7 +2460,8 @@
                       "remove-medium",
                       "align",
                       "set-reference",
-                      "import-svg"
+                      "import-svg",
+                      "open"
                     ]
                   },
                   "args": {
@@ -1990,6 +2493,38 @@
                     "properties": {
                       "action": {
                         "oneOf": [
+                          {
+                            "type": "object",
+                            "required": [
+                              "action",
+                              "src",
+                              "pixels",
+                              "title"
+                            ],
+                            "properties": {
+                              "src": {
+                                "type": "string"
+                              },
+                              "pixels": {
+                                "type": "array",
+                                "items": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 4294967295
+                                },
+                                "minItems": 2,
+                                "maxItems": 2
+                              },
+                              "title": {
+                                "type": "string"
+                              },
+                              "action": {
+                                "type": "string",
+                                "const": "open-picture"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
                           {
                             "type": "object",
                             "required": [
@@ -2346,6 +2881,27 @@
     "description": "List the media layers can use (oil, watercolour presets and those saved here) with their engines' parameters and pigment palettes, and the fonts text can use.",
     "operation": "View",
     "params": []
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "open",
+    "resource_kind": "canvas.artwork",
+    "label": "Open picture",
+    "description": "Open a PNG, JPEG or WebP as a new artwork the size of the picture (a unit per pixel), the picture its first mark, `picture`. Replaces what the artwork held (undo brings it back).",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "path",
+        "ty": "text",
+        "required": true,
+        "description": "A PNG, JPEG or WebP: an absolute path, a content address or a data: URI.",
+        "schema": {
+          "type": "string",
+          "description": "A PNG, JPEG or WebP: an absolute path, a content address or a data: URI."
+        },
+        "nullable": false
+      }
+    ]
   },
   {
     "resource": "canvas.artwork",
@@ -2733,7 +3289,7 @@
     "action": "set-artwork",
     "resource_kind": "canvas.artwork",
     "label": "Set artwork",
-    "description": "Set the title, size (units) or ground: texture (smooth, paper, cold-press, rough, linen, panel) and colour.",
+    "description": "Set the title, size (units) or ground: texture (smooth, paper, cold-press, rough, linen, panel) and colour; or crop the artwork to a region or to what a mark shows (fit).",
     "operation": "Document",
     "params": [
       {
@@ -2802,6 +3358,39 @@
             "null"
           ],
           "description": "Ground colour, `#rrggbb`."
+        },
+        "nullable": true
+      },
+      {
+        "name": "crop",
+        "ty": "array",
+        "required": false,
+        "description": "Crop to `[x, y, width, height]`: that corner becomes 0, 0 and every mark moves with it.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number"
+          },
+          "minItems": 4,
+          "maxItems": 4,
+          "description": "Crop to `[x, y, width, height]`: that corner becomes 0, 0 and every mark moves with it."
+        },
+        "nullable": true
+      },
+      {
+        "name": "fit",
+        "ty": "text",
+        "required": false,
+        "description": "Crop to what this mark or group shows (a photo after its crop).",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Crop to what this mark or group shows (a photo after its crop)."
         },
         "nullable": true
       }
@@ -2933,10 +3522,28 @@
     ]
   },
   {
+    "resource": "tilo.control:canvas-add-picture",
+    "action": "invoke",
+    "resource_kind": "tilo.control",
+    "label": "Add picture",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
     "resource": "tilo.control:canvas-dock-fold",
     "action": "invoke",
     "resource_kind": "tilo.control",
     "label": "Fold the layers and history away",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "tilo.control:canvas-layer-adjust-fold",
+    "action": "invoke",
+    "resource_kind": "tilo.control",
+    "label": "Show the layer's adjustments",
     "description": null,
     "operation": "View",
     "params": []
