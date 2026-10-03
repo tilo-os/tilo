@@ -58,6 +58,10 @@ pub struct ShotFrame {
     taffy: TaffyTree<()>,
     node_map: HashMap<NodeId, *mut dyn Widget>,
     child: Option<NodeId>,
+    /// The floating surfaces the last [`ShotFrame::draw`] and the
+    /// [`ShotFrame::draw_overlay`] after it drew over the blurred material,
+    /// with what lay below each; the PNG blurs them as a live window does.
+    backdrop: Vec<crate::backdrop::RecordedBackdrop>,
 }
 
 impl ShotFrame {
@@ -80,6 +84,7 @@ impl ShotFrame {
             taffy: TaffyTree::new(),
             node_map: HashMap::new(),
             child: None,
+            backdrop: Vec::new(),
         }
     }
 
@@ -235,6 +240,8 @@ impl ShotFrame {
     /// frame's window as a live host culls.
     pub fn draw(&mut self, widget: &mut dyn Widget) -> Scene {
         let mut scene = Scene::new();
+        let recording = crate::backdrop::BackdropRecording::begin();
+        crate::backdrop::layer_scene(&scene, 0);
         let previous = self.presence.push_viewport(self.window());
         widget.draw_with_presence(
             &mut scene,
@@ -245,6 +252,7 @@ impl ShotFrame {
             &self.permission,
         );
         self.presence.pop_viewport(previous);
+        self.backdrop = recording.finish();
         scene
     }
 
@@ -252,6 +260,9 @@ impl ShotFrame {
     /// `scene` over the frame's window, as the live host does after the main
     /// pass and the window chrome.
     pub fn draw_overlay(&mut self, widget: &mut dyn Widget, scene: &mut Scene) {
+        let recording =
+            crate::backdrop::BackdropRecording::continuing(std::mem::take(&mut self.backdrop));
+        crate::backdrop::layer_scene(scene, 0);
         let previous = self.presence.push_viewport(self.window());
         widget.draw_overlay(
             scene,
@@ -261,6 +272,7 @@ impl ShotFrame {
             &self.presence,
         );
         self.presence.pop_viewport(previous);
+        self.backdrop = recording.finish();
     }
 
     /// Paint app-owned floating surfaces onto `scene`, in the order the live
@@ -304,7 +316,11 @@ impl ShotFrame {
             let _ = std::fs::create_dir_all(parent);
         }
         let (w, h) = self.viewport;
-        OffscreenRenderer::new(w, h).render_png(scene, background, out);
+        let mut renderer = OffscreenRenderer::new(w, h);
+        renderer.set_backdrop(Some(std::sync::Arc::new(
+            crate::backdrop::BackdropFrame::from_single_scene(self.backdrop.clone()),
+        )));
+        renderer.render_png(scene, background, out);
     }
 }
 
