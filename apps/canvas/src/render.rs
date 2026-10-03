@@ -453,6 +453,12 @@ fn wet_marks(mark: &Mark, palette: &[Pigment], scale: f64) -> Vec<Painted> {
                         .as_ref()
                         .and_then(|gradient| gradient.stops.first())
                         .and_then(|(_, colour)| tilo_wet_media::parse_paint(colour, palette))
+                        // The stops' alpha fades the paint across the
+                        // mark; it is not the whole mark's opacity.
+                        .map(|paint| tilo_wet_media::Paint {
+                            alpha: 1.0,
+                            ..paint
+                        })
                 })
             {
                 let bounds = mark.bounds();
