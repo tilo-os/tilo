@@ -189,4 +189,10 @@ fn compare_scores_the_artwork_against_its_reference() {
         inspected["reference"]["pixels"],
         serde_json::json!([64, 64])
     );
+
+    let remove: ActionRef<ArtworkResource, bool> = ActionRef::new("set-reference", &["remove"]);
+    app.invoke(remove.with(true)).unwrap();
+    assert!(app.state().reference.is_none());
+    app.invoke(remove.with(true))
+        .expect("removing an absent reference is already done");
 }
