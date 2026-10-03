@@ -1484,6 +1484,28 @@ mod tests {
             assert_eq!(app(&harness).dialog, None, "a read runs without asking");
         }
 
+        // --- phase: the_run_button_runs_the_query_in_the_editor ---
+        {
+            let mut harness = mounted(DbClientApp::new_demo());
+            harness.relayout();
+            crate::doc::EditorDoc::set_sql(&mut harness.state_mut().doc, "SELECT 42 AS answer");
+            harness.relayout();
+            harness
+                .click_named("db.query.run")
+                .expect("Run is on the toolbar");
+            harness.relayout();
+            harness.root_mut::<DbClientApp>().session.block_until_idle();
+            harness.relayout();
+            let result = app(&harness)
+                .session
+                .query_result
+                .as_ref()
+                .expect("the query ran")
+                .clone();
+            assert_eq!(result.columns, ["answer"]);
+            assert_eq!(result.rows[0][0].display(), "42");
+        }
+
         // --- phase: destructive_sql_requires_an_explicit_confirmation ---
         {
             let mut harness = mounted(DbClientApp::new_demo());
