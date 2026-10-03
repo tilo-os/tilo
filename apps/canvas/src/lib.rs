@@ -123,14 +123,6 @@ impl ResourceApp for App {
             .collect()
     }
 
-    /// Pictures open as a new artwork the size of the picture.
-    const OPENS: &'static [&'static str] = &["image/png", "image/jpeg", "image/webp"];
-
-    fn open_file(name: &str, bytes: &[u8]) -> Result<Invoke<ArtworkResource>, String> {
-        let open = resource::open_picture(name, bytes)?;
-        Invoke::apply(&open).map_err(|error| error.to_string())
-    }
-
     fn label(art: &Artwork) -> String {
         if art.title.is_empty() {
             APP_TITLE.to_owned()

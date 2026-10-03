@@ -378,24 +378,3 @@ fn a_group_of_shapes_clips_a_picture() {
         .to_string();
     assert!(refused.contains("in group"), "{refused}");
 }
-
-#[test]
-fn a_picture_file_the_desktop_hands_over_opens_as_a_new_artwork() {
-    use base64::Engine as _;
-    use ui::framework::ResourceApp as _;
-    let mut app = TestApp::<App>::new().unwrap();
-    let data = halves(64, 32);
-    let png = base64::engine::general_purpose::STANDARD
-        .decode(data.split_once(";base64,").unwrap().1)
-        .unwrap();
-    assert!(App::OPENS.contains(&"image/png"));
-    let open = App::open_file("harbour.png", &png).unwrap();
-    app.invoke(open).unwrap();
-    let art = app.state();
-    assert_eq!(
-        (art.title.as_str(), art.width, art.height),
-        ("harbour", 64.0, 32.0)
-    );
-    assert!(art.mark("picture").is_some());
-    assert!(App::open_file("notes.png", b"not a picture").is_err());
-}
