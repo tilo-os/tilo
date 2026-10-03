@@ -3023,7 +3023,7 @@ impl SlidesApp {
                 Role::RadioButton,
                 tr_args(
                     "slides-a11y-fill",
-                    &[("role", ArgValue::from(role.as_str()))],
+                    &[("role", ArgValue::from(editor_chrome::role_name(role)))],
                 ),
                 AccessState::new().checked(selected.is_some_and(|element| element.fill == *role)),
             ),
@@ -3031,7 +3031,7 @@ impl SlidesApp {
                 Role::RadioButton,
                 tr_args(
                     "slides-a11y-stroke",
-                    &[("role", ArgValue::from(role.as_str()))],
+                    &[("role", ArgValue::from(editor_chrome::role_name(role)))],
                 ),
                 AccessState::new().checked(selected.is_some_and(|element| element.stroke == *role)),
             ),
