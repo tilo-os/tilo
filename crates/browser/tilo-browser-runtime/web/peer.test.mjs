@@ -290,6 +290,24 @@ test('a lost live session reconnects with a fresh grant', async () => {
   await peer.dispose();
 });
 
+test('late decryption cannot revive a departed or rejoined publisher', async () => {
+  const runtime = fakeRuntime();
+  const liveCarriers = fakeCarriers();
+  const peer = await connect(options(runtime, memoryStore(), {liveCarriers}));
+  await until(() => peer.live.state === 'live', 'the live layer');
+  const [session] = liveCarriers.connects;
+  session.memberWatcher(OTHER, true);
+  const original = runtime.peer.openLive.bind(runtime.peer);
+  let release;
+  runtime.peer.openLive = (...args) => new Promise(resolve => { release = () => resolve(original(...args)); });
+  session.presenceSubscribers.get(OTHER)(sealedFrame({seq:1,sentAtMs:1,pointer:[1,2]}),1);
+  session.memberWatcher(OTHER, false);
+  session.memberWatcher(OTHER, true);
+  release();
+  await settle();
+  assert.deepEqual(peer.live.remoteState(), [], 'the previous membership epoch is gone');
+});
+
 test('reauthentication forgets the certificate and certifies again', async () => {
   const runtime = fakeRuntime();
   const store = memoryStore();
