@@ -5,7 +5,7 @@
 
 pub use crate::chart_palette::ChartPalette;
 
-pub use crate::widget::function_plane::{format_tick, nice_step};
+pub use crate::widget::function_plane::{format_tick, nice_step, nice_ticks};
 pub use crate::widget::{
     AxisLabelFormat, AxisRange, AxisScale, AxisTick, BarGauge, Candle, CandlestickChart,
     CandlestickStyle, CartesianAnimationStyle, CartesianAnnotation, CartesianAnnotationKind,
