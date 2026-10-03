@@ -19,8 +19,7 @@ pub use crate::widget::{
     HistogramNormalization, LegendPosition, MarkerShape, PieChart, PieSlice, PieStyle,
     PieTooltipAnchor, PlotAxis, PlotDatum, PlotSeries, PolarAreaChart, PolarAreaDatum,
     PolarAreaStyle, RadarAxis, RadarChart, RadarLegendStyle, RadarSeries, RadarStyle, RangeBar,
-    RangeChart, RangeStyle, RingGauge, RollingSeries, SankeyChart, SankeyLink, SankeyNode,
-    SankeySelection, SankeyStyle, Series, SeriesKind, Sparkline, SunburstChart, SunburstNode,
-    SunburstStyle, Treemap, TreemapItem, TreemapStyle, TrendCurve, TrendFill, TrendRange,
-    TrendStyle,
+    RangeChart, RangeStyle, RollingSeries, SankeyChart, SankeyLink, SankeyNode, SankeySelection,
+    SankeyStyle, Series, SeriesKind, Sparkline, SunburstChart, SunburstNode, SunburstStyle,
+    Treemap, TreemapItem, TreemapStyle, TrendCurve, TrendFill, TrendRange, TrendStyle,
 };

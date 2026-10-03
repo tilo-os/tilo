@@ -473,12 +473,13 @@ impl PresencePalette {
     }
 
     /// The `index`th colour of a data series (chart categories, tag
-    /// colours): the same twelve hues, walked so consecutive series sit about
-    /// 150° apart instead of 30°, and wrapping past [`PRESENCE_LEN`].
+    /// colours): the same twelve hues, walked so the first six are at least
+    /// 60° apart from each other (consecutive ones mostly 120°–180°), the
+    /// next six fill the gaps, and the walk wraps past [`PRESENCE_LEN`].
     /// Equal lightness and chroma keep every series equally loud.
     #[must_use]
     pub fn series(&self, index: usize) -> Color {
-        const WALK: [usize; PRESENCE_LEN] = [8, 1, 4, 10, 6, 0, 3, 9, 5, 11, 2, 7];
+        const WALK: [usize; PRESENCE_LEN] = [8, 2, 4, 10, 6, 0, 7, 1, 3, 9, 5, 11];
         let slot = WALK.get(index % PRESENCE_LEN).copied().unwrap_or(0);
         self.get(slot)
     }

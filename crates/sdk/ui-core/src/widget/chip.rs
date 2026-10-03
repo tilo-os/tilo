@@ -36,6 +36,7 @@ use crate::tokens::colors::{
     NON_TEXT_MIN_CONTRAST, ON_FILL_MIN_CONTRAST, SMALL_TEXT_MIN_CONTRAST, mix8,
 };
 use crate::widget::TaffyTreeExt;
+use crate::widget::Tone;
 use crate::widget::Widget;
 
 /// `kurbo::Affine` composition is plain f64 matrix math with no panic
@@ -54,39 +55,6 @@ const TINT_FILL: f32 = 0.15;
 /// How strongly the same tone draws the pill's edge: enough to close the
 /// shape on a dark and a light ground, quieter than the label.
 const TINT_EDGE: f32 = 0.38;
-
-/// What a tinted chip or badge is about. Status tones are the theme's muted
-/// status colours; a person or a series is a presence colour.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Tone {
-    /// No hue: a grey wash.
-    Neutral,
-    /// Live, syncing, in flight.
-    Info,
-    Success,
-    Warning,
-    /// Failed, recording, destructive.
-    Danger,
-    /// A person or a data series: a colour from `colors.presence`
-    /// (`presence.of_rgb(user_color(id))`, `presence.series(i)`), carried
-    /// at the active material's lightness and chroma.
-    Presence(Color),
-}
-
-impl Tone {
-    /// The hue this tone washes with, in `theme`.
-    pub fn color(self, theme: &Theme) -> Color {
-        let colors = &theme.tokens.colors;
-        match self {
-            Self::Neutral => colors.text_dim,
-            Self::Info => colors.semantic.info,
-            Self::Success => colors.semantic.success,
-            Self::Warning => colors.semantic.warning,
-            Self::Danger => colors.semantic.danger,
-            Self::Presence(color) => colors.presence.of(color),
-        }
-    }
-}
 
 /// What a chip or badge is. The style is the whole appearance; there is no
 /// colour, size or radius to set.
@@ -143,7 +111,7 @@ impl ChipStyle {
                 }
             }
             Self::Tinted(tone) => {
-                let tint = tone.color(theme);
+                let tint = tone.colour(theme);
                 let fill = mix8(ground, tint, TINT_FILL);
                 let edge = mix8(ground, tint, TINT_EDGE);
                 ChipColors {
@@ -1131,7 +1099,7 @@ mod tests {
                 Tone::Success,
                 Tone::Warning,
                 Tone::Danger,
-                Tone::Presence(theme.tokens.colors.presence.series(3)),
+                Tone::Presence(crate::tokens::PresenceHue::from_slot(3)),
             ] {
                 let colors = ChipStyle::Tinted(tone).colors(&theme, ground, false, false);
                 let ratio = crate::a11y::contrast_ratio(colors.ink, colors.fill);

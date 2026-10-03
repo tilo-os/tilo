@@ -29,10 +29,11 @@ use tilo_ui::TextRole;
 use tilo_ui::headless::{FrameHarness, InspectionNode};
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
-use tilo_ui::widget::{Avatar, Breadcrumb, ChipFace, Column, Element, ShortcutRecorder};
+use tilo_ui::widget::{
+    Avatar, AvatarSize, Breadcrumb, ChipFace, Column, Element, ShortcutRecorder,
+};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
-use vello::peniko::Color;
 
 struct Capture {
     harness: FrameHarness,
@@ -167,7 +168,7 @@ fn retained_widgets() -> Vec<(&'static str, fn() -> Element, f64)> {
         // Initials are 0.4× the disc the app laid out: geometry, not type.
         (
             "Avatar",
-            || Box::new(Avatar::from_initials("AB", 40.0)),
+            || Box::new(Avatar::person("Ada Byron", "ada.byron").size(AvatarSize::Regular)),
             1.0,
         ),
     ]
@@ -232,16 +233,11 @@ fn text_scale_is_applied_once_by_retained_immediate_and_renderer_paths() {
             (
                 // Initials are sized from the disc, so they stay put when only
                 // the text scale changes — they used to grow out of it.
-                "Avatar::draw_at",
+                "AvatarFace::paint",
                 Box::new(|scene, tr, theme| {
-                    Avatar::draw_at(
-                        scene,
-                        Affine::IDENTITY,
+                    tilo_ui::widget::AvatarFace::new("Ada Byron", "ada.byron").paint(
+                        &mut tilo_ui::paint::PaintCtx::new(scene, Affine::IDENTITY, tr, theme),
                         Rect::new(0.0, 0.0, 40.0, 40.0),
-                        "AB",
-                        Color::from_rgb8(0x3b, 0x82, 0xf6),
-                        theme,
-                        tr,
                     );
                 }),
                 1.0,

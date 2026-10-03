@@ -133,8 +133,13 @@ impl Form {
 
 /// A meaningful group. Fields align together; `content` retains an arbitrary
 /// standard/manual region at the section edge and in declaration order.
+///
+/// The title is a `Heading`. A section is never a card: it sits on the
+/// ground, separated from the next section by space.
 pub struct FormSection {
     parts: Parts,
+    /// Settings rows: label leading, control trailing, inset separators.
+    grouped: bool,
     density: Option<Density>,
     field_spacing: Option<f32>,
     label_placement: Option<LabelPlacement>,
@@ -147,9 +152,10 @@ impl FormSection {
         Self {
             parts: Parts::new(vec![Box::new(
                 Text::new(&title.into())
-                    .with_role(TextRole::Title)
+                    .with_role(TextRole::Heading)
                     .with_heading_level(2),
             )]),
+            grouped: false,
             density: None,
             field_spacing: None,
             label_placement: None,
@@ -157,6 +163,15 @@ impl FormSection {
             inherited_field_spacing: None,
             effective: None,
         }
+    }
+    /// Lay the fields out as a settings list: each a row at least one
+    /// grouped-row high, its label leading and its control trailing, with an
+    /// inset separator between rows. The rows still stack their label above
+    /// the control when the section is too narrow.
+    #[must_use]
+    pub fn grouped(mut self) -> Self {
+        self.grouped = true;
+        self
     }
     #[must_use]
     pub fn field(mut self, field: Field) -> Self {
@@ -509,14 +524,44 @@ impl Widget for FormSection {
             {
                 field.inherited = Some(effective);
                 field.group_needs = None;
+                if self.grouped {
+                    field.trailing_control = true;
+                }
             }
         }
-        let node = self.parts.build(
-            column_style(effective.field_spacing.value),
-            tree,
-            theme,
-            map,
-        );
+        let gap = if self.grouped && self.field_spacing.is_none() {
+            0.0
+        } else {
+            effective.field_spacing.value
+        };
+        let node = self.parts.build(column_style(gap), tree, theme, map);
+        if self.grouped {
+            // Each field row is at least a grouped row high, its content on
+            // the row's centre line; the title keeps its own height and sits
+            // a related step above the first row.
+            let row = theme.tokens.metrics.panel_row_height + theme.tokens.spacing.s2;
+            for (index, (child, &child_node)) in self
+                .parts
+                .children
+                .iter_mut()
+                .zip(&self.parts.nodes)
+                .enumerate()
+            {
+                let is_field = child
+                    .as_any_mut()
+                    .is_some_and(|any| any.downcast_mut::<Field>().is_some());
+                if let Ok(style) = tree.style(child_node) {
+                    let mut style = style.clone();
+                    if is_field {
+                        style.min_size.height = length(row);
+                        style.align_content = Some(taffy::AlignContent::Center);
+                    } else if index == 0 {
+                        style.margin.bottom = length(theme.tokens.spacing.rhythm.related);
+                    }
+                    let _ = tree.set_style(child_node, style);
+                }
+            }
+        }
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -563,6 +608,36 @@ impl Widget for FormSection {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        if self.grouped {
+            // A separator between consecutive field rows, never above the
+            // first or below the last.
+            let ground = theme.tokens.colors.surfaces.content;
+            let rows: Vec<Rect> = self
+                .parts
+                .children
+                .iter_mut()
+                .filter_map(|child| {
+                    let rect = child.get_rect();
+                    child
+                        .as_any_mut()
+                        .and_then(|any| any.downcast_mut::<Field>())
+                        .map(|_| rect)
+                })
+                .collect();
+            for pair in rows.windows(2) {
+                if let [above, below] = pair {
+                    crate::surface::separator(
+                        scene,
+                        transform,
+                        below.x0,
+                        below.x1,
+                        f64::midpoint(above.y1, below.y0),
+                        0.0,
+                        ground,
+                    );
+                }
+            }
+        }
         self.parts.draw(scene, transform, text, theme, presence);
     }
 }
