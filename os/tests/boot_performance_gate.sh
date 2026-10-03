@@ -167,12 +167,17 @@ switch_root_steps() {
 # ldconfig.service and systemd-update-done.service run on a boot only when
 # /usr looks newer than /etc/.updated; the image records the two as equal.
 first_boot_update_check() {
-  local usr updated result
-  usr="$(stat -c '%y' /usr 2>/dev/null || true)"
-  updated="$(stat -c '%y' /etc/.updated 2>/dev/null || echo absent)"
+  local result path
   result="$(systemctl show ldconfig.service --property=ConditionResult --value 2>/dev/null || true)"
-  printf 'first-boot update check: ldconfig condition %s; /usr %s; /etc/.updated %s\n' \
-    "${result:-unknown}" "${usr:-unknown}" "$updated"
+  printf 'first-boot update check: ldconfig condition %s\n' "${result:-unknown}"
+  # The booted view, the mount behind /usr, and the deployment's own /etc
+  # (bootc's merged copy), to tell which side moved.
+  for path in /usr /etc/.updated /etc/ld.so.cache /sysroot/state/deploy/*/etc/.updated \
+      /sysroot/ostree/deploy/*/deploy/*/etc/.updated; do
+    [ -e "$path" ] || continue
+    printf '  %s %s\n' "$(stat -c '%y' "$path" 2>/dev/null)" "$path"
+  done
+  printf '  /usr is %s\n' "$(findmnt -no SOURCE,FSTYPE --target /usr 2>/dev/null | head -1)"
 }
 
 kernel_gaps() {
