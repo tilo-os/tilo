@@ -313,7 +313,13 @@ completeness does not exempt a screen from these requirements.
   text.
 
 Validate these requirements with `--shots` for the primary screens (populated,
-empty, and a mid-interaction state), then inspect the output. When a pattern
+empty, and a mid-interaction state), then inspect the output. The toolkit's
+own review grid is `cargo run -p ui-examples --example ui-shots --
+widget_states OUT_DIR`: every control, input, row, navigation and content
+composite in rest, hover, pressed, focused, disabled, selected and error, at
+each `ControlSize`, and every overlay over a busy page with and without the
+blurred material, dark and light. A change to a widget's look is checked
+there first. When a pattern
 recurs (a media/participant grid, a stat tile, a huddle overlay, a segmented
 control), promote it to a `ui` primitive so the shared version is the default.
 
@@ -757,14 +763,20 @@ draws a placeholder image under the tint and records what is below it; the
 renderer renders that backdrop at half resolution, halves it until the blur
 fits a short kernel (`surfaces.material_blur_px` is the standard deviation),
 blurs it separably and substitutes it for the placeholder. The live DRM,
-headless and nested compositors and the offscreen `shots` path all run the
-same pass, so captures match the screen.
+headless and nested compositors, an app's own window (`ui::App`'s render
+thread), the headless `FrameHarness` and `ShotFrame` behind every app's
+`--shots`, and the offscreen `shots` path all run the same pass, so a menu
+over content blurs it identically live and in a capture. A floating surface
+painted in the main pass inside a `Column` or `Row` blurs too: their subtree
+caches carry it (`backdrop::nest_scene`, `backdrop::append_nested`) and are
+redrawn while they hold one.
 
 The material falls back to opaque `panel_ground` whenever the blur is not
 there: under the reduced-transparency setting
 (`appearance.accessibility.reduce_transparency`), with forced colours or a
 theme without blur (the high-contrast track), in a renderer without the pass
-(an app's own window, a scene capture), and for surfaces past the per-frame
+(a raw scene rendered without its recorded backdrop), for a surface drawn
+into a scratch scene no host composes, and for surfaces past the per-frame
 budget (`MAX_BACKDROP_REGIONS`). The placeholder's own pixels are that ground,
 so a missed substitution is the opaque material, never a hole. Never paint
 unblurred translucency: a translucent fill without the blur is not glass but
@@ -813,8 +825,13 @@ defect.
 will activate in a menu, popover, dropdown, slash menu or palette result list
 is an inverted control (`intent.inverted` fill, `intent.on_inverted` label),
 concentric inside the panel: a lift was measured too weak to find (ΔL* 11.6
-read as "no highlighting"). A state row ("Copy on select", a sort order) is
-`MenuItem::with_checked(bool)`; the row a context menu acts on is ringed in
+read as "no highlighting"). Every menu paints it with
+`widget::floating_surface::paint_armed_row`, its rows inset
+`floating_surface::menu_inset` (`s2`) from the panel on every side and
+`metrics.menu_row_height` tall, so popover menus, dropdown lists and context
+menus are one shape. A state row ("Copy on select", a sort order) is
+`MenuItem::with_checked(bool)`, and the applied option of a popover menu or a
+dropdown list carries a check; the row a context menu acts on is ringed in
 your colour while it is open (`ContextMenu::anchor_row`).
 
 **A control with its own floor** (a filled rest face rather than a
@@ -921,22 +938,24 @@ edge kept at full strength, so rest and disabled never look the same.
 | Control | Rest fill | Rest edge |
 |---|---|---|
 | Button `Secondary` / `Destructive` / disabled, Dropdown field, NumberInput steppers | `surfaces.raised` (hover `lift_on(raised, 0.5)`, press `1.0`) | `edge_on(raised)`; `Destructive` letters it in danger ink |
-| Button `Primary` | `intent.inverted` (hover `inverted_hover`) | none; label `intent.on_inverted` |
+| Button `Primary` | `intent.inverted` (hover `inverted_hover`, press `Colors::inverted_pressed`, the hover step taken twice) | none; label `intent.on_inverted` |
 | Button `Plain`, toolbar commands, icon buttons | transparent (hover `intent.selection_hover`, press `selection`) | none; a toolbar toggle that is on is `intent.selection` |
 | Destructive confirmation (a `ModalDialog` danger action only) | `semantic.danger` | none |
 | Card / Container (objects only) | `surfaces.raised`; a pressable one lifts on hover and press | `edge_on(fill)`; a section inside a card gets space, not a second edge |
-| TextInput / NumberInput / SearchField | field fill | `edge_on(fill)`; focus `border_focus` |
-| Popover, ModalDialog, Toast, StatusBubble, video controls | the floating Panel body (`widget::floating_surface::paint`): `radii.panel`, the blurred material, `elevation.floating` | `panel_border`, `floating_edge` on dark |
+| TextInput / NumberInput / SearchField | field fill (hover `lift_on(fill, 0.5)`, focus `1.0`) | `edge_on(fill)`; focus `border_focus`; a value `Field::with_error` rejected edges the field in danger ink (`Widget::set_invalid`) and its message is danger ink |
+| Popover, ModalDialog, Toast, StatusBubble, video controls | the floating Panel body (`widget::floating_surface::paint`): `radii.panel`, the blurred material, `elevation.floating`; what stands on it is drawn with `theme.on_ground(panel_ground)`, whose `surfaces.raised` stays off the panel (`Colors::raised_on`) | `panel_border`, `floating_edge` on dark; a toast's severity is its leading icon's colour, as on a banner |
 | Dropdown list, ContextMenu, SlashMenu, Autocomplete, LinkPopover, CommandPalette, FilePicker, PermissionPrompt | `panel_ground` (or `surfaces.overlay` where already used) | `panel_border`, `floating_edge` on dark; separators `separator(.., s3, ..)`, never full-bleed. The dropdown list and context menu take `radii.panel`, rows `metrics.menu_row_height`, content inset `spacing.s3`, and a separator only between two rows |
 | Banner, ConflictBanner | `surfaces.raised` | `edge_on(raised)`; the severity is the icon's colour, never a tinted wash |
-| Tooltip | as today | `edge_on(fill)` |
+| Tooltip | the blurred material (`surface::panel`) at `radii.control`, ink measured on the panel ground | `panel_border`, `floating_edge` on dark |
 | Segmented / ToggleGroup track (`SegmentedStyle::Segmented`) | `surfaces.raised`, `radii.control` | `edge_on(track)`; the chosen segment is a thumb `selection_tier_on(raised)` inset concentrically (`radii.item`); separators only between two unchosen segments. `Tabs`: no track, a 2 px primary-ink underline. `Quiet`: no track, a lift of the ground |
 | Chip / Badge `Neutral` | `surfaces.raised`, `radii.full` | `edge_on(raised)`; selected is a lift, no edge |
 | Chip / Badge `Tinted(tone)` | the tone washed 15 % into the ground | the tone at 38 %; label neutral ink measured on the wash |
 | Chip / Badge `Live` | `semantic.danger` | none; label measured on it |
 | Toggle | off `intent.selection`, on `intent.inverted` | `edge_on(track)`; on, the knob is `on_inverted`; off, a raised white knob with a ring that clears 3:1 on a light material and `text_dim` on a dark one |
 | Slider | unfilled `intent.selection`, filled `intent.inverted` | `edge_on(unfilled)`; the thumb is a raised white object with a ring on a light material and primary ink on a dark one, clearing both halves; never collapses below six knob widths |
-| Checkbox | unchecked `surfaces.raised`, checked `intent.inverted`; always the largest square in its rect, `radii.item` | `edge_on(raised)` |
+| Checkbox | unchecked `surfaces.raised`, checked `intent.inverted`; always the largest square in its rect, `radii.item` | `edge_on(raised)`, kept at full strength when disabled (as a switch's) |
+| ProgressBar | track `intent.selection` (a lift of the ground, as a slider's unfilled half), fill `intent.inverted`, `radii.detail` | none |
+| TimePicker | value cells `surfaces.raised` at `radii.control`; step arrows are `Icon::ChevronUp` / `ChevronDown`, lifted under the pointer | `edge_on(raised)`; the focused cell `border_focus` |
 | Scroll thumb | `text_tertiary` at rest, `text_dim` active, each stepped to 3:1 on the ground | none; a vertical `Scrollable` keeps `metrics.scrollbar_gutter` free on its trailing edge |
 | DataTable header and rules | the region's ground (no fill of its own) | `edge_on(ground)` under the header and, with `.ruled()`, between columns |
 | StatTile, PropertyList, Section | the ground | none: separated by space |
