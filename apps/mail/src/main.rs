@@ -85,7 +85,6 @@ pub fn main() {
                 "setup_oauth",
                 "firstrun",
                 "html_mail",
-                "search",
                 "preview",
                 "bulk",
                 "bulk_purge_confirmation",
