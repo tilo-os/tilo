@@ -205,7 +205,6 @@ pub(super) struct TopbarWidths {
     pub(super) import: f64,
     pub(super) split: f64,
     pub(super) export: f64,
-    pub(super) history: f64,
     pub(super) project: f64,
 }
 
@@ -1264,7 +1263,6 @@ pub struct VideoEditorApp {
     goto_entry: Option<ui::widget::TextInput>,
     /// The window's History button, in the editor's own header row; while
     /// the editor shows it the window draws no History bar above it.
-    history_button: ui::widget::Button,
     /// Set when the typed timecode could not be read, so the field can say so
     /// instead of closing and going nowhere.
     thumbnails: crate::thumbnail::ThumbnailCache,
@@ -1540,7 +1538,6 @@ impl VideoEditorApp {
             focus: PaneCursor::default(),
             bin_focus_before_open: None,
             goto_entry: None,
-            history_button: ui::widget::history_button(),
             thumbnails: crate::thumbnail::ThumbnailCache::new(),
             waveforms: crate::waveform::WaveformCache::new(),
             projected_media: HashSet::new(),
@@ -1798,7 +1795,6 @@ impl VideoEditorApp {
         let gap = TOPBAR_GAP * self.chrome_scale();
         let needed = 2.0 * TOPBAR_EDGE * self.chrome_scale()
             + 2.0 * target
-            + w.history
             + w.import
             + w.split
             + w.export
@@ -1817,9 +1813,6 @@ impl VideoEditorApp {
             let import = w(IMPORT_LABEL);
             let split = w(SPLIT_LABEL);
             let export = w(EXPORT_LABEL);
-            let history = ButtonFace::new(Rect::ZERO, "History")
-                .icon(Icon::History)
-                .intrinsic_width(tr, theme);
             let project = ButtonFace::new(Rect::ZERO, &project)
                 .icon(Icon::Film)
                 .intrinsic_width(tr, theme)
@@ -1828,7 +1821,6 @@ impl VideoEditorApp {
                 import,
                 split,
                 export,
-                history,
                 project,
             }
         })
@@ -6583,9 +6575,6 @@ impl Widget for VideoEditorApp {
         // `draw_preview` only has to blit it.
         self.pump_compositor(&r);
         self.draw_chrome(scene, transform, tr, theme, &r);
-        self.history_button.apply_layout_external(r.history_btn);
-        self.history_button
-            .draw(scene, transform, tr, theme, presence);
         // Editor body. When the bin is docked it draws in its column; when
         // it's an overlay flap it is drawn LAST so it floats over the body
         // behind a scrim.
@@ -6867,15 +6856,6 @@ impl Widget for VideoEditorApp {
                 if *ctx.handled {
                     return;
                 }
-            }
-        }
-        // The History button in the header row is the toolkit's own button:
-        // it takes its own pointer events and raises the window's History.
-        if !self.is_modal() && !bin_overlay_open {
-            self.history_button.apply_layout_external(r.history_btn);
-            self.history_button.handle_event(event, ctx);
-            if *ctx.handled {
-                return;
             }
         }
         // The bin flap's full-window scrim is modal for secondary input too.
@@ -7382,7 +7362,7 @@ impl Widget for VideoEditorApp {
     /// or an in-flight rename is something a reader can find rather than an
     /// invisible mode.
     fn children(&self) -> Vec<&dyn Widget> {
-        let mut v: Vec<&dyn Widget> = vec![&self.history_button];
+        let mut v: Vec<&dyn Widget> = Vec::new();
         if let Some(field) = &self.goto_entry {
             v.push(field);
         }
@@ -7405,7 +7385,7 @@ impl Widget for VideoEditorApp {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let mut v: Vec<&mut (dyn Widget + '_)> = vec![&mut self.history_button];
+        let mut v: Vec<&mut (dyn Widget + '_)> = Vec::new();
         if let Some(field) = &mut self.goto_entry {
             v.push(field);
         }

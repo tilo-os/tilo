@@ -101,20 +101,19 @@ fn transport_and_topbar_share_centre_lines_insets_and_steps() {
                 ("import", r.import_btn),
                 ("split", r.split_btn),
                 ("export", r.export_btn),
-                ("history", r.history_btn),
                 ("inspector", r.inspector_btn),
             ]
             .into_iter()
             .filter(|(_, rect)| rect.width() > 0.0)
             .collect();
             row.sort_by(|a, b| a.1.x0.total_cmp(&b.1.x0));
-            // The trailing cluster (Import, Split, Export, History, the
-            // inspector toggle) is packed at exactly the sibling step; the
+            // The trailing cluster (Import, Split, Export, the inspector
+            // toggle) is packed at exactly the sibling step; the
             // leading controls keep at least that much from whatever follows
             // them — the project button is width-bounded and may leave the
             // middle of the bar empty, but never creeps closer than a step to
             // the trailing cluster.
-            let trailing = ["import", "split", "export", "history", "inspector"];
+            let trailing = ["import", "split", "export", "inspector"];
             for pair in row.windows(2) {
                 let gap = x_gap(pair[0].1, pair[1].1);
                 assert!(
