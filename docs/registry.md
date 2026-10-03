@@ -510,6 +510,13 @@ already holds the bytes the publisher signed, and fetches only new versions.
 A submission it cannot collect completely stays pending and out of the staged
 batch; the others are staged, and the collector exits non-zero listing it.
 
+The store keeps each staged package once, as the payload blobs and thin form it
+serves for thin installs plus a record of the package root, and rebuilds and
+re-hashes the exact bytes on read. After every publish the signer deletes the
+staged packages, thin packages and blobs that no published, quarantined,
+pending or staged entry references, such as the versions a full entry just
+dropped. `tilo-registry-server prune-storage` does the same on demand.
+
 Both seed files are exactly 32 secret bytes encoded as 64 hex characters. The
 root seed exists only in the bootstrap/manual authorization environment. The
 serving process receives neither private key. The collector cannot forge a

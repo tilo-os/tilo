@@ -34,9 +34,9 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use registry_server::{
-    AppState, InspectionPolicy, ModerationService, PromotionJournal, PublisherAllowlist,
-    PublisherRow, ServerIdentity, StagedArtifact, StagedPromotion, Storage, default_data_dir,
-    inspect_bytes, run_server,
+    AppState, InspectionPolicy, ModerationService, PromotionJournal, PruneReport,
+    PublisherAllowlist, PublisherRow, ServerIdentity, StagedArtifact, StagedPromotion, Storage,
+    default_data_dir, inspect_bytes, run_server,
 };
 use registry_types::EntryAction;
 use registry_types::{
@@ -186,6 +186,11 @@ enum Cmd {
         #[arg(long, default_value_t = 86_400)]
         valid_for_seconds: u64,
     },
+    /// Delete staged packages, thin packages and payload blobs that no
+    /// published, quarantined or pending entry references any more, and keep
+    /// remaining staged packages as their thin form and shared blobs.
+    /// Promotion does this after every publish.
+    PruneStorage,
     /// Refresh the current catalogue expiry with the networkless delegated
     /// channel key. Refuses to overtake staged promotion work.
     SignDelegatedSnapshot {
@@ -310,6 +315,7 @@ fn main() -> anyhow::Result<()> {
     tilo_rt::daemon("tilo-registry").run(serve_cli())?
 }
 
+#[allow(clippy::too_many_lines, reason = "one dispatch arm per subcommand")]
 async fn serve_cli() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -393,6 +399,7 @@ async fn serve_cli() -> anyhow::Result<()> {
             &reason,
             valid_for_seconds,
         ),
+        Cmd::PruneStorage => cmd_prune_storage(&storage),
         Cmd::SignDelegatedSnapshot {
             channel_key_file,
             valid_for_seconds,
@@ -810,7 +817,9 @@ fn cmd_publish_staged_first_party(
         )?;
         let moderation = ModerationService::new(storage.clone());
         moderation.complete_promotion_in_transaction(&writer, &journal.submissions)?;
+        let pruned = writer.prune_unreferenced()?;
         drop(writer);
+        let pruned = compact_after_prune(storage, pruned)?;
         println!(
             "{}",
             serde_json::json!({
@@ -818,6 +827,7 @@ fn cmd_publish_staged_first_party(
                 "promoted": journal.submissions.len(),
                 "sequence": journal.candidate_snapshot.sequence,
                 "snapshot_hash": registry_types::snapshot_hash(&journal.candidate_snapshot)?,
+                "pruned": pruned,
             })
         );
         return Ok(());
@@ -964,7 +974,9 @@ fn cmd_publish_staged_first_party(
     )?;
     writer.publish(&journal.candidate_snapshot)?;
     moderation.complete_promotion_in_transaction(&writer, &journal.submissions)?;
+    let pruned = writer.prune_unreferenced()?;
     drop(writer);
+    let pruned = compact_after_prune(storage, pruned)?;
     println!(
         "{}",
         serde_json::json!({
@@ -972,7 +984,33 @@ fn cmd_publish_staged_first_party(
             "promoted": reviews.len(),
             "sequence": journal.candidate_snapshot.sequence,
             "snapshot_hash": registry_types::snapshot_hash(&journal.candidate_snapshot)?,
+            "pruned": pruned,
         })
+    );
+    Ok(())
+}
+
+/// After pruning what no entry references any more, such as the versions a
+/// full entry just let go, compact staged packages one lock at a time.
+fn compact_after_prune(
+    storage: &Storage,
+    pruned: PruneReport,
+) -> anyhow::Result<serde_json::Value> {
+    let compacted = storage.compact_staged_artifacts()?;
+    Ok(serde_json::json!({
+        "staged_artifacts": pruned.staged_artifacts,
+        "thin_packages": pruned.thin_packages,
+        "payload_blobs": pruned.payload_blobs,
+        "compacted_staged_artifacts": compacted,
+    }))
+}
+
+fn cmd_prune_storage(storage: &Storage) -> anyhow::Result<()> {
+    let pruned = storage.lock_snapshot()?.prune_unreferenced()?;
+    let pruned = compact_after_prune(storage, pruned)?;
+    println!(
+        "{}",
+        serde_json::json!({"status": "pruned", "pruned": pruned})
     );
     Ok(())
 }
