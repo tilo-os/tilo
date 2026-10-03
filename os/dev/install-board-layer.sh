@@ -8,7 +8,9 @@
 # SOURCE is the board-inputs tree (the repository paths below, under it).
 #
 # Every board: sshd keeps restarting, since SSH is how a board dev image is
-# reached before it has a display, and brcmfmac keeps its permanent MAC.
+# reached before it has a display, brcmfmac keeps its permanent MAC, and
+# Energy Efficient Ethernet is turned off on the onboard end0 (its PHY drops
+# the cable after idle, which looks like SSH dying minutes after boot).
 #
 # An always-on board (`"always_on": true`) also gets the board session:
 # tilo-board-headless-session@<account> runs the person's session headless,
@@ -26,6 +28,9 @@ install -D -m 0644 "$src/os/usr/lib/systemd/system/sshd.service.d/20-tilo-board.
   /usr/lib/systemd/system/sshd.service.d/20-tilo-board.conf
 install -D -m 0644 "$src/os/etc/NetworkManager/conf.d/10-tilo-brcmfmac.conf" \
   /etc/NetworkManager/conf.d/10-tilo-brcmfmac.conf
+install -D -m 0755 "$src/os/usr/lib/NetworkManager/dispatcher.d/10-tilo-disable-eee" \
+  /usr/lib/NetworkManager/dispatcher.d/10-tilo-disable-eee
+test -x /usr/sbin/ethtool || { echo 'the EEE dispatcher needs /usr/sbin/ethtool' >&2; exit 1; }
 
 always_on=$(python3 -B -c 'import json, sys; print(json.load(open(sys.argv[1])).get("always_on", False))' \
   /usr/lib/tilo/hardware-profile-definition.json)

@@ -223,6 +223,8 @@ mod transient_sheets;
 mod two_netns_share;
 #[path = "wayland_test.rs"]
 mod wayland_test;
+#[path = "wheel_scroll_wire.rs"]
+mod wheel_scroll_wire;
 #[path = "window_previews.rs"]
 mod window_previews;
 #[path = "window_switcher.rs"]

@@ -95,7 +95,18 @@ pub trait Resource: Sized + 'static {
         Ok(())
     }
 
-    /// Write the initial content of a brand-new record.
+    /// Write the initial content of a brand-new record: its genesis.
+    ///
+    /// The genesis is made under an actor derived from the record's identity,
+    /// at time zero, so it is the same change byte for byte on every device:
+    /// two people who each create the same record before they sync (a room's
+    /// default record, the record of one file) converge on one record rather
+    /// than two competing roots. It must therefore depend on nothing but the
+    /// resource type — not on who creates it, the device, the clock or a
+    /// file. Content that does depend on those (the creator as owner, a
+    /// first-run import of settings that already exist) is the app's seed,
+    /// applied as actions right after the genesis (`ResourceApp::seed` in
+    /// `tilo-app`).
     ///
     /// # Errors
     /// Returns the document's write error.
@@ -105,7 +116,13 @@ pub trait Resource: Sized + 'static {
 
     /// Whether `next`, applied right after `previous` by the same person,
     /// continues it as one undo step — the characters of a word typed one
-    /// keystroke at a time. The default keeps every action its own step.
+    /// keystroke at a time, the values a slider passes through in one drag.
+    /// The default keeps every action its own step.
+    ///
+    /// Only edits applied immediately (`Dispatcher::apply_now` in
+    /// `tilo-app`) continue one another, and a surface ends the gesture
+    /// (`Dispatcher::settle`) when the pointer is let go, so the next drag
+    /// of the same slider is a step of its own.
     fn coalesces(previous: &Self::Action, next: &Self::Action) -> bool {
         let _ = (previous, next);
         false

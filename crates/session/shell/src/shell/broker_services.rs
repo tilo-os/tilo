@@ -46,7 +46,7 @@ impl NativeOwnerCommitService {
 impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitService {
     fn requires_room(&self, room: &str) -> bool {
         super::state::RoomId::parse(room)
-            .is_some_and(|room| self.tree.read().requires_native_owner(room))
+            .is_some_and(|room| self.tree.read().commits_native_documents(room))
     }
     fn health(&self) -> Result<(), String> {
         self.owner

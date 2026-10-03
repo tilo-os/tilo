@@ -4067,6 +4067,23 @@ mod tests {
     // --- no fabricated content + loading states ---
 
     #[test]
+    fn framework_launch_mounts_the_live_app() {
+        // The installed binary launches through the framework, so the surface
+        // it mounts must be the online app: no bundled sample catalogue, and
+        // a first `sync` that fetches the real feed.
+        let app = crate::resource::TubeShell::surface();
+        assert!(
+            app.online,
+            "the framework launch must reach the live backend"
+        );
+        assert!(
+            app.model.videos.is_empty() && app.model.channels.is_empty(),
+            "the framework launch must not show the bundled sample catalogue"
+        );
+        assert!(app.model.feed_loading, "cold Home shows a loading skeleton");
+    }
+
+    #[test]
     fn online_catalogue_starts_empty_and_tracks_requests() {
         // Case `online_starts_empty_with_no_fabricated_sample`.
         {

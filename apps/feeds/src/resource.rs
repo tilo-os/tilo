@@ -401,4 +401,81 @@ mod tests {
             "adopting an empty projection must not clear unpublished feeds"
         );
     }
+
+    /// What a refresh fetched reaches every collaborator but is nobody's
+    /// undo step, while an OPML import is one step.
+    #[test]
+    fn fetched_rows_are_no_undo_step_and_an_import_is_one() {
+        use crate::actions::{add_subscription_action, rename_feed_action};
+        use crate::model::{Article, Feed, FeedKind, Folder};
+        use ui::framework::testing::TestApp;
+        use ui::tilo_resource::Invoke;
+
+        let apply = |action: &FeedsAction| Invoke::<Feeds>::apply(action).unwrap();
+        let mut app = TestApp::<FeedsShell>::new().unwrap();
+        let feed_id = Uuid::from_u128(0xFEED_0010);
+        app.invoke(apply(&add_subscription_action(
+            feed_id,
+            "https://example.test/feed.xml",
+            None,
+            0,
+        )))
+        .unwrap();
+        app.invoke(apply(&rename_feed_action(feed_id, "Mine")))
+            .unwrap();
+        app.invoke(apply(&FeedsAction::UpsertFetched {
+            feeds: Vec::new(),
+            articles: vec![Article {
+                id: Uuid::from_u128(0xFEED_0011),
+                feed_id,
+                title: "Fetched".into(),
+                url: "https://example.test/fetched".into(),
+                summary: String::new(),
+                author: String::new(),
+                published: 0,
+                read: false,
+                starred: false,
+                tags: Vec::new(),
+                blocks: Vec::new(),
+            }],
+        }))
+        .unwrap();
+        assert_eq!(app.state().store.articles.len(), 1);
+
+        // Undo takes back the rename, past the fetched article, which stays.
+        assert!(app.undo());
+        let state = app.state();
+        assert_ne!(state.store.feeds[0].title, "Mine");
+        assert_eq!(state.store.articles.len(), 1);
+
+        // The subscriptions an import added go in one step.
+        let folder = Folder {
+            id: Uuid::from_u128(0xFEED_0020),
+            name: "Reading".into(),
+            order: 0,
+            collapsed: false,
+        };
+        let imported = |n: u128, url: &str| Feed {
+            id: Uuid::from_u128(n),
+            title: url.into(),
+            url: url.into(),
+            site_url: url.into(),
+            folder: Some(folder.id),
+            order: 0,
+            kind: FeedKind::Rss,
+        };
+        app.invoke(apply(&FeedsAction::ImportSubscriptions {
+            folders: vec![folder.clone()],
+            feeds: vec![
+                imported(0xFEED_0021, "https://a.test/rss"),
+                imported(0xFEED_0022, "https://b.test/rss"),
+            ],
+        }))
+        .unwrap();
+        assert_eq!(app.state().store.feeds.len(), 3);
+        assert_eq!(app.state().store.folders.len(), 1);
+        assert!(app.undo());
+        assert_eq!(app.state().store.feeds.len(), 1);
+        assert!(app.state().store.folders.is_empty());
+    }
 }

@@ -1,0 +1,8 @@
+#!/bin/sh
+# The Orange Pi 3B's Motorcomm YT8531 drops the cable after idle when Energy
+# Efficient Ethernet is active. The other machine then has no route, which
+# looks like SSH dying a minute or two after boot. Turn EEE off whenever the
+# onboard Ethernet comes up.
+if [ "$1" = end0 ] && [ "$2" = up ]; then
+  /usr/sbin/ethtool --set-eee end0 eee off || true
+fi

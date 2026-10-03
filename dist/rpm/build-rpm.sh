@@ -3,7 +3,14 @@
 # that runs something else the rest of the time.
 #
 #   dist/rpm/build-rpm.sh              build binaries, then the RPM
-#   dist/rpm/build-rpm.sh --no-cargo   package binaries that are already built
+#   dist/rpm/build-rpm.sh --no-cargo   package session binaries that are already built
+#                                      (the app collection is still built when stale)
+#
+# Each step can fail and be rerun on its own: Cargo rebuilds only what changed,
+# the app collection is kept while it matches the checkout
+# (dist/rpm/app-collection.sh), and staging starts afresh. Binaries compile
+# with this host's `cargo`; rpmbuild runs here, or in the build container on a
+# host without rpm-build (dist/rpm/rpmbuild.sh).
 #
 # Output lands in dist/rpm/build/RPMS/<native-rpm-architecture>/.
 set -euo pipefail
@@ -20,6 +27,8 @@ run_cargo=1
 [[ ${1:-} == --no-cargo ]] && run_cargo=0
 
 say() { printf '\n== %s\n' "$*"; }
+# Asked before each long step, so a host that cannot package learns it first.
+check_rpmbuild() { "$repo_root/dist/rpm/rpmbuild.sh" --check; }
 
 # ---------------------------------------------------------------------------
 # 1. The binaries.
@@ -28,6 +37,7 @@ say() { printf '\n== %s\n' "$*"; }
 # `hosted-test-control`, which a normal login session never reaches. Video
 # goes through GStreamer, whose library ABI is stable across Fedora releases.
 if (( run_cargo )); then
+    check_rpmbuild
     say "cargo build --release (session and app support)"
     ( cd "$repo_root" && cargo build --release --locked \
         -p launcher -p tilo-unlock-helper -p tilo-app-package-cli -p install -p runtime-bundle \
@@ -51,6 +61,7 @@ for bin in shell imager tilo-launcher tilo-unlock-helper tilo-install tilo-runti
            tilo-cli-shim tilo-app-host tilo-ush tilo-model-manager tilo-model-gateway; do
     [[ -x $rel/$bin ]] || { echo "missing $rel/$bin — run without --no-cargo" >&2; exit 1; }
 done
+(( run_cargo )) || check_rpmbuild
 
 # ---------------------------------------------------------------------------
 # 2. Stage the canonical payload.
@@ -71,21 +82,9 @@ mkdir -p "$out"/{SOURCES,SPECS,BUILD,RPMS,SRPMS}
 # immutable system store.  The companion RPM is version-locked to the session
 # below, so `rpm-ostree update` advances compositor, launcher, runtime and
 # apps in one deployment while user-installed packages retain precedence.
-say "building the default Tilo app collection"
+say "the default Tilo app collection"
 app_release=$out/app-release
-if (( run_cargo )); then
-    app_names=$(python3 "$repo_root/tools/apps/app_release.py" --collection desktop \
-        | jq -r '.catalog[].name' | paste -sd' ' -)
-    [[ -n $app_names ]] || { echo "desktop app collection is empty" >&2; exit 1; }
-    TILO_RELEASE_APPS="$app_names" TILO_APP_RELEASE_OUT="$app_release" \
-        "$repo_root/dist/apps/package-apps.sh"
-else
-    collection=$app_release/tilo-apps-$(uname -m).tar.gz
-    [[ -f $collection ]] || {
-        echo "missing $collection — run without --no-cargo" >&2
-        exit 1
-    }
-fi
+"$repo_root/dist/rpm/app-collection.sh" "$app_release"
 
 say "staging immutable Tilo app store"
 app_stage=$stage/apps
@@ -124,35 +123,12 @@ cp "$repo_root/dist/rpm/$name.spec" "$out/SPECS/"
 # ---------------------------------------------------------------------------
 # 3. rpmbuild.
 # ---------------------------------------------------------------------------
-# The host is image-based and has no rpm-build; the same container that builds
-# the workspace has it. `.build-container` is the one the cargo shim uses.
 say "rpmbuild"
-rpmbuild_cmd=(
-    rpmbuild -bb
-    --define "_topdir $out"
-    --define "tilo_version $version"
-    --define "tilo_release $release"
+"$repo_root/dist/rpm/rpmbuild.sh" -bb \
+    --define "_topdir $out" \
+    --define "tilo_version $version" \
+    --define "tilo_release $release" \
     "$out/SPECS/$name.spec"
-)
-if command -v rpmbuild >/dev/null 2>&1; then
-    "${rpmbuild_cmd[@]}"
-else
-    if [ ! -s "$repo_root/.build-container" ]; then
-        echo "rpmbuild is unavailable: install rpm-build locally or create .build-container with your distrobox name (see DEVELOPMENT.md)." >&2
-        exit 1
-    fi
-    container=$(head -n1 "$repo_root/.build-container" | tr -d '[:space:]')
-    if [ -z "$container" ]; then
-        echo ".build-container must contain a distrobox name (see DEVELOPMENT.md)." >&2
-        exit 1
-    fi
-    if ! command -v distrobox >/dev/null 2>&1; then
-        echo "distrobox is unavailable: install it or install rpm-build locally." >&2
-        exit 1
-    fi
-    printf -v quoted '%q ' "${rpmbuild_cmd[@]}"
-    distrobox enter "$container" -- bash -lc "$quoted"
-fi
 
 say "built"
 find "$out/RPMS" -name '*.rpm' -printf '%p\n'

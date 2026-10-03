@@ -6,7 +6,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
 
-use tilo_actions::{ActionAddress, ActionContext, ActionError, ControlInvocation};
+use tilo_actions::{ActionAddress, ActionContext, ActionError, ActionInvoker, ControlInvocation};
 use tilo_resource::{Doc, Invoke, Resource};
 use ui_core::LocalState;
 use ui_core::automerge::ChangeHash;
@@ -21,9 +21,39 @@ use ui_core::automerge::ChangeHash;
 /// split created, the cell a table insert made). Both check the
 /// participant's permission, apply through the replayable executor with
 /// attribution, and are undone per author.
+///
+/// # A drag as one undo step
+///
+/// A slider or a drag handle a surface draws itself applies each value it
+/// passes through with [`apply_now`](Self::apply_now), so the document — and
+/// every collaborator — follows the drag live. The resource declares that
+/// one value continues the one before it ([`Resource::coalesces`]: the same
+/// field of the same item), which makes the whole drag one step, and the
+/// surface calls [`settle`](Self::settle) when the pointer is let go, so the
+/// next drag is a step of its own:
+///
+/// ```ignore
+/// fn coalesces(previous: &Action, next: &Action) -> bool {
+///     matches!((previous, next), (Action::SetLevel(..), Action::SetLevel(..)))
+/// }
+///
+/// // In the surface's `handle_event`:
+/// WindowEvent::CursorMoved { .. } if self.dragging => {
+///     let _ = self.dispatch.apply_now(ctx.state, &Action::SetLevel(level));
+/// }
+/// WindowEvent::MouseInput { state: ElementState::Released, .. } => {
+///     self.dragging = false;
+///     self.dispatch.settle();
+/// }
+/// ```
+///
+/// A toolkit slider bound with `ViewCx::control` instead invokes its action
+/// once per drag when built with `Slider::commits_on_release`.
 pub struct Dispatcher<R: Resource> {
     app_id: &'static str,
     resource_id: Rc<str>,
+    /// Who edits through this dispatcher; `None` in a view of a past version.
+    me: Option<Rc<str>>,
     queue: Rc<RefCell<VecDeque<ControlInvocation>>>,
     /// The invocations of the open group, and how many groups are open.
     group: Rc<RefCell<(usize, Vec<Invoke<R>>)>>,
@@ -67,6 +97,7 @@ impl<R: Resource> Clone for Dispatcher<R> {
         Self {
             app_id: self.app_id,
             resource_id: Rc::clone(&self.resource_id),
+            me: self.me.clone(),
             queue: Rc::clone(&self.queue),
             group: Rc::clone(&self.group),
             read_only: self.read_only.clone(),
@@ -83,10 +114,16 @@ impl<R: Resource> Clone for Dispatcher<R> {
 }
 
 impl<R: Resource> Dispatcher<R> {
-    pub(crate) fn new(app_id: &'static str, resource_id: &str, read_only: bool) -> Self {
+    pub(crate) fn new(
+        app_id: &'static str,
+        resource_id: &str,
+        read_only: bool,
+        me: Option<&str>,
+    ) -> Self {
         Self {
             app_id,
             resource_id: Rc::from(resource_id),
+            me: me.map(Rc::from),
             queue: Rc::default(),
             group: Rc::default(),
             read_only: LocalState::new(read_only),
@@ -101,6 +138,14 @@ impl<R: Resource> Dispatcher<R> {
             opened: Rc::default(),
             marker: std::marker::PhantomData,
         }
+    }
+
+    /// Who edits through this dispatcher: the participant this view is
+    /// for, the same id an action they invoke reads as its author
+    /// ([`ActionCx::author`](tilo_resource::ActionCx::author)). `None` in a
+    /// view of a past version, which nobody edits.
+    pub fn me(&self) -> Option<&str> {
+        self.me.as_deref()
     }
 
     /// Whether edits from this participant will be refused, as of now: it
@@ -252,15 +297,18 @@ impl<R: Resource> Dispatcher<R> {
                 R::LABEL.to_lowercase()
             )));
         }
-        // History names the resource even when the surface's context does not.
-        let context = context.enriched_by(&ActionContext::for_resource(
-            "",
-            self.resource_id.as_ref(),
-            R::KIND,
-            R::LABEL,
-        ));
+        // History names the resource and who edited it even when the
+        // surface's context does not.
+        let mut named =
+            ActionContext::for_resource("", self.resource_id.as_ref(), R::KIND, R::LABEL);
+        if let Some(me) = &self.me {
+            named = named.with_invoker(ActionInvoker::actor(me.as_ref()));
+        }
+        let context = context.enriched_by(&named);
         (self.submit_now)(&mut self.host.borrow_mut(), doc, action, context)?;
-        if R::annotates(action) {
+        // Content from outside is nobody's step: it neither continues the
+        // open one nor ends it.
+        if R::annotates(action) || !tilo_actions::Action::change_kind(action).is_step() {
             return Ok(());
         }
         // Only an action right after this dispatcher's last one, with nothing
@@ -305,6 +353,7 @@ impl<R: Resource> Dispatcher<R> {
         let parent = Rc::clone(&self.submit_now);
         Dispatcher {
             app_id: self.app_id,
+            me: self.me.clone(),
             resource_id: Rc::from(id),
             queue: Rc::clone(&self.queue),
             group: Rc::default(),
@@ -322,6 +371,15 @@ impl<R: Resource> Dispatcher<R> {
             opened: Rc::clone(&self.opened),
             marker: std::marker::PhantomData,
         }
+    }
+
+    /// End the gesture the last immediate actions belonged to: the pointer
+    /// was let go of a slider or a drag handle. The next action starts a
+    /// step of its own even when it would continue the last one
+    /// ([`Resource::coalesces`]), so two drags of one slider are two undo
+    /// steps while every value one drag passes through is one.
+    pub fn settle(&self) {
+        self.last.borrow_mut().take();
     }
 
     pub(crate) fn take(&self) -> Option<ControlInvocation> {
