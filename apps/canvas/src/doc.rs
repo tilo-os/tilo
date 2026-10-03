@@ -3,10 +3,12 @@
 //! ```text
 //! title, width, height      scalars
 //! ground                    JSON of Ground
-//! layers.<id>               { name, order, medium, opacity, visible, texture, locked }
+//! layers.<id>               { name, order, medium, opacity, visible, texture, locked,
+//!                             mask_of, base, invert, clip }
 //! marks.<id>                { layer, order, body: JSON of MarkBody }
 //! media.<id>                JSON of MediumSpec
 //! reference                 JSON of Reference, when there is one
+//! selection                 JSON of Selection, while there is one
 //! ```
 //!
 //! Keyed maps, so concurrent edits of different layers and marks merge, and
@@ -20,12 +22,13 @@ use ui::automerge::{AutomergeError, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, 
 use ui::tilo_resource::Doc;
 
 use crate::media::MediumSpec;
-use crate::model::{Artwork, Ground, Layer, Mark, MarkBody, Reference};
+use crate::model::{Artwork, Ground, Layer, Mark, MarkBody, Reference, Selection};
 
 pub const LAYERS: &str = "layers";
 pub const MARKS: &str = "marks";
 pub const MEDIA: &str = "media";
 pub const REFERENCE: &str = "reference";
+pub const SELECTION: &str = "selection";
 
 pub fn child(doc: &Doc, parent: &ObjId, key: &str) -> Option<ObjId> {
     match doc.get(parent, key).ok().flatten()? {
@@ -104,6 +107,10 @@ pub fn read(doc: &Doc) -> Artwork {
                 visible: flag(doc, &obj, "visible").unwrap_or(true),
                 texture: number(doc, &obj, "texture").unwrap_or(0.0),
                 locked: flag(doc, &obj, "locked").unwrap_or(false),
+                mask_of: text(doc, &obj, "mask_of").unwrap_or_default(),
+                base: number(doc, &obj, "base").unwrap_or(1.0),
+                invert: flag(doc, &obj, "invert").unwrap_or(false),
+                clip: flag(doc, &obj, "clip").unwrap_or(false),
                 id,
             })
         })
@@ -156,7 +163,23 @@ pub fn read(doc: &Doc) -> Artwork {
         marks,
         media,
         reference: json(doc, &ROOT, REFERENCE),
+        selection: json(doc, &ROOT, SELECTION),
     }
+}
+
+/// Set or clear the selection.
+///
+/// # Errors
+/// Returns the document's write error.
+pub fn write_selection(doc: &mut Doc, selection: Option<&Selection>) -> Result<(), AutomergeError> {
+    if let Some(selection) = selection {
+        let encoded = serde_json::to_string(selection).unwrap_or_default();
+        return put_text(doc, &ROOT, SELECTION, &encoded);
+    }
+    if doc.get(&ROOT, SELECTION)?.is_some() {
+        doc.delete(&ROOT, SELECTION)?;
+    }
+    Ok(())
 }
 
 /// Set or clear the reference picture.
@@ -196,6 +219,19 @@ pub fn write_layer(doc: &mut Doc, layer: &Layer) -> Result<(), AutomergeError> {
     }
     if flag(doc, &obj, "locked").unwrap_or(false) != layer.locked {
         doc.put(&obj, "locked", layer.locked)?;
+    }
+    // A mask's fields are written only on a mask, and clipping only once
+    // set, so an ordinary layer's entry stays as it was.
+    if layer.is_mask() || text(doc, &obj, "mask_of").is_some() {
+        put_text(doc, &obj, "mask_of", &layer.mask_of)?;
+        if number(doc, &obj, "base") != Some(layer.base) {
+            doc.put(&obj, "base", layer.base)?;
+        }
+    }
+    for (key, value) in [("invert", layer.invert), ("clip", layer.clip)] {
+        if flag(doc, &obj, key).unwrap_or(false) != value {
+            doc.put(&obj, key, value)?;
+        }
     }
     Ok(())
 }
