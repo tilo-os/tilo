@@ -367,10 +367,15 @@ impl FieldBody {
         };
         let copy = Text::new(text).with_role(TextRole::Caption);
         let copy: Element = Box::new(if error {
-            copy.with_live(crate::a11y::Politeness::Polite)
+            // Validation is status: the message in danger ink, and the
+            // control itself edged in it, so the error reads at a glance.
+            copy.with_live(crate::a11y::Politeness::Polite).danger()
         } else {
             copy.dimmed()
         });
+        if error && let Some(control) = self.parts.children.first_mut() {
+            control.set_invalid(true);
+        }
         if (error && self.error) || (!error && self.help) {
             if let Some(slot) = self.parts.children.get_mut(index) {
                 *slot = copy;

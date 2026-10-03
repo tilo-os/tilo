@@ -322,21 +322,43 @@ impl<'a> ProgressRingFace<'a> {
         let Some((value_role, caption_role)) = self.size.roles() else {
             return;
         };
-        let value_style = theme.text(value_role).numeric();
         let caption_style = theme.text(caption_role);
-        let inner = crate::num::f32_of_f64((2.0 * radius - 2.0 * thickness).max(1.0));
+        // The text stays inside the ring with `s2` of air: the width it may
+        // take is the chord of the ring's inner edge at the top and bottom
+        // of the text block, not the diameter.
+        let clear = (radius - thickness / 2.0 - f64::from(theme.tokens.spacing.s2)).max(1.0);
+        let caption_h = self.caption.map_or(0.0, |c| {
+            f64::from(ctx.text.measure_style(c, None, &caption_style).1)
+        });
+        let chord = |block_h: f64| {
+            let half = (block_h / 2.0).min(clear);
+            2.0 * (clear * clear - half * half).max(0.0).sqrt()
+        };
+        // A value too wide for its role at this size steps down to `Label`
+        // before it elides: "3 of 10" reads whole in a regular ring.
+        let value_style = self.value.map_or_else(
+            || theme.text(value_role).numeric(),
+            |v| {
+                [value_role, TextRole::Heading, TextRole::Label]
+                    .into_iter()
+                    .map(|role| theme.text(role).numeric())
+                    .find(|style| {
+                        let (w, h) = ctx.text.measure_style(v, None, style);
+                        f64::from(w) <= chord(f64::from(h) + caption_h)
+                    })
+                    .unwrap_or_else(|| theme.text(TextRole::Label).numeric())
+            },
+        );
+        let value_h = self.value.map_or(0.0, |v| {
+            f64::from(ctx.text.measure_style(v, None, &value_style).1)
+        });
+        let inner = crate::num::f32_of_f64(chord(value_h + caption_h).max(1.0));
         let value = self
             .value
             .map(|v| ctx.text.elide_to_width_style(v, inner, &value_style));
         let caption = self
             .caption
             .map(|c| ctx.text.elide_to_width_style(c, inner, &caption_style));
-        let value_h = value.as_ref().map_or(0.0, |v| {
-            f64::from(ctx.text.measure_style(v, None, &value_style).1)
-        });
-        let caption_h = caption.as_ref().map_or(0.0, |c| {
-            f64::from(ctx.text.measure_style(c, None, &caption_style).1)
-        });
         let mut y = center.y - (value_h + caption_h) / 2.0;
         if let Some(value) = value {
             let w = f64::from(ctx.text.measure_style(&value, None, &value_style).0);
