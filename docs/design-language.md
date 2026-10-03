@@ -50,9 +50,23 @@ Ink on the content surface: primary L 0.96 / 0.18, secondary 0.76 / 0.43,
 tertiary 0.62 / 0.56 (dark / light). Every pairing meets WCAG AA for its role,
 and the existing contrast tests enforce it.
 
+**Default chroma.** The default dark theme is pure neutral (chroma 0). The
+default light theme carries chroma 0.010, so it takes on the workspace's
+temperature.
+
+**Dark presets.** Three more dark palettes ship as presets with the same
+contract:
+
+| Preset | Hue / chroma | Lightness |
+|---|---|---|
+| Cool | 255 / 0.008 | As in the table |
+| Warm graphite | 60 / 0.006 | As in the table |
+| Soft | 270 / 0.003 | Lifted: base 0.19, content 0.25, sidebar 0.228, raised 0.30, overlay 0.32 |
+
 **Workspace temperature.** Each workspace derives the neutral hue (never more
 chroma) from its wallpaper. Switching workspaces feels like entering a
-different room. The fallback hue is 255.
+different room. A palette with chroma 0 shows no temperature; the fallback hue
+is 255.
 
 **No brand accent.**
 - A primary action is an *inverted* control: primary ink as its fill and the
@@ -138,6 +152,16 @@ Reading text is serif and code is mono, both from the font catalog.
 - Hierarchy comes from size and weight contrast plus ink tier, never from
   colour.
 
+## Windows and navigation
+
+Windows have no title bar. The OS tab names the app, and the framework draws
+one header row across the top of the window that holds each column's header:
+sidebar, list title and detail toolbar together read as one unified toolbar.
+The sidebar toggle sits at the top-leading corner of the sidebar; when the
+sidebar is hidden it moves to the leading edge of the next column. One
+system-wide shortcut toggles it in every app. Narrow windows collapse the
+sidebar into a floating drawer instead of squeezing content.
+
 ## Space and density
 
 - The 4 px spacing scale (`s1`–`s16`) is unchanged.
@@ -148,6 +172,29 @@ Reading text is serif and code is mono, both from the font catalog.
   not cram by hand.
 - Reading and forms are bounded to a readable width. Canvases, tables, maps
   and media use the full width.
+
+## Theming
+
+Everything in this document is a theme's default, not a hard-coded value.
+`docs/architecture/theming.md` defines the contract: a validated, versioned
+theme document that sets semantic roles, resolved through the built-in,
+distribution, user, workspace and accessibility layers. A theme can set:
+
+- **Palette:** neutral hue and chroma, the surface lightness ladder, ink
+  tiers, and status colours.
+- **Emphasis:** how primary actions, selection and "on" states show. The
+  default is *inverted*; a theme may choose *tinted* with one hue, which
+  restores an accent for people who want one.
+- **Presence:** lightness and chroma of the presence palette (hues stay evenly
+  spaced so participants remain equal).
+- **Shape:** the window radius; every other radius derives concentrically.
+- **Density, type and motion:** spacing scale, UI face and base size, and
+  spring character.
+- **Material:** blur strength and tint opacity of floating chrome.
+
+A theme cannot set colours of individual widgets, remove the lift or focus
+ring, or break contrast floors. "Your colour" is part of your identity, not
+the theme: you pick it once and every device and collaborator sees the same.
 
 ## Icons
 
