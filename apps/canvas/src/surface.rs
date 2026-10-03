@@ -1428,17 +1428,38 @@ impl CanvasSurface {
         let ground = part.is_none();
         let art = part.as_ref().unwrap_or(art);
         let text = self.look_text.get_or_insert_with(TextRenderer::new);
+        let outline_all = export.outline_text == Some(true);
+        let outlines = art
+            .marks
+            .iter()
+            .filter(|mark| match &mark.shape {
+                Shape::Text { path, .. } => outline_all || path.is_some(),
+                _ => false,
+            })
+            .map(|mark| {
+                let mut outline = ui::vello::kurbo::BezPath::new();
+                for letter in crate::render::letters(&mark.shape, text) {
+                    outline.extend(letter.path);
+                }
+                (mark.id.clone(), outline)
+            })
+            .collect();
         let renderer = &mut self.renderer;
-        let svg = crate::svg::export(art, ground, |layer| {
-            let options = Options {
-                layers: Some(vec![layer.id.clone()]),
-                bare: true,
-                ..Options::default()
-            };
-            view_ops::render(renderer, text, art, (art.bounds(), 1.0), &options, false)
-                .ok()
-                .map(|picture| picture.bytes)
-        });
+        let svg = crate::svg::export(
+            art,
+            ground,
+            |layer| {
+                let options = Options {
+                    layers: Some(vec![layer.id.clone()]),
+                    bare: true,
+                    ..Options::default()
+                };
+                view_ops::render(renderer, text, art, (art.bounds(), 1.0), &options, false)
+                    .ok()
+                    .map(|picture| picture.bytes)
+            },
+            outlines,
+        );
         let address = crate::resource::store(svg.as_bytes())?;
         let mut value = json!({
             "format": "svg",
@@ -1539,6 +1560,12 @@ impl CanvasSurface {
             ViewOp::ExportSvg(export) => self.export_svg(&art, &revision, export),
             ViewOp::Inspect(inspect) => {
                 let mut value = view_ops::inspect(&art, inspect)?;
+                if let Some(ids) = &inspect.measure {
+                    let measured = view_ops::measure(&mut self.renderer, text, &art, ids)?;
+                    if let Value::Object(fields) = &mut value {
+                        fields.insert("measured".into(), measured);
+                    }
+                }
                 stamp(&mut value);
                 if let Value::Object(fields) = &mut value
                     && shown.is_none()

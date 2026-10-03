@@ -130,6 +130,21 @@ pub fn catalog_manifest_sha256() -> String {
     tilo_font_catalog::manifest_sha256()
 }
 
+/// The families of the fonts Tilo ships, in catalog order: the faces that
+/// look the same on every machine, which a document that syncs can name.
+pub fn shipped_families() -> Vec<String> {
+    let mut families: Vec<String> = Vec::new();
+    let assets = tilo_font_catalog::manifest().map_or(&[][..], |manifest| manifest.font.as_slice());
+    for asset in assets.iter().filter(|asset| asset.scope == Scope::Product) {
+        for face in &asset.faces {
+            if !families.contains(&face.family) {
+                families.push(face.family.clone());
+            }
+        }
+    }
+    families
+}
+
 #[cfg(any(test, all(feature = "native", feature = "test-support")))]
 pub(crate) fn fixture_catalog() -> FontCatalog {
     FontCatalog::controlled_fixture(
