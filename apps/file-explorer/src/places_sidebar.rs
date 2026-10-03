@@ -233,8 +233,9 @@ impl Places {
     }
 
     /// The navigation list: choosing a place opens it, dragging a favourite
-    /// reorders them, and a favourite's row action unpins it.
-    pub fn nav_list(self, sink: &CommandSink) -> NavList {
+    /// reorders them, and a favourite's row action unpins it. The row the
+    /// person chooses in the list is also left in `chosen`.
+    pub fn nav_list(self, sink: &CommandSink, chosen: &Rc<RefCell<Option<String>>>) -> NavList {
         let selected = self.selected_id();
         let sections = self.sections();
         let places = Rc::new(self);
@@ -243,10 +244,12 @@ impl Places {
             .with_accessible_name(t("files-a11y-places"))
             .on_select({
                 let sink = sink.clone();
+                let chosen = Rc::clone(chosen);
                 move |id| {
                     if let Some(path) = path_of_id(&id) {
                         push(&sink, FileCommand::Navigate(path));
                     }
+                    *chosen.borrow_mut() = Some(id);
                 }
             })
             .item_actions(
@@ -478,7 +481,7 @@ mod tests {
     #[test]
     fn the_list_shows_the_chosen_place() {
         let sink = new_sink();
-        let list = sample().nav_list(&sink);
+        let list = sample().nav_list(&sink, &Rc::new(RefCell::new(None)));
         assert_eq!(list.selected_id().as_deref(), Some("fav:/home/u/Pictures"));
     }
 }

@@ -741,6 +741,12 @@ pub struct FileExplorerWidget {
     /// Shared, persistent favourites + drag-reorder state (see
     /// [`crate::places_sidebar`]). Cloned into the sidebar each rebuild.
     favs: FavStore,
+    /// The places the shell's list was last built from, and the row chosen in
+    /// it.
+    places_shown: Option<(Vec<ui::widget::NavSection>, Option<String>)>,
+    /// The row the person last chose in the places list itself, so the
+    /// navigation that follows does not rebuild a list that already shows it.
+    places_choice: Rc<RefCell<Option<String>>>,
     /// Per-user config dir for persisting favourites + zoom (`None` when the
     /// environment has no config dir — the UI still works, just doesn't persist).
     config_dir: Option<PathBuf>,
@@ -1257,6 +1263,8 @@ impl FileExplorerWidget {
             submenu_commands: Vec::new(),
             last_cursor: Point::ZERO,
             favs: places_sidebar::new_store(favorites),
+            places_shown: None,
+            places_choice: Rc::new(RefCell::new(None)),
             config_dir,
             zoom_level,
             show_hidden,
@@ -1498,11 +1506,9 @@ impl FileExplorerWidget {
         );
     }
 
-    /// The **places** pane (the window's sidebar): the Favorites and
-    /// locations list. The favourites live in the shared `FavStore`, so a
-    /// reorder or removal survives the rebuild of the list.
-    fn build_places_pane(&self) -> Box<dyn Widget> {
-        let places = Places::new(&self.favs, self.current_path.clone())
+    /// What the places list shows now: the Favorites and the locations.
+    fn current_places(&self) -> Places {
+        Places::new(&self.favs, self.current_path.clone())
             .with_workspaces(self.workspace_roots.clone())
             .with_remote_accounts(
                 self.remote_account_snapshot()
@@ -1515,8 +1521,29 @@ impl FileExplorerWidget {
                         account.mount.map(|mount| (account.label, mount, badge))
                     })
                     .collect(),
-            );
-        Box::new(places.nav_list(&self.cmds))
+            )
+    }
+
+    /// Put the **places** pane (the window's sidebar) in the shell. The list
+    /// keeps its own keyboard focus and scroll, so it is replaced only when
+    /// what it shows changes: its places, or the chosen one when the choice
+    /// did not come from the list itself.
+    fn refresh_places_pane(&mut self) {
+        let places = self.current_places();
+        let sections = places.sections();
+        let selected = places.selected_id();
+        if let Some((shown, chosen)) = &self.places_shown
+            && *shown == sections
+            && (*chosen == selected || *self.places_choice.borrow() == selected)
+        {
+            self.places_shown = Some((sections, selected));
+            return;
+        }
+        self.nav.set_sidebar(Some(Box::new(
+            places.nav_list(&self.cmds, &self.places_choice),
+        )));
+        *self.places_choice.borrow_mut() = None;
+        self.places_shown = Some((sections, selected));
     }
 
     /// The **content** pane (the responsive body's detail): the file list or
@@ -7477,7 +7504,7 @@ impl FileExplorerWidget {
                 } else {
                     Availability::Unavailable {
                         code: "location_unavailable".into(),
-                        reason: "The current location cannot be a favourite".into(),
+                        reason: "The current location cannot be a favorite".into(),
                     }
                 },
                 permission: PermissionRequirement::Write,
@@ -8282,7 +8309,7 @@ impl Widget for FileExplorerWidget {
         // doesn't snap the body or the path bar back mid-interaction.
         self.update_toolbar();
         self.composed_once = true;
-        self.nav.set_sidebar(Some(self.build_places_pane()));
+        self.refresh_places_pane();
         self.nav.set_content(self.build_content_pane(theme));
 
         // The shell fills the window; the item count / selection status floats
@@ -9103,7 +9130,7 @@ impl FileExplorerWidget {
                     }
                     "add-favorite" => {
                         if !self.current_path.is_dir() {
-                            return Err("the current location cannot be a favourite".into());
+                            return Err("the current location cannot be a favorite".into());
                         }
                         self.apply_command(FileCommand::AddFavorite(self.current_path.clone()));
                     }
