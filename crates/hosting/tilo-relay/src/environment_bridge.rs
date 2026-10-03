@@ -15,32 +15,31 @@ use serde::Serialize;
 use tilo_relay_client::{EnvironmentClientError, PtyEvent, PtyStream};
 use tilo_relay_protocol::environment::{
     DirectoryGrant, EnvironmentRecordRef, EnvironmentSpec, HomePolicy, MAX_SCROLLBACK_BYTES,
-    PtySize, Refusal, RuntimeImages, SessionId, ToolImage, this_architecture,
+    PtySize, Refusal, RuntimeImages, SessionId, ToolImage,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
 
 /// The wire form of an environment record: what a relay builds the guest
-/// from. The record's images are this device's architecture's; a relay of
-/// another architecture builds the tools it lacks. Grants are the record's
+/// from, images of every architecture included; a relay of an architecture
+/// a tool has no image for builds it. Grants are the record's
 /// `FsPath` grants for the runtime; read-write when the grant allows
 /// writing.
 #[must_use]
 pub fn environment_spec(environment: &tilo_environment::Environment) -> EnvironmentSpec {
     use collab_types::caps::{Scope, Verb};
-    let arch = this_architecture().to_owned();
     EnvironmentSpec {
         name: environment.name.clone(),
         runtime: RuntimeImages {
-            release: String::new(),
-            images: [(arch.clone(), environment.runtime.clone())].into(),
+            release: environment.runtime.release.clone(),
+            images: environment.runtime.images.clone(),
         },
         tools: environment
             .tools
             .iter()
             .map(|tool| ToolImage {
                 packages: tool.packages.clone(),
-                images: [(arch.clone(), tool.id.clone())].into(),
+                images: tool.images.clone(),
             })
             .collect(),
         grants: environment
@@ -267,10 +266,19 @@ mod tests {
     #[test]
     fn a_record_becomes_the_spec_a_relay_builds_from() {
         let runtime = tilo_environment::PackageId::from_bytes([1; 32]);
-        let mut environment = tilo_environment::Environment::new("Work", &runtime);
+        let mut environment =
+            tilo_environment::Environment::new("Work", "2026.10", "x86_64", &runtime);
+        environment
+            .runtime
+            .images
+            .insert("aarch64".into(), "tapp:arm".into());
         environment.tools.push(tilo_environment::ToolRef {
-            id: tilo_environment::PackageId::from_bytes([2; 32]).to_string(),
             packages: vec!["pandoc".into()],
+            images: [(
+                "aarch64".to_owned(),
+                tilo_environment::PackageId::from_bytes([2; 32]).to_string(),
+            )]
+            .into(),
         });
         environment.grants.0.push(
             tilo_environment::dir_grant(std::path::Path::new("/home/alice/src"), true).unwrap(),
@@ -280,10 +288,14 @@ mod tests {
         );
         let spec = environment_spec(&environment);
         assert!(spec.valid());
+        // Every architecture travels; the relay picks its own.
+        assert_eq!(spec.runtime.release, "2026.10");
+        assert_eq!(spec.runtime.images.len(), 2);
         assert_eq!(
-            spec.runtime.images.get(this_architecture()),
+            spec.runtime.images.get("x86_64"),
             Some(&runtime.to_string())
         );
+        assert!(spec.tools[0].images.contains_key("aarch64"));
         assert_eq!(spec.tools[0].packages, vec!["pandoc".to_owned()]);
         assert_eq!(
             spec.grants,

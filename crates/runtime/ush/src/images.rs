@@ -26,12 +26,13 @@ pub trait Images: Send + Sync {
     /// Returns why it may not be stacked there.
     fn check_tool(&self, tool: &PackageId, runtime: &PackageId) -> Result<(), String>;
 
-    /// The `env-runtime` a new environment starts on: the newest one this
-    /// device holds, the system store's shipped one included.
+    /// The `env-runtime` a new environment starts on — its release and this
+    /// architecture's image: the newest one this device holds, the system
+    /// store's shipped one included.
     ///
     /// # Errors
     /// Returns why there is none.
-    fn current_runtime(&self) -> Result<PackageId, String>;
+    fn current_runtime(&self) -> Result<(String, PackageId), String>;
 }
 
 /// OCI references (`host/repo[:tag]`, comma-separated) to fetch images no
@@ -54,16 +55,21 @@ impl StoreImages {
         Self { store }
     }
 
-    /// The device's stores, as the package store finds them.
+    /// The device's stores, as the package store finds them, also trusting
+    /// images this device signed — the tools its builder made.
     ///
     /// # Errors
     /// Returns why the stores cannot be opened.
     pub fn from_env() -> Result<Self, String> {
-        let store = package_store::Store::from_env().map_err(|e| e.to_string())?;
-        Ok(Self::new(match oci_fetcher_from_env()? {
-            Some(fetcher) => store.with_fetcher(fetcher),
-            None => store,
-        }))
+        let mut store = package_store::Store::from_env().map_err(|e| e.to_string())?;
+        if let Some(key) = device_publisher() {
+            let trust = store.trust().clone().with_publisher(key);
+            store = store.with_trust(trust);
+        }
+        if let Some(fetcher) = oci_fetcher_from_env()? {
+            store = store.with_fetcher(fetcher);
+        }
+        Ok(Self::new(store))
     }
 }
 
@@ -96,18 +102,27 @@ impl Images for StoreImages {
         package_store::check_tool_runtime(&self.store, tool, runtime).map_err(|e| e.to_string())
     }
 
-    fn current_runtime(&self) -> Result<PackageId, String> {
+    fn current_runtime(&self) -> Result<(String, PackageId), String> {
         let images = self.store.images().map_err(|e| e.to_string())?;
+        let for_this_arch = |meta: &&tilo_app_package::PackageMeta| {
+            let isa = &meta.manifest.package.isa;
+            if cfg!(target_arch = "aarch64") {
+                isa.aarch64.is_some()
+            } else {
+                isa.x86_64.is_some()
+            }
+        };
         images
             .iter()
             .filter(|meta| meta.manifest.package.kind == tilo_app_package::Kind::EnvRuntime)
+            .filter(for_this_arch)
             .max_by(|a, b| {
                 let version = |m: &tilo_app_package::PackageMeta| {
                     semver::Version::parse(&m.manifest.package.version).ok()
                 };
                 version(a).cmp(&version(b))
             })
-            .map(|meta| meta.id)
+            .map(|meta| (meta.manifest.package.version.clone(), meta.id))
             .ok_or_else(|| {
                 "no env-runtime image is installed; Tilo OS and the tilo-session-apps \
                  package ship one in the system app store"
@@ -128,13 +143,32 @@ impl Images for NoImages {
     fn check_tool(&self, _tool: &PackageId, _runtime: &PackageId) -> Result<(), String> {
         Err(self.0.clone())
     }
-    fn current_runtime(&self) -> Result<PackageId, String> {
+    fn current_runtime(&self) -> Result<(String, PackageId), String> {
         Err(self.0.clone())
     }
 }
 
+/// The public key of this device, whose key signs the tool images its
+/// builder makes. `None` where the session cannot read it.
+fn device_publisher() -> Option<[u8; 32]> {
+    let paths = std::env::var_os("TILO_IDENTITY_ROOT")
+        .filter(|root| !root.is_empty())
+        .map_or_else(
+            tilo_user_identity::IdentityPaths::default_system,
+            tilo_user_identity::IdentityPaths::under,
+        );
+    match tilo_user_identity::persist::load_device_key(&paths) {
+        Ok(key) => Some(key.verifying_key().to_bytes()),
+        Err(error) => {
+            tracing::debug!(%error, "no device key; tools built here are not trusted by key");
+            None
+        }
+    }
+}
+
 /// Already-materialised trees kept as `<root>/<hex id>/`, with the current
-/// runtime's id in `<root>/current-runtime` — fixture images for tests,
+/// runtime's id and release on the two lines of `<root>/current-runtime` —
+/// fixture images for tests,
 /// selected with `TILO_USH_IMAGES`. Every tool is taken to be built for the
 /// runtime it is listed with.
 #[derive(Debug, Clone)]
@@ -162,9 +196,12 @@ impl Images for DirImages {
         Ok(())
     }
 
-    fn current_runtime(&self) -> Result<PackageId, String> {
+    fn current_runtime(&self) -> Result<(String, PackageId), String> {
         let raw = std::fs::read_to_string(self.root.join("current-runtime"))
             .map_err(|e| format!("no env-runtime is installed: {e}"))?;
-        tilo_environment::parse_image(raw.trim())
+        let mut lines = raw.lines();
+        let id = tilo_environment::parse_image(lines.next().unwrap_or_default().trim())?;
+        let release = lines.next().unwrap_or("fixture").trim().to_owned();
+        Ok((release, id))
     }
 }

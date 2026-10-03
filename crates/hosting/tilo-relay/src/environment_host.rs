@@ -310,9 +310,6 @@ pub struct Guest {
     pub input: Pin<Box<dyn AsyncWrite + Send>>,
     /// Resize and teardown.
     pub control: Box<dyn GuestControl>,
-    /// Tool images built for this worker's architecture to start the
-    /// guest; the member's terminal is told of them.
-    pub built_tools: Vec<ToolImage>,
 }
 
 /// Out-of-band control of a running guest.
@@ -733,20 +730,11 @@ impl EnvironmentHost {
             output,
             input,
             control,
-            built_tools,
         } = guest;
         let slot = Arc::new(Slot {
             id: session,
             owner: member,
-            known_tools: Mutex::new(
-                request
-                    .spec
-                    .tools
-                    .iter()
-                    .chain(&built_tools)
-                    .filter_map(own_image)
-                    .collect(),
-            ),
+            known_tools: Mutex::new(request.spec.tools.iter().filter_map(own_image).collect()),
             record: request.record,
             opened_at: Instant::now(),
             input: tokio::sync::Mutex::new(input),
@@ -757,7 +745,7 @@ impl EnvironmentHost {
                 next_generation: 0,
                 last_activity: Instant::now(),
                 ended: false,
-                pending_tools: built_tools,
+                pending_tools: Vec::new(),
             }),
         });
         self.sessions().insert(session, Arc::clone(&slot));

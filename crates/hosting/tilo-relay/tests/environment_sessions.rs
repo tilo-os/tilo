@@ -90,7 +90,6 @@ impl GuestLauncher for EchoLauncher {
             output: Box::pin(output),
             input: Box::pin(input),
             control: Box::new(EchoControl(Mutex::new(Some(stop)))),
-            built_tools: Vec::new(),
         })
     }
 }

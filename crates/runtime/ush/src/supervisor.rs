@@ -169,25 +169,66 @@ impl Session {
         let (key, environment) = self
             .records()
             .resolve(self.opts.environment.as_deref(), &*self.images)?;
-        let mut images = Vec::new();
-        let runtime = environment.runtime_id().map_err(anyhow::Error::msg)?;
-        let tools = environment
-            .tool_ids_topmost_first()
+        let arch = tilo_environment::host_arch();
+        let runtime = environment
+            .runtime_image(arch)
             .map_err(anyhow::Error::msg)?;
-        for (id, tool) in tools.iter().zip(environment.tools.iter().rev()) {
-            self.images
-                .check_tool(id, &runtime)
-                .map_err(anyhow::Error::msg)?;
-            let tree = self.images.tree(id).map_err(anyhow::Error::msg)?;
-            images.push((format!("tool {id} ({})", tool.packages.join(", ")), tree));
+        let mut images = Vec::new();
+        let mut environment = environment;
+        let tools = environment.tools.clone();
+        for tool in tools.iter().rev() {
+            let label = format!("tool ({})", tool.packages.join(", "));
+            let id = match self.tool_image(tool, &runtime) {
+                Ok(id) => id,
+                Err(missing) => {
+                    // No usable image for this architecture yet: build it here,
+                    // for the same packages on this node's image of the
+                    // runtime, and record it so the next session is a hit.
+                    eprintln!("ush: {missing}; building it for {arch}…");
+                    let id = self
+                        .builder
+                        .build(&runtime, &tool.packages, &mut std::io::stderr())
+                        .map_err(|e| anyhow::anyhow!("{missing}, and {e}"))?;
+                    environment = self.records().apply(
+                        &key,
+                        Environment::ADD_TOOL.with((
+                            tool.packages.clone(),
+                            arch.to_owned(),
+                            id.to_string(),
+                        )),
+                    )?;
+                    id
+                }
+            };
+            let tree = self.images.tree(&id).map_err(anyhow::Error::msg)?;
+            images.push((format!("{label} {id}"), tree));
         }
         let tree = self.images.tree(&runtime).map_err(anyhow::Error::msg)?;
-        images.push((format!("runtime {runtime}"), tree));
+        images.push((
+            format!("runtime {} {runtime}", environment.runtime.release),
+            tree,
+        ));
         Ok(Resolved {
             key,
             environment,
             images,
         })
+    }
+
+    /// This node's image of `tool`, checked to be built for `runtime` and
+    /// available here; the reason when there is none to use.
+    fn tool_image(
+        &self,
+        tool: &tilo_environment::ToolRef,
+        runtime: &tilo_environment::PackageId,
+    ) -> Result<tilo_environment::PackageId, String> {
+        let arch = tilo_environment::host_arch();
+        let id = tool
+            .image(arch)?
+            .ok_or_else(|| format!("{} has no image for {arch}", tool.packages.join(", ")))?;
+        self.images.check_tool(&id, runtime)?;
+        self.images.tree(&id)?;
+        Ok(id)
     }
 
     /// Build the plan for this session: everything the guest will be is decided
@@ -912,8 +953,8 @@ mod tests {
                 Ok(())
             }
         }
-        fn current_runtime(&self) -> Result<PackageId, String> {
-            Ok(PackageId::from_bytes([1; 32]))
+        fn current_runtime(&self) -> Result<(String, PackageId), String> {
+            Ok(("2026.10".into(), PackageId::from_bytes([1; 32])))
         }
     }
 
@@ -961,8 +1002,9 @@ mod tests {
             .apply(
                 DEFAULT_RECORD,
                 Environment::ADD_TOOL.with((
-                    PackageId::from_bytes([2; 32]).to_string(),
                     vec!["pandoc".into()],
+                    tilo_environment::host_arch().to_owned(),
+                    PackageId::from_bytes([2; 32]).to_string(),
                 )),
             )
             .unwrap();
@@ -1001,41 +1043,90 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_missing_image_or_record_stops_the_session_with_the_reason() {
-        let dir = tempfile::tempdir().unwrap();
-        let session = session_in(dir.path());
-        session.resolve().unwrap();
+    fn add_tool(session: &Session, package: &str, arch: &str, byte: u8) {
         session
             .records()
             .apply(
                 DEFAULT_RECORD,
                 Environment::ADD_TOOL.with((
-                    PackageId::from_bytes([7; 32]).to_string(),
-                    vec!["gone".into()],
+                    vec![package.into()],
+                    arch.into(),
+                    PackageId::from_bytes([byte; 32]).to_string(),
                 )),
             )
             .unwrap();
+    }
+
+    struct BuildsTwo;
+    impl ToolBuilder for BuildsTwo {
+        fn build(
+            &self,
+            runtime: &PackageId,
+            _packages: &[String],
+            _progress: &mut dyn Write,
+        ) -> Result<PackageId, tilo_environment::ToolBuildError> {
+            if *runtime == PackageId::from_bytes([1; 32]) {
+                Ok(PackageId::from_bytes([2; 32]))
+            } else {
+                Err(tilo_environment::ToolBuildError::Failed(
+                    "wrong runtime".into(),
+                ))
+            }
+        }
+    }
+
+    #[test]
+    fn a_tool_without_an_image_here_is_built_here_and_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = session_in(dir.path());
+        session.builder = Arc::new(BuildsTwo);
+        session.resolve().unwrap();
+        let other = if tilo_environment::host_arch() == "x86_64" {
+            "aarch64"
+        } else {
+            "x86_64"
+        };
+        add_tool(&session, "pandoc", other, 5);
+
+        let resolved = session.resolve().unwrap();
+        assert!(
+            resolved.images[0].0.contains("pandoc"),
+            "{:?}",
+            resolved.images
+        );
+        let tool = &resolved.environment.tools[0];
+        assert_eq!(
+            tool.image(tilo_environment::host_arch()).unwrap(),
+            Some(PackageId::from_bytes([2; 32])),
+            "the image built here is recorded next to the other architecture's"
+        );
+        assert_eq!(
+            tool.image(other).unwrap(),
+            Some(PackageId::from_bytes([5; 32]))
+        );
+    }
+
+    #[test]
+    fn a_tool_that_cannot_be_used_or_built_stops_the_session_with_the_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = session_in(dir.path());
+        session.resolve().unwrap();
+        let arch = tilo_environment::host_arch();
+        add_tool(&session, "gone", arch, 7);
         let err = session.resolve().unwrap_err().to_string();
-        assert!(err.contains("is not here"), "{err}");
+        assert!(
+            err.contains("is not here") && err.contains("not available"),
+            "{err}"
+        );
 
         session
             .records()
             .apply(
                 DEFAULT_RECORD,
-                Environment::REMOVE_TOOL.with(PackageId::from_bytes([7; 32]).to_string()),
+                Environment::REMOVE_TOOL.with(vec!["gone".into()]),
             )
             .unwrap();
-        session
-            .records()
-            .apply(
-                DEFAULT_RECORD,
-                Environment::ADD_TOOL.with((
-                    PackageId::from_bytes([9; 32]).to_string(),
-                    vec!["elsewhere".into()],
-                )),
-            )
-            .unwrap();
+        add_tool(&session, "elsewhere", arch, 9);
         let err = session.resolve().unwrap_err().to_string();
         assert!(err.contains("another runtime"), "{err}");
 

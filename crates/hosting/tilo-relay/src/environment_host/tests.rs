@@ -94,7 +94,6 @@ impl GuestLauncher for EchoLauncher {
                 stop: Mutex::new(Some(stop)),
                 sizes: Arc::clone(&self.sizes),
             }),
-            built_tools: Vec::new(),
         })
     }
 }
