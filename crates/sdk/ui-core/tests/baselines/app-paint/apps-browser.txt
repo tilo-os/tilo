@@ -1,0 +1,12 @@
+# The app-paint ratchet for apps-browser: counts may only fall (HIG §9.13).
+# Format: <path relative to the repository root> <pattern> <count>
+# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
+apps/browser/src/address_overlay.rs legacy_alias 2
+apps/browser/src/address_overlay.rs literal_alpha 1
+apps/browser/src/address_overlay.rs raw_paint 4
+apps/browser/src/browser_tab_strip.rs desktop_ground 1
+apps/browser/src/browser_tab_strip.rs literal_radius 1
+apps/browser/src/browser_tab_strip.rs raw_paint 7
+apps/browser/src/main.rs glyph_icon 1
+apps/browser/src/main.rs legacy_alias 2
+apps/browser/src/main.rs transparent_shot 1
