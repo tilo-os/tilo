@@ -488,7 +488,7 @@ impl Theme {
         );
         tokens.spacing =
             crate::tokens::Spacing::BASE.scaled(spacing_px / crate::tokens::Spacing::BASE.s3);
-        tokens.typography.sans_family.clone_from(&spec.font);
+        tokens.typography.set_face(&spec.font);
         apply_authored_scales(&mut tokens, spec);
         Some(Self::from_tokens(&spec.name, tokens))
     }
@@ -535,6 +535,7 @@ impl Theme {
             forced_colors: admitted && file.forced_colors,
             thick_caret: admitted && file.thick_caret,
             reduce_transparency: admitted && file.reduce_transparency,
+            hyperlegible: admitted && file.hyperlegible,
             text_scale: 1.0,
             ui_scale: 1.0,
             reduce_motion: reduce_motion_override,

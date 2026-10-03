@@ -23,7 +23,7 @@ use std::path::Path;
 
 use regex::Captures;
 
-use crate::support::ratchet::{Pattern, Ratchet};
+use crate::support::ratchet::{Pattern, Ratchet, no_exemptions};
 
 /// The type system's own definitions and the text engine behind it.
 fn is_type_engine(path: &Path) -> bool {
@@ -88,6 +88,27 @@ pub fn typography_ratchet() -> Ratchet {
         advice: "Give text a TextRole (Display, LargeTitle, Title, Heading, Subheading, Body, \
                  Label, Caption, Reading, Code) with .strong() / .numeric() / .italic() \
                  modifiers; the theme owns size, weight and leading.",
+    }
+}
+
+/// Applications never pick OpenType features: they say what text is (a
+/// `TextKind`, or a widget that knows) and the toolkit resolves the features
+/// against the face. Every raw feature setting in an app is counted here and
+/// may only fall.
+pub fn opentype_ratchet() -> Ratchet {
+    Ratchet {
+        name: "opentype",
+        roots: &["apps/*/src"],
+        patterns: vec![Pattern::new(
+            "raw_opentype_feature",
+            r#"\.with_(?:font_feature|kerning|discretionary_ligatures|small_caps|numeric_style)\(|OpenTypeTag::new\(|FeatureTag::new\(|b"(?:tnum|pnum|lnum|onum|zero|smcp|c2sc|liga|dlig|kern|case|frac|(?:ss|cv)\d\d)""#,
+            "raw OpenType feature — say what the text is with a TextKind \
+             (Numeric, Secret, Identifier, Code) and let the toolkit pick the features",
+        )],
+        exempt: no_exemptions,
+        advice: "Give text a TextKind (`Text::with_kind`, `TextStyle::with_kind`, \
+                 `ColumnDef::with_kind`, a `TextInputKind`) or use a widget that knows \
+                 its content; the toolkit applies the features the active face supports.",
     }
 }
 
@@ -197,4 +218,33 @@ fn typography_patterns_match_exactly_the_shapes_they_name() {
 #[test]
 fn typography_literals_do_not_grow() {
     typography_ratchet().check();
+}
+
+#[test]
+fn opentype_pattern_matches_raw_feature_settings_only() {
+    let ratchet = opentype_ratchet();
+    let pattern = ratchet.pattern("raw_opentype_feature");
+    for line in [
+        ".with_numeric_style(NumericStyle::TabularLining)",
+        "style.with_font_feature(OpenTypeTag::new(*b\"ss01\"), 1)",
+        "Text::new(s).with_kerning(false)",
+        "FeatureTag::new(b\"zero\")",
+        "let tag = *b\"cv11\";",
+    ] {
+        assert!(pattern.hits(line) > 0, "must count {line:?}");
+    }
+    for line in [
+        "Text::new(s).numeric()",
+        "Text::new(code).with_kind(TextKind::Secret)",
+        "ColumnDef::new(k, h, w).with_kind(TextKind::Numeric)",
+        "let label = b\"kernel\";",
+    ] {
+        assert_eq!(pattern.hits(line), 0, "must not count {line:?}");
+    }
+}
+
+/// Raw OpenType feature settings in apps may not grow.
+#[test]
+fn opentype_features_stay_out_of_apps() {
+    opentype_ratchet().check();
 }
