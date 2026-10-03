@@ -10,13 +10,12 @@ use std::{
 use taffy::{NodeId, TaffyTree};
 use ui::icons::Icon;
 use ui::tokens::{Metrics, spacing::Spacing};
-use ui::widget::toolbar::Orientation;
 use ui::widget::{
-    Actions, Banner, Button, ButtonRole, Card, CardGrid, Column, Container, ControlSize, Dropdown,
-    Element, EmptyState, Field, LabelPlacement, ModalDialog, ModelView, NavItem, NavList,
-    NavSection, NavShell, ProgressRing, Property, PropertyList, Row, Scrollable, Section,
-    SectionHeader, Stack, Text, TextInput, TextInputKind, TimePicker, TimeValue, Toggle, Toolbar,
-    Widget,
+    Actions, Banner, Button, ButtonRole, Card, CardGrid, CardWidth, Checkbox, Column, Container,
+    ControlSize, Dropdown, Element, EmptyState, Field, LabelPlacement, ListRow, ModalDialog,
+    ModelView, NavItem, NavList, NavSection, NavShell, NumberInput, ProgressRing, Property,
+    PropertyList, Row, Scrollable, Section, SectionHeader, Stack, Text, TextInput, TextInputKind,
+    Toggle, Widget,
 };
 use ui::widget::{AppModel, ModelPath};
 use ui::{TextKind, TextRole};
@@ -45,11 +44,6 @@ fn text(label: &str, role: TextRole) -> Text {
 /// A secondary button that runs `f`.
 fn button(id: &str, label: &str, f: impl FnMut() + 'static) -> Button {
     Button::new(id, label, None).on_effect(f)
-}
-
-/// An icon-only plain button that runs `f`.
-fn icon_button(id: &str, icon: Icon, name: &str, f: impl FnMut() + 'static) -> Button {
-    Button::icon_only(id, icon, name).on_effect(f)
 }
 
 pub(crate) fn duration(ms: u64) -> String {
@@ -87,22 +81,32 @@ fn timer_label(input: &str) -> String {
     }
 }
 
-fn duration_component(input: &str, upper_bound: u64) -> Option<u64> {
-    let input = input.trim();
-    (!input.is_empty() && input.chars().all(|character| character.is_ascii_digit()))
-        .then(|| input.parse::<u64>().ok())
-        .flatten()
-        .filter(|value| *value <= upper_bound)
+/// How long a custom timer runs, or `None` when it would not run at all.
+fn custom_timer_duration_seconds(hours: f64, minutes: f64, seconds: f64) -> Option<u64> {
+    let whole = |value: f64, upper_bound: f64| {
+        (value.is_finite() && (0.0..=upper_bound).contains(&value)).then(|| value.round())
+    };
+    let hours = whole(hours, 99.0)?;
+    let minutes = whole(minutes, 59.0)?;
+    let seconds = whole(seconds, 59.0)?;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "each field is a whole number checked against its range above"
+    )]
+    let total = (hours * 3_600.0 + minutes * 60.0 + seconds) as u64;
+    (total > 0).then_some(total)
 }
 
-fn custom_timer_duration_seconds(hours: &str, minutes: &str, seconds: &str) -> Option<u64> {
-    let hours = duration_component(hours, 99)?;
-    let minutes = duration_component(minutes, 59)?;
-    let seconds = duration_component(seconds, 59)?;
-    hours
-        .checked_mul(3_600)?
-        .checked_add(minutes.checked_mul(60)?)?
-        .checked_add(seconds)
+/// A stepper's value as a whole number of hours or minutes, at most `upper`.
+fn time_of(value: f64, upper: u32) -> u32 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the value is clamped to the unit's range first"
+    )]
+    let whole = value.clamp(0.0, f64::from(upper)).round() as u32;
+    whole
 }
 
 fn alarm_label(input: &str) -> String {
@@ -271,21 +275,44 @@ fn fields(items: Vec<Element>) -> Column {
     )
 }
 
-/// The weekday choices of the new alarm form, one toggle per day.
+/// The weekday choices of the new alarm form: a strip of seven equal days,
+/// each a checkbox under its short name.
 fn weekday_picker(days: &[ui::LocalState<bool>]) -> Element {
-    let mut picker = Toolbar::new(Orientation::Horizontal);
-    for ((_, label), state) in WEEKDAYS.iter().zip(days) {
-        let day = state.clone();
-        picker = picker.push_toggle(label, state.get(), move || day.update(|on| *on = !*on));
+    let mut picker = Row::new().with_gap(Spacing::BASE.s1);
+    for ((day, label), state) in WEEKDAYS.iter().zip(days) {
+        picker = picker.push(Box::new(
+            Container::new()
+                .with_no_padding()
+                .with_width(Metrics::BASE.min_pointer_target)
+                .with_child(Box::new(
+                    Column::new()
+                        .with_no_padding()
+                        .with_intrinsic_height()
+                        .with_gap(Spacing::BASE.s1)
+                        .push(Box::new(text(label, TextRole::Label).dimmed()))
+                        .push(Box::new(
+                            Checkbox::from_state(state)
+                                .with_id(&format!("clocks.alarm.day.{day:?}"))
+                                .with_accessible_name(&day_name(*day)),
+                        )),
+                )),
+        ));
     }
-    Box::new(
-        Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(Spacing::BASE.s2)
-            .push(Box::new(text("Repeat", TextRole::Label)))
-            .push(Box::new(picker)),
-    )
+    labelled("Repeat", Box::new(picker))
+}
+
+/// A weekday's full name, for assistive technology.
+fn day_name(day: WeekdayKey) -> String {
+    match day {
+        WeekdayKey::Mon => "Monday",
+        WeekdayKey::Tue => "Tuesday",
+        WeekdayKey::Wed => "Wednesday",
+        WeekdayKey::Thu => "Thursday",
+        WeekdayKey::Fri => "Friday",
+        WeekdayKey::Sat => "Saturday",
+        WeekdayKey::Sun => "Sunday",
+    }
+    .to_owned()
 }
 
 /// The current wall-clock second: what a live readout is keyed on.
@@ -299,7 +326,6 @@ fn local_time_block() -> Column {
         .with_no_padding()
         .with_intrinsic_height()
         .with_gap(Spacing::BASE.s1)
-        .push(Box::new(text("Local time", TextRole::Caption).dimmed()))
         .push(Box::new(
             Text::dynamic(|| ui::clock::local_now().format("%H:%M").to_string())
                 .with_role(TextRole::Display)
@@ -312,44 +338,19 @@ fn local_time_block() -> Column {
         ))
 }
 
-/// One city, as a card with its time and how far it is from here.
-fn city_card(state: &ui::LocalState<ClockState>, clock: &WorldClock) -> Element {
+/// One city: its name and how far it is from here, with its time beside it.
+fn city_row(state: &ui::LocalState<ClockState>, clock: &WorldClock) -> Element {
     let id = clock.id;
     let remove = state.clone();
-    let (time_zone, relation_zone) = (clock.timezone.clone(), clock.timezone.clone());
-    let body = Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .with_gap(Spacing::BASE.s1)
-        .push(Box::new(
-            Text::dynamic(move || {
-                city_time(&time_zone).map_or_else(|| "--:--".into(), |(time, _)| time)
-            })
-            .with_role(TextRole::Title)
-            .numeric(),
-        ))
-        .push(Box::new(
-            Text::dynamic(move || {
-                city_time(&relation_zone)
-                    .map_or_else(|| "Time unavailable".into(), |(_, relation)| relation)
-            })
-            .with_role(TextRole::Caption)
-            .dimmed(),
-        ));
-    let name = format!("Remove {}", clock.city);
+    let (time, relation) =
+        city_time(&clock.timezone).unwrap_or_else(|| ("--:--".into(), "Time unavailable".into()));
     Box::new(
-        Card::new(Box::new(body)).with_title_action(
-            &clock.city,
-            Box::new(
-                icon_button(
-                    &format!("clocks.world.{id}.remove"),
-                    Icon::Trash2,
-                    &name,
-                    move || remove.update(|s| s.world_clocks.retain(|c| c.id != id)),
-                )
-                .tooltip(name.clone()),
-            ),
-        ),
+        ListRow::new(format!("clocks.world.{id}"), &clock.city)
+            .secondary(relation)
+            .meta(time)
+            .action(Icon::Trash2, format!("Remove {}", clock.city), move || {
+                remove.update(|s| s.world_clocks.retain(|c| c.id != id));
+            }),
     )
 }
 
@@ -386,22 +387,25 @@ fn world_screen(state: &ui::LocalState<ClockState>) -> Element {
     let list_state = state.clone();
     let cities = ModelView::from_state_by(
         state,
-        |s| s.world_clocks.clone(),
+        // The times show the minute, so the list is built again each minute.
+        |s| {
+            (
+                s.world_clocks.clone(),
+                ui::clock::local_now().timestamp() / 60,
+            )
+        },
         move |s| {
             if s.world_clocks.is_empty() {
                 return Box::new(
                     EmptyState::new("Add a city to compare times").with_icon(Icon::Globe),
                 ) as Element;
             }
-            let cards: Vec<Element> = s
+            let rows: Vec<Element> = s
                 .world_clocks
                 .iter()
-                .map(|clock| city_card(&list_state, clock))
+                .map(|clock| city_row(&list_state, clock))
                 .collect();
-            Box::new(Section::titled(
-                "Cities",
-                vec![Box::new(CardGrid::new(cards))],
-            ))
+            Box::new(Section::titled("Cities", rows))
         },
     );
     Box::new(
@@ -428,30 +432,72 @@ fn world_screen(state: &ui::LocalState<ClockState>) -> Element {
 /// are rebuilt when a notice appears or goes.
 #[derive(Clone)]
 struct Drafts {
-    alarm_time: ui::LocalState<TimeValue>,
+    alarm_hours: ui::LocalState<f64>,
+    alarm_minutes: ui::LocalState<f64>,
     alarm_label: ui::LocalState<String>,
     alarm_days: Vec<ui::LocalState<bool>>,
     timer_label: ui::LocalState<String>,
-    timer_hours: ui::LocalState<String>,
-    timer_minutes: ui::LocalState<String>,
-    timer_seconds: ui::LocalState<String>,
+    timer_hours: ui::LocalState<f64>,
+    timer_minutes: ui::LocalState<f64>,
+    timer_seconds: ui::LocalState<f64>,
 }
 
 impl Drafts {
     fn new() -> Self {
         Self {
-            alarm_time: ui::LocalState::new(TimeValue::new(7, 30)),
+            alarm_hours: ui::LocalState::new(7.0),
+            alarm_minutes: ui::LocalState::new(30.0),
             alarm_label: ui::LocalState::new(String::new()),
             alarm_days: WEEKDAYS
                 .iter()
                 .map(|_| ui::LocalState::new(false))
                 .collect(),
             timer_label: ui::LocalState::new(String::new()),
-            timer_hours: ui::LocalState::new("00".to_string()),
-            timer_minutes: ui::LocalState::new("10".to_string()),
-            timer_seconds: ui::LocalState::new("00".to_string()),
+            timer_hours: ui::LocalState::new(0.0),
+            timer_minutes: ui::LocalState::new(10.0),
+            timer_seconds: ui::LocalState::new(0.0),
         }
     }
+}
+
+/// A stepper for one part of a time, with its unit beside the value.
+fn time_part(
+    id: &str,
+    name: &str,
+    unit: &str,
+    max: f64,
+    state: &ui::LocalState<f64>,
+) -> NumberInput {
+    NumberInput::from_state(state)
+        .with_id(id)
+        .with_accessible_name(name)
+        .with_range(0.0, max)
+        .with_suffix(&format!(" {unit}"))
+        .compact()
+}
+
+/// A control that is not a single form control, with its label above it as a
+/// field's is.
+fn labelled(label: &str, control: Element) -> Element {
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(Spacing::BASE.s2)
+            .push(Box::new(text(label, TextRole::Label)))
+            .push(control),
+    )
+}
+
+/// A row of steppers, one per part of a time.
+fn stepper_row(parts: Vec<NumberInput>) -> Element {
+    Box::new(
+        parts
+            .into_iter()
+            .fold(Row::new().with_gap(Spacing::BASE.s4), |row, part| {
+                row.push(Box::new(part))
+            }),
+    )
 }
 
 /// One alarm, as a card with its on/off switch.
@@ -506,7 +552,7 @@ fn new_alarm_dialog(
     dialog: &ui::LocalState<Option<Dialog>>,
 ) -> Element {
     let add_state = state.clone();
-    let add_time = drafts.alarm_time.clone();
+    let (add_hours, add_minutes) = (drafts.alarm_hours.clone(), drafts.alarm_minutes.clone());
     let add_label = drafts.alarm_label.clone();
     let add_days = drafts.alarm_days.clone();
     let add_dialog = dialog.clone();
@@ -523,14 +569,24 @@ fn new_alarm_dialog(
             )
             .with_label_placement(Some(LabelPlacement::Above)),
         ),
-        Box::new(
-            Field::new(
-                "Time",
-                TimePicker::from_state(&drafts.alarm_time)
-                    .with_id("clocks.alarm.time")
-                    .with_accessible_name("Alarm time"),
-            )
-            .with_label_placement(Some(LabelPlacement::Above)),
+        labelled(
+            "Time",
+            stepper_row(vec![
+                time_part(
+                    "clocks.alarm.hours",
+                    "Alarm hour",
+                    "h",
+                    23.0,
+                    &drafts.alarm_hours,
+                ),
+                time_part(
+                    "clocks.alarm.minutes",
+                    "Alarm minute",
+                    "min",
+                    59.0,
+                    &drafts.alarm_minutes,
+                ),
+            ]),
         ),
         weekday_picker(&drafts.alarm_days),
     ]);
@@ -538,7 +594,7 @@ fn new_alarm_dialog(
         ModalDialog::new("New alarm", form)
             .open(true)
             .primary_action("Add alarm", move || {
-                let t = add_time.get();
+                let (hours, minutes) = (add_hours.get(), add_minutes.get());
                 let weekdays: BTreeSet<WeekdayKey> = WEEKDAYS
                     .iter()
                     .zip(&add_days)
@@ -548,8 +604,12 @@ fn new_alarm_dialog(
                     s.alarms.push(Alarm {
                         id: Uuid::new_v4(),
                         label: alarm_label(&add_label.get()),
-                        local_time: NaiveTime::from_hms_opt(t.hours.into(), t.minutes.into(), 0)
-                            .unwrap_or_default(),
+                        local_time: NaiveTime::from_hms_opt(
+                            time_of(hours, 23),
+                            time_of(minutes, 59),
+                            0,
+                        )
+                        .unwrap_or_default(),
                         weekdays,
                         enabled: true,
                         last_fired_local_date: None,
@@ -578,7 +638,9 @@ fn alarms_screen(state: &ui::LocalState<ClockState>) -> Element {
             .iter()
             .map(|alarm| alarm_card(&list_state, alarm))
             .collect();
-        Box::new(Section::new(vec![Box::new(CardGrid::new(cards))]))
+        Box::new(Section::new(vec![Box::new(
+            CardGrid::new(cards).with_card_width(CardWidth::Wide),
+        )]))
     });
     Box::new(
         Column::new()
@@ -678,19 +740,56 @@ fn timer_ring(state: &ui::LocalState<ClockState>, id: Uuid) -> ModelView<RingKey
                 remaining_ms,
                 timer.duration_ms,
             )))
-            .value(duration(remaining_ms))
-            .caption(match timer_phase(timer) {
-                TimerPhase::Running => "Running",
-                TimerPhase::Finished => "Finished",
-                TimerPhase::Paused => "Paused",
-            });
+            .value(duration(remaining_ms));
             Box::new(
                 Row::new()
-                    .with_justify(taffy::JustifyContent::Center)
-                    .push(Box::new(ring)),
+                    .no_wrap()
+                    .with_padding(0.0, Spacing::BASE.s2)
+                    .with_gap(Spacing::BASE.s6)
+                    .with_align_items(taffy::AlignItems::Center)
+                    .push(Box::new(ring))
+                    .push(Box::new(timer_facts(timer))),
             )
         },
     )
+}
+
+/// What a timer is doing and what it was set for, beside its ring.
+fn timer_facts(timer: &Timer) -> Column {
+    let status = match (timer_phase(timer), timer.ends_at_utc) {
+        (TimerPhase::Running, Some(ends)) => format!(
+            "Ends at {}",
+            ends.with_timezone(&chrono::Local).format("%H:%M")
+        ),
+        (TimerPhase::Running, None) => "Running".to_owned(),
+        (TimerPhase::Paused, _) => "Paused".to_owned(),
+        (TimerPhase::Finished, _) => "Finished".to_owned(),
+    };
+    Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_gap(Spacing::BASE.s1)
+        .push(Box::new(text(&status, TextRole::Body).numeric()))
+        .push(Box::new(
+            text(
+                &format!("{} timer", length_label(timer.duration_ms)),
+                TextRole::Caption,
+            )
+            .dimmed(),
+        ))
+}
+
+/// A duration in words: "45 s", "5 min", "1 h 30 min".
+fn length_label(ms: u64) -> String {
+    let seconds = ms / 1_000;
+    let (hours, minutes, seconds) = (seconds / 3_600, seconds / 60 % 60, seconds % 60);
+    match (hours, minutes, seconds) {
+        (0, 0, seconds) => format!("{seconds} s"),
+        (0, minutes, 0) => format!("{minutes} min"),
+        (0, minutes, seconds) => format!("{minutes} min {seconds} s"),
+        (hours, 0, 0) => format!("{hours} h"),
+        (hours, minutes, _) => format!("{hours} h {minutes} min"),
+    }
 }
 
 /// What a ring's key holds: the second, and the timer's countdown fields.
@@ -717,24 +816,22 @@ fn timer_phase(timer: &Timer) -> TimerPhase {
 fn timer_card(state: &ui::LocalState<ClockState>, timer: &Timer) -> Element {
     let id = timer.id;
     let pin = state.clone();
-    let float_name = if timer.pinned_overlay {
-        "Stop floating timer"
+    let (float_label, float_name) = if timer.pinned_overlay {
+        ("Stop floating", "Stop floating timer")
     } else {
-        "Float timer above other windows"
+        ("Float", "Float timer above other windows")
     };
-    let pin_button = icon_button(
-        &format!("clocks.timer.{id}.pin"),
-        Icon::PictureInPicture2,
-        float_name,
-        move || {
-            pin.update(|s| {
-                if let Some(t) = s.timers.iter_mut().find(|t| t.id == id) {
-                    t.pinned_overlay = !t.pinned_overlay;
-                }
-            });
-        },
-    )
-    .tooltip(float_name);
+    let pin_button = button(&format!("clocks.timer.{id}.pin"), float_label, move || {
+        pin.update(|s| {
+            if let Some(t) = s.timers.iter_mut().find(|t| t.id == id) {
+                t.pinned_overlay = !t.pinned_overlay;
+            }
+        });
+    })
+    .role(ButtonRole::Plain)
+    .control_size(ControlSize::Small)
+    .with_icon(Icon::PictureInPicture2)
+    .with_accessible_name(float_name);
     let finished = timer_phase(timer) == TimerPhase::Finished;
     Box::new(
         Card::new(Box::new(timer_ring(state, id)))
@@ -750,30 +847,17 @@ fn new_timer_dialog(
     validation_error: &ui::LocalState<Option<String>>,
     dialog: &ui::LocalState<Option<Dialog>>,
 ) -> Element {
-    // Keep the components as distinct fields. A spinner row looked compact at
-    // default size but allowed its values and arrow targets to collide at 200%
-    // text, which made setting a duration unreliable with touch or a screen
-    // magnifier.
     let add_state = state.clone();
-    let add_hours = drafts.timer_hours.clone();
-    let add_minutes = drafts.timer_minutes.clone();
-    let add_seconds = drafts.timer_seconds.clone();
+    let (add_hours, add_minutes, add_seconds) = (
+        drafts.timer_hours.clone(),
+        drafts.timer_minutes.clone(),
+        drafts.timer_seconds.clone(),
+    );
     let add_label = drafts.timer_label.clone();
     let add_error = validation_error.clone();
     let add_dialog = dialog.clone();
     let cancel = dialog.clone();
     let dismiss = dialog.clone();
-    let duration_field = |label: &str, id: &str, name: &str, state: &ui::LocalState<String>| {
-        Field::new(
-            label,
-            TextInput::from_state(state)
-                .with_id(id)
-                .with_kind(TextInputKind::Number)
-                .with_accessible_name(name)
-                .with_placeholder("00"),
-        )
-        .with_label_placement(Some(LabelPlacement::Above))
-    };
     let error = ModelView::from_state(validation_error, |message| {
         message.as_ref().map_or_else(
             || Box::new(Column::new().with_no_padding().with_intrinsic_height()) as Element,
@@ -794,24 +878,32 @@ fn new_timer_dialog(
             )
             .with_label_placement(Some(LabelPlacement::Above)),
         ),
-        Box::new(duration_field(
-            "Hours",
-            "clocks.timer.custom.hours",
-            "Timer duration hours",
-            &drafts.timer_hours,
-        )),
-        Box::new(duration_field(
-            "Minutes",
-            "clocks.timer.custom.minutes",
-            "Timer duration minutes",
-            &drafts.timer_minutes,
-        )),
-        Box::new(duration_field(
-            "Seconds",
-            "clocks.timer.custom.seconds",
-            "Timer duration seconds",
-            &drafts.timer_seconds,
-        )),
+        labelled(
+            "Duration",
+            stepper_row(vec![
+                time_part(
+                    "clocks.timer.custom.hours",
+                    "Timer duration hours",
+                    "h",
+                    99.0,
+                    &drafts.timer_hours,
+                ),
+                time_part(
+                    "clocks.timer.custom.minutes",
+                    "Timer duration minutes",
+                    "min",
+                    59.0,
+                    &drafts.timer_minutes,
+                ),
+                time_part(
+                    "clocks.timer.custom.seconds",
+                    "Timer duration seconds",
+                    "s",
+                    59.0,
+                    &drafts.timer_seconds,
+                ),
+            ]),
+        ),
         Box::new(error),
     ]);
     Box::new(
@@ -819,21 +911,15 @@ fn new_timer_dialog(
             .open(true)
             .primary_action("Start timer", move || {
                 let Some(secs) = custom_timer_duration_seconds(
-                    &add_hours.get(),
-                    &add_minutes.get(),
-                    &add_seconds.get(),
+                    add_hours.get(),
+                    add_minutes.get(),
+                    add_seconds.get(),
                 ) else {
-                    add_error.set(Some(
-                        "Use whole numbers: hours 0–99 and minutes and seconds 0–59.".into(),
-                    ));
-                    return;
-                };
-                if secs == 0 {
                     add_error.set(Some(
                         "Choose a duration greater than zero before starting a timer.".into(),
                     ));
                     return;
-                }
+                };
                 let mut t = Timer::new(timer_label(&add_label.get()), Duration::from_secs(secs));
                 t.start(now_utc());
                 add_state.update(|s| s.timers.push(t));
@@ -973,19 +1059,19 @@ fn stopwatch_controls(controls: &ui::LocalState<ClockState>, s: &ClockState) -> 
                 if s.stopwatch.pinned_overlay {
                     "Stop floating"
                 } else {
-                    "Float above other windows"
+                    "Float on top"
                 },
                 move || {
                     float.update(|s| s.stopwatch.pinned_overlay = !s.stopwatch.pinned_overlay);
                 },
             )
-            .role(ButtonRole::Plain)
             .with_icon(Icon::PictureInPicture2),
         ))
 }
 
-/// The laps, newest first, each with how long it lasted.
-fn lap_list(s: &ClockState) -> Section {
+/// The laps, newest first, each with how long it lasted: the heading and the
+/// list, as two parts that share one text edge.
+fn lap_list(s: &ClockState) -> Column {
     // Each lap is stored as the time on the clock when it was taken; the
     // list shows how long each one lasted.
     let mut previous = 0;
@@ -1002,8 +1088,26 @@ fn lap_list(s: &ClockState) -> Section {
         })
         .collect();
     laps.reverse();
-    Section::new(vec![Box::new(PropertyList::new(laps))])
-        .with_header(SectionHeader::heading("Laps").count(s.stopwatch.laps_ms.len()))
+    Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_gap(Spacing::BASE.s2)
+        .push(text_edge(Box::new(Section::new(Vec::new()).with_header(
+            SectionHeader::heading("Laps").count(s.stopwatch.laps_ms.len()),
+        ))))
+        .push(Box::new(PropertyList::new(laps)))
+}
+
+/// `item` set in from the page edge by the inset a list keeps around its
+/// text, so text outside a list lines up with the text in it.
+fn text_edge(item: Element) -> Element {
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_horizontal_padding(Spacing::BASE.s2, Spacing::BASE.s2)
+            .push(item),
+    )
 }
 
 fn stopwatch_screen(state: &ui::LocalState<ClockState>) -> Element {
@@ -1015,12 +1119,18 @@ fn stopwatch_screen(state: &ui::LocalState<ClockState>) -> Element {
             .with_no_padding()
             .with_intrinsic_height()
             .with_gap(group_gap())
-            .push(Box::new(
-                Text::dynamic(move || readout.with(|s| duration(stopwatch_elapsed_ms(s))))
-                    .with_role(TextRole::Display)
-                    .numeric(),
-            ))
-            .push(Box::new(stopwatch_controls(&controls, s)));
+            .push(text_edge(Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
+                    .with_gap(group_gap())
+                    .push(Box::new(
+                        Text::dynamic(move || readout.with(|s| duration(stopwatch_elapsed_ms(s))))
+                            .with_role(TextRole::Display)
+                            .numeric(),
+                    ))
+                    .push(Box::new(stopwatch_controls(&controls, s))),
+            )));
         if !s.stopwatch.laps_ms.is_empty() {
             page = page.push(Box::new(lap_list(s)));
         }
@@ -1033,45 +1143,18 @@ fn stopwatch_screen(state: &ui::LocalState<ClockState>) -> Element {
 pub(crate) struct Notice {
     pub(crate) title: String,
     pub(crate) body: String,
-    /// The finished timer this notice can restart.
-    pub(crate) restart: Option<Uuid>,
+    /// The finished timer this notice announces; the notice ends when that
+    /// timer is restarted or removed.
+    pub(crate) timer: Option<Uuid>,
 }
 
-fn notice_banner(
-    notice: &Notice,
-    notices: &ui::LocalState<Option<Notice>>,
-    state: &ui::LocalState<ClockState>,
-) -> Element {
-    let dismiss = notices.clone();
-    let mut actions = Actions::new(button("clocks.notice.dismiss", "Dismiss", move || {
-        dismiss.set(None);
-    }));
-    if let Some(id) = notice.restart {
-        let notices = notices.clone();
-        let state = state.clone();
-        actions = actions.secondary(button(
-            "clocks.notice.restart",
-            "Restart timer",
-            move || {
-                state.update(|s| {
-                    if let Some(t) = s.timers.iter_mut().find(|t| t.id == id) {
-                        t.paused_remaining_ms = None;
-                        t.start(now_utc());
-                    }
-                });
-                notices.set(None);
-            },
-        ));
-    }
+/// The notice, in the flow above the open screen. Its close control dismisses
+/// it; a finished timer is restarted from its card below.
+fn notice_banner(notice: &Notice) -> Element {
     Box::new(
-        Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_gap(Spacing::BASE.s2)
-            .push(Box::new(
-                Banner::warning(notice.title.clone()).with_message(notice.body.clone()),
-            ))
-            .push(Box::new(actions)),
+        Banner::warning(notice.title.clone())
+            .with_message(notice.body.clone())
+            .dismissible(),
     )
 }
 
@@ -1131,7 +1214,6 @@ fn header_action(
 fn surface(
     selection: &ui::LocalState<Option<String>>,
     state: &ui::LocalState<ClockState>,
-    notice: &ui::LocalState<Option<Notice>>,
     validation_error: &ui::LocalState<Option<String>>,
     dialog: &ui::LocalState<Option<Dialog>>,
     view: &ui::LocalState<ViewKey>,
@@ -1147,17 +1229,28 @@ fn surface(
     .with_id("clocks.screens")
     .with_accessible_name("Clocks")
     .bind_selection(selection);
-    let (pages_state, banner_notice) = (state.clone(), notice.clone());
+    let pages_state = state.clone();
     // The banner sits above the open screen while a notice is showing, so the
     // screen is built again when either changes; the scroll area stays.
     let pages = ModelView::from_state(view, move |(selected, notice)| {
-        let mut column = Column::new().with_intrinsic_height();
+        // The window header's title starts `s3` in; list rows keep `s2` around
+        // their text, so a page sits `s1` in and sets its text in by `s2`.
+        let mut column = Column::new()
+            .with_intrinsic_height()
+            .with_horizontal_padding(Spacing::BASE.s1, Spacing::BASE.s1);
         if let Some(notice) = notice {
             column = column
-                .push(notice_banner(notice, &banner_notice, &pages_state))
+                .push(text_edge(notice_banner(notice)))
                 .with_gap(group_gap());
         }
-        Box::new(column.push(page(screen_of(selected.as_deref()), &pages_state)))
+        let screen = screen_of(selected.as_deref());
+        let body = page(screen, &pages_state);
+        // The stopwatch sets its own text in: its laps are a list.
+        Box::new(column.push(if screen == Screen::Stopwatch {
+            body
+        } else {
+            text_edge(body)
+        }))
     });
     let body = Column::new().with_no_padding().push(Box::new(
         Scrollable::new_vertical()
@@ -1180,13 +1273,7 @@ fn surface(
         .content(Box::new(
             Stack::new().push(Box::new(body)).push(Box::new(dialogs)),
         ))
-        .content_header(
-            screen.title(),
-            vec![
-                header_action(selection, dialog),
-                Box::new(ui::widget::history_button()),
-            ],
-        )
+        .content_header(screen.title(), vec![header_action(selection, dialog)])
 }
 
 pub struct ClocksApp {
@@ -1202,6 +1289,9 @@ pub struct ClocksApp {
     next_clock_tick: ui::time::Instant,
     /// The open screen's id, bound to the sidebar list.
     selection: ui::LocalState<Option<String>>,
+    /// The screen that was open when the last notice was dealt with: moving
+    /// to another screen ends a notice.
+    last_selection: Option<String>,
     /// The screen the window header currently names.
     shown: Screen,
     /// The dialog that is open over the window.
@@ -1357,6 +1447,7 @@ impl ClocksApp {
         self.persistent = false;
         self.state.set(value);
         self.selection.set(Some(screen.id().to_owned()));
+        self.last_selection = self.selection.get();
         self.notice.set(None);
         if let Some(id) = finished {
             self.remember_due(DueEvent::Timer {
@@ -1395,7 +1486,6 @@ impl ClocksApp {
             inner: surface(
                 &selection,
                 &state,
-                &notice,
                 &validation_error,
                 &dialog,
                 &view,
@@ -1410,6 +1500,7 @@ impl ClocksApp {
             notice,
             persistent,
             next_clock_tick: ui::time::now(),
+            last_selection: Some(screen.id().to_owned()),
             selection,
             shown: screen,
             dialog,
@@ -1441,7 +1532,7 @@ impl ClocksApp {
             }
             DueEvent::Timer { .. } | DueEvent::Alarm { .. } => None,
         };
-        let restart = match &event {
+        let timer = match &event {
             DueEvent::Timer { id, .. } => Some(*id),
             DueEvent::Alarm { .. } => None,
         };
@@ -1473,9 +1564,33 @@ impl ClocksApp {
                 .map(|(_, title, body)| Notice {
                     title: title.clone(),
                     body: body.clone(),
-                    restart,
+                    timer,
                 }),
         );
+    }
+
+    /// A notice belongs to the screen it appeared on: opening another ends it.
+    fn end_notice_on_navigation(&mut self) {
+        let selected = self.selection.get();
+        if selected != self.last_selection {
+            self.last_selection = selected;
+            self.notice.set(None);
+        }
+    }
+
+    /// A finished timer's notice ends when the timer is restarted or removed.
+    fn end_notice_of_restarted_timer(&self) {
+        if let Some(Notice {
+            timer: Some(id), ..
+        }) = self.notice.get()
+            && !self.state.with(|s| {
+                s.timers
+                    .iter()
+                    .any(|t| t.id == id && timer_phase(t) == TimerPhase::Finished)
+            })
+        {
+            self.notice.set(None);
+        }
     }
 
     /// The host's notifications, resolved once.
@@ -1776,6 +1891,7 @@ impl Widget for ClocksApp {
                 .update(|state| state.apply_shell_command(&cmd, activity_id, now));
         }
         self.apply_activations();
+        self.end_notice_on_navigation();
         let mut due = Vec::new();
         self.schedule_native_timers(now);
         self.state
@@ -1838,6 +1954,7 @@ impl Widget for ClocksApp {
             self.last_saved = encoded;
         }
         self.state.update(|_| {});
+        self.end_notice_of_restarted_timer();
         let key = (self.selection.get(), self.notice.get());
         if self.view.get() != key {
             self.view.set(key);
@@ -2362,16 +2479,16 @@ mod tests {
             "case timer-label-bounded"
         );
 
-        // Case: custom timer durations require bounded whole-number fields, incl. edges.
+        // Case: custom timer durations are bounded and need some length, incl. edges.
         for (hours, minutes, seconds, want) in [
-            ("01", "02", "03", Some(3_723)),
-            ("", "10", "00", None),
-            ("100", "10", "00", None),
-            ("00", "60", "00", None),
-            ("00", "10", "-1", None),
-            ("0", "0", "0", Some(0)),
-            ("99", "59", "59", Some(99 * 3_600 + 59 * 60 + 59)),
-            ("18446744073709551616", "0", "0", None),
+            (1.0, 2.0, 3.0, Some(3_723)),
+            (0.0, 10.0, 0.0, Some(600)),
+            (100.0, 10.0, 0.0, None),
+            (0.0, 60.0, 0.0, None),
+            (0.0, 10.0, -1.0, None),
+            (0.0, 0.0, 0.0, None),
+            (99.0, 59.0, 59.0, Some(99 * 3_600 + 59 * 60 + 59)),
+            (f64::NAN, 0.0, 0.0, None),
         ] {
             assert_eq!(
                 custom_timer_duration_seconds(hours, minutes, seconds),
