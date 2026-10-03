@@ -851,7 +851,7 @@ pub(crate) fn application_tree(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) ->
     }
     if let Ok(pip) = ActionSpec::operation(
         "picture-in-picture",
-        "Open Picture in Picture",
+        "Open picture in picture",
         OperationKind::View,
         OPERATION_TYPE,
         &PlayerOperation::OpenPictureInPicture,
@@ -859,7 +859,7 @@ pub(crate) fn application_tree(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) ->
         presentation = presentation.with_action(if ctx.media.has_media {
             pip.retry_policy(RetryPolicy::AtMostOnce)
         } else {
-            pip.unavailable("no_media", "Open a video before using Picture in Picture")
+            pip.unavailable("no_media", "Open a video before using picture in picture")
         });
     }
 
