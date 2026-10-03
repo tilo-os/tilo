@@ -1071,12 +1071,6 @@ impl DeviceMeshPane {
             )
             .with_enabled(!pairing),
         );
-        let mut personal_rows = vec![caption(&t("mesh-personal-caption"))];
-        if self.pairing_target == PairingTarget::PersonalDevice
-            && (pairing || self.pairing_candidate.is_some() || !self.load_status.is_empty())
-        {
-            personal_rows.push(caption(&mesh_status_shown(&self.load_status)));
-        }
         let mut enrolled_device_rows = Vec::new();
         for device in &self.personal_devices {
             let armed = self.personal_remove_armed.contains(&device.key);
@@ -1157,6 +1151,12 @@ impl DeviceMeshPane {
             )));
         } else if enrolled_device_rows.is_empty() {
             enrolled_device_rows.push(caption(&t("mesh-device-list-empty")));
+        }
+        enrolled_device_rows.push(caption(&t("mesh-personal-caption")));
+        if self.pairing_target == PairingTarget::PersonalDevice
+            && (pairing || self.pairing_candidate.is_some() || !self.load_status.is_empty())
+        {
+            enrolled_device_rows.push(caption(&mesh_status_shown(&self.load_status)));
         }
 
         let current_device = self
@@ -1265,10 +1265,7 @@ impl DeviceMeshPane {
                 .iter()
                 .rev()
                 .take(6)
-                .map(|entry| {
-                    let change = t("mesh-audit-change");
-                    value_row(&change, &entry.summary())
-                })
+                .map(|entry| value_row(&entry.summary(), &entry.when()))
                 .collect()
         };
         let mut roaming_rows = self.roaming_provenance.as_ref().map_or_else(
@@ -1301,7 +1298,6 @@ impl DeviceMeshPane {
         let route_title = t("mesh-route-title");
         let roaming_title = t("mesh-roaming-title");
         let activity_title = t("mesh-activity-title");
-        let add_personal = t("mesh-add-personal");
         let trusted_title = t("mesh-trusted-title");
         let availability_title = t("mesh-availability-title");
         let synced_title = t("mesh-synced-title");
@@ -1309,11 +1305,10 @@ impl DeviceMeshPane {
         let mut sections = vec![
             card(&continue_title, rows(continuation_rows)),
             card(&privacy_title, rows(privacy_rows)),
+            card_with_action(&trusted_title, approve_personal, rows(enrolled_device_rows)),
             card(&route_title, rows(provenance_rows)),
             card(&roaming_title, rows(roaming_rows)),
             card(&activity_title, rows(audit_rows)),
-            card_with_action(&add_personal, approve_personal, rows(personal_rows)),
-            card(&trusted_title, rows(enrolled_device_rows)),
             card(&availability_title, rows(availability_rows)),
             card(&synced_title, workspace_rows),
             card_with_action(&home_nas, approve, rows(home_server_rows)),
@@ -2142,6 +2137,110 @@ impl ui::undo::UndoPoints for DeviceMeshPane {
             "Devices & sync",
             "Change device mesh settings",
         )
+    }
+}
+
+/// The `--shots` pane: a laptop that is one of three personal devices,
+/// keeping one workspace available and sharing most of what Continuity can.
+#[cfg(not(feature = "thin"))]
+mod capture {
+    use super::{
+        Capability, CheckpointPrefixRecovery, ContinuityPrivacy, DeviceMeshPane,
+        DiscoveredWorkspace, HashMap, ReplicationIntent,
+    };
+    use crate::continuity::AuditEntry;
+    use crate::device_fleet::DeviceView;
+    use tilo_relay_protocol::WorkspaceBinding;
+
+    fn device(label: &str, seed: u8, current: bool, can_host: bool) -> DeviceView {
+        let key = [seed; 32];
+        DeviceView {
+            label: label.into(),
+            key,
+            fingerprint: key[..6]
+                .iter()
+                .map(|byte| format!("{byte:02X}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+            current,
+            revoked: false,
+            can_host,
+        }
+    }
+
+    impl DeviceMeshPane {
+        pub(crate) fn for_shot() -> Self {
+            let mut pane = Self::from_path(
+                std::env::temp_dir()
+                    .join(format!("settings-shot-{}/relay.toml", std::process::id())),
+            );
+            pane.config.workspaces = vec![WorkspaceBinding {
+                id: 1,
+                pin: true,
+                replication: ReplicationIntent::OnDemand,
+                admitted_users: Vec::new(),
+                shell_authority: None,
+                checkpoint_prefix_recovery: CheckpointPrefixRecovery::default(),
+            }];
+            pane.discovered_workspaces = vec![
+                DiscoveredWorkspace {
+                    id: 1,
+                    name: "Personal".into(),
+                },
+                DiscoveredWorkspace {
+                    id: 2,
+                    name: "Studio".into(),
+                },
+            ];
+            pane.registered_home_peers = 0;
+            pane.home_peers = Vec::new();
+            pane.home_peer_health = HashMap::new();
+            pane.home_peer_last_seen = HashMap::new();
+            pane.personal_devices = vec![
+                device("ada-laptop", 0x3a, true, false),
+                device("Pixel 9", 0x7c, false, false),
+                device("Studio tower", 0x51, false, true),
+            ];
+            pane.personal_device_error = None;
+            let now = ui::time::wall()
+                .duration_since(ui::time::SystemTime::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_secs());
+            let mut continuity = ContinuityPrivacy {
+                enabled: true,
+                ..ContinuityPrivacy::default()
+            };
+            for capability in [
+                Capability::Clipboard,
+                Capability::Notifications,
+                Capability::WifiSettings,
+                Capability::Media,
+                Capability::FileTransfer,
+                Capability::RealtimeSessions,
+                Capability::AppContinuations,
+            ] {
+                continuity.set_allowed(capability, true);
+            }
+            continuity.audit = vec![
+                AuditEntry {
+                    recorded_at_secs: now.saturating_sub(26 * 3600),
+                    capability: Some(Capability::Clipboard),
+                    enabled: true,
+                },
+                AuditEntry {
+                    recorded_at_secs: now.saturating_sub(2 * 3600),
+                    capability: Some(Capability::DisplayInput),
+                    enabled: false,
+                },
+            ];
+            pane.continuity = continuity;
+            pane.continuity_path = None;
+            pane.roaming_provenance = None;
+            pane.roaming_provenance_path = None;
+            pane.roaming_provenance_status = None;
+            pane.structure_dirty = false;
+            pane.next_status_refresh = ui::time::now() + std::time::Duration::from_secs(24 * 3600);
+            pane
+        }
     }
 }
 

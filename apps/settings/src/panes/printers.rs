@@ -21,7 +21,7 @@ use os_actions::printing::{
 };
 use taffy::{NodeId, TaffyTree};
 use ui::theme::Theme;
-use ui::widget::{Button, Column, Row, Spacer, Text, Widget};
+use ui::widget::{Button, ButtonRole, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
@@ -29,7 +29,9 @@ use winit::event::WindowEvent;
 use ui::i18n::ArgValue;
 
 use crate::i18n::{t, t_args};
-use crate::widgets::{El, StatusTone, caption, card, card_with_action, rows, semantic_status_pill};
+use crate::widgets::{
+    El, StatusTone, caption, card, card_with_action, item_row, rows, semantic_status_pill,
+};
 
 pub(crate) const REFRESH_KEY: &str = "settings.printers.refresh";
 pub(crate) const SCAN_KEY: &str = "settings.printers.discover";
@@ -435,19 +437,7 @@ impl PrintersPane {
             rows(
                 self.scanners
                     .iter()
-                    .map(|s| {
-                        Box::new(
-                            Column::new()
-                                .with_no_padding()
-                                .with_intrinsic_height()
-                                .push(Box::new(Text::new(&s.description)))
-                                .push(Box::new(
-                                    Text::new(&s.device)
-                                        .with_role(ui::TextRole::Caption)
-                                        .dimmed(),
-                                )),
-                        ) as El
-                    })
+                    .map(|s| item_row(&s.description, Vec::new(), &[], Vec::new()))
                     .collect(),
             )
         };
@@ -455,38 +445,23 @@ impl PrintersPane {
         crate::widgets::cards(cards)
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one printer row declares its state, supplies and every action together"
-    )]
     fn printer_row(&self, printer: &PrinterQueue) -> El {
         let default_key = format!("settings.printers.default.{}", slug(&printer.name));
         let enabled_key = format!("settings.printers.enabled.{}", slug(&printer.name));
         let remove_key = format!("settings.printers.remove.{}", slug(&printer.name));
         let confirm_key = format!("settings.printers.confirm_remove.{}", slug(&printer.name));
         let state = state_label(printer.state);
-        let mut top = Row::new()
-            .push(Box::new(Text::new(&printer.name)))
-            .push(Box::new(Spacer::new()))
-            .push(semantic_status_pill(&state, state_tone(printer.state)));
+        let mut actions: Vec<Button> = Vec::new();
         if !printer.default {
             let make_default = t("settings-printers-make-default");
-            top = top.push(Box::new(Button::new(
-                &default_key,
-                &make_default,
-                Some(&default_key),
-            )));
+            actions.push(Button::new(&default_key, &make_default, Some(&default_key)));
         }
         let pause_label = t(if printer.state == QueueState::Paused {
             "settings-printers-resume"
         } else {
             "settings-printers-pause"
         });
-        top = top.push(Box::new(Button::new(
-            &enabled_key,
-            &pause_label,
-            Some(&enabled_key),
-        )));
+        actions.push(Button::new(&enabled_key, &pause_label, Some(&enabled_key)));
         let remove_label = t(
             if self.confirm_remove.as_deref() == Some(printer.name.as_str()) {
                 "settings-printers-remove-confirm"
@@ -499,11 +474,10 @@ impl PrintersPane {
         } else {
             remove_key
         };
-        top = top.push(Box::new(Button::new(
-            &remove_action,
-            &remove_label,
-            Some(&remove_action),
-        )));
+        actions.push(
+            Button::new(&remove_action, &remove_label, Some(&remove_action))
+                .role(ButtonRole::Destructive),
+        );
         let role = t(if printer.default {
             "settings-printers-role-default"
         } else {
@@ -547,19 +521,11 @@ impl PrintersPane {
             None if printer.telemetry.available => t("settings-printers-supplies-unreported"),
             None => t("settings-printers-ipp-unavailable"),
         };
-        Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .push(Box::new(top))
-                .push(Box::new(
-                    Text::new(&detail).with_role(ui::TextRole::Caption).dimmed(),
-                ))
-                .push(Box::new(
-                    Text::new(&supplies)
-                        .with_role(ui::TextRole::Caption)
-                        .dimmed(),
-                )),
+        item_row(
+            &printer.name,
+            vec![semantic_status_pill(&state, state_tone(printer.state))],
+            &[detail, supplies],
+            actions,
         )
     }
 }
@@ -602,22 +568,12 @@ fn discovered_row(p: &DiscoveredPrinter) -> El {
     let location = p
         .location
         .clone()
-        .unwrap_or_else(|| t("settings-printers-driverless"));
-    Box::new(
-        Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .push(Box::new(
-                Row::new()
-                    .push(Box::new(Text::new(&p.name)))
-                    .push(Box::new(Spacer::new()))
-                    .push(Box::new(Button::new(&key, &add, Some(&key)))),
-            ))
-            .push(Box::new(
-                Text::new(&location)
-                    .with_role(ui::TextRole::Caption)
-                    .dimmed(),
-            )),
+        .unwrap_or_else(|| t("settings-printers-on-network"));
+    item_row(
+        &p.name,
+        Vec::new(),
+        &[location],
+        vec![Button::new(&key, &add, Some(&key))],
     )
 }
 
@@ -652,39 +608,32 @@ fn job_row(job: &PrintJob) -> El {
         .map_or(String::new(), |reason| format!(", {reason}"));
     let retry_label = t("settings-printers-retry");
     let cancel_label = t("settings-printers-cancel");
-    let mut action_row = Row::new()
-        .push(Box::new(Text::new(job.title.as_deref().unwrap_or(&job.id))))
-        .push(Box::new(Spacer::new()));
+    let mut actions: Vec<Button> = Vec::new();
     if matches!(
         job.state,
         Some(JobState::Stopped | JobState::Canceled | JobState::Aborted)
     ) {
-        action_row = action_row.push(Box::new(Button::new(&retry, &retry_label, Some(&retry))));
+        actions.push(Button::new(&retry, &retry_label, Some(&retry)));
     }
     if matches!(
         job.state,
         None | Some(JobState::Pending | JobState::Held | JobState::Processing | JobState::Stopped)
     ) {
-        action_row = action_row.push(Box::new(Button::new(&cancel, &cancel_label, Some(&cancel))));
+        actions.push(Button::new(&cancel, &cancel_label, Some(&cancel)));
     }
-    Box::new(
-        Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .push(Box::new(action_row))
-            .push(Box::new(
-                Text::new(&format!(
-                    "{}, {}, {}, {}",
-                    job.destination, job.owner, size, job.submitted
-                ))
-                .with_role(ui::TextRole::Caption)
-                .dimmed(),
-            ))
-            .push(Box::new(
-                Text::new(&format!("{state}, {progress}{reason}"))
-                    .with_role(ui::TextRole::Caption)
-                    .dimmed(),
-            )),
+    let sent = t_args(
+        "settings-printers-job-sent",
+        &[
+            ("destination", job.destination.as_str().into()),
+            ("owner", job.owner.as_str().into()),
+            ("size", size.as_str().into()),
+        ],
+    );
+    item_row(
+        job.title.as_deref().unwrap_or(&job.id),
+        Vec::new(),
+        &[sent, format!("{state}, {progress}{reason}")],
+        actions,
     )
 }
 
@@ -1009,7 +958,7 @@ mod fixture {
     fn scanners() -> Vec<Scanner> {
         vec![Scanner {
             device: "airscan:e0:Office laser".into(),
-            description: "Office laser (eSCL network scanner)".into(),
+            description: "Office laser (network scanner)".into(),
         }]
     }
 

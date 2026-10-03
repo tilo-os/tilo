@@ -43,7 +43,7 @@ use zeroize::{Zeroize, Zeroizing};
 use crate::dispatcher::dispatcher_or_real;
 use crate::i18n::{t, t_args};
 use crate::widgets::{
-    El, caption, card, card_with_action, choice_row, rows, setting_row, value_row,
+    El, caption, card, card_with_action, choice_row, field_row, rows, setting_row, value_row,
 };
 
 fn connectivity_shown(state: ConnectivityState) -> String {
@@ -1665,7 +1665,7 @@ impl NetworkPane {
                     .with_placeholder(&mac_shown("Stable per network")),
                 ),
             ));
-            rows_out.push(setting_row(
+            rows_out.push(field_row(
                 &t("net-proxy-url"),
                 Box::new(
                     TextInput::new(Vec::new())
@@ -1950,17 +1950,11 @@ impl NetworkPane {
         } else {
             t("net-connect")
         };
-        Box::new(
-            Row::new()
-                .with_align_items(taffy::AlignItems::Center)
-                .push(Box::new(ui::widget::IconWidget::new(
-                    ui::icons::Icon::Wifi,
-                    ui::tokens::Metrics::BASE.icon_md,
-                )))
-                .push(Box::new(Text::new(&net.ssid)))
-                .push(Box::new(Spacer::new()))
-                .push(caption(&detail))
-                .push(Box::new(Button::new(&cta_id, &cta_label, Some(&key)))),
+        crate::widgets::icon_row(
+            ui::icons::Icon::Wifi,
+            &net.ssid,
+            &detail,
+            Box::new(Button::new(&cta_id, &cta_label, Some(&key))),
         )
     }
 
@@ -2942,7 +2936,7 @@ impl NetworkPane {
             let _ = tx.send((
                 NetworkJob::SimUnlock,
                 result.map(|()| NetworkJobSuccess::OperationCompleted {
-                    notice: "SIM unlocked.".into(),
+                    notice: "The SIM card is unlocked.".into(),
                 }),
             ));
         });

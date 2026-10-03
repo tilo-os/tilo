@@ -262,24 +262,19 @@ impl StoragePane {
         }
     }
 
+    /// The apps using the most space, each once: its installed files, data
+    /// and cache together.
     fn apps_card(&self) -> El {
-        let mut largest = self.snapshot.entries.clone();
-        largest.sort_by_key(|e| std::cmp::Reverse(e.bytes));
+        let mut by_owner: std::collections::BTreeMap<&str, u64> = std::collections::BTreeMap::new();
+        for entry in &self.snapshot.entries {
+            *by_owner.entry(entry.owner.as_str()).or_default() += entry.bytes;
+        }
+        let mut largest: Vec<(&str, u64)> = by_owner.into_iter().collect();
+        largest.sort_by_key(|(owner, bytes)| (std::cmp::Reverse(*bytes), *owner));
         let largest_rows = largest
             .into_iter()
             .take(8)
-            .map(|e| {
-                value_row(
-                    &e.owner,
-                    &t_args(
-                        "settings-storage-item-meta",
-                        &[
-                            ("size", ui::format::bytes_si(e.bytes).into()),
-                            ("category", category_label(e.category).into()),
-                        ],
-                    ),
-                )
-            })
+            .map(|(owner, bytes)| value_row(owner, &ui::format::bytes_si(bytes)))
             .collect();
         card(
             &t("settings-storage-largest"),
@@ -656,7 +651,7 @@ impl Widget for StoragePane {
 mod fixture {
     use super::StoragePane;
     use desktop_policy::{StorageCategory, StorageEntry, StorageRoots, StorageSnapshot};
-    use runtime_fs::storage::SyncStorageSnapshot;
+    use runtime_fs::storage::{StorageAggregate, SyncStorageSnapshot, SyncedFileState};
     use std::path::PathBuf;
 
     fn entry(
@@ -673,6 +668,64 @@ mod fixture {
             bytes: megabytes * 1_000_000,
             files,
             reclaimable,
+        }
+    }
+
+    fn synced_file(
+        workspace: &str,
+        path: &str,
+        megabytes: u64,
+        reclaimable_megabytes: u64,
+    ) -> SyncedFileState {
+        SyncedFileState {
+            workspace: workspace.into(),
+            app: None,
+            logical_path: path.into(),
+            identity: format!("{workspace}:{path}"),
+            inode: 1,
+            version: "1".into(),
+            logical_bytes: megabytes * 1_000_000,
+            hydrated_bytes: megabytes * 1_000_000,
+            remote_only: false,
+            dirty: false,
+            pinned: false,
+            in_flight: false,
+            remotely_durable: true,
+            reclaimable_bytes: reclaimable_megabytes * 1_000_000,
+        }
+    }
+
+    fn aggregate(
+        owner: &str,
+        logical: u64,
+        local: u64,
+        remote: u64,
+        reclaimable: u64,
+    ) -> StorageAggregate {
+        StorageAggregate {
+            owner: owner.into(),
+            logical_bytes: logical * 1_000_000,
+            local_bytes: local * 1_000_000,
+            remote_only_bytes: remote * 1_000_000,
+            reclaimable_bytes: reclaimable * 1_000_000,
+            files: 0,
+        }
+    }
+
+    /// Two workspaces that sync to this device, part of them kept local.
+    fn synced_fixture() -> SyncStorageSnapshot {
+        SyncStorageSnapshot {
+            online: true,
+            files: vec![
+                synced_file("Studio", "Footage/Interview take 2.mov", 1_900, 1_900),
+                synced_file("Studio", "Exports/Brand film.mp4", 1_100, 1_100),
+                synced_file("Personal", "Photos/Lisbon trip.zip", 400, 400),
+            ],
+            workspaces: vec![
+                aggregate("Studio", 18_400, 6_200, 12_200, 3_000),
+                aggregate("Personal", 3_400, 2_700, 700, 400),
+            ],
+            apps: Vec::new(),
         }
     }
 
@@ -712,12 +765,7 @@ mod fixture {
                 pane.cleanup = desktop_policy::preview_cache_cleanup(&cache).ok();
                 let _ = std::fs::remove_dir_all(&cache);
             }
-            pane.sync_snapshot = Some(SyncStorageSnapshot {
-                online: true,
-                files: Vec::new(),
-                workspaces: Vec::new(),
-                apps: Vec::new(),
-            });
+            pane.sync_snapshot = Some(synced_fixture());
             pane
         }
     }

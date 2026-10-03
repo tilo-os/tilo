@@ -65,6 +65,7 @@ pub use os_actions::codec_pack;
 mod continuity;
 mod device_fleet;
 pub mod dispatcher;
+pub(crate) mod facts;
 pub mod i18n;
 pub(crate) mod input_sources;
 pub mod panes;

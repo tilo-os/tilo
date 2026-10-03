@@ -708,8 +708,7 @@ impl AppearancePrefs {
         ui::theme::ThemeLayerStack {
             distribution_defaults: self.distribution_defaults.clone(),
             user_theme: self.user_document(),
-            workspace_hue: None,
-            your_colour: None,
+            window: ui::WindowAppearance::default(),
             accessibility,
         }
     }
