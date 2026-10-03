@@ -130,6 +130,9 @@ enum LibraryTab {
     Shared,
 }
 
+/// What the picture area says when the decoder cannot play a video.
+const DECODER_FAILURE: &str = "The decoder could not play this video.";
+
 /// A capture scenario that plays a real file: `open:` and its path.
 pub(crate) const OPEN_CAPTURE: &str = "open:";
 
@@ -216,7 +219,7 @@ fn configure_player_settings(player: &mut VideoPlayer, autoplay: bool, loop_enab
     player.set_setting(PlayerSetting::button(
         "picture-in-picture",
         Icon::PictureInPicture2,
-        "Picture in Picture",
+        "Picture in picture",
         0,
     ));
 }
@@ -895,8 +898,13 @@ impl PlayerApp {
 
     fn stage_capture_scenario(&mut self, scenario: Option<&str>) {
         match scenario {
-            Some("error") => {
-                self.open_error = Some("The decoder could not read this video.".into());
+            // Nothing opened: the open itself failed.
+            Some("error") => self.fail_playback(),
+            // A video opened and the decoder then gave up on it: the title
+            // and the strip stay, the picture is the failure.
+            Some("native-error") => {
+                self.shot_loading = true;
+                self.fail_playback();
             }
             Some("loading") => self.shot_loading = true,
             Some("playing") => self.player.play(),
@@ -1071,6 +1079,14 @@ impl PlayerApp {
     /// decode is captured, not a blank frame.
     pub fn has_media_frame(&self) -> bool {
         self.player.latest_frame().is_some()
+    }
+
+    /// The picture area says the decoder could not play the video. The
+    /// decoder's own wording is for logs and agents; the person is told what
+    /// it means for them, the same way wherever a decode fails.
+    fn fail_playback(&mut self) {
+        self.open_error = Some(DECODER_FAILURE.into());
+        self.dirty = true;
     }
 
     /// Whether a capture of an opened file can stop waiting: its first
@@ -2204,8 +2220,7 @@ impl PlayerApp {
                     // The decoder's own wording is for logs and agents; the
                     // person is told what it means for them.
                     tracing::warn!(error = %message, "video player: the decoder reported an error");
-                    self.open_error = Some("The decoder could not play this video.".into());
-                    self.dirty = true;
+                    self.fail_playback();
                     if let Some(pending) = self.media_open.take() {
                         self.queue_resource_result(tilo_actions::InvocationUpdate::Failed {
                             invocation: pending.invocation,
@@ -4445,6 +4460,23 @@ mod tests {
             );
             std::fs::remove_file(path).ok();
         }
+    }
+
+    #[test]
+    fn capture_scenarios_stage_the_two_failure_states() {
+        // A failed open leaves nothing open; a decoder that gives up on an
+        // opened video keeps its title. Both tell the person the same thing.
+        let failed_open = PlayerApp::for_shot(None, Some("error"));
+        assert_eq!(failed_open.open_error.as_deref(), Some(DECODER_FAILURE));
+        assert!(!failed_open.player.has_media());
+        let gave_up = PlayerApp::for_shot(None, Some("native-error"));
+        assert_eq!(gave_up.open_error.as_deref(), Some(DECODER_FAILURE));
+        assert!(gave_up.player.has_media());
+        assert_eq!(gave_up.title, DEMO_TITLE);
+        assert!(
+            gave_up.shot_loading,
+            "the picture is held back for the failure"
+        );
     }
 
     #[test]
