@@ -4,6 +4,7 @@
 #
 #   dist/rpm/host-update.sh                build from HEAD, stage the swap
 #   dist/rpm/host-update.sh --no-cargo     repackage binaries already in target/release
+#                                          (and build the app collection if HEAD has none)
 #   dist/rpm/host-update.sh --no-build     install RPMs already built for HEAD
 #   dist/rpm/host-update.sh --apply-live   also make it the running /usr (no reboot)
 #   dist/rpm/host-update.sh --stage-only   leave the deployment for shutdown to write
@@ -48,7 +49,7 @@ out=${TILO_PACKAGE_OUT:-$repo_root/dist/rpm/build}
 version=$(<"$repo_root/dist/VERSION")
 
 build=cargo apply_live=0 dry_run=0 devel=auto allow_dirty=0 finalize=1
-usage() { sed -n '2,38p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,39p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 while (( $# )); do
     case $1 in
         --no-cargo) build=repackage ;;
