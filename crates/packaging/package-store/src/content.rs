@@ -76,6 +76,19 @@ impl Content<'_> {
             .map_err(content_error)
     }
 
+    /// The complete blob `blob` as an open file, or `None` when the store
+    /// lacks it. The file is a private copy that is gone once closed.
+    pub(crate) fn open(&self, blob: &BlobHash) -> Result<Option<(u64, std::fs::File)>, StoreError> {
+        let Some(len) = self.len(blob)? else {
+            return Ok(None);
+        };
+        let dir = tempfile::tempdir_in(self.staging)?;
+        let target = dir.path().join("blob");
+        self.export(blob, &target)?;
+        let file = std::fs::File::open(&target)?;
+        Ok(Some((len, file)))
+    }
+
     /// Every blob held, complete or partial.
     pub(crate) fn hashes(&self) -> Result<Vec<BlobHash>, StoreError> {
         Ok(self

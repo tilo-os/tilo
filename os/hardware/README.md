@@ -35,6 +35,11 @@ firmware manifest. Paths cannot be absolute, traverse directories, or contain
 shell metacharacters. Unknown fields and unsupported architectures fail.
 The optional `always_on` (version 2, default `false`) marks a board that is
 an always-on host rather than a personal computer; see the Orange Pi below.
+The optional `kernel_args` (version 2) lists kernel arguments the board
+needs, one unquoted token each. The preparer writes them to
+`/usr/lib/bootc/kargs.d/10-hardware-profile.toml`, after the image's own
+drop-ins, so they are sealed into the UKI command line and a console named
+there is the last `console=`, which the kernel makes `/dev/console`.
 
 The reviewed definition is copied into the immutable rootfs beside the
 generated profile. The UKI builder checks both files' ownership and permissions,
@@ -208,6 +213,11 @@ display while a sink is connected (`tilo-seat-session`). greetd and sleep are
 masked, chrony accepts the first NTS certificate before the clock can be
 checked against it (the board has no battery-backed clock), and
 `tilo-boot-health` judges the boot by that session.
+
+The board's debug UART is `ttyS2` at 1500000 baud (the device tree's
+`stdout-path`). The image's generic `console=` arguments override that
+path, so the profile names it in `kernel_args` as `console=ttyS2,1500000n8`,
+with `earlycon` so output starts before the UART driver binds.
 
 The disk puts a 15 MiB unformatted hole at the 1 MiB alignment so the ESP starts at LBA 32768. `idbloader.img` sits in the unpartitioned sectors before that hole, and `u-boot.itb` sits inside the hole. `os/dev/build-orangepi-uboot.sh`
 builds mainline U-Boot for `orangepi-3b-rk3566` and

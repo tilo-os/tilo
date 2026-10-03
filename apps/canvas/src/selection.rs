@@ -96,7 +96,7 @@ fn mark_outline(mark: &Mark) -> Result<BezPath, ActionError> {
                 mark.id
             )));
         }
-        Shape::Stroke { .. } => crate::render::silhouette(&mark.shape),
+        Shape::Stroke { .. } => crate::render::silhouette(mark),
         shape if shape.closed() && filled => shape.path(),
         shape => {
             let width = mark.style.stroke_width.max(1.0);

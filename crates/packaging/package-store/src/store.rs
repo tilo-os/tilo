@@ -27,6 +27,27 @@ use crate::integrity;
 use crate::layout::{COLLECTION_FILE, Layout, MANIFEST_FILE, SIGNED_ROOT_FILE};
 use crate::registry::{InstalledPackage, Registry};
 
+/// Payload blobs read back from the content store.
+struct StoredBlobs<'a, 'b> {
+    content: &'a Content<'b>,
+}
+
+impl tilo_app_package::BlobSource for StoredBlobs<'_, '_> {
+    fn open_blob(
+        &self,
+        hash: &BlobHash,
+    ) -> std::io::Result<Option<tilo_app_package::OpenBlob<'_>>> {
+        let opened = self
+            .content
+            .open(hash)
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        Ok(opened.map(|(len, file)| tilo_app_package::OpenBlob {
+            len,
+            reader: Box::new(file),
+        }))
+    }
+}
+
 fn image_install_time(
     image_build: bool,
     epoch: Option<&str>,
@@ -379,6 +400,30 @@ impl PackageStore {
     /// does not form the package `id`.
     pub fn image(&self, id: PackageId) -> Result<Option<PackageMeta>, StoreError> {
         crate::image::read_image(&self.layout, id)
+    }
+
+    /// Write the image `id` to `out` as a whole `.tapp`, its payload read
+    /// back from the content store, and hand `out` back.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError::NotInstalled`] when this store does not hold
+    /// the image, [`StoreError::Tapp`] when a payload blob is missing or
+    /// does not match its hash, or an I/O or content-store error.
+    pub fn export_image<W: std::io::Write + Send>(
+        &self,
+        id: PackageId,
+        out: W,
+    ) -> Result<W, StoreError> {
+        let _lock = self.lock()?;
+        let meta = self
+            .image(id)?
+            .ok_or_else(|| StoreError::NotInstalled(id.to_string()))?;
+        content::session(&self.layout.content(), &self.layout.tmp(), |content| {
+            let source = StoredBlobs { content };
+            tilo_app_package::tapp::write(out, &meta, Some(&source))
+                .map_err(|error| StoreError::Tapp(error.to_string()))
+        })
     }
 
     /// Every image this store holds.

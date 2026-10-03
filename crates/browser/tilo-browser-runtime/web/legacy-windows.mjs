@@ -255,6 +255,9 @@ function defaultCancelFrame(handle) {
  *   (`desktop_set_peer_windows`).
  * - `sendInput(publisher, surface, events)`: resolves whether the host took
  *   them (`peer.legacyInput`); with no events, whether this member may.
+ * - `dismissed()`: the keys of windows the person closed since the last
+ *   call (`desktop_dismissed_peer_windows`); each is asked to close at its
+ *   source, when this member drives it.
  */
 export function createLegacyWindows({
   surface,
@@ -262,6 +265,7 @@ export function createLegacyWindows({
   windows,
   setWindows,
   sendInput,
+  dismissed = () => [],
   mac = /Mac/.test(globalThis.navigator?.platform ?? ''),
   document: doc = globalThis.document,
   VideoDecoder = globalThis.VideoDecoder,
@@ -578,14 +582,26 @@ export function createLegacyWindows({
       if (!entry.visible) { entry.canvas.style.display = 'block'; entry.visible = true; }
     }
   }
+  /** Ask the source of each window the person closed to close it. */
+  function closeDismissed() {
+    let keys = [];
+    try { keys = dismissed() ?? []; } catch (error) { report(error); }
+    for (const key of keys) {
+      const entry = streams.get(key);
+      if (!entry?.control) continue;
+      releaseInput(entry);
+      sendInput(entry.publisher, entry.stream.surface, ['Close']).catch(report);
+    }
+  }
   function tick() {
     frame = undefined;
     if (closed) return;
+    closeDismissed();
     layout();
     // Windows move with every presented frame (scrolls, drags, resizes).
     if (streams.size) schedule();
   }
-  const poll = every(() => { attach(); expire(); schedule(); }, 1000);
+  const poll = every(() => { attach(); expire(); closeDismissed(); schedule(); }, 1000);
   attach();
 
   return {

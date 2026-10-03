@@ -59,6 +59,7 @@ fn with(mut mark: Mark, values: &[(&str, f32)]) -> Mark {
     let params = match &mut mark {
         Mark::Stroke(stroke) => &mut stroke.params,
         Mark::Fill(fill) => &mut fill.params,
+        Mark::Erase(_) => return mark,
     };
     params.extend(values.iter().map(|(id, value)| ((*id).to_owned(), *value)));
     mark
