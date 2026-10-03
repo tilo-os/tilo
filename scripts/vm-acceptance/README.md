@@ -75,6 +75,15 @@ sets the system locale the way the installer seeds it (`localectl set-locale
 LANG=de_DE.UTF-8`, inherited through the session's PAM login) and restarts the slot;
 if the restarted compositor is not German those checks fail as unobservable.
 
+An app's processes (A01–A07) are the `tilo-launcher` the open started for that app, its
+descendants, the sessions they lead (a host launch `setsid`s its app; Wine's prefix stays
+in it) and the launcher's `app-tilo-<id>-<pid>.scope`. Session services the app woke up
+— D-Bus-activated portals, socket-activated Tilo services, the workspace's Xwayland — are
+children of the user manager or the compositor and never count as leftovers. A first
+frame is sampled for up to 5 s until it is not a flat fill, so a clear presented before
+the client's first real buffer does not fail it; a client that stays blank does. The pure
+parts are unit-tested: `python3 -m unittest discover -s scripts/vm-acceptance -p 'test_*.py'`.
+
 Animation pacing (W16) is read from the session's frame trace per transition: a burst
 starts at the first painted frame after an idle park and spans the transition's length,
 and its painted-to-painted intervals are held to the budgets, so the park itself never
