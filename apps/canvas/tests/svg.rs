@@ -129,15 +129,22 @@ fn exported_svg_imports_back_as_the_same_marks() {
 }
 
 /// A reference picture set from a file is compared against the artwork:
-/// matching it scores near zero, missing it scores high.
+/// matching it scores near zero; the wrong colour, or paint where the
+/// reference is empty, scores high.
 #[test]
 fn compare_scores_the_artwork_against_its_reference() {
     let dir = std::env::temp_dir().join(format!("canvas-reference-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("red.png");
-    image::RgbaImage::from_pixel(64, 64, image::Rgba([200, 30, 30, 255]))
-        .save(&path)
-        .unwrap();
+    image::RgbaImage::from_fn(64, 64, |x, _| {
+        if x < 32 {
+            image::Rgba([200, 30, 30, 255])
+        } else {
+            image::Rgba([0, 0, 0, 0])
+        }
+    })
+    .save(&path)
+    .unwrap();
 
     let mut app = TestApp::<App>::new().expect("the app opens");
     let refused = app.operate(ActionRef::<ArtworkResource, ()>::new("compare", &[]).invoke());
@@ -153,18 +160,27 @@ fn compare_scores_the_artwork_against_its_reference() {
     std::fs::remove_dir_all(&dir).unwrap();
     assert!(app.state().reference.is_some());
 
-    let square = |fill: &str| {
+    let rect = |width: u32, fill: &str| {
         format!(
-            r#"<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="900"><rect x="100" y="100" width="200" height="200" fill="{fill}"/></svg>"#
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="900"><rect x="100" y="100" width="{width}" height="200" fill="{fill}"/></svg>"#
         )
     };
-    import(&mut app, &square("#1e40c8"), "wrong");
-    let wrong = operate(&mut app, "compare");
-    import(&mut app, &square("#c81e1e"), "right");
-    let right = operate(&mut app, "compare");
+    let clear: ActionRef<ArtworkResource, String> = ActionRef::new("remove-marks", &["layer"]);
     let score = |value: &Value| value["difference"].as_f64().unwrap();
+    import(&mut app, &rect(100, "#1e40c8"), "wrong");
+    let wrong = operate(&mut app, "compare");
+    app.invoke(clear.with("layer-1".into())).unwrap();
+    import(&mut app, &rect(200, "#c81e1e"), "spill");
+    let spill = operate(&mut app, "compare");
+    app.invoke(clear.with("layer-1".into())).unwrap();
+    import(&mut app, &rect(100, "#c81e1e"), "right");
+    let right = operate(&mut app, "compare");
     assert!(score(&right) < 0.05, "{right}");
-    assert!(score(&wrong) > 0.3, "{wrong}");
+    assert!(score(&wrong) > 0.2, "{wrong}");
+    assert!(
+        score(&spill) > 0.2,
+        "paint where the reference is empty counts: {spill}"
+    );
     assert_eq!(right["mode"], "side-by-side");
     assert_eq!(right["worst_regions"].as_array().map(Vec::len), Some(4));
 

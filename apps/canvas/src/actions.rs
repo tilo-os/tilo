@@ -943,6 +943,9 @@ impl tilo_actions::Action for CanvasAction {
                 if let Some(layer) = &remove.layer {
                     let layer = target_layer(&art, Some(layer))?;
                     ids.extend(art.marks_of(&layer).map(|mark| mark.id.clone()));
+                    if ids.is_empty() {
+                        return Ok(());
+                    }
                 }
                 if ids.is_empty() {
                     return Err(refuse("name marks or groups in ids, or a layer to clear"));

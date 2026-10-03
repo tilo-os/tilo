@@ -129,6 +129,19 @@ fn named_marks_are_edited_arranged_and_removed_by_id() {
     art.apply(ArtworkResource::REMOVE_MARKS.with(vec!["sky".into()]))
         .unwrap();
     assert_eq!(art.state().unwrap().marks.len(), 1);
+
+    let clear = |art: &mut Replica<ArtworkResource>| {
+        apply(
+            art,
+            CanvasAction::RemoveMarks(canvas::actions::RemoveMarks {
+                ids: Vec::new(),
+                layer: Some("layer-1".into()),
+            }),
+        )
+    };
+    clear(&mut art).unwrap();
+    assert!(art.state().unwrap().marks.is_empty());
+    clear(&mut art).expect("clearing an empty layer is already done, not a mistake");
 }
 
 /// A refusal says what was wrong and what would be right, so an agent can

@@ -148,6 +148,16 @@ pub fn compare(
     let (reference, _, _) = pixels(region, scale, true, |scene, to| {
         renderer.draw_reference(art, scene, to);
     })?;
+    let ground = crate::render::colour(&art.ground.colour, &[])
+        .unwrap_or(Color::WHITE) // document colour
+        .to_rgba8();
+    let inside = Rect::new(
+        (frame.x0 - region.x0) * scale,
+        (frame.y0 - region.y0) * scale,
+        (frame.x1 - region.x0) * scale,
+        (frame.y1 - region.y0) * scale,
+    );
+    let reference = flatten(&reference, width, inside, [ground.r, ground.g, ground.b]);
     let (score, cells) = difference(&drawn, &reference, width, height);
     let combined = match mode {
         "overlay" => blend_pixels(&drawn, &reference, |a, b, alpha| {
@@ -187,7 +197,7 @@ pub fn compare(
         "region": [region.x0, region.y0, region.width(), region.height()],
         "difference": (score * 1000.0).round() / 1000.0,
         "worst_regions": worst,
-        "reading": "difference is the mean colour distance 0..1 over the reference; lower is closer. side-by-side shows the artwork left, the reference right.",
+        "reading": "difference is the mean colour distance 0..1 within the reference's frame, its transparent parts read as the ground; lower is closer. side-by-side shows the artwork left, the reference right.",
     });
     Ok((
         Picture {
@@ -202,7 +212,35 @@ pub fn compare(
 /// The gap between the two pictures side by side, in pixels.
 const GUTTER: u32 = 8;
 
-/// The mean colour distance where the reference covers, overall and per
+/// The reference as the artwork should look within its frame: opaque over
+/// the ground, so paint where the reference is empty counts against a
+/// match. Outside the frame it stays transparent and is not compared.
+fn flatten(reference: &[u8], width: u32, inside: Rect, ground: [u8; 3]) -> Vec<u8> {
+    let width = usize::try_from(width.max(1)).unwrap_or(1);
+    let mut out = Vec::with_capacity(reference.len());
+    for (index, pixel) in reference.chunks_exact(4).enumerate() {
+        let x = index % width;
+        let y = index / width;
+        let centre = ui::vello::kurbo::Point::new(count(x) + 0.5, count(y) + 0.5);
+        if !inside.contains(centre) {
+            out.extend_from_slice(&[0, 0, 0, 0]);
+            continue;
+        }
+        let alpha = f64::from(pixel.get(3).copied().unwrap_or(0)) / 255.0;
+        for (channel, under) in ground.iter().enumerate() {
+            let over = f64::from(pixel.get(channel).copied().unwrap_or(0));
+            out.push(byte(over * alpha + f64::from(*under) * (1.0 - alpha)));
+        }
+        out.push(255);
+    }
+    out
+}
+
+fn count(n: usize) -> f64 {
+    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
+}
+
+/// The mean colour distance within the reference's frame, overall and per
 /// cell of a `COMPARE_CELLS` grid.
 fn difference(
     drawn: &[u8],
