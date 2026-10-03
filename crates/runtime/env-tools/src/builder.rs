@@ -12,6 +12,7 @@
 //! Nothing here needs a session or a display; a relay's compute worker
 //! drives the same [`Builder`] as a device does.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -125,6 +126,8 @@ impl Default for Timeouts {
 pub struct SealedTree {
     pub nevras: Vec<String>,
     pub report: SealReport,
+    /// The package manager's output.
+    pub log: String,
 }
 
 /// Resolves, caches and builds tool images.
@@ -180,6 +183,22 @@ impl<S: ToolStore, C: ToolLookup> Builder<S, C> {
     /// [`BuildError`] for an empty or unresolvable request, a request the
     /// runtime already satisfies, and any build or store failure.
     pub fn build(&self, runtime: &PackageId, packages: &[String]) -> Result<Built, BuildError> {
+        self.build_reporting(runtime, packages, &mut std::io::sink())
+    }
+
+    /// [`Self::build`], telling `progress` what it is doing and passing on
+    /// the package manager's output.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::build`].
+    pub fn build_reporting(
+        &self,
+        runtime: &PackageId,
+        packages: &[String],
+        progress: &mut dyn Write,
+    ) -> Result<Built, BuildError> {
+        let _ = writeln!(progress, "resolving {}", packages.join(" "));
         let tree = self
             .store
             .runtime_tree(runtime)
@@ -190,6 +209,7 @@ impl<S: ToolStore, C: ToolLookup> Builder<S, C> {
             && self.store.has(&entry.tool)
         {
             tracing::info!(tool = %entry.tool, %digest, "tool cache hit");
+            let _ = writeln!(progress, "already built: {}", key.nevras.join(" "));
             return Ok(Built {
                 tool: entry.tool,
                 key,
@@ -198,6 +218,7 @@ impl<S: ToolStore, C: ToolLookup> Builder<S, C> {
         }
         if let Some(tool) = self.catalog.lookup(&digest) {
             tracing::info!(%tool, %digest, "tool catalog hit");
+            let _ = writeln!(progress, "in the tool catalog: {}", key.nevras.join(" "));
             self.remember(&key, tool, packages);
             return Ok(Built {
                 tool,
@@ -207,10 +228,13 @@ impl<S: ToolStore, C: ToolLookup> Builder<S, C> {
         }
 
         let started = Instant::now();
+        let _ = writeln!(progress, "installing {}", key.nevras.join(" "));
         let scratch = self.scratch("build")?;
         let out = scratch.join("tool");
         let sealed = self.build_tree(runtime, &tree, &key.nevras, &scratch.join("sandbox"), &out);
         let result = sealed.and_then(|sealed| {
+            let _ = progress.write_all(sealed.log.as_bytes());
+            let _ = writeln!(progress, "sealing {} files", sealed.report.files);
             let key = CacheKey::new(*runtime, &sealed.nevras);
             let tool = self
                 .store
@@ -432,6 +456,7 @@ pub fn build_tree(
     Ok(SealedTree {
         nevras: added,
         report,
+        log: ran.stdout,
     })
 }
 
@@ -447,38 +472,4 @@ fn installed(sandbox: &BuildSandbox) -> Result<Vec<String>, BuildError> {
         });
     }
     Ok(resolve::parse_rpm_list(&ran.stdout))
-}
-
-/// Rebuild an environment's tools for `runtime`, all or nothing: the
-/// returned ids are in `tools` order, and a single failure fails the whole
-/// set so the record keeps its old runtime and tools. `set-runtime` calls
-/// this before switching.
-///
-/// # Errors
-///
-/// The first tool that fails, with what it was.
-pub fn rebuild_for_runtime<S: ToolStore, C: ToolLookup>(
-    builder: &Builder<S, C>,
-    runtime: &PackageId,
-    tools: &[Vec<String>],
-) -> Result<Vec<Built>, RebuildError> {
-    tools
-        .iter()
-        .map(|packages| {
-            builder
-                .build(runtime, packages)
-                .map_err(|source| RebuildError {
-                    packages: packages.clone(),
-                    source,
-                })
-        })
-        .collect()
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("rebuilding {packages:?} for the new runtime: {source}")]
-pub struct RebuildError {
-    pub packages: Vec<String>,
-    #[source]
-    pub source: BuildError,
 }
