@@ -8,7 +8,7 @@ pub static HISTORY: HistoryDefinition = HistoryDefinition {
     app_id: "so.tilo.logs",
     scopes: &[HistoryScopeDefinition {
         key: "journal-observations",
-        title: "Journal observations (not recorded)",
+        title: "System journal",
         presentation: HistoryPresentation::External { reason: LIMITATION },
         content_schema: None,
     }],

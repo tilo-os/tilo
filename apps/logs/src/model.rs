@@ -5,9 +5,7 @@
 //! the handful of fields the UI promotes to columns plus every remaining
 //! field kept verbatim in [`LogEntry::extra`] for the detail pane.
 
-use vello::peniko::Color;
-
-use crate::theme_ext::ThemeColors;
+use ui::widget::Tone;
 
 /// The eight syslog severities, ordered most-severe (`Emerg`, level 0) to
 /// least-severe (`Debug`, level 7). Level numbers match RFC 5424 and the
@@ -68,21 +66,7 @@ impl Priority {
         }
     }
 
-    /// Short uppercase tag for the list column (`ERR`, `WARN`, …).
-    pub fn tag(self) -> &'static str {
-        match self {
-            Priority::Emerg => "EMERG",
-            Priority::Alert => "ALERT",
-            Priority::Crit => "CRIT",
-            Priority::Err => "ERR",
-            Priority::Warning => "WARN",
-            Priority::Notice => "NOTICE",
-            Priority::Info => "INFO",
-            Priority::Debug => "DEBUG",
-        }
-    }
-
-    /// Human-readable name for the detail pane badge.
+    /// The severity's name, the same in the list and the detail.
     pub fn long(self) -> &'static str {
         match self {
             Priority::Emerg => "Emergency",
@@ -96,18 +80,29 @@ impl Priority {
         }
     }
 
-    /// Severity colour, resolved entirely from the OS theme's *semantic*
-    /// palette so the viewer stays consistent across themes. Emergencies
-    /// through errors share the danger hue (differentiated by their tag),
-    /// warnings use the warning hue, and the verbose tail walks
-    /// notice→info→debug across accent / info / dim neutrals.
-    pub fn color(self, theme: &ThemeColors) -> Color {
+    /// The status tone a severity is marked with: errors and worse are
+    /// danger, warnings are warnings, notices are information, and the
+    /// verbose tail carries no status.
+    pub fn tone(self) -> Tone {
         match self {
-            Priority::Emerg | Priority::Alert | Priority::Crit | Priority::Err => theme.danger,
-            Priority::Warning => theme.warning,
-            Priority::Notice => theme.accent,
-            Priority::Info => theme.info,
-            Priority::Debug => theme.dim,
+            Priority::Emerg | Priority::Alert | Priority::Crit | Priority::Err => Tone::Danger,
+            Priority::Warning => Tone::Warning,
+            Priority::Notice => Tone::Info,
+            Priority::Info | Priority::Debug => Tone::Neutral,
+        }
+    }
+
+    /// The threshold this severity sets, as the severity filter names it.
+    pub fn threshold_label(self) -> &'static str {
+        match self {
+            Priority::Emerg => "Emergency only",
+            Priority::Alert => "Alert and above",
+            Priority::Crit => "Critical and above",
+            Priority::Err => "Error and above",
+            Priority::Warning => "Warning and above",
+            Priority::Notice => "Notice and above",
+            Priority::Info => "Info and above",
+            Priority::Debug => "All levels",
         }
     }
 }
@@ -134,30 +129,32 @@ pub struct LogEntry {
 }
 
 impl LogEntry {
-    /// `Mon DD HH:MM:SS.mmm` in UTC — the list-column timestamp.
-    pub fn timestamp(&self) -> String {
-        let (y, mo, d, hh, mm, ss, milli) = civil(self.realtime_us);
-        let _ = y;
-        format!(
-            "{} {:02} {:02}:{:02}:{:02}.{:03}",
-            MONTHS.get((mo as usize).saturating_sub(1)).unwrap_or(&""),
-            d,
-            hh,
-            mm,
-            ss,
-            milli
-        )
+    /// The list-column time in local time: `HH:MM:SS.mmm` for today,
+    /// `Mon DD HH:MM:SS.mmm` for an earlier day.
+    pub fn list_time(&self) -> String {
+        let (y, mo, d, hh, mm, ss, milli) = civil(local_us(self.realtime_us));
+        let now = ui::clock::local_now();
+        let now_us = u64::try_from(now.timestamp_micros()).unwrap_or(0);
+        let (ty, tmo, td, ..) = civil(local_us(now_us));
+        if (ty, tmo, td) == (y, mo, d) {
+            format!("{hh:02}:{mm:02}:{ss:02}.{milli:03}")
+        } else {
+            format!(
+                "{} {d:02} {hh:02}:{mm:02}:{ss:02}.{milli:03}",
+                MONTHS.get((mo as usize).saturating_sub(1)).unwrap_or(&"")
+            )
+        }
     }
 
-    /// `YYYY-MM-DD HH:MM:SS.mmm UTC` — the verbose detail-pane stamp.
+    /// `YYYY-MM-DD HH:MM:SS.mmm` in local time — the detail timestamp.
     pub fn timestamp_full(&self) -> String {
-        let (y, mo, d, hh, mm, ss, milli) = civil(self.realtime_us);
-        format!("{y:04}-{mo:02}-{d:02} {hh:02}:{mm:02}:{ss:02}.{milli:03} UTC")
+        let (y, mo, d, hh, mm, ss, milli) = civil(local_us(self.realtime_us));
+        format!("{y:04}-{mo:02}-{d:02} {hh:02}:{mm:02}:{ss:02}.{milli:03}")
     }
 
-    /// `HH:MM:SS` for compact contexts.
+    /// `HH:MM:SS` in local time, for compact contexts.
     pub fn time_hms(&self) -> String {
-        let (_, _, _, hh, mm, ss, _) = civil(self.realtime_us);
+        let (_, _, _, hh, mm, ss, _) = civil(local_us(self.realtime_us));
         format!("{hh:02}:{mm:02}:{ss:02}")
     }
 
@@ -166,6 +163,13 @@ impl LogEntry {
     pub fn unit_short(&self) -> &str {
         self.unit.strip_suffix(".service").unwrap_or(&self.unit)
     }
+}
+
+/// `realtime_us` shifted into the local time zone, read through
+/// [`ui::clock`] so captures show the same wall clock on every run.
+fn local_us(realtime_us: u64) -> u64 {
+    let offset_s = i64::from(ui::clock::local_now().offset().local_minus_utc());
+    realtime_us.saturating_add_signed(offset_s.saturating_mul(1_000_000))
 }
 
 /// The process-local live filter applied to the entry list. Pure predicate
