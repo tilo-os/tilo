@@ -800,72 +800,79 @@ impl AccountsPane {
             ));
         }
 
-        panel.push(self.mail_card(theme));
-        panel.push(self.kind_card(AccountKind::CalDav, theme));
-        panel.push(self.kind_card(AccountKind::WebDav, theme));
-        panel.push(self.kind_card(AccountKind::Nextcloud, theme));
+        // A kind with accounts is a section of its own; the kinds without any
+        // are offered together, one row each, instead of eight empty sections.
+        let mut absent: Vec<El> = Vec::new();
         for kind in [
+            AccountKind::Mail,
+            AccountKind::CalDav,
+            AccountKind::WebDav,
+            AccountKind::Nextcloud,
             AccountKind::GoogleDrive,
             AccountKind::OneDrive,
             AccountKind::Dropbox,
             AccountKind::ICloudDrive,
         ] {
-            panel.push(self.kind_card(kind, theme));
+            if self.dir.views_of(kind).is_empty() {
+                absent.push(self.kind_add_row(kind));
+            } else {
+                panel.push(self.kind_card(kind, theme));
+            }
+        }
+        if !absent.is_empty() {
+            panel.push(card(&t("accounts-add-title"), rows(absent)));
         }
 
         crate::widgets::cards(panel)
     }
 
-    fn mail_card(&self, theme: &Theme) -> El {
-        let title = kind_shown(AccountKind::Mail);
-        let add = t("accounts-add");
-        let add_btn: El = Box::new(account_action_button(
-            "settings.accounts.add.mail",
-            &add,
+    /// The button that starts adding an account of `kind`.
+    fn add_button(kind: AccountKind) -> El {
+        Box::new(account_action_button(
+            &format!("settings.accounts.add.{}", kind.slug()),
+            &t("accounts-add"),
             crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
             pane_label(),
-            "add-mail",
+            &format!("add-{}", kind.slug()),
             tilo_actions::OperationKind::View,
             crate::actions::AccountOperation::Add {
-                kind: "mail".into(),
+                kind: kind.slug().into(),
             },
             false,
-        ));
-        let views = self.dir.views_of(AccountKind::Mail);
-        let body = self.kind_body(AccountKind::Mail, &views, theme);
-        card_with_action(&title, add_btn, body)
+        ))
     }
 
+    /// A kind with no accounts yet: its name and the button to add one, with
+    /// the reason it cannot be added when that is so.
+    fn kind_add_row(&self, kind: AccountKind) -> El {
+        let row = setting_row(&kind_shown(kind), Self::add_button(kind));
+        let note = if kind.is_cloud_storage()
+            && let Some(reason) = cloud_signin::unavailable_reason(kind, &self.custodian)
+        {
+            Some(reason)
+        } else if kind.best_effort() {
+            Some(t("accounts-best-effort-icloud"))
+        } else {
+            None
+        };
+        match note {
+            Some(note) => rows(vec![row, caption(&note)]),
+            None => row,
+        }
+    }
+
+    /// A kind with accounts: its name and add button over its accounts.
     fn kind_card(&self, kind: AccountKind, theme: &Theme) -> El {
         let views = self.dir.views_of(kind);
-        let add = t("accounts-add");
         card_with_action(
             &kind_shown(kind),
-            Box::new(account_action_button(
-                &format!("settings.accounts.add.{}", kind.slug()),
-                &add,
-                crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
-                pane_label(),
-                &format!("add-{}", kind.slug()),
-                tilo_actions::OperationKind::View,
-                crate::actions::AccountOperation::Add {
-                    kind: kind.slug().into(),
-                },
-                false,
-            )),
+            Self::add_button(kind),
             self.kind_body(kind, &views, theme),
         )
     }
 
     fn kind_body(&self, kind: AccountKind, views: &[AccountView], theme: &Theme) -> El {
-        let mut body: Vec<El> = if views.is_empty() {
-            vec![caption(&t_args(
-                "accounts-kind-empty",
-                &[("kind", kind_shown(kind).into())],
-            ))]
-        } else {
-            views.iter().map(|v| self.account_row(v, theme)).collect()
-        };
+        let mut body: Vec<El> = views.iter().map(|v| self.account_row(v, theme)).collect();
         if kind.is_cloud_storage()
             && let Some(reason) = cloud_signin::unavailable_reason(kind, &self.custodian)
         {
@@ -918,26 +925,19 @@ impl AccountsPane {
                     .dimmed(),
             ));
         if !self.is_sample {
-            let sync_line = runtime.map_or_else(
-                || t("accounts-sync-none"),
-                |status| {
-                    let when = status
-                        .last_success_unix
-                        .map_or_else(|| t("accounts-sync-never"), relative_sync_time);
-                    match status.message.as_deref() {
-                        Some(message) => t_args(
-                            "accounts-sync-when-msg",
-                            &[("when", when.as_str().into()), ("message", message.into())],
-                        ),
-                        None => t_args("accounts-sync-when", &[("when", when.into())]),
-                    }
-                },
-            );
-            column = column.push(Box::new(
-                Text::new(&sync_line)
-                    .with_role(ui::TextRole::Caption)
-                    .dimmed(),
-            ));
+            if let Some(status) = runtime {
+                let when = status
+                    .last_success_unix
+                    .map_or_else(|| t("accounts-sync-never"), relative_sync_time);
+                let sync_line = match status.message.as_deref() {
+                    Some(message) => t_args(
+                        "accounts-sync-when-msg",
+                        &[("when", when.as_str().into()), ("message", message.into())],
+                    ),
+                    None => t_args("accounts-sync-when", &[("when", when.into())]),
+                };
+                column = column.push(caption(&sync_line));
+            }
             let account_resource = format!("settings.account:{}", view.id);
             let needs_sign_in = runtime.is_some_and(|status| {
                 status.health == accounts::AccountSyncHealth::NeedsAuthentication
@@ -954,13 +954,24 @@ impl AccountsPane {
                 t("accounts-verify")
             };
             let remove = t("accounts-remove");
-            let mut primary_actions = Row::new();
-            if !view.kind.is_cloud_storage() {
-                primary_actions = primary_actions.push(Box::new(account_action_button(
-                    &format!("settings.accounts.edit.{}", view.id),
-                    &edit,
+            let button = |id: &str, label: &str, action: &str, kind, op, destructive| {
+                account_action_button(
+                    &format!("settings.accounts.{id}.{}", view.id),
+                    label,
                     account_resource.clone(),
                     view.label.clone(),
+                    action,
+                    kind,
+                    op,
+                    destructive,
+                )
+                .control_size(ui::widget::ControlSize::Small)
+            };
+            let mut actions = Row::new();
+            if !view.kind.is_cloud_storage() {
+                actions = actions.push(Box::new(button(
+                    "edit",
+                    &edit,
                     "edit",
                     tilo_actions::OperationKind::View,
                     crate::actions::AccountOperation::Edit {
@@ -969,12 +980,10 @@ impl AccountsPane {
                     false,
                 )));
             }
-            let primary_actions = primary_actions
-                .push(Box::new(account_action_button(
-                    &format!("settings.accounts.reauth.{}", view.id),
+            let actions = actions
+                .push(Box::new(button(
+                    "reauth",
                     &reauth_label,
-                    account_resource.clone(),
-                    view.label.clone(),
                     "reauthenticate",
                     tilo_actions::OperationKind::View,
                     crate::actions::AccountOperation::Reauthenticate {
@@ -982,13 +991,9 @@ impl AccountsPane {
                     },
                     false,
                 )))
-                .push(Box::new(Spacer::new()));
-            let secondary_actions = Row::new()
-                .push(Box::new(account_action_button(
-                    &format!("settings.accounts.test.{}", view.id),
+                .push(Box::new(button(
+                    "test",
                     &check,
-                    account_resource.clone(),
-                    view.label.clone(),
                     "test",
                     tilo_actions::OperationKind::Effect,
                     crate::actions::AccountOperation::Test {
@@ -998,11 +1003,9 @@ impl AccountsPane {
                 )))
                 .push(Box::new(Spacer::new()))
                 .push(Box::new(
-                    account_action_button(
-                        &format!("settings.accounts.remove.{}", view.id),
+                    button(
+                        "remove",
                         &remove,
-                        account_resource,
-                        view.label.clone(),
                         "remove",
                         tilo_actions::OperationKind::Effect,
                         crate::actions::AccountOperation::Remove {
@@ -1012,9 +1015,7 @@ impl AccountsPane {
                     )
                     .role(ui::widget::ButtonRole::Destructive),
                 ));
-            column = column
-                .push(Box::new(primary_actions))
-                .push(Box::new(secondary_actions));
+            column = column.push(Box::new(actions));
         }
         Box::new(column)
     }

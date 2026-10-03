@@ -663,6 +663,42 @@ impl DisplayPane {
         self
     }
 
+    /// Add an external monitor beside the built-in display, for captures.
+    #[cfg(not(feature = "thin"))]
+    #[must_use]
+    pub(crate) fn with_external_monitor_for_shot(mut self) -> Self {
+        let mode = OutputMode {
+            width: 2560,
+            height: 1440,
+            refresh_mhz: 59_950,
+        };
+        self.outputs.push(DisplayOutput {
+            label: "Dell U2720Q (DP-2)".into(),
+            connected: true,
+            builtin: false,
+            connector: "DP-2".into(),
+            connector_label: "DP-2".into(),
+            modes: vec![mode],
+            current_mode: Some(mode),
+            scale: 1.0,
+            hdr: false,
+            sink_hdr: false,
+            hdr_unavailable_reason: None,
+            vrr: false,
+            sink_vrr: false,
+            vrr_unavailable_reason: None,
+            color_profiles: Vec::new(),
+            color_profile_labels: BTreeMap::new(),
+            monitor: Some(MonitorIdentity {
+                make: "Dell".into(),
+                model: "DELL U2720Q".into(),
+                serial: "7XKQ3H2".into(),
+                physical_size_mm: Some((597, 336)),
+            }),
+        });
+        self
+    }
+
     /// Pin which monitors have a brightness control (tests / `--shots`).
     #[must_use]
     pub fn with_monitor_brightness(mut self, levels: &[os_actions::MonitorLevel]) -> Self {
