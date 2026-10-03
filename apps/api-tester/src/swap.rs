@@ -123,6 +123,15 @@ impl<L: Widget + 'static, R: Widget + 'static> ui::widget::Decorator for Followi
         &mut self.split
     }
 
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+        // The split does not pass the per-frame update on to its panes.
+        let mut changed = self.split.update(state, path);
+        for pane in self.split.children_mut() {
+            changed |= pane.update(state, path);
+        }
+        changed
+    }
+
     fn take_structure_dirty(&mut self) -> bool {
         let moved = (self.split.split_position() - self.laid_out_at).abs() > f32::EPSILON;
         self.laid_out_at = self.split.split_position();
