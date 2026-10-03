@@ -142,11 +142,13 @@ impl Resource for VideoProject {
                 .media(clip.media)
                 .map_or_else(|| "Clip".to_owned(), |media| media.name.clone()),
             text: format!("{} s", clip.start),
+            action: None,
         });
         let markers = project.markers.iter().map(|marker| SearchEntry {
             anchor: Some(crate::actions::marker_resource_id(marker.id)),
             title: marker.name.clone(),
             text: marker.note.clone(),
+            action: None,
         });
         clips.chain(markers).collect()
     }

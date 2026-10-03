@@ -129,6 +129,7 @@ impl Resource for Windows {
                 anchor: Some(format!("windows.app:{app_id}")),
                 title: app_id.clone(),
                 text: route.label().to_owned(),
+                action: None,
             })
             .collect()
     }

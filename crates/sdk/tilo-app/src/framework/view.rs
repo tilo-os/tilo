@@ -7,7 +7,7 @@ use std::hash::Hash;
 use std::rc::{Rc, Weak};
 
 use tilo_actions::ActionBinding;
-use tilo_resource::{Binds, Collection, Effect, Id, Invoke, Resource};
+use tilo_resource::{ActionDecl, Binds, Collection, Effect, Id, Invoke, Resource};
 use ui_core::LocalState;
 use ui_core::record::RecordSaveStatus;
 use ui_core::widget::{Button, Checkbox, Element, Text, TextInput};
@@ -67,6 +67,33 @@ impl<R: Resource> Updaters<R> {
     }
 }
 
+type Bind<R> = Box<dyn Fn(&<R as Resource>::State) -> Vec<ActionDecl<R>>>;
+type BindList<R> = Vec<(Weak<()>, Bind<R>)>;
+
+/// The edits views bound to their local state
+/// ([`ViewCx::bind_declarations`]), each tied to the view scope that bound
+/// it.
+pub(crate) struct Bindings<R: Resource>(Rc<RefCell<BindList<R>>>);
+
+impl<R: Resource> Clone for Bindings<R> {
+    fn clone(&self) -> Self {
+        Self(Rc::clone(&self.0))
+    }
+}
+
+impl<R: Resource> Bindings<R> {
+    pub(crate) fn new() -> Self {
+        Self(Rc::default())
+    }
+
+    /// Every live view's bound edits over `state`.
+    pub(crate) fn declarations(&self, state: &R::State) -> Vec<ActionDecl<R>> {
+        let mut bindings = self.0.borrow_mut();
+        bindings.retain(|(alive, _)| alive.strong_count() > 0);
+        bindings.iter().flat_map(|(_, bind)| bind(state)).collect()
+    }
+}
+
 /// Projects the resource state onto the value a view scope reads: the whole
 /// state at the root, one item inside an [`Each`] row.
 pub(crate) type Focus<R, T> = Rc<dyn for<'a> Fn(&'a <R as Resource>::State) -> Option<&'a T>>;
@@ -90,6 +117,7 @@ pub struct ViewCx<R: Resource, T: 'static = <R as Resource>::State> {
     pub(crate) feeds: super::history::HistoryFeeds,
     pub(crate) run: Run,
     pub(crate) storage: Rc<ViewStorage>,
+    pub(crate) bindings: Bindings<R>,
     pub(crate) effects: Effects<R>,
 }
 
@@ -126,6 +154,7 @@ impl<R: Resource> ViewCx<R> {
             feeds: super::history::HistoryFeeds::default(),
             run,
             storage,
+            bindings: Bindings::new(),
             effects: Effects::inert(),
         }
     }
@@ -388,6 +417,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let feeds = self.feeds.clone();
         let run = self.run.clone();
         let storage = Rc::clone(&self.storage);
+        let bindings = self.bindings.clone();
         let effects = self.effects.clone();
         Each::new(
             self.live.clone(),
@@ -412,11 +442,27 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                     feeds: feeds.clone(),
                     run: run.clone(),
                     storage: Rc::clone(&storage),
+                    bindings: bindings.clone(),
                     effects: effects.clone(),
                 };
                 row(&mut cx)
             }),
         )
+    }
+
+    /// Publish edits bound to this view's local state — the folder shown,
+    /// the row selected — on the resource beside its declared actions, as
+    /// typed builders of its action: `bind` runs whenever the published
+    /// tree is read, with the current resource state, and reads the local
+    /// state it captured. Invoking one dispatches what it builds through the
+    /// same permission check, confirmation and undo as any other action. The
+    /// binding lasts as long as this view scope (a row's ends with the row);
+    /// an id the resource already publishes keeps the resource's action.
+    pub fn bind_declarations(&self, bind: impl Fn(&R::State) -> Vec<ActionDecl<R>> + 'static) {
+        self.bindings
+            .0
+            .borrow_mut()
+            .push((self.alive.clone(), Box::new(bind)));
     }
 
     /// The resource's published actions, for binding controls built outside
@@ -478,6 +524,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let feeds = self.feeds.clone();
         let run = self.run.clone();
         let storage = Rc::clone(&self.storage);
+        let bindings = self.bindings.clone();
         let effects = self.effects.clone();
         Box::new(Switch::new(
             key.clone(),
@@ -497,6 +544,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                     feeds: feeds.clone(),
                     run: run.clone(),
                     storage: Rc::clone(&storage),
+                    bindings: bindings.clone(),
                     effects: effects.clone(),
                 };
                 part(&mut cx, value)

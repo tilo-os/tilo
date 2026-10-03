@@ -101,6 +101,7 @@ impl Resource for Contacts {
                     .first()
                     .map(|email| email.value.clone())
                     .unwrap_or_default(),
+                action: None,
             })
             .collect()
     }
@@ -139,6 +140,12 @@ impl ResourceSurface<Contacts> for ContactsApp {
 
     fn attach(&mut self, cx: SurfaceCx<Contacts>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    // Edits bound to where the user is publish as hand-built rows of the
+    // widget's own rather than as `bound_declarations`.
+    fn publishes_document_actions(&self) -> bool {
+        true
     }
 }
 

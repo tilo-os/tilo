@@ -114,6 +114,7 @@ impl Resource for Store {
                 anchor: Some(format!("store.report:{}", report.app_id)),
                 title: format!("Report · {}", report.app_id),
                 text: report.status.clone(),
+                action: None,
             })
             .collect()
     }

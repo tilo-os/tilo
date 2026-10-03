@@ -126,6 +126,24 @@
 //!   the process (a mail engine, a socket, a journal reader, a hardware
 //!   probe): History rebuilds the view for every version it previews, and a
 //!   screenshot must come out the same on every machine.
+//! * **Edits bound to where the user is** — the selection, the caret, the
+//!   playhead, the folder shown — are typed builders of the resource's
+//!   action ([`ActionDecl`](tilo_resource::ActionDecl)), published on the
+//!   resource beside its declarations:
+//!   [`ResourceSurface::bound_declarations`] from a surface's view state,
+//!   [`ViewCx::bind_declarations`] from a view's local state, and
+//!   `Resource::bound_declarations` from the resource state itself.
+//! * **Live external rows** — processes, devices, containers, journal
+//!   entries, fetched catalogue rows, running jobs — are [`LiveRow`]s from
+//!   [`ResourceSurface::live_rows`], merged by id into the resource's
+//!   published children. A row carries only view and effect operations.
+//!   Neither rows nor children need to be published whole: a bounded page is
+//!   published and the rest resolve by id (`ResourceSurface::live_row`,
+//!   `Resource::child`).
+//! * **One published tree** — the palette, agents and scripts see the
+//!   resource's publication and nothing beside it that changes the document:
+//!   a document action a content widget publishes through its own
+//!   `PublishesResources` is dropped (a debug build stops at it).
 //! * **Screenshot scenarios** (`--shots --scenario NAME`, every one with
 //!   `--shots-dir DIR`, each at [`ResourceApp::shot_viewport`]) are prepared
 //!   in three parts. What the resource does not hold is the scenario's
@@ -155,6 +173,7 @@ pub mod history;
 mod live;
 mod preview;
 mod root;
+mod rows;
 mod scenario;
 mod settings;
 mod stage;
@@ -177,6 +196,7 @@ pub use each::Each;
 pub use effect::{EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, Progress};
 pub use live::Live;
 pub use preview::PastVersion;
+pub use rows::LiveRow;
 pub use scenario::{Fixture, RunMode};
 pub use settings::Setting;
 pub use stage::stage;

@@ -6,7 +6,7 @@ use std::hash::Hash;
 use std::rc::{Rc, Weak};
 use ui_core::widget::{AppModel, ModelPath};
 
-use tilo_resource::{Effect, NoEffect, Resource};
+use tilo_resource::{ActionDecl, Effect, NoEffect, Resource};
 use ui_core::automerge::{AutoCommit, ObjId};
 use ui_core::presence::PresenceKey;
 use ui_core::widget::{Decorator, ResourceOperation, ResourceOperationStart, Widget};
@@ -15,6 +15,7 @@ use ui_core::{PresencePayload, WakeHandle};
 use super::dispatch::Dispatcher;
 use super::effect::{EffectAnswer, EffectCx, EffectRunner, EffectStatus, Effects};
 use super::live::Live;
+use super::rows::{LiveRow, outside_document, resolved_outside_document};
 use super::scenario::{Run, RunMode};
 use super::settings::{Setting, ViewStorage};
 
@@ -69,6 +70,15 @@ use super::settings::{Setting, ViewStorage};
 ///   nothing. Work still in flight that the frame shows (a page render, a
 ///   decode) is reported by the toolkit's `Widget::has_pending_visual_work`;
 ///   a capture waits for it.
+/// * **One published tree** — what the surface offers the palette, agents
+///   and scripts joins the resource's own publication:
+///   [`bound_declarations`](Self::bound_declarations) for edits bound to
+///   where the user is (delete the selected clip, bookmark the current
+///   folder), and [`live_rows`](Self::live_rows) for the live external
+///   entities it shows (processes, containers), which carry only view and
+///   effect operations. A document action the surface's own
+///   `PublishesResources` offers is dropped, so nothing reaches the
+///   document beside the resource's actions.
 pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
     /// The resource state to show.
     fn present(&mut self, state: &Rc<R::State>);
@@ -122,6 +132,70 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
     /// actions follow the surface.
     fn effects(&self) -> Vec<EffectStatus> {
         Vec::new()
+    }
+
+    /// Edits bound to the surface's view state — the selection, the caret,
+    /// the playhead, the folder or page shown — as typed builders of the
+    /// resource's action, published on the resource beside its declared
+    /// actions. Invoking one dispatches the action it builds through the
+    /// same permission check, confirmation and undo as any other. An id the
+    /// resource already publishes keeps the resource's action.
+    fn bound_declarations(&self) -> Vec<ActionDecl<R>> {
+        Vec::new()
+    }
+
+    /// The live external entities the surface shows, published as children
+    /// of the resource and merged by id with its document children. Keep it
+    /// to what fits a published tree (the rows on screen, a bounded page)
+    /// and resolve the rest in [`live_row`](Self::live_row).
+    fn live_rows(&self) -> Vec<LiveRow> {
+        Vec::new()
+    }
+
+    /// The live row `id`, when [`live_rows`](Self::live_rows) leaves it out,
+    /// so an action addressed to any entity the surface knows still reaches
+    /// it.
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        let _ = id;
+        None
+    }
+
+    /// Whether the document actions this surface's own `PublishesResources`
+    /// offers (edits bound to its selection, published as hand-built rows)
+    /// still reach the published tree. Otherwise they are dropped, and a
+    /// debug build stops at the first one. The surfaces that answer `true`
+    /// are listed in the policy baseline, which only shrinks: their edits
+    /// move to [`bound_declarations`](Self::bound_declarations).
+    fn publishes_document_actions(&self) -> bool {
+        false
+    }
+}
+
+/// What a hosted surface adds to its resource's publication, as the root
+/// collects it.
+pub(crate) trait SurfacePublication<R: Resource> {
+    fn bound_declarations(&self) -> Vec<ActionDecl<R>>;
+    fn live_rows(&self) -> Vec<LiveRow>;
+    fn live_row(&self, id: &str) -> Option<LiveRow>;
+}
+
+impl<R: Resource, S: ResourceSurface<R, E>, E: Effect> SurfaceHost<R, S, E> {
+    /// `resource` as the surface may publish it beside the resource.
+    fn admitted(&self, resource: tilo_actions::Resource) -> tilo_actions::Resource {
+        if self.surface.publishes_document_actions() {
+            resource
+        } else {
+            outside_document(resource)
+        }
+    }
+
+    /// `resource`, resolved by id, as the surface may answer it.
+    fn resolved(&self, resource: tilo_actions::Resource) -> tilo_actions::Resource {
+        if self.surface.publishes_document_actions() {
+            resource
+        } else {
+            resolved_outside_document(resource)
+        }
     }
 }
 
@@ -339,6 +413,8 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceHost<R, 
 impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> Decorator
     for SurfaceHost<R, S, E>
 {
+    ui_core::provides!(dyn SurfacePublication<R>, dyn ui_core::resources::PublishesResources; inner = surface);
+
     type Inner = S;
 
     fn inner(&self) -> &S {
@@ -402,5 +478,116 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> Decorator
         }
         self.surface
             .poll_resource_operation(invocation, cancellation_requested, doc, path)
+    }
+}
+
+impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfacePublication<R>
+    for SurfaceHost<R, S, E>
+{
+    fn bound_declarations(&self) -> Vec<ActionDecl<R>> {
+        self.surface.bound_declarations()
+    }
+
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.surface.live_rows()
+    }
+
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        self.surface.live_row(id)
+    }
+}
+
+// What the surface publishes as a widget passes through here, without
+// document actions: those are the resource's, through its dispatcher. A
+// surface still publishing its own says so
+// (`ResourceSurface::publishes_document_actions`).
+impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect>
+    ui_core::resources::PublishesResources for SurfaceHost<R, S, E>
+{
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        ui_core::resources::resources(&self.surface, doc)
+            .into_iter()
+            .map(|resource| self.admitted(resource))
+            .collect()
+    }
+
+    fn caller_view_resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        ui_core::resources::caller_view_resources(&self.surface, doc)
+            .into_iter()
+            .map(|resource| self.admitted(resource))
+            .collect()
+    }
+
+    fn action_directory_resource_page(
+        &self,
+        doc: &AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui_core::widget::ActionDirectoryResourcePage> {
+        let mut page = ui_core::resources::action_directory_resource_page(
+            &self.surface,
+            doc,
+            cursor,
+            max_results,
+        )?;
+        page.resources = page
+            .resources
+            .into_iter()
+            .map(|resource| self.admitted(resource))
+            .collect();
+        Some(page)
+    }
+
+    fn action_directory_revision(&self, doc: &AutoCommit) -> Option<String> {
+        ui_core::resources::action_directory_revision(&self.surface, doc)
+    }
+
+    fn action_directory_invocation_domain(
+        &self,
+        doc: &AutoCommit,
+    ) -> ui_core::widget::ActionDirectoryInvocationDomain {
+        ui_core::resources::action_directory_invocation_domain(&self.surface, doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        ui_core::resources::resource(&self.surface, doc, id).map(|resource| self.resolved(resource))
+    }
+
+    fn resources_for(
+        &self,
+        participant: Option<&tilo_actions::ParticipantId>,
+        doc: &AutoCommit,
+    ) -> Vec<tilo_actions::Resource> {
+        ui_core::resources::resources_for(&self.surface, participant, doc)
+            .into_iter()
+            .map(|resource| self.admitted(resource))
+            .collect()
+    }
+
+    fn resource_for(
+        &self,
+        participant: Option<&tilo_actions::ParticipantId>,
+        doc: &AutoCommit,
+        id: &str,
+    ) -> Option<tilo_actions::Resource> {
+        ui_core::resources::resource_for(&self.surface, participant, doc, id)
+            .map(|resource| self.resolved(resource))
+    }
+
+    fn action_directory_visibility(
+        &self,
+        doc: &AutoCommit,
+        resource_id: &str,
+    ) -> Option<tilo_actions::ActionAddress> {
+        ui_core::resources::action_directory_visibility(&self.surface, doc, resource_id)
+    }
+
+    fn document_action_result(
+        &self,
+        doc: &AutoCommit,
+        address: &tilo_actions::ActionAddress,
+        changes: &[ui_core::automerge::Patch],
+    ) -> Option<serde_json::Value> {
+        ui_core::resources::document_action_result(&self.surface, doc, address, changes)
     }
 }

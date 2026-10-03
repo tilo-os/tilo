@@ -101,6 +101,7 @@ impl Resource for Camera {
                 anchor: Some(format!("camera.capture:{}", recent.id)),
                 title: recent.label.clone(),
                 text: "recent capture".into(),
+                action: None,
             });
         }
         for scan in &state.scans {
@@ -108,6 +109,7 @@ impl Resource for Camera {
                 anchor: Some(format!("camera.scan:{}", scan.ts)),
                 title: scan.raw.clone(),
                 text: "scan".into(),
+                action: None,
             });
         }
         entries

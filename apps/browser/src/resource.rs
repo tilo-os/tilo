@@ -109,6 +109,7 @@ impl Resource for Browser {
                     entry.title.clone()
                 },
                 text: entry.url.clone(),
+                action: None,
             })
             .collect()
     }

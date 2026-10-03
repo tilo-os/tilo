@@ -95,6 +95,7 @@ impl Resource for Snippets {
                     snippet.title.clone()
                 },
                 text: snippet.description.clone(),
+                action: None,
             })
             .collect()
     }
@@ -126,6 +127,12 @@ impl ResourceSurface<Snippets> for SnippetsApp {
 
     fn attach(&mut self, cx: SurfaceCx<Snippets>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    // Edits bound to where the user is publish as hand-built rows of the
+    // widget's own rather than as `bound_declarations`.
+    fn publishes_document_actions(&self) -> bool {
+        true
     }
 }
 

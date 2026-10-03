@@ -69,6 +69,7 @@ impl Resource for Themes {
                 anchor: Some(format!("themes.theme:{}", theme.id)),
                 title: theme.name.clone(),
                 text: theme.id.clone(),
+                action: None,
             })
             .collect()
     }

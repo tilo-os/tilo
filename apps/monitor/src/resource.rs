@@ -1,14 +1,15 @@
 //! System Monitor as a [`tilo_resource::Resource`]: shared view preferences
-//! sync in the document; live process rows stay hosted extras.
+//! sync in the document; live process rows are the surface's
+//! [`ResourceSurface::live_rows`].
 //!
 //! Refresh is an Effect with no document delta (published via
 //! [`Resource::local_operations`]). Per-process inspect / copy / signal ops
-//! ride the live process catalogue — never a second hand-built root beside
-//! [`tilo_resource::publish`].
+//! ride the live process rows beneath the processes door — never a second
+//! hand-built root beside [`tilo_resource::publish`].
 
 use serde::{Deserialize, Serialize};
 use ui::automerge::AutoCommit;
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{Dispatcher, LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_actions::{
     Action, ActionError, ActionParam, ActionRegistry, ActionSpec, EncodedAction, ParamType,
     Resource as PublishedResource,
@@ -200,12 +201,6 @@ impl Resource for Monitor {
     }
 }
 
-/// Hosted-only extras that are not document state: live process rows.
-/// The processes door stays on [`tilo_resource::publish`].
-pub(crate) fn live_extras(app: &MonitorApp) -> Vec<PublishedResource> {
-    app.live_process_extras()
-}
-
 /// Framework app.
 pub struct MonitorShell;
 
@@ -234,6 +229,16 @@ impl ResourceSurface<Monitor> for MonitorApp {
     fn attach(&mut self, cx: SurfaceCx<Monitor>) {
         self.follow_preferences(cx.settings());
         self.attach_framework(cx.dispatcher());
+    }
+
+    /// The processes on this machine, beneath the processes door: inspect,
+    /// copy the PID, stop or kill one. Not document state.
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.live_process_rows()
+    }
+
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        self.live_process_row(id)
     }
 }
 
@@ -397,10 +402,10 @@ mod tests {
 
     #[allow(
         clippy::too_many_lines,
-        reason = "one integration check covers publish tree, hosted extras, and live overlay"
+        reason = "one integration check covers publish tree, live rows, and standalone overlay"
     )]
     #[test]
-    fn resource_publish_owns_process_door_and_hosted_keeps_only_live_extras() {
+    fn resource_publish_owns_process_door_and_hosted_rows_are_live_rows() {
         let mut doc = AutoCommit::new();
         MonitorAction::SetTab {
             tab: "resources".into(),
@@ -501,22 +506,25 @@ mod tests {
             "standalone publishes process rows from the sampler snapshot"
         );
 
+        // Hosted, the framework publishes the door and the surface's live
+        // rows; the widget publishes nothing of its own.
         app.mark_hosted_for_test();
         assert!(app.is_hosted());
-        let extras = ui::resources::PublishesResources::resources(&app, &seeded);
+        assert!(ui::resources::PublishesResources::resources(&app, &seeded).is_empty());
+        let rows = ResourceSurface::live_rows(&app);
+        assert!(!rows.is_empty(), "the sampler snapshot has processes");
+        let row = rows[0].clone().into_resource();
+        assert_eq!(row.kind, "monitor.process");
         assert!(
-            extras
+            row.actions
                 .iter()
-                .all(|resource| resource.kind != "monitor.processes"),
-            "hosted must not republish monitor.processes beside ResourceRoot: {:?}",
-            extras.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
+                .all(|action| action.kind != ui::tilo_actions::OperationKind::Document),
+            "a live process row carries only views and effects"
         );
-        assert!(
-            extras
-                .iter()
-                .any(|resource| resource.kind == "monitor.process"),
-            "hosted still publishes live process rows: {:?}",
-            extras.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>()
+        assert_eq!(
+            ResourceSurface::live_row(&app, row.id.as_str()).map(|row| row.into_resource().label),
+            Some(row.label.clone()),
+            "any process resolves by id"
         );
 
         let door = provide_resources(&state);
@@ -546,5 +554,35 @@ mod tests {
             before,
             "adopting empty view prefs must not clear the process table"
         );
+    }
+
+    #[test]
+    fn hosted_process_rows_are_children_of_the_processes_door() {
+        let mut app = ui::framework::testing::TestApp::<MonitorShell>::new().unwrap();
+        let resources = app.harness().resources();
+        let doors: Vec<_> = resources
+            .iter()
+            .filter(|resource| resource.kind == "monitor.processes")
+            .collect();
+        assert_eq!(doors.len(), 1, "one processes door");
+        assert!(
+            resources
+                .iter()
+                .all(|resource| resource.kind != "monitor.process"),
+            "no process row beside the door"
+        );
+        let row = doors[0]
+            .children
+            .iter()
+            .find(|child| child.kind == "monitor.process")
+            .expect("this machine's processes are rows of the door")
+            .clone();
+
+        // Inspecting a row through the door reaches the surface, which
+        // selects that process.
+        let (pid, _) = crate::app::parse_process_resource_id(row.id.as_str()).unwrap();
+        app.call_on(row.id.as_str(), "inspect", serde_json::json!({}))
+            .unwrap();
+        assert_eq!(app.state().selected_pid, Some(pid));
     }
 }
