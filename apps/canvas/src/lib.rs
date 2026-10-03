@@ -15,6 +15,7 @@ pub const APP_TITLE: &str = "Canvas";
 
 pub mod actions;
 pub mod author;
+pub mod brushes;
 pub mod doc;
 pub mod fonts;
 pub mod gesture;
@@ -28,6 +29,7 @@ pub mod render;
 pub mod resource;
 pub mod sample;
 pub mod selection;
+pub mod strokes;
 pub mod surface;
 pub mod svg;
 pub mod thumb;
