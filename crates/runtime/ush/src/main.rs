@@ -181,8 +181,10 @@ fn images() -> Arc<dyn Images> {
     if let Some(root) = std::env::var_os("TILO_USH_IMAGES") {
         return Arc::new(DirImages::at(PathBuf::from(root)));
     }
-    match StoreImages::from_env() {
-        Ok(images) => Arc::new(images),
+    match package_store::Store::from_env() {
+        Ok(store) => Arc::new(StoreImages::new(env_tools::store::trusting_device_tools(
+            store,
+        ))),
         Err(reason) => Arc::new(NoImages(format!(
             "the package store cannot be opened: {reason}"
         ))),
@@ -191,7 +193,7 @@ fn images() -> Arc<dyn Images> {
 
 /// How `pkg install` builds tool images on this device.
 fn builder() -> Arc<dyn tilo_environment::ToolBuilder> {
-    Arc::new(tilo_environment::NoToolBuilder)
+    env_tools::store::device_tool_builder()
 }
 
 fn cmd_serve(args: &[String]) -> anyhow::Result<i32> {
