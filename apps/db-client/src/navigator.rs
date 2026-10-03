@@ -1,21 +1,21 @@
-//! The sidebar: the saved connections, and under them the tables and views of
-//! the one that is open.
+//! The sidebar: the saved connections, and inside the open one the tables and
+//! views of its database.
 //!
-//! Both are the toolkit's [`NavList`], so a row looks, selects and moves the
-//! way it does in every other app. The connections list is as tall as its rows;
-//! the schema list takes the rest of the column and scrolls.
+//! One toolkit [`NavList`], so a row looks, selects and moves the way it does
+//! in every other app, and one selection: the table that is open, or the
+//! connection when no table is. The tables sit inside their connection, so the
+//! list says which database they belong to.
 
-use ui::chrome::{nav_row_height, nav_section_height};
 use ui::icons::Icon;
-use ui::theme::Theme;
-use ui::widget::{NavAction, NavItem, NavList, NavSection, Widget};
+use ui::widget::{NavAction, NavItem, NavList, NavSection};
 use uuid::Uuid;
 
-use crate::frame::{Frame, FrameStyle, Place, Slot, frame_methods};
 use crate::link::{ConnectionRow, Intent, Link};
-use crate::model::{DatabaseSchema, Engine, RelationKind, RelationRef};
+use crate::model::{DatabaseSchema, Engine, RelationKind, RelationRef, SchemaInfo};
 
 const CONNECTIONS: &str = "connections";
+/// Marks the row id of the open connection.
+const OPEN: &str = "open:";
 /// Separates a schema from a table in a row id; no catalog name contains it.
 const SEPARATOR: char = '\u{1f}';
 
@@ -31,6 +31,26 @@ fn parse_relation(key: &str) -> Option<RelationRef> {
     })
 }
 
+/// The row id of a connection. An open connection is a different row from the
+/// same connection closed, so the list opens it afresh each time instead of
+/// remembering that it was folded the last time it was open.
+fn connection_key(id: Uuid, open: bool) -> String {
+    if open {
+        format!("{OPEN}{id}")
+    } else {
+        id.to_string()
+    }
+}
+
+/// The connection a row id names, and whether it is the open one.
+fn parse_connection(key: &str) -> Option<(Uuid, bool)> {
+    let (id, open) = match key.strip_prefix(OPEN) {
+        Some(id) => (id, true),
+        None => (key, false),
+    };
+    Some((Uuid::parse_str(id).ok()?, open))
+}
+
 fn engine_icon(engine: Engine) -> Icon {
     match engine {
         Engine::Sqlite => Icon::HardDrive,
@@ -38,14 +58,66 @@ fn engine_icon(engine: Engine) -> Icon {
     }
 }
 
-fn connection_section(rows: &[ConnectionRow]) -> NavSection {
+/// The tables and views of one schema.
+fn relation_items(schema: &SchemaInfo) -> Vec<NavItem> {
+    schema
+        .tables
+        .iter()
+        .map(|table| {
+            let relation = RelationRef {
+                schema: schema.name.clone(),
+                name: table.name.clone(),
+            };
+            let item = NavItem::new(relation_key(&relation), table.name.clone()).without_actions();
+            match table.kind {
+                RelationKind::View => item.icon(Icon::Eye),
+                RelationKind::Table => {
+                    let item = item.icon(Icon::List);
+                    match table.row_count.and_then(|rows| u32::try_from(rows).ok()) {
+                        Some(rows) => item.count(rows),
+                        None => item,
+                    }
+                }
+            }
+        })
+        .collect()
+}
+
+/// What an open connection holds: the tables of its one schema, or a folder
+/// for each when there are several.
+fn catalog_items(schema: &DatabaseSchema) -> Vec<NavItem> {
+    if let [only] = schema.schemas.as_slice() {
+        return relation_items(only);
+    }
+    schema
+        .schemas
+        .iter()
+        .map(|info| {
+            NavItem::new(format!("schema:{}", info.name), info.name.clone())
+                .icon(Icon::Folder)
+                .without_actions()
+                .children(relation_items(info))
+                .expanded()
+        })
+        .collect()
+}
+
+/// The saved connections, the open one holding its catalog.
+fn connection_section(rows: &[ConnectionRow], open: Option<(Uuid, &DatabaseSchema)>) -> NavSection {
     NavSection::new(
         CONNECTIONS,
         "Connections",
         rows.iter()
             .map(|row| {
-                let item = NavItem::new(row.id.to_string(), row.name.clone())
+                let is_open = matches!(open, Some((id, _)) if id == row.id);
+                let item = NavItem::new(connection_key(row.id, is_open), row.name.clone())
                     .icon(engine_icon(row.engine));
+                let item = match open {
+                    Some((id, schema)) if id == row.id && !schema.schemas.is_empty() => {
+                        item.children(catalog_items(schema)).expanded()
+                    }
+                    _ => item,
+                };
                 if row.removable {
                     item
                 } else {
@@ -57,59 +129,13 @@ fn connection_section(rows: &[ConnectionRow]) -> NavSection {
     .trailing_action(NavAction::new("new", Icon::Plus, "New connection"))
 }
 
-/// The catalog as sections: the tables and views of the one schema, or one
-/// collapsible section per schema when there are several.
-fn schema_sections(schema: &DatabaseSchema) -> Vec<NavSection> {
-    let single = schema.schemas.len() == 1;
-    schema
-        .schemas
-        .iter()
-        .map(|info| {
-            let items = info
-                .tables
-                .iter()
-                .map(|table| {
-                    let relation = RelationRef {
-                        schema: info.name.clone(),
-                        name: table.name.clone(),
-                    };
-                    let item =
-                        NavItem::new(relation_key(&relation), table.name.clone()).without_actions();
-                    match table.kind {
-                        RelationKind::View => item.icon(Icon::Eye),
-                        RelationKind::Table => {
-                            let item = item.icon(Icon::List);
-                            match table.row_count.and_then(|rows| u32::try_from(rows).ok()) {
-                                Some(rows) => item.count(rows),
-                                None => item,
-                            }
-                        }
-                    }
-                })
-                .collect();
-            let title = if single { "Tables" } else { info.name.as_str() };
-            let section = NavSection::new(format!("schema:{}", info.name), title, items);
-            if single {
-                section
-            } else {
-                section.collapsible()
-            }
-        })
-        .collect()
-}
-
+/// The sidebar list, kept in line with the published model.
 pub struct Navigator {
     link: Link,
-    connections: NavList,
-    schema: NavList,
+    list: NavList,
     shown: Vec<ConnectionRow>,
-    shown_revision: Option<u64>,
-    schema_visible: bool,
-    /// Height of the connections list, from the row metrics of the theme the
-    /// tree was last built with.
-    connections_height: f32,
-    frame: Frame,
-    structure_dirty: bool,
+    /// The open connection and the catalog revision the rows were built from.
+    shown_open: Option<(Uuid, u64)>,
 }
 
 impl Navigator {
@@ -117,74 +143,37 @@ impl Navigator {
         let ask = link.clone();
         let remove = link.clone();
         let new = link.clone();
-        let connections = NavList::new(vec![connection_section(&[])])
-            .with_id("db.connections")
-            .with_accessible_name("Connections")
+        let list = NavList::new(vec![connection_section(&[], None)])
+            .with_id("db.sidebar")
+            .with_accessible_name("Connections and tables")
             .on_select(move |id| {
-                if let Ok(id) = Uuid::parse_str(&id) {
-                    ask.ask(Intent::Connect(id));
+                if let Some((id, open)) = parse_connection(&id) {
+                    // Choosing the connection that is already open keeps it open.
+                    if !open {
+                        ask.ask(Intent::Connect(id));
+                    }
+                } else if let Some(relation) = parse_relation(&id) {
+                    ask.ask(Intent::OpenRelation(relation));
                 }
             })
             .item_actions(
                 vec![NavAction::new("remove", Icon::Trash2, "Remove connection")],
                 move |id, _action| {
-                    if let Ok(id) = Uuid::parse_str(id) {
+                    if let Some((id, _)) = parse_connection(id) {
                         remove.ask(Intent::RemoveConnection(id));
                     }
                 },
             )
             .on_section_action(move |_section, _action| new.ask(Intent::NewConnection));
-        let open = link.clone();
-        let schema = NavList::new(Vec::new())
-            .with_id("db.schema")
-            .with_accessible_name("Tables")
-            .on_select(move |key| {
-                if let Some(relation) = parse_relation(&key) {
-                    open.ask(Intent::OpenRelation(relation));
-                }
-            });
         Self {
             link: link.clone(),
-            connections,
-            schema,
+            list,
             shown: Vec::new(),
-            shown_revision: None,
-            schema_visible: false,
-            connections_height: 0.0,
-            frame: Frame::default(),
-            structure_dirty: false,
+            shown_open: None,
         }
     }
 
-    fn slots(&mut self) -> Vec<Slot<'_>> {
-        let mut slots = vec![Slot::new(
-            &mut self.connections,
-            Place::Fixed(self.connections_height),
-        )];
-        if self.schema_visible {
-            slots.push(Slot::new(&mut self.schema, Place::Grow));
-        }
-        slots
-    }
-
-    fn children_ref(&self) -> Vec<&dyn Widget> {
-        let mut children: Vec<&dyn Widget> = vec![&self.connections];
-        if self.schema_visible {
-            children.push(&self.schema);
-        }
-        children
-    }
-
-    fn frame_style(&mut self, theme: &Theme) -> FrameStyle {
-        let rows = self.shown.len();
-        let section = nav_section_height(theme, true);
-        let row = nav_row_height(theme);
-        let pad = f64::from(theme.tokens.spacing.s2);
-        self.connections_height = (section + rows as f64 * row + pad) as f32;
-        FrameStyle::default()
-    }
-
-    /// Bring the lists up to the published model.
+    /// Bring the list up to the published model.
     fn refresh(&mut self) {
         let (rows, active, connected, revision, schema, selected) = self.link.read(|model| {
             (
@@ -196,41 +185,42 @@ impl Navigator {
                 model.selected_relation.clone(),
             )
         });
-        if rows != self.shown {
+        let open = active.filter(|_| connected);
+        let open_now = open.map(|id| (id, revision));
+        if rows != self.shown || open_now != self.shown_open {
+            self.list.set_sections(vec![connection_section(
+                &rows,
+                open.map(|id| (id, schema.as_ref())),
+            )]);
             self.shown = rows;
-            self.connections
-                .set_sections(vec![connection_section(&self.shown)]);
-            self.structure_dirty = true;
+            self.shown_open = open_now;
         }
-        let active_key = active.map(|id| id.to_string());
-        if self.connections.selected_id() != active_key {
-            self.connections.set_selected(active_key.as_deref());
-        }
-        let visible = connected && !schema.schemas.is_empty();
-        if visible != self.schema_visible {
-            self.schema_visible = visible;
-            self.structure_dirty = true;
-        }
-        if visible && self.shown_revision != Some(revision) {
-            self.shown_revision = Some(revision);
-            self.schema.set_sections(schema_sections(&schema));
-        }
-        let selected_key = selected.as_ref().map(relation_key);
-        if visible && self.schema.selected_id() != selected_key {
-            self.schema.set_selected(selected_key.as_deref());
+        // One selection: the open table, or else the connection itself.
+        let selected_key = match (&selected, open) {
+            (Some(relation), Some(_)) => Some(relation_key(relation)),
+            _ => active.map(|id| connection_key(id, open.is_some())),
+        };
+        if self.list.selected_id() != selected_key {
+            self.list.set_selected(selected_key.as_deref());
         }
     }
 }
 
-impl Widget for Navigator {
-    fn sync(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) {
-        self.refresh();
-        for child in self.children_mut() {
-            child.sync(state, path);
-        }
+impl ui::widget::Decorator for Navigator {
+    type Inner = NavList;
+
+    fn inner(&self) -> &NavList {
+        &self.list
     }
 
-    frame_methods!();
+    fn inner_mut(&mut self) -> &mut NavList {
+        &mut self.list
+    }
+
+    fn sync(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) {
+        self.refresh();
+        ui::widget::Widget::sync(&mut self.list, state, path);
+    }
 
     fn name(&self) -> &'static str {
         "Navigator"
@@ -241,7 +231,7 @@ impl Widget for Navigator {
 mod tests {
     use super::*;
     use crate::link::ViewModel;
-    use crate::model::{ColumnInfo, SchemaInfo, TableInfo, TypeClass};
+    use crate::model::{ColumnInfo, TableInfo, TypeClass};
     use ui::headless::FrameHarness;
     use ui::theme::Theme;
 
@@ -284,33 +274,39 @@ mod tests {
         }
     }
 
-    /// One schema lists its tables under "Tables" with row counts; several schemas get a collapsible section each.
+    /// One schema lists its tables inside the connection with row counts; several schemas get a folder each; a closed connection holds nothing.
     #[test]
-    fn the_catalog_becomes_sections_of_tables_and_views() {
+    fn the_open_connection_holds_its_catalog() {
+        let sample = row("Chinook sample", Engine::Sqlite, false);
+        let analytics = row("Analytics", Engine::Postgres, true);
+        let rows = [sample.clone(), analytics.clone()];
+
         // --- phase: one_schema_is_just_tables ---
         {
-            let sections = schema_sections(&catalog(&[(
+            let schema = catalog(&[(
                 "main",
                 vec![
                     table("albums", RelationKind::Table, Some(8)),
                     table("recent", RelationKind::View, None),
                 ],
-            )]));
-            assert_eq!(sections.len(), 1);
-            assert_eq!(sections[0].title, "Tables");
-            assert!(!sections[0].collapsible);
-            let labels: Vec<_> = sections[0].items.iter().map(|i| i.label.as_str()).collect();
+            )]);
+            let section = connection_section(&rows, Some((sample.id, &schema)));
+            assert_eq!(section.items.len(), 2, "the catalog is not a section");
+            let tables = &section.items[0].children;
+            let labels: Vec<_> = tables.iter().map(|i| i.label.as_str()).collect();
             assert_eq!(labels, ["albums", "recent"]);
+            assert!(tables[0].count.is_some(), "a table shows its rows");
+            assert!(tables[1].count.is_none(), "a view has no count");
+            assert!(section.items[0].expanded, "the open connection is open");
             assert!(
-                sections[0].items[0].count.is_some(),
-                "a table shows its rows"
+                section.items[1].children.is_empty(),
+                "another connection holds nothing"
             );
-            assert!(sections[0].items[1].count.is_none(), "a view has no count");
         }
 
-        // --- phase: several_schemas_are_one_section_each ---
+        // --- phase: several_schemas_are_one_folder_each ---
         {
-            let sections = schema_sections(&catalog(&[
+            let schema = catalog(&[
                 (
                     "public",
                     vec![table("orders", RelationKind::Table, Some(3))],
@@ -319,19 +315,23 @@ mod tests {
                     "archive",
                     vec![table("orders", RelationKind::Table, Some(9))],
                 ),
-            ]));
+            ]);
+            let section = connection_section(&rows, Some((analytics.id, &schema)));
+            let folders = &section.items[1].children;
             assert_eq!(
-                sections
-                    .iter()
-                    .map(|s| s.title.as_str())
-                    .collect::<Vec<_>>(),
+                folders.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(),
                 ["public", "archive"]
             );
-            assert!(sections.iter().all(|s| s.collapsible));
             assert_ne!(
-                sections[0].items[0].id, sections[1].items[0].id,
+                folders[0].children[0].id, folders[1].children[0].id,
                 "the same table name in two schemas is two rows"
             );
+        }
+
+        // --- phase: no_connection_open_means_no_tables ---
+        {
+            let section = connection_section(&rows, None);
+            assert!(section.items.iter().all(|item| item.children.is_empty()));
         }
 
         // --- phase: a_row_id_names_its_relation ---
@@ -345,7 +345,7 @@ mod tests {
         }
     }
 
-    /// Choosing a connection, removing one and adding one reach the controller as intents; the sample cannot be removed.
+    /// Choosing a connection, a table, removing a connection and adding one reach the controller as intents; the sample cannot be removed.
     #[test]
     fn the_sidebar_asks_for_connections_to_open_and_to_change() {
         let link = Link::new();
@@ -370,24 +370,20 @@ mod tests {
         );
         harness.relayout();
 
-        // --- phase: the_active_connection_is_selected ---
+        // --- phase: the_open_connection_is_selected_until_a_table_is ---
         {
             let navigator = harness.root::<Navigator>();
             assert_eq!(
-                navigator.connections.selected_id(),
-                Some(sample.id.to_string())
-            );
-            assert!(
-                navigator.schema_visible,
-                "an open connection lists its tables"
+                navigator.list.selected_id(),
+                Some(connection_key(sample.id, true))
             );
         }
 
-        // --- phase: choosing_a_row_opens_that_connection ---
+        // --- phase: choosing_a_connection_opens_it ---
         {
             let rect = harness
                 .root::<Navigator>()
-                .connections
+                .list
                 .row_rect(&analytics.id.to_string())
                 .expect("the row is on screen");
             harness.click_at(rect.center().x, rect.center().y);
@@ -400,6 +396,22 @@ mod tests {
             );
         }
 
+        // --- phase: choosing_the_open_connection_asks_for_nothing ---
+        {
+            let rect = harness
+                .root::<Navigator>()
+                .list
+                .row_rect(&connection_key(sample.id, true))
+                .expect("the row is on screen");
+            harness.click_at(rect.center().x, rect.center().y);
+            assert!(
+                link.take_intents()
+                    .iter()
+                    .all(|intent| !matches!(intent, Intent::Connect(_))),
+                "it is already open"
+            );
+        }
+
         // --- phase: choosing_a_table_opens_it ---
         {
             let key = relation_key(&RelationRef {
@@ -408,9 +420,9 @@ mod tests {
             });
             let rect = harness
                 .root::<Navigator>()
-                .schema
+                .list
                 .row_rect(&key)
-                .expect("the table is listed");
+                .expect("the table is listed under its connection");
             harness.click_at(rect.center().x, rect.center().y);
             assert!(
                 link.take_intents()
@@ -421,14 +433,74 @@ mod tests {
 
         // --- phase: the_sample_has_no_remove_action_and_others_do ---
         {
-            let sections = [connection_section(&[sample, analytics])];
-            let items = &sections[0].items;
-            assert!(!items[0].actions, "the bundled sample cannot be removed");
-            assert!(items[1].actions);
+            let section = connection_section(&[sample, analytics], None);
             assert!(
-                sections[0].trailing_action.is_some(),
+                !section.items[0].actions,
+                "the bundled sample cannot be removed"
+            );
+            assert!(section.items[1].actions);
+            assert!(
+                section.trailing_action.is_some(),
                 "the section adds connections"
             );
         }
+    }
+
+    /// Opening a table moves the one selection to it, and closing it moves the selection back to the connection; opening another connection and returning to the first still lists its tables.
+    #[test]
+    fn one_selection_follows_the_open_table() {
+        let link = Link::new();
+        let sample = row("Chinook sample", Engine::Sqlite, false);
+        let analytics = row("Analytics", Engine::Postgres, true);
+        let albums = RelationRef {
+            schema: "main".into(),
+            name: "albums".into(),
+        };
+        let schema = std::rc::Rc::new(catalog(&[(
+            "main",
+            vec![table("albums", RelationKind::Table, Some(8))],
+        )]));
+        let model = |active: Uuid, relation: Option<RelationRef>, revision: u64| ViewModel {
+            connections: vec![sample.clone(), analytics.clone()],
+            active: Some(active),
+            connected: true,
+            schema: std::rc::Rc::clone(&schema),
+            schema_revision: revision,
+            selected_relation: relation,
+            ..ViewModel::default()
+        };
+        link.publish(model(sample.id, None, 1));
+        let mut harness = FrameHarness::for_root(
+            ui::State::new(),
+            Navigator::new(&link),
+            (320, 700),
+            Theme::dark(),
+        );
+        harness.relayout();
+
+        link.publish(model(sample.id, Some(albums.clone()), 1));
+        harness.relayout();
+        assert_eq!(
+            harness.root::<Navigator>().list.selected_id(),
+            Some(relation_key(&albums))
+        );
+
+        link.publish(model(analytics.id, None, 2));
+        harness.relayout();
+        assert_eq!(
+            harness.root::<Navigator>().list.selected_id(),
+            Some(connection_key(analytics.id, true))
+        );
+
+        link.publish(model(sample.id, None, 3));
+        harness.relayout();
+        assert!(
+            harness
+                .root::<Navigator>()
+                .list
+                .row_rect(&relation_key(&albums))
+                .is_some(),
+            "the connection that was opened again lists its tables"
+        );
     }
 }

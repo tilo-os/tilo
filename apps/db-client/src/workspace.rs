@@ -1,123 +1,234 @@
 //! The window's content: the tabs of the open connection, the view each one
 //! shows, and the dialogs over them.
+//!
+//! The workspace is one toolkit [`Column`] whose children follow the model: the
+//! tab strip, a banner while an action has failed, the view the tab shows, and
+//! a dialog while one is open. The views that hold state (the tab strip and the
+//! three tabs) are kept while they are out of sight, so a tab comes back as it
+//! was left.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
+use taffy::{NodeId, Position, TaffyTree};
 use ui::TextRole;
 use ui::icons::Icon;
 use ui::theme::Theme;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    AppModel, Banner, Button, Column, ControlSize, EmptyState, ModalDialog, ModelPath,
-    SegmentedStyle, Text, ToggleGroup, Widget,
+    AppModel, Banner, Button, Column, ControlSize, Element, EmptyState, ModalDialog, ModelPath,
+    Row, SegmentedStyle, Spacer, Text, ToggleGroup, Widget,
 };
 
-use crate::connect_modal::{ConnectDialog, confirm_dialog};
-use crate::frame::{Frame, FrameStyle, Place, Slot, frame_methods};
+use crate::connect_modal::{confirm_dialog, connect_dialog};
 use crate::link::{Dialog, Intent, Link};
 use crate::model::QueryResult;
-use crate::query::QueryPane;
-use crate::results::ResultsTable;
+use crate::query::query_pane;
+use crate::results::{CaptionLine, ResultsTable, fill_remaining_height};
 use crate::session::{MainTab, RunStatus};
 use crate::structure::StructureView;
 
-/// A quiet statement that a tab has nothing to show yet.
-fn placeholder(title: &str, message: &str) -> EmptyState {
-    EmptyState::new(title).with_message(message)
+/// A statement that a view has nothing to show yet, or, with an action, that
+/// the app has nothing at all. It takes the room its parent has left.
+struct Placeholder {
+    empty: EmptyState,
+    /// Where the action goes; without one there is no action.
+    link: Option<Link>,
 }
 
-/// Which rows of the table are shown, and the page controls.
-pub struct DataHeader {
-    link: Link,
-    caption: Text,
-    previous: Button,
-    next: Button,
-    frame: Frame,
-    structure_dirty: bool,
-}
-
-impl DataHeader {
-    pub fn new(link: &Link) -> Self {
-        let caption_link = link.clone();
-        let back = link.clone();
-        let forward = link.clone();
+impl Placeholder {
+    /// "No table selected" and what to do about it.
+    fn no_table(message: &str) -> Self {
         Self {
-            link: link.clone(),
-            caption: Text::dynamic(move || caption_text(&caption_link))
-                .with_role(TextRole::Caption)
-                .dimmed(),
-            previous: Button::icon_only("db.data.previous", Icon::ChevronLeft, "Previous rows")
-                .control_size(ControlSize::Small)
-                .on_view(move || back.ask(Intent::PreviousPage)),
-            next: Button::icon_only("db.data.next", Icon::ChevronRight, "Next rows")
-                .control_size(ControlSize::Small)
-                .on_view(move || forward.ask(Intent::NextPage)),
-            frame: Frame::default(),
-            structure_dirty: false,
+            empty: EmptyState::new("No table selected").with_message(message),
+            link: None,
         }
     }
 
-    fn slots(&mut self) -> Vec<Slot<'_>> {
-        vec![
-            Slot::new(&mut self.caption, Place::Grow),
-            Slot::new(&mut self.previous, Place::Natural),
-            Slot::new(&mut self.next, Place::Natural),
-        ]
-    }
-
-    fn children_ref(&self) -> Vec<&dyn Widget> {
-        vec![&self.caption, &self.previous, &self.next]
-    }
-
-    #[allow(
-        clippy::unused_self,
-        clippy::needless_pass_by_ref_mut,
-        reason = "every frame-based view gives its style through `frame_methods!`"
-    )]
-    fn frame_style(&mut self, theme: &Theme) -> FrameStyle {
-        FrameStyle {
-            gap: theme.tokens.spacing.s1,
-            row: true,
-            centred: true,
-            ..FrameStyle::default()
+    /// The first run: no connections, and the one way to add one.
+    fn first_run(link: &Link) -> Self {
+        Self {
+            empty: EmptyState::new("No connections yet")
+                .with_icon(Icon::HardDrive)
+                .with_message(
+                    "Add a PostgreSQL, MySQL or SQLite database to browse its tables and run queries.",
+                )
+                .with_action("New connection")
+                .with_action_id("db.new-connection"),
+            link: Some(link.clone()),
         }
     }
 }
 
-impl Widget for DataHeader {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (has_previous, has_next) = self.link.read(|model| {
-            let shown = model.data.as_ref().map_or(0, |data| data.rows.len());
-            let total = usize::try_from(model.data_total.max(0)).unwrap_or(usize::MAX);
-            (
-                model.data_offset > 0,
-                shown > 0 && model.data_offset.saturating_add(shown) < total,
-            )
-        });
-        self.previous.set_enabled(has_previous);
-        self.next.set_enabled(has_next);
-        for child in self.children_mut() {
-            child.sync(state, path);
-        }
+impl ui::widget::Decorator for Placeholder {
+    type Inner = EmptyState;
+
+    fn inner(&self) -> &EmptyState {
+        &self.empty
     }
 
-    frame_methods!();
+    fn inner_mut(&mut self) -> &mut EmptyState {
+        &mut self.empty
+    }
+
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        if let Some(link) = &self.link
+            && self.empty.take_action()
+        {
+            link.ask(Intent::NewConnection);
+        }
+        Widget::sync(&mut self.empty, state, path);
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = Widget::build_layout(&mut self.empty, taffy, theme, node_map);
+        fill_remaining_height(taffy, node);
+        // The placeholder is the thing the node stands for: it is what the
+        // action is addressed through.
+        ui::widget::decorator::register_node(node_map, node, self);
+        node
+    }
 
     fn name(&self) -> &'static str {
-        "DataHeader"
+        "Placeholder"
     }
 }
 
-/// The rows of the selected table.
-pub struct DataPane {
+/// A dialog that paints over the window and takes no room in the flow.
+struct Floating<W: Widget>(W);
+
+impl<W: Widget> ui::widget::Decorator for Floating<W> {
+    type Inner = W;
+
+    fn inner(&self) -> &W {
+        &self.0
+    }
+
+    fn inner_mut(&mut self) -> &mut W {
+        &mut self.0
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = self.0.build_layout(taffy, theme, node_map);
+        if let Ok(mut style) = taffy.style(node).cloned() {
+            style.position = Position::Absolute;
+            let _ = taffy.set_style(node, style);
+        }
+        node
+    }
+
+    fn name(&self) -> &'static str {
+        "Floating"
+    }
+}
+
+/// The failure the last action ended with, until it is dismissed.
+struct ErrorBanner {
     link: Link,
-    header: DataHeader,
-    table: ResultsTable,
-    nothing: EmptyState,
-    bound: Option<usize>,
-    has_rows: bool,
-    frame: Frame,
-    structure_dirty: bool,
+    banner: Banner,
+}
+
+impl ErrorBanner {
+    fn new(link: &Link, message: &str) -> Self {
+        Self {
+            link: link.clone(),
+            banner: Banner::error(message).dismissible(),
+        }
+    }
+}
+
+impl ui::widget::Decorator for ErrorBanner {
+    type Inner = Banner;
+
+    fn inner(&self) -> &Banner {
+        &self.banner
+    }
+
+    fn inner_mut(&mut self) -> &mut Banner {
+        &mut self.banner
+    }
+
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        if self.banner.take_dismissed() {
+            self.link.ask(Intent::DismissStatus);
+        }
+        Widget::sync(&mut self.banner, state, path);
+    }
+
+    fn name(&self) -> &'static str {
+        "ErrorBanner"
+    }
+}
+
+fn tab_index(tab: MainTab) -> usize {
+    MainTab::all()
+        .iter()
+        .position(|candidate| *candidate == tab)
+        .unwrap_or(0)
+}
+
+/// The tabs of the open connection.
+struct TabStrip {
+    link: Link,
+    tabs: ToggleGroup,
+}
+
+impl TabStrip {
+    fn new(link: &Link) -> Self {
+        let pick = link.clone();
+        let tabs = ToggleGroup::new(
+            MainTab::all()
+                .iter()
+                .map(|tab| Segment::new(tab.label()))
+                .collect(),
+            0,
+        )
+        .with_style(SegmentedStyle::Tabs)
+        .with_id("db.tabs")
+        .on_change(move |index| {
+            if let Some(tab) = MainTab::all().get(index) {
+                pick.ask(Intent::SelectTab(*tab));
+            }
+        });
+        Self {
+            link: link.clone(),
+            tabs,
+        }
+    }
+}
+
+impl ui::widget::Decorator for TabStrip {
+    type Inner = ToggleGroup;
+
+    fn inner(&self) -> &ToggleGroup {
+        &self.tabs
+    }
+
+    fn inner_mut(&mut self) -> &mut ToggleGroup {
+        &mut self.tabs
+    }
+
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let tab = tab_index(self.link.read(|model| model.tab));
+        if self.tabs.selected() != tab {
+            self.tabs.set_selected(tab);
+        }
+        Widget::sync(&mut self.tabs, state, path);
+    }
+
+    fn name(&self) -> &'static str {
+        "TabStrip"
+    }
 }
 
 /// "Rows 1 to 25 of 347".
@@ -142,314 +253,420 @@ fn caption_text(link: &Link) -> String {
     })
 }
 
-impl DataPane {
-    pub fn new(link: &Link) -> Self {
+/// A page control: it is there when there is a page to go to.
+struct PageButton {
+    link: Link,
+    button: Button,
+    forward: bool,
+}
+
+impl PageButton {
+    fn new(link: &Link, forward: bool) -> Self {
+        let ask = link.clone();
+        let (id, icon, label, intent) = if forward {
+            (
+                "db.data.next",
+                Icon::ChevronRight,
+                "Next rows",
+                Intent::NextPage,
+            )
+        } else {
+            (
+                "db.data.previous",
+                Icon::ChevronLeft,
+                "Previous rows",
+                Intent::PreviousPage,
+            )
+        };
         Self {
             link: link.clone(),
-            header: DataHeader::new(link),
-            table: ResultsTable::new("db.data.table"),
-            nothing: placeholder("No table selected", "Choose a table to see its rows."),
-            bound: None,
-            has_rows: false,
-            frame: Frame::default(),
-            structure_dirty: false,
-        }
-    }
-
-    fn slots(&mut self) -> Vec<Slot<'_>> {
-        if self.has_rows {
-            vec![
-                Slot::new(&mut self.header, Place::Natural),
-                Slot::new(&mut self.table, Place::Grow),
-            ]
-        } else {
-            vec![Slot::new(&mut self.nothing, Place::Grow)]
-        }
-    }
-
-    fn children_ref(&self) -> Vec<&dyn Widget> {
-        if self.has_rows {
-            vec![&self.header, &self.table]
-        } else {
-            vec![&self.nothing]
-        }
-    }
-
-    #[allow(
-        clippy::unused_self,
-        clippy::needless_pass_by_ref_mut,
-        reason = "every frame-based view gives its style through `frame_methods!`"
-    )]
-    fn frame_style(&mut self, theme: &Theme) -> FrameStyle {
-        FrameStyle {
-            gap: theme.tokens.spacing.s2,
-            ..FrameStyle::default()
-        }
-    }
-
-    fn refresh(&mut self) {
-        let (generation, data): (usize, Option<Arc<QueryResult>>) = self
-            .link
-            .read(|model| (model.data_generation, model.data.clone()));
-        let has_rows = data.as_ref().is_some_and(|data| !data.columns.is_empty());
-        if self.bound != Some(generation) || has_rows != self.has_rows {
-            self.bound = Some(generation);
-            self.has_rows = has_rows;
-            self.table.bind(data);
-            self.structure_dirty = true;
+            button: Button::icon_only(id, icon, label)
+                .control_size(ControlSize::Small)
+                .on_view(move || ask.ask(intent.clone())),
+            forward,
         }
     }
 }
 
-impl Widget for DataPane {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        self.refresh();
-        for child in self.children_mut() {
-            child.sync(state, path);
-        }
+impl ui::widget::Decorator for PageButton {
+    type Inner = Button;
+
+    fn inner(&self) -> &Button {
+        &self.button
     }
 
-    frame_methods!();
+    fn inner_mut(&mut self) -> &mut Button {
+        &mut self.button
+    }
+
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let available = self.link.read(|model| {
+            if self.forward {
+                let shown = model.data.as_ref().map_or(0, |data| data.rows.len());
+                let total = usize::try_from(model.data_total.max(0)).unwrap_or(usize::MAX);
+                shown > 0 && model.data_offset.saturating_add(shown) < total
+            } else {
+                model.data_offset > 0
+            }
+        });
+        self.button.set_enabled(available);
+        Widget::sync(&mut self.button, state, path);
+    }
+
+    fn name(&self) -> &'static str {
+        "PageButton"
+    }
+}
+
+/// Which rows of the table are shown, and the page controls.
+fn data_header(link: &Link) -> Row {
+    let caption_link = link.clone();
+    Row::new()
+        .no_wrap()
+        .push(Box::new(CaptionLine::new(
+            Text::dynamic(move || caption_text(&caption_link))
+                .with_role(TextRole::Caption)
+                .dimmed(),
+        )))
+        .push(Box::new(Spacer::new()))
+        .push(Box::new(PageButton::new(link, false)))
+        .push(Box::new(PageButton::new(link, true)))
+}
+
+/// What the Data tab shows: the header over the rows, or the statement that
+/// there are none.
+fn data_content(link: &Link, data: Option<Arc<QueryResult>>) -> Element {
+    let has_rows = data.as_ref().is_some_and(|data| !data.columns.is_empty());
+    if !has_rows {
+        return Box::new(Placeholder::no_table("Choose a table to see its rows."));
+    }
+    let mut table = ResultsTable::new("db.data.table");
+    table.bind(data);
+    Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_fill_remaining_height()
+            .push(Box::new(data_header(link)))
+            .push(Box::new(table)),
+    )
+}
+
+/// The rows of the selected table, rebuilt when a new page lands.
+struct DataPane {
+    link: Link,
+    content: Element,
+    bound: Option<usize>,
+    structure_dirty: bool,
+}
+
+impl DataPane {
+    fn new(link: &Link) -> Self {
+        Self {
+            link: link.clone(),
+            content: data_content(link, None),
+            bound: None,
+            structure_dirty: false,
+        }
+    }
+}
+
+impl ui::widget::Decorator for DataPane {
+    type Inner = dyn Widget;
+
+    fn inner(&self) -> &(dyn Widget + 'static) {
+        self.content.as_ref()
+    }
+
+    fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
+        self.content.as_mut()
+    }
+
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (generation, data) = self
+            .link
+            .read(|model| (model.data_generation, model.data.clone()));
+        if self.bound != Some(generation) {
+            self.bound = Some(generation);
+            self.content = data_content(&self.link, data);
+            self.structure_dirty = true;
+        }
+        self.content.sync(state, path);
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        let rebuilt = std::mem::take(&mut self.structure_dirty);
+        self.content.take_structure_dirty() || rebuilt
+    }
 
     fn name(&self) -> &'static str {
         "DataPane"
     }
 }
 
-fn tab_index(tab: MainTab) -> usize {
-    MainTab::all()
-        .iter()
-        .position(|candidate| *candidate == tab)
-        .unwrap_or(0)
+/// What the workspace's column holds, in order.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum Part {
+    Tabs,
+    /// The message of the failure it reports.
+    Banner(String),
+    FirstRun,
+    Query,
+    Data,
+    Structure,
+    /// The Data or Structure tab with no table open.
+    NoTable(MainTab),
+    Dialog(Dialog),
+}
+
+impl Part {
+    /// A part that holds what a person did, and so waits out of sight rather
+    /// than being rebuilt.
+    fn is_kept(&self) -> bool {
+        matches!(
+            self,
+            Self::Tabs | Self::Query | Self::Data | Self::Structure
+        )
+    }
 }
 
 /// The content column of the window.
 pub struct Workspace {
     link: Link,
-    tabs: ToggleGroup,
-    query: QueryPane,
-    data: DataPane,
-    structure: StructureView,
-    nothing_to_inspect: EmptyState,
-    no_connections: EmptyState,
-    connect: ConnectDialog,
-    confirm: ModalDialog<Column>,
-    /// The error the last action ended with, and the banner showing it.
-    banner: Option<(String, Banner)>,
-    tab: MainTab,
-    has_connections: bool,
-    has_table: bool,
-    frame: Frame,
+    column: Column,
+    /// What `column` holds now.
+    shown: Vec<Part>,
+    /// The parts that hold state, while they are not in the column.
+    kept: HashMap<Part, Element>,
     structure_dirty: bool,
 }
 
 impl Workspace {
     pub fn new(link: &Link) -> Self {
-        let pick = link.clone();
-        let tabs = ToggleGroup::new(
-            MainTab::all()
-                .iter()
-                .map(|tab| Segment::new(tab.label()))
-                .collect(),
-            0,
-        )
-        .with_style(SegmentedStyle::Tabs)
-        .with_id("db.tabs")
-        .on_change(move |index| {
-            if let Some(tab) = MainTab::all().get(index) {
-                pick.ask(Intent::SelectTab(*tab));
-            }
-        });
-        Self {
+        let mut workspace = Self {
             link: link.clone(),
-            tabs,
-            query: QueryPane::new(link),
-            data: DataPane::new(link),
-            structure: StructureView::new(),
-            nothing_to_inspect: placeholder(
-                "No table selected",
-                "Choose a table to see its structure.",
-            ),
-            no_connections: EmptyState::new("No connections yet")
-                .with_icon(Icon::HardDrive)
-                .with_message(
-                    "Add a PostgreSQL, MySQL or SQLite database to browse its tables and run queries.",
-                )
-                .with_action("New connection")
-                .with_action_id("db.new-connection"),
-            connect: ConnectDialog::new(link),
-            confirm: confirm_dialog(link),
-            banner: None,
-            tab: MainTab::Query,
-            has_connections: false,
-            has_table: false,
-            frame: Frame::default(),
+            column: Column::new(),
+            shown: Vec::new(),
+            kept: HashMap::new(),
             structure_dirty: false,
-        }
-    }
-
-    fn body_ref(&self) -> &dyn Widget {
-        if !self.has_connections {
-            return &self.no_connections;
-        }
-        match self.tab {
-            MainTab::Query => &self.query,
-            MainTab::Data => &self.data,
-            MainTab::Structure if self.has_table => &self.structure,
-            MainTab::Structure => &self.nothing_to_inspect,
-        }
-    }
-
-    fn slots(&mut self) -> Vec<Slot<'_>> {
-        let has_connections = self.has_connections;
-        let connect_open = self.connect.dialog.is_open();
-        let confirm_open = self.confirm.is_open();
-        let mut slots = Vec::new();
-        if connect_open {
-            slots.push(Slot::new(&mut self.connect.dialog, Place::Overlay));
-        }
-        if confirm_open {
-            slots.push(Slot::new(&mut self.confirm, Place::Overlay));
-        }
-        if has_connections {
-            slots.push(Slot::new(&mut self.tabs, Place::Start));
-        }
-        if let Some((_, banner)) = self.banner.as_mut() {
-            slots.push(Slot::new(banner, Place::Natural));
-        }
-        // The body is borrowed last: it is a different field from the rest,
-        // but reaches them through `self`.
-        let tab = self.tab;
-        let has_table = self.has_table;
-        let body: &mut dyn Widget = if has_connections {
-            match tab {
-                MainTab::Query => &mut self.query,
-                MainTab::Data => &mut self.data,
-                MainTab::Structure if has_table => &mut self.structure,
-                MainTab::Structure => &mut self.nothing_to_inspect,
-            }
-        } else {
-            &mut self.no_connections
         };
-        slots.push(Slot::new(body, Place::Grow));
-        slots
+        workspace.arrange();
+        workspace
     }
 
-    fn children_ref(&self) -> Vec<&dyn Widget> {
-        let mut children: Vec<&dyn Widget> = Vec::new();
-        if self.connect.dialog.is_open() {
-            children.push(&self.connect.dialog);
-        }
-        if self.confirm.is_open() {
-            children.push(&self.confirm);
-        }
-        if self.has_connections {
-            children.push(&self.tabs);
-        }
-        if let Some((_, banner)) = self.banner.as_ref() {
-            children.push(banner);
-        }
-        children.push(self.body_ref());
-        children
+    /// The parts the model asks for.
+    fn wanted(&self) -> Vec<Part> {
+        self.link.read(|model| {
+            let mut parts = Vec::new();
+            if model.connections.is_empty() {
+                parts.push(Part::FirstRun);
+            } else {
+                parts.push(Part::Tabs);
+                if let RunStatus::Error(message) = &model.status {
+                    parts.push(Part::Banner(message.clone()));
+                }
+                parts.push(match model.tab {
+                    MainTab::Query => Part::Query,
+                    MainTab::Data if model.table.is_some() => Part::Data,
+                    MainTab::Structure if model.table.is_some() => Part::Structure,
+                    tab => Part::NoTable(tab),
+                });
+            }
+            parts.extend(model.dialog.map(Part::Dialog));
+            parts
+        })
     }
 
-    #[allow(
-        clippy::unused_self,
-        clippy::needless_pass_by_ref_mut,
-        reason = "every frame-based view gives its style through `frame_methods!`"
-    )]
-    fn frame_style(&mut self, theme: &Theme) -> FrameStyle {
-        FrameStyle {
-            gap: theme.tokens.spacing.s3,
-            padding: theme.tokens.spacing.s6,
-            ..FrameStyle::default()
+    fn make(&self, part: &Part) -> Element {
+        let link = &self.link;
+        match part {
+            Part::Tabs => Box::new(TabStrip::new(link)),
+            Part::Banner(message) => Box::new(ErrorBanner::new(link, message)),
+            Part::FirstRun => Box::new(Placeholder::first_run(link)),
+            Part::Query => query_pane(link),
+            Part::Data => Box::new(DataPane::new(link)),
+            Part::Structure => Box::new(StructureView::new(link)),
+            Part::NoTable(MainTab::Data) => {
+                Box::new(Placeholder::no_table("Choose a table to see its rows."))
+            }
+            Part::NoTable(_) => Box::new(Placeholder::no_table(
+                "Choose a table to see its structure.",
+            )),
+            Part::Dialog(Dialog::Connect) => Box::new(Floating(connect_dialog(link))),
+            Part::Dialog(Dialog::ConfirmRun) => {
+                Box::new(Floating::<ModalDialog<Column>>(confirm_dialog(link)))
+            }
         }
     }
 
-    /// Bring the view up to the published model.
-    fn refresh(&mut self) {
-        let (tab, has_connections, has_table, dialog) = self.link.read(|model| {
-            (
-                model.tab,
-                !model.connections.is_empty(),
-                model.table.is_some(),
-                model.dialog,
-            )
-        });
-        if tab != self.tab || has_connections != self.has_connections || has_table != self.has_table
-        {
-            self.tab = tab;
-            self.has_connections = has_connections;
-            self.has_table = has_table;
-            self.structure_dirty = true;
+    /// Put the column's children in line with the model.
+    fn arrange(&mut self) {
+        let wanted = self.wanted();
+        if wanted == self.shown {
+            return;
         }
-        if self.tabs.selected() != tab_index(tab) {
-            self.tabs.set_selected(tab_index(tab));
-        }
-        let table = self.link.read(|model| model.table.clone());
-        self.structure.show(table.as_ref());
-
-        let connect_open = self.connect.dialog.is_open();
-        match dialog {
-            Some(Dialog::Connect) if !connect_open => {
-                self.connect.open();
-                self.structure_dirty = true;
+        let old = self.column.take_children();
+        for (part, element) in std::mem::take(&mut self.shown).into_iter().zip(old) {
+            if part.is_kept() {
+                self.kept.insert(part, element);
             }
-            Some(Dialog::ConfirmRun) if !self.confirm.is_open() => {
-                self.confirm.set_open(true);
-                self.structure_dirty = true;
-            }
-            _ => {}
         }
-        if dialog != Some(Dialog::Connect) && connect_open {
-            self.connect.close();
-            self.structure_dirty = true;
-        }
-        if dialog != Some(Dialog::ConfirmRun) && self.confirm.is_open() {
-            self.confirm.set_open(false);
-            self.structure_dirty = true;
-        }
-        let error = self.link.read(|model| match &model.status {
-            RunStatus::Error(message) => Some(message.clone()),
-            _ => None,
-        });
-        match (&error, &self.banner) {
-            (Some(message), Some((shown, _))) if message == shown => {}
-            (Some(message), _) => {
-                self.banner = Some((
-                    message.clone(),
-                    Banner::error(message.clone()).dismissible(),
-                ));
-                self.structure_dirty = true;
-            }
-            (None, Some(_)) => {
-                self.banner = None;
-                self.structure_dirty = true;
-            }
-            (None, None) => {}
-        }
-        if let Some((_, banner)) = self.banner.as_mut()
-            && banner.take_dismissed()
-        {
-            self.link.ask(Intent::DismissStatus);
-        }
-        if !has_connections && self.no_connections.take_action() {
-            self.link.ask(Intent::NewConnection);
-        }
+        let children = wanted
+            .iter()
+            .map(|part| self.kept.remove(part).unwrap_or_else(|| self.make(part)))
+            .collect();
+        self.column.set_children(children);
+        self.shown = wanted;
+        self.structure_dirty = true;
     }
 }
 
-impl Widget for Workspace {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        self.refresh();
-        for child in self.children_mut() {
-            child.sync(state, path);
-        }
+impl ui::widget::Decorator for Workspace {
+    type Inner = Column;
+
+    fn inner(&self) -> &Column {
+        &self.column
     }
 
-    frame_methods!();
+    fn inner_mut(&mut self) -> &mut Column {
+        &mut self.column
+    }
+
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        self.arrange();
+        Widget::sync(&mut self.column, state, path);
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        let rebuilt = std::mem::take(&mut self.structure_dirty);
+        Widget::take_structure_dirty(&mut self.column) || rebuilt
+    }
 
     fn name(&self) -> &'static str {
         "Workspace"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::link::{ConnectionRow, ViewModel};
+    use crate::model::Engine;
+    use ui::headless::FrameHarness;
+    use ui::theme::Theme;
+    use uuid::Uuid;
+
+    fn connection() -> ConnectionRow {
+        ConnectionRow {
+            id: Uuid::new_v4(),
+            name: "Chinook sample".into(),
+            engine: Engine::Sqlite,
+            removable: false,
+        }
+    }
+
+    fn open_model(tab: MainTab) -> ViewModel {
+        ViewModel {
+            connections: vec![connection()],
+            connected: true,
+            tab,
+            ..ViewModel::default()
+        }
+    }
+
+    fn shown(harness: &FrameHarness) -> Vec<Part> {
+        harness.root::<Workspace>().shown.clone()
+    }
+
+    /// The column holds what the model asks for: the first run with no connections, then the tabs over the tab's view, a banner while an action has failed, and a dialog while one is open.
+    #[test]
+    fn the_workspace_holds_what_the_model_asks_for() {
+        let link = Link::new();
+        let mut harness = FrameHarness::for_root(
+            ui::State::new(),
+            Workspace::new(&link),
+            (900, 700),
+            Theme::dark(),
+        );
+
+        // --- phase: no_connections_is_the_first_run ---
+        {
+            harness.relayout();
+            assert_eq!(shown(&harness), [Part::FirstRun]);
+        }
+
+        // --- phase: a_connection_brings_the_tabs_and_the_query_view ---
+        {
+            link.publish(open_model(MainTab::Query));
+            harness.relayout();
+            assert_eq!(shown(&harness), [Part::Tabs, Part::Query]);
+        }
+
+        // --- phase: a_tab_without_a_table_says_so ---
+        {
+            link.publish(open_model(MainTab::Data));
+            harness.relayout();
+            assert_eq!(shown(&harness), [Part::Tabs, Part::NoTable(MainTab::Data)]);
+        }
+
+        // --- phase: a_failure_shows_a_banner_above_the_view ---
+        {
+            link.publish(ViewModel {
+                status: RunStatus::Error("Connection refused".into()),
+                ..open_model(MainTab::Query)
+            });
+            harness.relayout();
+            assert_eq!(
+                shown(&harness),
+                [
+                    Part::Tabs,
+                    Part::Banner("Connection refused".into()),
+                    Part::Query
+                ]
+            );
+        }
+
+        // --- phase: a_dialog_comes_after_the_view_and_goes_when_closed ---
+        {
+            link.publish(ViewModel {
+                dialog: Some(Dialog::Connect),
+                ..open_model(MainTab::Query)
+            });
+            harness.relayout();
+            assert_eq!(
+                shown(&harness),
+                [Part::Tabs, Part::Query, Part::Dialog(Dialog::Connect)]
+            );
+            link.publish(open_model(MainTab::Query));
+            harness.relayout();
+            assert_eq!(shown(&harness), [Part::Tabs, Part::Query]);
+        }
+    }
+
+    /// A tab that is not showing keeps what a person did in it: the query view comes back as it was left.
+    #[test]
+    fn a_tab_comes_back_as_it_was_left() {
+        let link = Link::new();
+        link.publish(open_model(MainTab::Query));
+        let mut harness = FrameHarness::for_root(
+            ui::State::new(),
+            Workspace::new(&link),
+            (900, 700),
+            Theme::dark(),
+        );
+        harness.relayout();
+        let before = harness.targets()["db.query.run"];
+
+        link.publish(open_model(MainTab::Data));
+        harness.relayout();
+        assert!(
+            harness.root::<Workspace>().kept.contains_key(&Part::Query),
+            "the query view waits out of sight"
+        );
+        assert!(!harness.targets().contains_key("db.query.run"));
+
+        link.publish(open_model(MainTab::Query));
+        harness.relayout();
+        assert_eq!(harness.targets()["db.query.run"], before);
+        assert!(!harness.root::<Workspace>().kept.contains_key(&Part::Query));
     }
 }

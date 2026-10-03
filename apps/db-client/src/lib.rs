@@ -59,7 +59,6 @@ pub mod doc;
 pub mod engine;
 pub mod engine_mysql;
 pub mod engine_pg;
-mod frame;
 pub mod link;
 pub mod model;
 pub mod navigator;

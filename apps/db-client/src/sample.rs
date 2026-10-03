@@ -169,6 +169,10 @@ pub fn starter_queries() -> &'static [(&'static str, &'static str)] {
             "SELECT track, artist, album, genre, unit_price\nFROM track_catalog\nORDER BY artist, album\nLIMIT 50;",
         ),
         (
+            "Track listing",
+            "SELECT t.name AS track, ar.name AS artist,\n       al.title AS album, t.unit_price AS price,\n       g.name AS genre\nFROM tracks t\nJOIN albums al ON al.album_id = t.album_id\nJOIN artists ar ON ar.artist_id = al.artist_id\nJOIN genres g ON g.genre_id = t.genre_id\nORDER BY ar.name, al.title, t.track_id;",
+        ),
+        (
             "Tracks per genre",
             "SELECT g.name AS genre, COUNT(*) AS tracks\nFROM tracks t\nJOIN genres g ON g.genre_id = t.genre_id\nGROUP BY g.genre_id\nORDER BY tracks DESC;",
         ),

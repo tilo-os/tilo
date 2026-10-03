@@ -258,6 +258,20 @@ impl DbClientApp {
         self.session.drain();
     }
 
+    /// Load the starter query called `name` into the editor and run it, as
+    /// choosing it from the menu and pressing Run does.
+    pub fn run_starter_query(&mut self, name: &str) {
+        let queries = crate::sample::starter_queries();
+        if let Some((index, (_, sql))) = queries
+            .iter()
+            .enumerate()
+            .find(|(_, (title, _))| *title == name)
+        {
+            self.link.ask(Intent::LoadSnippet(index));
+            self.show_query_result(sql);
+        }
+    }
+
     /// Open the new-connection dialog.
     pub fn open_connect_dialog(&mut self) {
         self.dialog = Some(Dialog::Connect);
@@ -272,6 +286,12 @@ impl DbClientApp {
     /// Fail the session with `message`, for staging an error.
     pub fn fail_with(&mut self, message: &str) {
         self.session.status = RunStatus::Error(message.to_owned());
+    }
+
+    /// Stage an attempt to open the connection called `name` that ended in
+    /// `message`: that connection is the active one, and it is not open.
+    pub fn fail_connecting(&mut self, name: &str, message: &str) {
+        self.session.fail_connecting(name, message);
     }
 
     /// Run the statement in the editor, after asking when it changes data.
@@ -1290,7 +1310,7 @@ mod tests {
     }
 
     /// The first-run state, by the name the harness addresses it with.
-    const EMPTY_STATE: &str = "DbClientApp[0]/Workspace[0]/EmptyState";
+    const EMPTY_STATE: &str = "DbClientApp[0]/Workspace[0]/Placeholder";
 
     /// Press `key` with Ctrl held.
     fn chord(harness: &mut FrameHarness, key: &str) {
@@ -2002,5 +2022,55 @@ mod tests {
             .last_dispatched()
             .expect("the SQL edit is submitted through the action sink");
         assert_eq!(recorded.type_id.as_str(), crate::actions::DB_ACTION_TYPE);
+    }
+
+    /// The staged captures are what they claim: the track listing holds the query that produced its rows, and the failed connection is a remote one with no stale results.
+    #[test]
+    fn staged_captures_are_consistent() {
+        // --- phase: the_track_listing_shows_its_own_query_and_rows ---
+        {
+            let mut demo = DbClientApp::new_demo();
+            demo.run_starter_query("Track listing");
+            let mut harness = mounted(demo);
+            harness.relayout();
+            harness.relayout();
+            let (_, sql) = crate::sample::starter_queries()
+                .iter()
+                .find(|(name, _)| *name == "Track listing")
+                .expect("the starter exists");
+            assert_eq!(&app(&harness).link.sql(), sql, "the editor holds the query");
+            let columns = app(&harness)
+                .link
+                .read(|model| model.query.as_ref().map(|result| result.columns.clone()));
+            assert_eq!(
+                columns.as_deref(),
+                Some(
+                    ["track", "artist", "album", "price", "genre"]
+                        .map(String::from)
+                        .as_slice()
+                ),
+                "the rows are the ones the query selects"
+            );
+        }
+
+        // --- phase: a_failed_connection_is_a_remote_one_with_nothing_open ---
+        {
+            let mut demo = DbClientApp::new_demo();
+            demo.fail_connecting("Production analytics", "Connection refused");
+            let mut harness = mounted(demo);
+            harness.relayout();
+            let (name, connected, results, failed) = app(&harness).link.read(|model| {
+                (
+                    model.active_name.clone(),
+                    model.connected,
+                    model.query.is_some() || model.data.is_some(),
+                    matches!(model.status, RunStatus::Error(_)),
+                )
+            });
+            assert_eq!(name, "Production analytics");
+            assert!(!connected, "the failed connection is not open");
+            assert!(!results, "another database's rows are not shown");
+            assert!(failed);
+        }
     }
 }

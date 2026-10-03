@@ -10,8 +10,8 @@ use ui::LocalState;
 use ui::TextRole;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    Column, Decorator, Element, Field, Form, FormSection, ModalDialog, SegmentedStyle, Text,
-    TextInput, TextInputKind, ToggleGroup, Widget,
+    Column, Decorator, Density, Element, Field, Form, FormSection, ModalDialog, SegmentedStyle,
+    Text, TextInput, TextInputKind, ToggleGroup, Widget,
 };
 
 use crate::link::{Intent, Link};
@@ -113,7 +113,7 @@ fn name_input(fields: &Fields) -> TextInput {
 }
 
 fn network_form(fields: &Fields) -> Form {
-    Form::new().section(
+    Form::new().with_density(Some(Density::Compact)).section(
         FormSection::new("")
             .field(Field::new("Connection name", name_input(fields)))
             .field(Field::new(
@@ -145,7 +145,7 @@ fn network_form(fields: &Fields) -> Form {
 }
 
 fn sqlite_form(fields: &Fields) -> Form {
-    Form::new().section(
+    Form::new().with_density(Some(Density::Compact)).section(
         FormSection::new("")
             .field(Field::new("Connection name", name_input(fields)))
             .field(Field::new(
@@ -238,44 +238,31 @@ impl Decorator for ConnectForm {
     }
 }
 
-/// The new-connection dialog and the values it reads.
-pub struct ConnectDialog {
-    pub dialog: ModalDialog<ConnectForm>,
-    fields: Fields,
+/// The new-connection dialog, open on a blank connection, and the values it
+/// reads. A dialog lasts as long as it is open: the next one starts blank.
+fn connect_dialog_with_fields(link: &Link) -> (ModalDialog<ConnectForm>, Fields) {
+    let fields = Fields::new();
+    let save = fields.clone();
+    let save_link = link.clone();
+    let cancel_link = link.clone();
+    let dismiss_link = link.clone();
+    let dialog = ModalDialog::new("New connection", ConnectForm::new(&fields))
+        .with_test_id("db.connect-dialog")
+        .primary_action("Add connection", move || {
+            save_link.ask(Intent::SaveConnection(Box::new(save.profile())));
+        })
+        .secondary_action("Cancel", move || cancel_link.ask(Intent::CloseDialog))
+        .on_dismiss(move || dismiss_link.ask(Intent::CloseDialog))
+        .open(true);
+    (dialog, fields)
 }
 
-impl ConnectDialog {
-    pub fn new(link: &Link) -> Self {
-        let fields = Fields::new();
-        let save = fields.clone();
-        let save_link = link.clone();
-        let cancel_link = link.clone();
-        let dismiss_link = link.clone();
-        let dialog = ModalDialog::new("New connection", ConnectForm::new(&fields))
-            .with_test_id("db.connect-dialog")
-            .primary_action("Add connection", move || {
-                save_link.ask(Intent::SaveConnection(Box::new(save.profile())));
-            })
-            .secondary_action("Cancel", move || cancel_link.ask(Intent::CloseDialog))
-            .on_dismiss(move || dismiss_link.ask(Intent::CloseDialog));
-        Self { dialog, fields }
-    }
-
-    /// Open on a blank connection.
-    pub fn open(&mut self) {
-        if !self.dialog.is_open() {
-            self.fields.reset();
-            self.dialog.content_mut().focus_first = true;
-            self.dialog.set_open(true);
-        }
-    }
-
-    pub fn close(&mut self) {
-        self.dialog.set_open(false);
-    }
+/// The new-connection dialog, open.
+pub fn connect_dialog(link: &Link) -> ModalDialog<ConnectForm> {
+    connect_dialog_with_fields(link).0
 }
 
-/// The statement waiting for confirmation, and where it will run.
+/// The statement waiting for confirmation, and where it will run. Open.
 pub fn confirm_dialog(link: &Link) -> ModalDialog<Column> {
     let target = link.clone();
     let statement = link.clone();
@@ -312,6 +299,7 @@ pub fn confirm_dialog(link: &Link) -> ModalDialog<Column> {
         .primary_action("Run statement", move || run.ask(Intent::ConfirmRun))
         .secondary_action("Cancel", move || cancel.ask(Intent::CloseDialog))
         .on_dismiss(move || dismiss.ask(Intent::CloseDialog))
+        .open(true)
 }
 
 #[cfg(test)]
@@ -336,15 +324,9 @@ pub(crate) mod tests {
     #[test]
     fn the_form_takes_typing_in_the_focused_field() {
         let link = Link::new();
-        let dialog = ConnectDialog::new(&link);
-        let fields = dialog.fields.clone();
+        let (dialog, fields) = connect_dialog_with_fields(&link);
         let mut harness =
-            FrameHarness::for_root(ui::State::new(), dialog.dialog, (900, 800), Theme::dark());
-        harness.relayout();
-        fields.reset();
-        harness
-            .root_mut::<ModalDialog<ConnectForm>>()
-            .set_open(true);
+            FrameHarness::for_root(ui::State::new(), dialog, (900, 800), Theme::dark());
         harness.relayout();
 
         focus_field(&mut harness, "Connection name");
