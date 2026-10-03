@@ -55,6 +55,7 @@ pub(crate) enum Cmd {
         edit: RowEdit,
     },
     EditAuth(AuthField, String),
+    PickEnvironment(String),
     OpenForm(FormMode, FormTarget),
     SubmitForm,
     CancelForm,
