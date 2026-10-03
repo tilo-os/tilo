@@ -16,8 +16,8 @@
 //!
 //! ## What is *not* an action
 //!
-//! Presentation stays local: selection, scroll, search text, filter tabs,
-//! playback and cache/download policy.
+//! Presentation stays local: selection, scroll, playback and cache/download
+//! policy.
 //! The stable top-level destinations are still exported as idempotent `View`
 //! operations, so history, search hosts and agents can address a screen without
 //! guessing a local widget path. Stream resolution, audio output, artwork
@@ -80,8 +80,8 @@ pub const NAVIGATION_VIEWS: &[(&str, &str)] = &[
     ("artists", "Artists"),
     ("playlists", "Playlists"),
     ("downloads", "Downloads"),
-    ("liked", "Liked Songs"),
-    ("search", "Search"),
+    ("liked", "Liked songs"),
+    ("browse", "Browse"),
     ("queue", "Queue"),
     ("lyrics", "Lyrics"),
 ];

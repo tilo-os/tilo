@@ -468,11 +468,9 @@ fn kind_icon(type_id: &str) -> Icon {
 ///
 /// It is deliberately library-scoped and synchronous: a [`SearchProvider`] is
 /// queried on the UI thread, so it must never block on the network. The live
-/// YouTube-Music search (which does real HTTP) stays in Music's own search
-/// view, driven off-thread by the [`crate::stream`] worker. The deep links this
-/// provider emits and the live view emits are the same shape, so a future
-/// shell-level Ctrl+K can register this provider directly and every activation
-/// still lands on the one router.
+/// YouTube-Music catalogue (which does real HTTP) answers through
+/// [`crate::live_search::LiveCatalogProvider`], driven off-thread by the
+/// [`crate::stream`] worker.
 ///
 /// Holds a cheap clone of a prebuilt shared catalog. [`MusicApp`](crate::app::MusicApp)
 /// retains the catalog and refreshes it only when its library revision changes,

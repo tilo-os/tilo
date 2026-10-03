@@ -271,20 +271,20 @@ pub struct MusicApp {
     backend_name: String,
     /// Whether the bound backend can actually stream from `YouTube`.
     backend_live: bool,
-    /// Real search results merged in-memory (rendered by the Search view and
-    /// re-injected into the library snapshot each frame so they stay visible
-    /// across a `sync` that reloads the catalog from the document).
+    /// Real search results merged in-memory (playable from the platform
+    /// search, and re-injected into the library snapshot each frame so they
+    /// stay playable across a `sync` that reloads the catalog from the
+    /// document).
     live_hits: Vec<LiveTrack>,
     /// A live search query awaiting results (drives animation frames + a
     /// "searching…" affordance). `None` when idle.
     live_search_pending: Option<String>,
-    /// The most recent live search's `(query, ordered track ids)`, so the
-    /// Search view can render real YouTube-Music hits in ranking order even
-    /// when a multi-word query wouldn't substring-match the local index.
+    /// The most recent live search's `(query, ordered track ids)`, in the
+    /// catalogue's ranking order.
     live_results: Option<(String, Vec<String>)>,
-    /// The full multi-type search response for the current query: songs, albums,
-    /// artists, playlists + a top-result hero. Powers the Spotify-style filter
-    /// tabs; per-type "see all" deep fetches merge into the matching bucket.
+    /// The full multi-type search response for the current query: songs,
+    /// albums, artists and playlists. The platform search's live-catalogue
+    /// rows are made from it.
     live_bundle: Option<(String, SearchBundle)>,
     /// Count of in-flight stream resolutions (keeps redraws flowing until the
     /// resolved URL lands and can be handed to the audio engine).
@@ -909,7 +909,7 @@ impl MusicApp {
             "liked" => View::Liked,
             "queue" => View::Queue,
             "lyrics" => View::Lyrics,
-            "search" => View::Browse,
+            "browse" => View::Browse,
             other => {
                 if let Some(id) = other.strip_prefix("album:") {
                     View::Album(id.to_string())
@@ -939,7 +939,7 @@ impl MusicApp {
             "playlists" => Some(View::Playlists),
             "downloads" => Some(View::Downloads),
             "liked" => Some(View::Liked),
-            "search" => Some(View::Browse),
+            "browse" => Some(View::Browse),
             "queue" => Some(View::Queue),
             "lyrics" => Some(View::Lyrics),
             _ => None,
@@ -2538,7 +2538,7 @@ impl MusicApp {
             if now {
                 format!("Liked \u{201c}{label}\u{201d}")
             } else {
-                format!("Removed \u{201c}{label}\u{201d} from Liked Songs")
+                format!("Removed \u{201c}{label}\u{201d} from liked songs")
             },
             ui::time::now(),
         ));
@@ -2617,7 +2617,7 @@ impl MusicApp {
 
     fn on_create_playlist(&mut self, state: &mut AutoCommit) {
         let name = if self.name_input.trim().is_empty() {
-            "New Playlist".to_string()
+            "New playlist".to_string()
         } else {
             self.name_input.trim().to_string()
         };
