@@ -195,6 +195,9 @@ pub struct WindowGroup {
     /// `(press-time cursor x, press-time resolved width in px)`.
     resize_origin: Option<(f32, f64)>,
     pub hover_resize: bool,
+    /// The pointer entered or left the resize band since the last frame,
+    /// which shows or hides the grip.
+    grip_dirty: bool,
     pub maximized: bool,
     pub search_active: bool,
     /// The active group of the active strip, set by the shell each frame.
@@ -380,6 +383,7 @@ impl WindowGroup {
             external_navigation: false,
             resize_origin: None,
             hover_resize: false,
+            grip_dirty: false,
             maximized: false,
             search_active: false,
             focused: false,
@@ -1000,6 +1004,7 @@ impl WindowGroup {
             external_navigation: false,
             resize_origin: None,
             hover_resize: false,
+            grip_dirty: false,
             maximized: false,
             search_active: false,
             focused: false,
@@ -1328,7 +1333,9 @@ impl WindowGroup {
                 self.last_cursor = pt;
                 // A maximized group owns the output; its former tiled-width
                 // grip must neither paint nor remain an active resize target.
-                self.hover_resize = !self.maximized && handle_rect.contains(pt);
+                let hover = !self.maximized && handle_rect.contains(pt);
+                self.grip_dirty |= hover != self.hover_resize;
+                self.hover_resize = hover;
                 self.restore_hover = self.maximized && self.restore_rect.contains(pt);
                 self.close_hover = self.maximized && self.close_rect.contains(pt);
                 if self.resize_origin.is_some() {
@@ -2524,7 +2531,13 @@ impl Widget for WindowGroup {
         // Redraw follows the presentation tree. Retained inactive hosts still
         // participate in resources, lifecycle, components and ownership, but
         // they are not drawn or marked drawn until selected.
-        self.children().into_iter().any(Widget::needs_redraw)
+        self.grip_dirty || self.children().into_iter().any(Widget::needs_redraw)
+    }
+    fn mark_drawn(&mut self) {
+        self.grip_dirty = false;
+        for child in self.children_mut() {
+            child.mark_drawn();
+        }
     }
     /// Layout follows the built tree: the tab bar (whenever it was built) and
     /// the active host. Inactive hosts have no taffy nodes until they are
