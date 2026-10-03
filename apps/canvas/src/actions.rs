@@ -1285,7 +1285,17 @@ fn set_artwork(doc: &mut Doc, art: &Artwork, set: &SetArtwork) -> Result<(), Act
         (Some([x, y, width, height]), None) => {
             Some(ui::vello::kurbo::Rect::new(*x, *y, x + width, y + height))
         }
-        (None, Some(id)) => Some(extent(art, &units_of(art, id)?)),
+        // Whole units inside what the mark shows, so no sliver of ground
+        // is left along an edge.
+        (None, Some(id)) => {
+            let shown = extent(art, &units_of(art, id)?);
+            Some(ui::vello::kurbo::Rect::new(
+                (shown.x0 - 1e-6).ceil(),
+                (shown.y0 - 1e-6).ceil(),
+                (shown.x1 + 1e-6).floor(),
+                (shown.y1 + 1e-6).floor(),
+            ))
+        }
         (None, None) => None,
     };
     if let Some(crop) = crop {
