@@ -396,19 +396,19 @@ fn the_panel_is_painted_in_the_top_layer_lighter_than_the_window() {
         }
     }
 
-    // Case `the_highlight_is_a_lift_not_an_accent`.
+    // Case `the_armed_row_is_inverted_as_in_every_menu`.
     {
         let theme = Theme::dark();
-        let on_panel = theme.on_ground(crate::chrome::panel_ground(&theme));
-        let lift = on_panel.tokens.colors.intent.selection;
-        let oklch = crate::color::Oklch::from_color(lift);
+        let inverted = theme.tokens.colors.intent.inverted;
+        let oklch = crate::color::Oklch::from_color(inverted);
         assert!(oklch.c <= 0.011, "no hue in the highlight: {oklch:?}");
         let mut p = opened();
         let scene = present(&mut p, &theme);
-        let lift_rgba = lift.premultiply().to_rgba8().to_u32();
+        let inverted_rgba = inverted.premultiply().to_rgba8().to_u32();
         assert!(
-            scene.encoding().draw_data.contains(&lift_rgba),
-            "the highlighted row is filled with the panel's lift"
+            scene.encoding().draw_data.contains(&inverted_rgba),
+            "the armed row is the inverted control (HIG §9.3), as in the \
+             dropdown list and the context menu"
         );
     }
 }
