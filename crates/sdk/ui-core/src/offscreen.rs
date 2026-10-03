@@ -2048,6 +2048,17 @@ impl OffscreenRenderer {
         reason = "exhausting bounded screenshot retries is a fatal renderer invariant"
     )]
     pub fn render_resilient(&mut self, scene: &Scene, bg: Color) -> Vec<u8> {
+        self.try_render_resilient(scene, bg)
+            .unwrap_or_else(|problem| panic!("{problem}"))
+    }
+
+    /// [`Self::render_resilient`] for a caller that can answer a failure
+    /// instead of stopping: an app rendering a picture someone asked for.
+    ///
+    /// # Errors
+    /// Returns why no two consecutive overflow-free renders came within the
+    /// bounded retry count.
+    pub fn try_render_resilient(&mut self, scene: &Scene, bg: Color) -> Result<Vec<u8>, String> {
         let mut confirmed = false;
         for _ in 0..RESILIENT_RENDER_ATTEMPTS {
             let (pixels, overflowed) = self.render_with_overflow(scene, bg);
@@ -2065,16 +2076,16 @@ impl OffscreenRenderer {
                 continue;
             }
             if resilient_submission_accepted(scene.encoding().is_empty(), confirmed) {
-                return pixels;
+                return Ok(pixels);
             }
             // A scene that just fit is still not sufficient: Vello can use
             // that submission to populate its glyph/image atlas. Require a
             // second consecutive clean frame before writing a screenshot.
             confirmed = true;
         }
-        panic!(
+        Err(format!(
             "Vello did not produce two consecutive overflow-free screenshot renders after {RESILIENT_RENDER_ATTEMPTS} attempts"
-        );
+        ))
     }
 
     /// Render a one-shot scene without accepting Vello's transparent
