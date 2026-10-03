@@ -1013,6 +1013,16 @@ mod component_adapter {
             let root = self.component.root.as_deref()?;
             root.accessibility_child_path(child_index)
         }
+        fn accessibility_represents_child(&self, child_index: usize) -> bool {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return false;
+            };
+            self.component
+                .root
+                .as_deref()
+                .is_some_and(|root| root.accessibility_represents_child(child_index))
+        }
         fn perform_action(
             &mut self,
             action: &crate::a11y::Action,

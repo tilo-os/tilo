@@ -18374,6 +18374,13 @@ impl Widget for ShellOverlayHost {
     /// Expose content + palette + sidebar as direct children so trait
     /// walkers can recurse into the live tree, in `build_layout`'s
     /// child-node order (sidebar last so it paints over the chrome).
+    /// The open palette is published once, by [`Self::accessibility`] under the
+    /// command-palette layer with the host's filter band inside it; its widget
+    /// (the [`Self::children`] entry after the content) is not exported again.
+    fn accessibility_represents_child(&self, child_index: usize) -> bool {
+        self.onboarding.is_none() && self.palette_visible && child_index == 1
+    }
+
     fn children(&self) -> Vec<&dyn Widget> {
         if let Some(onboarding) = self.onboarding.as_ref() {
             return vec![onboarding, &self.capture_studio];
