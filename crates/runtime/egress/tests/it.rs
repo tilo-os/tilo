@@ -120,7 +120,10 @@ fn probe_inside_the_namespace() {
     };
     if steps == "supervise" {
         // Be a supervisor: start egress, say where pasta is, and wait to be
-        // killed.
+        // killed. Not dumpable, as a supervisor that loaded key material
+        // is: its forks must still be able to hand pasta the namespaces.
+        // SAFETY: PR_SET_DUMPABLE takes scalar arguments only.
+        assert_eq!(unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) }, 0);
         let netns = Netns::create().unwrap();
         let egress = spawn_egress(&netns, EgressPolicy::Any, &options(fake_resolver())).unwrap();
         println!("PASTA {}", egress.pasta_pid().unwrap());
