@@ -25,8 +25,6 @@ impl FakeCompositor {
         let listener = UnixListener::bind(&socket).unwrap();
         let commands = Arc::new(StdMutex::new(Vec::new()));
         let recorded = Arc::clone(&commands);
-        // The window draws three frames in answer to input, then rests.
-        let mut asked_frames = 0_u64;
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { return };
@@ -38,9 +36,6 @@ impl FakeCompositor {
                 let command: Value = serde_json::from_str(&line).unwrap();
                 let reply = if command["op"] == "key" && command["key"] == "Unmapped" {
                     json!({"err":{"code":"parse_error","message":"unknown key"}})
-                } else if command["op"] == "foreign_frames" {
-                    asked_frames = asked_frames.saturating_add(1);
-                    json!({"foreign_frames":{"frames":[{"app_id":"so.tilo.canvas","frame_seq":asked_frames.min(3)}]}})
                 } else if command["op"] == "agent_seat" {
                     let (width, height) = size_of(&command);
                     json!({"answer":{"viewport":[40.0, 30.0, width, height],"window":command["window"]}})
@@ -479,35 +474,23 @@ fn a_modifier_is_held_through_a_drag() {
 }
 
 #[test]
-fn a_screenshot_after_input_waits_for_the_window_to_finish_drawing() {
+fn a_screenshot_after_input_is_one_request_the_compositor_settles() {
     let fake = with_window();
-    let shot = |action: &str| Action {
+    let click = Action {
         app_id: Some("so.tilo.canvas".into()),
-        coordinate: (action == "left_click").then_some([10.0, 10.0]),
-        ..act(action)
+        coordinate: Some([10.0, 10.0]),
+        ..act("left_click")
     };
-    fake.computer.run(&[shot("screenshot")], false).unwrap();
-    let ops = |fake: &FakeCompositor| -> Vec<String> {
-        fake.ops()
-            .iter()
-            .filter_map(|op| op["op"].as_str().map(str::to_owned))
-            .filter(|op| op != "agent_seat")
-            .collect()
-    };
-    assert_eq!(
-        ops(&fake),
-        vec!["snapshot"],
-        "no input, nothing to wait for"
-    );
-    fake.computer.run(&[shot("left_click")], false).unwrap();
-    let after_click = ops(&fake);
-    let polls = after_click
+    fake.computer.run(&[click], false).unwrap();
+    let ops: Vec<String> = fake
+        .ops()
         .iter()
-        .filter(|op| *op == "foreign_frames")
-        .count();
+        .filter_map(|op| op["op"].as_str().map(str::to_owned))
+        .filter(|op| op != "agent_seat")
+        .collect();
     assert!(
-        polls >= 4,
-        "frames 1, 2, 3 and a quiet one are watched for: {after_click:?}"
+        !ops.iter().any(|op| op == "foreign_frames"),
+        "the compositor knows when the window answered; nothing is polled: {ops:?}"
     );
-    assert_eq!(after_click.last().map(String::as_str), Some("snapshot"));
+    assert_eq!(ops.last().map(String::as_str), Some("snapshot"));
 }
