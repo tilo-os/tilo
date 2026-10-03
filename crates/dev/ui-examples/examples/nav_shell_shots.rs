@@ -21,6 +21,10 @@
 //! - `mail-1280-text2x.png` — 200 % text.
 //! - `settings-560.png` — `NavMode::Push`: the sidebar is the first screen.
 //! - `rail-1280.png` — a docked icon rail.
+//! - `mail-1280-history-{dark,light}.png` — a document with History: its
+//!   control at the trailing edge of the header row.
+//! - `mail-1280-history-open-{dark,light}.png` — History showing beside the
+//!   app, its control reading as on.
 //!
 //! Run: `cargo run -p ui-examples --example ui-shots -- nav_shell_shots [OUT_DIR]`
 
@@ -207,6 +211,37 @@ fn shoot(
     println!("wrote {}", out.display());
 }
 
+/// The mail window over a document with a few changes, with the window's
+/// History control in its header row, and History showing when `open`.
+fn shoot_history(theme: &Theme, open: bool, out: &Path) {
+    use automerge::transaction::Transactable;
+    let size = (1280, 800);
+    let mut state = State::new();
+    for subject in [
+        "Design review",
+        "Design review moved to Thursday",
+        "Design review moved to Thursday, 14:00",
+    ] {
+        let _ = state.doc.put(automerge::ROOT, "subject", subject);
+        state.commit_action(None, None);
+    }
+    let mut harness = FrameHarness::for_root(state, mail(), size, theme.clone());
+    harness.enable_document_history_chrome();
+    if open && let Err(error) = harness.open_history() {
+        eprintln!("nav_shell_shots: History did not open: {error}");
+        std::process::exit(1);
+    }
+    for _ in 0..2 {
+        harness.root_mut::<NavShell>().snap();
+        if let Err(error) = harness.relayout_at(size) {
+            eprintln!("nav_shell_shots: layout failed: {error}");
+            std::process::exit(1);
+        }
+    }
+    harness.render_png(out);
+    println!("wrote {}", out.display());
+}
+
 pub fn run(args: &[String]) {
     let dir = args
         .first()
@@ -292,4 +327,16 @@ pub fn run(args: &[String]) {
         |_| {},
     );
     shoot(rail(), &theme, wide, &dir.join("rail-1280.png"), |_| {});
+    for (name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
+        shoot_history(
+            &theme,
+            false,
+            &dir.join(format!("mail-1280-history-{name}.png")),
+        );
+        shoot_history(
+            &theme,
+            true,
+            &dir.join(format!("mail-1280-history-open-{name}.png")),
+        );
+    }
 }

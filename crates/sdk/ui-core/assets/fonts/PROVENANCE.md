@@ -23,16 +23,16 @@ capability, so they take effect when a build that has them is copied in.
 
 | file | bytes | SHA-256 |
 |---|---:|---|
-| `TiloSans[wdth,wght].ttf` | 298140 | `a2a38f9f9898610aee0cc0f9e5bc984d30b0da0d4c89a171a459445a0ed5e45f` |
-| `TiloSans-Italic[wdth,wght].ttf` | 308180 | `5b255ff718cee4c24b3a98e4af3b0750502d01d80d2c1c5c44e56ee06e09c3cb` |
+| `TiloSans[wdth,wght].ttf` | 296124 | `140edddcc0ee4953e5120ac208757e88f48c786788bfdd092d2dba1bb49abef4` |
+| `TiloSans-Italic[wdth,wght].ttf` | 306512 | `a4ca118abf92d41fa93f46a6833436bea98869eada3f07634a3594104dfad09c` |
 | `LICENSES/Tilo-Sans-OFL.txt` (`vendor/fonts/tilo-sans/OFL.txt`) | 4448 | `63a4ce1628d9c43e728a77e40d27529f036a7bca9f50c65be96f4cf0a9aa5f98` |
 
 Both fonts are `vendor/fonts/tilo-sans/fonts/default/` as built from commit
-`cf769051cc76431fe21f17e5c22cb938c826ca60` (the last commit touching
+`c29493874c0874e530ed6bc6398b96bac7bf8df6` (the last commit touching
 `vendor/fonts/tilo-sans`) with
 
 ```sh
-SOURCE_DATE_EPOCH=1791034943 uv run vendor/fonts/tilo-sans/build.py
+SOURCE_DATE_EPOCH=1791039400 uv run vendor/fonts/tilo-sans/build.py
 ```
 
 `SOURCE_DATE_EPOCH` is that commit's time; it sets `head.modified`, the only
