@@ -171,6 +171,17 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         self.dispatch.clone()
     }
 
+    /// The dispatcher of the resource nested in this one at `id`, whose
+    /// edits are this resource's action `wrap(edit)`: a rich-text body, a
+    /// draft, a SQL buffer. See [`Dispatcher::child`].
+    pub fn child<C: Resource>(
+        &self,
+        id: &str,
+        wrap: impl Fn(C::Action) -> R::Action + 'static,
+    ) -> Dispatcher<C> {
+        self.dispatch.child(id, wrap)
+    }
+
     /// Who this view is for: the participant reading and editing through
     /// it, the same id an action they invoke reads as its author
     /// ([`ActionCx::author`](tilo_resource::ActionCx::author)). Compare the

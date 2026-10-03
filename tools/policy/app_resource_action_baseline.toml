@@ -76,7 +76,6 @@
 "apps/api-tester/src/main.rs" = 2
 "apps/backups/src/main.rs" = 2
 "apps/calculator/src/main.rs" = 1
-"apps/calendar/src/lib.rs" = 2
 "apps/calendar/src/main.rs" = 1
 "apps/camera/src/lib.rs" = 2
 "apps/camera/src/main.rs" = 1
@@ -160,7 +159,7 @@
 "apps/maps/src/app/interaction.rs" = 1
 "apps/maps/src/offline_panel.rs" = 1
 "apps/music/src/doc.rs" = 1
-"apps/notes/src/actions.rs" = 2
+"apps/notes/src/actions.rs" = 1
 "apps/notes/src/framework_history.rs" = 1
 "apps/notes/src/legacy_import.rs" = 1
 "apps/notes/src/search_provider.rs" = 1

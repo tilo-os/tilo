@@ -799,8 +799,14 @@ impl<R: Resource> ui_core::widget::controls::ActionControls for ResourceRoot<R> 
         address: &tilo_actions::ActionAddress,
         result: &Result<ui_core::widget::ResourceOperationStart, tilo_actions::DoorError>,
     ) {
+        // The resource itself, or a child its dispatcher edits through it.
+        let ours = address.resource == self.dispatch.resource_id()
+            || address
+                .resource
+                .strip_prefix(R::KIND)
+                .is_some_and(|rest| rest.starts_with('/'));
         if let Err(error) = result
-            && address.resource == self.dispatch.resource_id()
+            && ours
         {
             if !matches!(error, tilo_actions::DoorError::ConfirmationRequired) {
                 self.dispatch.refuse(&address.action, error.to_string());

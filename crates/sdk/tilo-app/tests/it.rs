@@ -5,6 +5,8 @@
 
 #[path = "action_groups.rs"]
 pub mod action_groups;
+#[path = "child_resources.rs"]
+pub mod child_resources;
 #[path = "control_custody_raw_holder.rs"]
 pub mod control_custody_raw_holder;
 #[path = "effects.rs"]

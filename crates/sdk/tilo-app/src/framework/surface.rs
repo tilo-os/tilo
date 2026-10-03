@@ -214,6 +214,17 @@ impl<R: Resource> SurfaceCx<R> {
         self.dispatch.clone()
     }
 
+    /// The dispatcher of the resource nested in this one at `id`, whose
+    /// edits are this resource's action `wrap(edit)`: the body of the item a
+    /// surface is editing. See [`Dispatcher::child`].
+    pub fn child<C: Resource>(
+        &self,
+        id: &str,
+        wrap: impl Fn(C::Action) -> R::Action + 'static,
+    ) -> Dispatcher<C> {
+        self.dispatch.child(id, wrap)
+    }
+
     /// The live state, for a surface that reads it where it needs it (in
     /// `draw`, in an event) rather than copying what it was presented, and
     /// that asks for the parts of a large resource it shows

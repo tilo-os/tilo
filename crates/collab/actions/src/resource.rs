@@ -1433,6 +1433,66 @@ impl ActionSpec {
         self
     }
 
+    /// This document action as another resource carries it: every action it
+    /// builds passes through `wrap`, which re-encodes it as the action of the
+    /// resource that contains this one (a rich-text edit becomes the note's
+    /// edit of its body, registered under `wrapped_type`). Parameters,
+    /// permission, risk and confirmation stay this action's. A builder's
+    /// refusal passes through unchanged. An effect or view operation is
+    /// returned as it is: it writes nothing to wrap.
+    #[must_use]
+    pub fn rewrapped(
+        mut self,
+        wrapped_type: &str,
+        wrap: impl Fn(EncodedAction) -> EncodedAction + Send + Sync + 'static,
+    ) -> Self {
+        if self.kind != OperationKind::Document {
+            return self;
+        }
+        let wrap: Arc<dyn Fn(EncodedAction) -> EncodedAction + Send + Sync> =
+            Arc::new(move |encoded: EncodedAction| {
+                if encoded.type_id == INVALID_ARGUMENTS_TYPE {
+                    encoded
+                } else {
+                    wrap(encoded)
+                }
+            });
+        self.build = match self.build {
+            InvocationBuilder::Fixed(encoded) => {
+                InvocationBuilder::Fixed(Arc::new(wrap(encoded.as_ref().clone())))
+            }
+            InvocationBuilder::Dynamic {
+                build,
+                deferred_type,
+            } => {
+                let wrap = Arc::clone(&wrap);
+                InvocationBuilder::Dynamic {
+                    build: Arc::new(move |args| wrap(build(args))),
+                    deferred_type: deferred_type.map(|_| wrapped_type.to_owned()),
+                }
+            }
+        };
+        self.input = match self.input {
+            ActionInput::Immediate(encoded) => ActionInput::Immediate(wrap(encoded)),
+            ActionInput::Deferred { build, .. } => ActionInput::Deferred {
+                type_id: wrapped_type.to_owned(),
+                build: Arc::new(move || wrap(build())),
+            },
+            ActionInput::Prompted {
+                prompt,
+                placeholder,
+                collects,
+                build,
+            } => ActionInput::Prompted {
+                prompt,
+                placeholder,
+                collects,
+                build: Arc::new(move |text| wrap(build(text))),
+            },
+        };
+        self
+    }
+
     /// What an invocation of this action must carry. Empty for the nullary
     /// majority.
     ///
