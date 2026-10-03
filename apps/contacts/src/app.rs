@@ -2023,6 +2023,8 @@ impl Widget for ContactsApp {
             self.pending_menu = None;
             self.open_menu_at(menu, anchor);
             self.menu_follows = Some(menu);
+            // A menu opened from the keyboard starts on its first command.
+            self.menu.focus_first_action();
         }
         if self.menu.is_open()
             && let Some(menu) = self.menu_follows
@@ -2078,6 +2080,18 @@ impl Widget for ContactsApp {
         // An open menu owns input until it closes.
         if self.menu.is_open() {
             self.menu.handle_event(event, ctx);
+            // Any other press outside the menu dismisses it, like a click.
+            if !*ctx.handled
+                && matches!(
+                    event,
+                    WindowEvent::MouseInput {
+                        state: ElementState::Pressed,
+                        ..
+                    }
+                )
+            {
+                self.menu.close();
+            }
             let choice = self.menu.take_selection();
             let (doc, _) = ui::doc::document(ctx.state, ctx.path);
             if let Some(index) = choice {
