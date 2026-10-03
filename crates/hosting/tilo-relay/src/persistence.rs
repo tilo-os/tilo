@@ -186,14 +186,19 @@ impl State {
         Ok(next)
     }
     pub(crate) fn would_materialize(&self, bytes: &[u8]) -> bool {
-        self.doc.as_ref().is_some_and(
-            |current| {
-                matches!(tilo_automerge::ApplyIncoming::load_incoming(&mut current.clone(), bytes), Ok(n) if n > 0)
-            },
-        )
+        crate::workspace::is_automerge_chunk(bytes)
+            && self.doc.as_ref().is_some_and(
+                |current| {
+                    matches!(tilo_automerge::ApplyIncoming::load_incoming(&mut current.clone(), bytes), Ok(n) if n > 0)
+                },
+            )
     }
     pub(crate) fn materialize(&mut self, bytes: &[u8]) -> bool {
-        let Some(current) = &self.doc else {
+        let Some(current) = self
+            .doc
+            .as_ref()
+            .filter(|_| crate::workspace::is_automerge_chunk(bytes))
+        else {
             return false;
         };
         let mut candidate = current.clone();
@@ -1685,5 +1690,50 @@ mod tests {
         state.doc = Some(automerge::AutoCommit::new());
         assert!(!state.would_materialize(&delta));
         assert!(!state.materialize(&delta));
+    }
+
+    /// A sealed or wrapped delta is not handed to Automerge's parser, which
+    /// logs every chunk it rejects; an Automerge change still materializes.
+    #[test]
+    fn only_automerge_chunks_reach_the_parser() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        struct Complaints(Arc<AtomicUsize>);
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Complaints {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                if *event.metadata().level() <= tracing::Level::WARN {
+                    self.0.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state(tmp.path());
+        let mut state = state.lock().unwrap();
+        state.doc = Some(automerge::AutoCommit::new());
+        let mut author = automerge::AutoCommit::new();
+        automerge::transaction::Transactable::put(&mut author, automerge::ROOT, "title", "Q3")
+            .unwrap();
+        let change = author.save_incremental();
+        let complaints = Arc::new(AtomicUsize::new(0));
+        let subscriber = tracing_subscriber::registry().with(Complaints(Arc::clone(&complaints)));
+        tracing::subscriber::with_default(subscriber, || {
+            for sealed in [
+                &b"\x02sealed channel payload"[..],
+                &[0x85, 0x6f][..],
+                &[][..],
+            ] {
+                assert!(!state.would_materialize(sealed));
+                assert!(!state.materialize(sealed));
+            }
+            assert!(state.would_materialize(&change));
+            assert!(state.materialize(&change));
+        });
+        assert_eq!(complaints.load(Ordering::SeqCst), 0);
     }
 }
