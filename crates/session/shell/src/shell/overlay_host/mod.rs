@@ -19783,7 +19783,8 @@ impl ShellOverlayHost {
                 .next()
                 .unwrap_or('\u{2022}')
                 .to_ascii_uppercase();
-            let (red, green, blue) = ui::presence::user_color(&own_id);
+            let (red, green, blue) =
+                ui::presence::identity_rgb(crate::shell::state::local_presence_hue());
             self.collaborators_overlay.draw(
                 scene,
                 transform,

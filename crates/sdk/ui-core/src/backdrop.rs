@@ -2,11 +2,13 @@
 //!
 //! Floating chrome — the palette, menus, popovers, quick settings, sheets,
 //! notifications and chrome over media — is drawn over a blurred copy of
-//! what is behind it, tinted with the panel ground at
-//! [`FLOATING_TINT_ALPHA`] (`docs/design-language.md`, "Material and
-//! transparency"). A surface asks for it with
-//! [`crate::floating_surface::Material::Floating`]; nothing outside this
-//! module picks a blur radius or a tint.
+//! what is behind it, tinted with the panel ground
+//! (`docs/design-language.md`, "Material and transparency"). The blur
+//! radius and the tint's opacity are theme roles
+//! (`surfaces.material_blur_px`, `surfaces.material_opacity`, set by the
+//! theme document's `material`). A surface asks for the material with
+//! [`crate::floating_surface::Material::Floating`]; nothing outside the
+//! theme and this module picks a blur radius or a tint.
 //!
 //! Vello cannot sample what it has already drawn, so the blur is a pass
 //! that runs before the frame:
@@ -47,9 +49,6 @@ use vello::{AaConfig, RenderParams, Renderer, Scene, wgpu};
 use crate::floating_surface::Material;
 use crate::theme::Theme;
 
-/// Opacity of the panel ground over the blurred backdrop.
-pub const FLOATING_TINT_ALPHA: f32 = 0.72;
-
 /// Most surfaces one frame blurs behind. Later ones in the same frame are
 /// opaque: each region costs one extra render of everything below it.
 pub const MAX_BACKDROP_REGIONS: usize = 4;
@@ -83,7 +82,7 @@ pub(crate) fn blurs(material: Material, theme: &Theme) -> bool {
     matches!(material, Material::Floating)
         && !theme.reduce_transparency
         && !theme.forced_colors
-        && theme.tokens.colors.surfaces.glass_blur_px > 0.0
+        && theme.tokens.colors.surfaces.material_blur_px > 0.0
 }
 
 /// Fill `shape` with `material`: under an active [`BackdropRecording`] the
@@ -114,7 +113,7 @@ pub(crate) fn fill(
         scene.fill(
             Fill::NonZero,
             transform,
-            ground.with_alpha(FLOATING_TINT_ALPHA),
+            ground.with_alpha(theme.tokens.colors.surfaces.material_opacity),
             None,
             shape,
         );
@@ -256,7 +255,7 @@ fn record(
         recording.surfaces.push(RecordedBackdrop {
             image: image.clone(),
             bounds,
-            blur_px: f64::from(theme.tokens.colors.surfaces.glass_blur_px),
+            blur_px: f64::from(theme.tokens.colors.surfaces.material_blur_px),
             layer,
             below: scene.clone(),
             ground,

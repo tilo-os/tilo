@@ -36,33 +36,23 @@ const TYPING_DERIVE_MAX_RUN: usize = 512;
 /// real edit would license markers for every caret that moves afterward.
 const EDIT_PULSE_WINDOW: crate::time::Duration = crate::time::Duration::from_millis(1500);
 
-/// Stable identity colour for a collaborator. `me`/`alice`/`bob`/`charlie`
-/// are pinned to fixed slots; everything else hashes onto [`PEER_PALETTE`].
-/// A pure function of the id alone: two hosts painting the same room see
-/// different peer sets (everyone but themselves), so a colour derived from
-/// who's present couldn't agree across machines.
+/// Stable identity colour for a collaborator who has not chosen one: the
+/// presence hue [`crate::tokens::PresenceHue::of_identity`] derives from
+/// their id, as the sRGB colour in [`PEER_PALETTE`]. A pure function of the
+/// id alone: two hosts painting the same room see different peer sets
+/// (everyone but themselves), so a colour derived from who's present
+/// couldn't agree across machines.
 ///
 /// This is the identity as it travels; paint it through
 /// `theme.tokens.colors.presence.of_rgb(..)`, which carries the hue at the
 /// active theme's presence lightness and chroma.
 pub fn user_color(user_id: &str) -> (u8, u8, u8) {
-    let slot = match user_id {
-        "me" => 8,      // blue
-        "alice" => 11,  // pink
-        "bob" => 1,     // orange
-        "charlie" => 4, // green
-        _ => {
-            // FNV-1a 64-bit: cheap, deterministic, no RNG state.
-            let mut hasher = fnv::FnvHasher::default();
-            std::hash::Hasher::write(&mut hasher, user_id.as_bytes());
-            let h = std::hash::Hasher::finish(&hasher);
-            // `PEER_PALETTE.len()` (12) is a nonzero compile-time constant,
-            // so the remainder can never divide by zero and always fits.
-            let idx = h.checked_rem(PEER_PALETTE.len() as u64).unwrap_or(0);
-            usize::try_from(idx).unwrap_or(0)
-        }
-    };
-    PEER_PALETTE.get(slot).copied().unwrap_or_default()
+    identity_rgb(crate::tokens::PresenceHue::of_identity(user_id))
+}
+
+/// A presence hue as the identity colour it travels as.
+pub fn identity_rgb(hue: crate::tokens::PresenceHue) -> (u8, u8, u8) {
+    PEER_PALETTE.get(hue.slot()).copied().unwrap_or_default()
 }
 
 /// Every colour a peer can be drawn in: the design language's twelve

@@ -3,6 +3,7 @@ pub mod contrast;
 pub mod elevation;
 pub mod metrics;
 pub mod motion;
+pub mod palette;
 pub mod radii;
 pub mod spacing;
 pub mod syntax_palette;
@@ -10,13 +11,15 @@ pub mod terminal_palette;
 pub mod typography;
 
 pub use colors::{
-    ColorRamp, Colors, DEFAULT_NEUTRAL_HUE, Intents, Material, NON_TEXT_MIN_CONTRAST, OnSurface,
-    OverlayTiers, PresencePalette, SemanticColors, Surfaces, TintedChip, dark_overlays,
-    light_overlays,
+    ColorRamp, Colors, Intents, NON_TEXT_MIN_CONTRAST, OnSurface, OverlayTiers, PresenceHue,
+    PresencePalette, SemanticColors, Surfaces, TintedChip, dark_overlays, light_overlays,
 };
 pub use elevation::{Elevation, Shadow};
 pub use metrics::Metrics;
 pub use motion::{Durations, Gesture, Motion, SpringParams, SpringPresets, rubber_band};
+pub use palette::{
+    DEFAULT_NEUTRAL_HUE, Emphasis, InkLadder, Palette, StatusTones, SurfaceLadder, Tone,
+};
 pub use radii::Radii;
 pub use spacing::{Spacing, SpacingStep};
 pub use syntax_palette::SyntaxPalette;
@@ -50,13 +53,14 @@ pub struct Tokens {
 }
 
 impl Tokens {
-    /// The token set for `material` at the default temperature.
-    pub fn of_material(material: Material) -> Self {
+    /// The stock token set around `colors`: the design language's type,
+    /// spacing, metrics, radii and motion, with the elevation of the
+    /// palette's polarity.
+    pub fn around(colors: Colors) -> Self {
         let typography = Typography::default();
         let font_mono = FontFamily::new(typography.mono_family.clone());
         let font_size_base = typography.scale.base;
-        let colors = Colors::of_material(material, DEFAULT_NEUTRAL_HUE);
-        let light = material == Material::Light;
+        let dark = colors.palette.dark;
         Self {
             terminal_palette: TerminalPalette::from_colors(&colors),
             syntax: SyntaxPalette::from_colors(&colors),
@@ -65,10 +69,10 @@ impl Tokens {
             spacing: Spacing::default(),
             metrics: Metrics::default(),
             radii: Radii::default(),
-            elevation: if light {
-                Elevation::light()
-            } else {
+            elevation: if dark {
                 Elevation::dark()
+            } else {
+                Elevation::light()
             },
             motion: Motion::default(),
             font_mono,
@@ -78,10 +82,10 @@ impl Tokens {
     }
 
     pub fn dark() -> Self {
-        Self::of_material(Material::Dark)
+        Self::around(Colors::dark())
     }
 
     pub fn light() -> Self {
-        Self::of_material(Material::Light)
+        Self::around(Colors::light())
     }
 }
