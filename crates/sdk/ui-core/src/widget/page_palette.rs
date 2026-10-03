@@ -150,7 +150,12 @@ impl PageJumpPalette {
             self.search_cursor = None;
             self.cursor = 0;
         }
-        let page = provider.search_page(&self.query, self.search_cursor.as_ref(), 512, 64);
+        let page = provider.search_page(
+            &crate::search::SearchQuery::new(self.query.as_str()),
+            self.search_cursor.as_ref(),
+            512,
+            64,
+        );
         self.items.retain(|entry| !entry.id.is_nil());
         for result in page.results {
             let Some(address) = result.action_address() else {
@@ -1033,13 +1038,13 @@ mod tests {
                 }
                 fn search_page(
                     &self,
-                    query: &str,
+                    query: &crate::search::SearchQuery,
                     cursor: Option<&crate::search::SearchCursor>,
                     budget: usize,
                     limit: usize,
                 ) -> crate::search::SearchPage {
                     assert_eq!((budget, limit), (512, 64));
-                    self.0.query_page(query, cursor, budget, limit)
+                    self.0.query_page(query.text(), cursor, budget, limit)
                 }
             }
             let catalog = SearchCatalog::new("Notes");

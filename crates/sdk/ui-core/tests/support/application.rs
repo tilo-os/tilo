@@ -165,7 +165,7 @@ impl tilo_ui::search::SearchProvider for ProbeProvider {
     }
     fn search_page(
         &self,
-        _: &str,
+        _: &tilo_ui::search::SearchQuery,
         _: Option<&tilo_ui::search::SearchCursor>,
         work: usize,
         limit: usize,
@@ -178,6 +178,7 @@ impl tilo_ui::search::SearchProvider for ProbeProvider {
                 vec![]
             },
             next: Some(tilo_ui::search::SearchCursor::default()),
+            pending: None,
             inspected: work.min(limit).min(1),
         }
     }

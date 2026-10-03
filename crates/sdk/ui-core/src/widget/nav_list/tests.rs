@@ -236,7 +236,7 @@ fn paint_nav_row_paints_what_the_list_paints() {
         );
         let ground = theme.tokens.colors.surfaces.content;
         let painted = crate::offscreen::OffscreenRenderer::new(280, 360).render(&scene, ground);
-        let listed = h.render_window_rgba();
+        let listed = h.render_rgba();
         assert_eq!(painted.len(), listed.len());
         let differing: Vec<(usize, [u8; 4], [u8; 4])> = painted
             .chunks_exact(4)
