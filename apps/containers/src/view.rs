@@ -11,7 +11,7 @@ use std::rc::Rc;
 
 use ui::icons::Icon;
 use ui::text_render::TextKind;
-use ui::tokens::TextRole;
+use ui::tokens::{SpacingStep, TextRole};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
     Actions, Badge, Button, ButtonRole, ChipStyle, Column, Container as Well, Element, EmptyState,
@@ -557,27 +557,36 @@ fn stats(c: &Container) -> Element {
         Property::new("Disk writes", ui::format::bytes(s.block_write_bytes))
             .with_kind(TextKind::Numeric),
     ]);
-    Box::new(
-        Column::new()
-            .with_intrinsic_height()
-            .with_no_padding()
-            .push(Box::new(Section::titled(
-                "Usage",
-                vec![
-                    usage("CPU", &cpu, s.cpu_percent),
-                    usage("Memory", &memory, s.mem_fraction()),
-                ],
-            )))
-            .push(Box::new(Section::titled(
-                "Activity",
-                vec![Box::new(StatGroup::new(tiles)), Box::new(io)],
-            ))),
-    )
+    stack(vec![
+        Section::titled(
+            "Usage",
+            vec![
+                usage("CPU", &cpu, s.cpu_percent),
+                usage("Memory", &memory, s.mem_fraction()),
+            ],
+        ),
+        Section::titled(
+            "Activity",
+            vec![Box::new(StatGroup::new(tiles)), Box::new(io)],
+        ),
+    ])
+}
+
+/// Sections of one tab, a group's gap apart.
+fn stack(sections: Vec<Section>) -> Element {
+    let mut column = Column::new().with_intrinsic_height().with_no_padding();
+    for (index, section) in sections.into_iter().enumerate() {
+        if index > 0 {
+            // Two sibling gaps either side of nothing: the gap between groups.
+            column = column.push(Box::new(Spacer::token(SpacingStep::S0)));
+        }
+        column = column.push(Box::new(section));
+    }
+    Box::new(column)
 }
 
 fn inspect(c: &Container) -> Element {
-    let mut page = Column::new().with_intrinsic_height().with_no_padding();
-    page = page.push(Box::new(Section::titled(
+    let mut page = vec![Section::titled(
         "Details",
         vec![Box::new(PropertyList::new(vec![
             Property::new("ID", c.short_id()).with_kind(TextKind::Identifier),
@@ -585,9 +594,9 @@ fn inspect(c: &Container) -> Element {
             Property::new("Created", c.created.clone()),
             Property::new("State", c.status_detail.clone()),
         ]))],
-    )));
+    )];
     if !c.ports.is_empty() {
-        page = page.push(Box::new(Section::titled(
+        page.push(Section::titled(
             "Ports",
             vec![Box::new(PropertyList::new(
                 c.ports
@@ -601,10 +610,10 @@ fn inspect(c: &Container) -> Element {
                     })
                     .collect(),
             ))],
-        )));
+        ));
     }
     if !c.mounts.is_empty() {
-        page = page.push(Box::new(Section::titled(
+        page.push(Section::titled(
             "Mounts",
             vec![Box::new(PropertyList::new(
                 c.mounts
@@ -619,10 +628,10 @@ fn inspect(c: &Container) -> Element {
                     })
                     .collect(),
             ))],
-        )));
+        ));
     }
     if !c.env.is_empty() {
-        page = page.push(Box::new(Section::titled(
+        page.push(Section::titled(
             "Environment",
             vec![Box::new(PropertyList::new(
                 c.env
@@ -630,10 +639,10 @@ fn inspect(c: &Container) -> Element {
                     .map(|(k, v)| Property::new(k.clone(), v.clone()).with_kind(TextKind::Code))
                     .collect(),
             ))],
-        )));
+        ));
     }
     if !c.labels.is_empty() {
-        page = page.push(Box::new(Section::titled(
+        page.push(Section::titled(
             "Labels",
             vec![Box::new(PropertyList::new(
                 c.labels
@@ -643,9 +652,9 @@ fn inspect(c: &Container) -> Element {
                     })
                     .collect(),
             ))],
-        )));
+        ));
     }
-    Box::new(page)
+    stack(page)
 }
 
 fn shell(model: &DetailModel<'_>, intents: &Intents) -> Element {
@@ -985,6 +994,40 @@ pub(crate) struct Model {
     /// showing empty lists.
     pub missing: bool,
     pub history_in_header: bool,
+    /// Digests of what each column shows, taken once per publish so the
+    /// columns compare a hash instead of the engine on every frame.
+    pub list_digest: Digest,
+    pub detail_digest: Digest,
+    pub page_digest: Digest,
+}
+
+/// A digest of what one part of the window shows.
+pub(crate) type Digest = [u8; 32];
+
+fn digest(value: &impl serde::Serialize) -> Digest {
+    let bytes = serde_json::to_vec(value).unwrap_or_default();
+    *blake3::hash(&bytes).as_bytes()
+}
+
+impl Model {
+    /// Take the digests of what each column shows.
+    pub(crate) fn digested(mut self) -> Self {
+        let e = &self.engine;
+        let rows: Vec<(&str, &str, ContainerStatus)> = listed_containers(e)
+            .into_iter()
+            .map(|c| (c.id.as_str(), c.name.as_str(), c.status))
+            .collect();
+        self.list_digest = digest(&rows);
+        let chosen = self.view.selected.as_deref().and_then(|id| e.find(id));
+        self.detail_digest = digest(&chosen);
+        self.page_digest = match self.view.section {
+            Place::Images => digest(&e.images),
+            Place::Volumes => digest(&e.volumes),
+            Place::Distrobox => digest(&e.distroboxes),
+            Place::Containers => Digest::default(),
+        };
+        self
+    }
 }
 
 /// The scroll positions the pages keep across rebuilds.
@@ -1002,8 +1045,6 @@ pub(crate) struct Parts {
     pub intents: Intents,
     pub offsets: Offsets,
 }
-
-type ContainerRowKey = Vec<(String, String, ContainerStatus)>;
 
 /// The window: a shell per section, its columns rebuilt from the model.
 pub(crate) fn window(parts: &Parts) -> ModelView<(Place, bool, bool)> {
@@ -1102,12 +1143,13 @@ fn list_view(parts: &Parts) -> Element {
     let intents = parts.intents.clone();
     let view = Box::new(ModelView::from_state_by(
         &parts.model,
-        |m: &Model| -> (ContainerRowKey, Option<String>, bool, bool) {
-            let rows = listed_containers(&m.engine)
-                .into_iter()
-                .map(|c| (c.id.clone(), c.name.clone(), c.status))
-                .collect();
-            (rows, m.view.selected.clone(), m.controls, m.missing)
+        |m: &Model| {
+            (
+                m.list_digest,
+                m.view.selected.clone(),
+                m.controls,
+                m.missing,
+            )
         },
         move |m: &Model| {
             if m.missing {
@@ -1123,15 +1165,7 @@ fn detail_view(parts: &Parts) -> Element {
     let intents = parts.intents.clone();
     let view = Box::new(ModelView::from_state_by(
         &parts.model,
-        |m: &Model| -> (Option<Container>, DetailTab, bool, bool) {
-            let chosen = m
-                .view
-                .selected
-                .as_deref()
-                .and_then(|id| m.engine.find(id))
-                .cloned();
-            (chosen, m.view.tab, m.controls, m.missing)
-        },
+        |m: &Model| (m.detail_digest, m.view.tab, m.controls, m.missing),
         move |m: &Model| {
             let chosen = m.view.selected.as_deref().and_then(|id| m.engine.find(id));
             match chosen {
@@ -1152,27 +1186,11 @@ fn detail_view(parts: &Parts) -> Element {
     scrolling(view, &parts.offsets.detail)
 }
 
-/// What a section page lists.
-#[derive(PartialEq)]
-enum PageKey {
-    Images(Vec<Image>),
-    Volumes(Vec<Volume>),
-    Boxes(Vec<DistroBox>),
-}
-
-fn page_key(m: &Model) -> PageKey {
-    match m.view.section {
-        Place::Images => PageKey::Images(m.engine.images.clone()),
-        Place::Volumes => PageKey::Volumes(m.engine.volumes.clone()),
-        _ => PageKey::Boxes(m.engine.distroboxes.clone()),
-    }
-}
-
 fn page_view(parts: &Parts) -> Element {
     let intents = parts.intents.clone();
     let view = Box::new(ModelView::from_state_by(
         &parts.model,
-        |m: &Model| (page_key(m), m.controls, m.missing),
+        |m: &Model| (m.view.section, m.page_digest, m.controls, m.missing),
         move |m: &Model| {
             if m.missing {
                 return engine_missing();

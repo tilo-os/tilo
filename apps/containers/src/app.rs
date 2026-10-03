@@ -144,7 +144,7 @@ impl Prompt {
     fn placeholder(&self) -> &'static str {
         match self.kind {
             PromptKind::NewVolume => "backups",
-            PromptKind::TagImage => "registry.example.test/api:edge",
+            PromptKind::TagImage => "ghcr.io/northwind/api:edge",
             PromptKind::PullImage => "docker.io/library/alpine:3.20",
         }
     }
@@ -925,7 +925,7 @@ impl ContainersApp {
                 name: name.to_string(),
                 driver: "local".into(),
                 mountpoint: format!(
-                    "/var/home/sam/.local/share/containers/storage/volumes/{name}/_data"
+                    "/var/home/dev/.local/share/containers/storage/volumes/{name}/_data"
                 ),
                 created: "Just now".into(),
                 in_use_by: 0,
@@ -1331,14 +1331,18 @@ impl ContainersApp {
             return;
         }
         self.published = Some(published);
-        self.parts.model.set(view::Model {
-            engine: Rc::new(self.engine.clone()),
-            view: self.view.clone(),
-            controls: self.engine_controls_available(),
-            connected: self.connected(),
-            missing: self.live && !self.engine.live,
-            history_in_header: self.history_in_header,
-        });
+        self.parts.model.set(
+            view::Model {
+                engine: Rc::new(self.engine.clone()),
+                view: self.view.clone(),
+                controls: self.engine_controls_available(),
+                connected: self.connected(),
+                missing: self.live && !self.engine.live,
+                history_in_header: self.history_in_header,
+                ..view::Model::default()
+            }
+            .digested(),
+        );
     }
 
     /// Stage the opening scene of a demo or screenshot session.
