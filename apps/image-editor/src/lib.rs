@@ -39,11 +39,9 @@ pub fn app_root() -> Box<dyn Widget> {
     Box::new(ImageEditorApp::new())
 }
 
-/// The app as every host mounts it: the live root.
+/// The app as every host mounts it: the framework app over its project.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::launch::LaunchSpec::new("so.tilo.image-editor", app_root)
-        .component_actions(actions::register)
-        .as_definition("Image Editor")
+    ui::framework::definition::<ImageEditorShell>()
 }
 pub const SHOT_SCENARIOS: &[&str] = &[
     "empty",

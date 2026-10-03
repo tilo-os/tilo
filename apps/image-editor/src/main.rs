@@ -28,11 +28,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     ui::launch::run(
         &LaunchSpec::new("so.tilo.image-editor", image_editor::app_root)
-            .open_state_with_args(open_state)
-            .max_positionals(1)
             .shot_handler(render_shot)
             .allowed_options(&["--size"])
-            .allowed_live_options(&["--open"])
             .scenarios(image_editor::SHOT_SCENARIOS)
             .configure_app(|app| image_editor::actions::register(app.action_registry_mut())),
     )?;
@@ -160,26 +157,4 @@ fn shot_theme(args: &LaunchArgs) -> Theme {
     theme
         .with_text_scale(args.text_scale.unwrap_or(1.0))
         .with_reduce_motion(reduce_motion)
-}
-fn open_state(id: &'static str, args: &LaunchArgs) -> (ui::State, ui::persist::DocWriter) {
-    let (mut state, save) = ui::persist::open(id);
-    image_editor::doc::ProjectDoc::seed(&mut state.doc);
-    if let Some(path) = args
-        .value("--open")
-        .or_else(|| args.positionals().first().map(String::as_str))
-    {
-        let mut p = image_editor::doc::ProjectDoc::read(&state.doc);
-        if let Some(image_editor::model::Operation::Source { path: source }) =
-            p.operations.get_mut("source")
-        {
-            *source = path.into();
-            p.name = std::path::Path::new(path)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("Untitled image")
-                .into();
-            image_editor::doc::ProjectDoc::write(&mut state.doc, &p);
-        }
-    }
-    (state, save)
 }
