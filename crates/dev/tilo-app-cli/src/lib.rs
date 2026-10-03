@@ -5491,7 +5491,6 @@ fn build_entrypoints(
         let triple = if let Some(target) = plan.triple {
             target.to_owned()
         } else {
-            native_libs::require_thin_runtime()?;
             host_triple(&spec.app_dir)?
         };
         let (key, flags) = prefer_dynamic_rustflags(&triple);
@@ -5527,6 +5526,14 @@ fn build_entrypoints(
     }
     let status = child.wait().context("waiting for Cargo build")?;
     if !status.success() {
+        // Asked only now: Cargo may have compiled on another machine, which
+        // needs none of this one's development files.
+        if plan.thin
+            && plan.triple.is_none()
+            && let Some(hint) = native_libs::thin_build_failure_hint()
+        {
+            bail!("Cargo package build failed with {status}\n{hint}");
+        }
         bail!("Cargo package build failed with {status}");
     }
     for (cargo_bin, _) in plan.bins {

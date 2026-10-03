@@ -1014,7 +1014,7 @@ mod tests {
         let mut doc = tilo_resource::Doc::new();
         Probe::initialize(&mut doc).unwrap();
         EffectRunner::new(EffectEnv {
-            dispatch: Dispatcher::new("test", Probe::KIND, false),
+            dispatch: Dispatcher::new("test", Probe::KIND, false, None),
             live: Live::new(Reader::<Probe>::read(&doc).unwrap()),
             wake: WakeHandle::detached(),
         })

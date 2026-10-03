@@ -551,6 +551,40 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 }
 
+/// Inspect the window `A`'s live launch opens: the same definition and
+/// component, mounted in a native [`ui_core::App`] on a fresh private
+/// profile, without running its event loop. For what the window itself
+/// declares, such as capture protection.
+///
+/// # Errors
+/// Returns any launch, storage or construction failure.
+pub fn inspect_live_window<A: ResourceApp, T>(
+    inspect: impl FnOnce(&ui_core::App) -> T,
+) -> Result<T, LaunchError> {
+    let profile = tempfile::tempdir().map_err(operation)?;
+    let mut host = ApplicationHost::new(
+        profile.path().join("state"),
+        "test-device".into(),
+        "test-workspace",
+        UserId(AUTHOR.into()),
+        role_permissions(AUTHOR, Role::Owner),
+        tilo_actions::ActionContext::default(),
+    )?;
+    let definition = definition::<A>();
+    let prepared = host.prepare_default(
+        definition,
+        INSTANCE,
+        default_record::<A>(),
+        None,
+        ComponentRunnerInputs::from_native_process(),
+    )?;
+    let component = definition.instantiate(prepared.context, prepared.target, prepared.restore)?;
+    let mut app = ui_core::App::from_component(component, prepared.runner_inputs)?;
+    let seen = inspect(&app);
+    app.close_components();
+    Ok(seen)
+}
+
 impl<A: ResourceApp> Drop for HeadlessApp<A> {
     fn drop(&mut self) {
         let _ = self.close();
