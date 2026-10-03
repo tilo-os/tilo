@@ -320,8 +320,24 @@ impl Artwork {
     /// The topmost visible mark under `point`, for hit-testing.
     pub fn mark_at(&self, point: Point) -> Option<&Mark> {
         self.marks.iter().rev().find(|mark| {
-            self.layer(&mark.layer).is_some_and(|layer| layer.visible) && mark.hit(point)
+            self.layer(&mark.layer).is_some_and(|layer| layer.visible)
+                && mark.hit(point)
+                && self.clip_of(mark).is_none_or(|clip| clip.hit(point))
         })
+    }
+
+    /// The mark `mark` is cut to, if any.
+    pub fn clip_of(&self, mark: &Mark) -> Option<&Mark> {
+        (!mark.clip.is_empty())
+            .then(|| self.mark(&mark.clip))
+            .flatten()
+    }
+
+    /// What of `mark` can show: its bounds, cut to its clip's.
+    pub fn visible_bounds(&self, mark: &Mark) -> Rect {
+        let bounds = mark.bounds();
+        self.clip_of(mark)
+            .map_or(bounds, |clip| bounds.intersect(clip.bounds()))
     }
 
     /// The members of group `id`, bottom to top.

@@ -452,7 +452,9 @@ pub fn inspect(art: &Artwork, inspect: &Inspect) -> Result<Value, String> {
                 .as_ref()
                 .is_none_or(|layer| mark.layer == *layer)
         })
-        .filter(|mark| region.is_none_or(|region| mark.bounds().intersect(region).area() > 0.0))
+        .filter(|mark| {
+            region.is_none_or(|region| art.visible_bounds(mark).intersect(region).area() > 0.0)
+        })
         .collect();
     let marks: Vec<Value> = matching
         .iter()
@@ -460,7 +462,7 @@ pub fn inspect(art: &Artwork, inspect: &Inspect) -> Result<Value, String> {
         .take(MAX_LISTED)
         .rev()
         .map(|mark| {
-            let bounds = mark.bounds();
+            let bounds = art.visible_bounds(mark);
             let mut entry = json!({
                 "id": mark.id,
                 "kind": mark.shape.kind(),

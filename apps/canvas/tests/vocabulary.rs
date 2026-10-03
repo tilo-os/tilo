@@ -533,3 +533,62 @@ fn align_and_distribute_move_marks_and_groups() {
     .unwrap_err();
     assert!(error.contains("left, center, right"), "{error}");
 }
+
+/// A clipped mark measures as what of it shows, so aligning to a group
+/// whose sheen spills past its clip centres on what is seen, and a click
+/// outside the clip does not find the mark.
+#[test]
+fn clipped_marks_measure_what_shows() {
+    let mut art = Replica::<ArtworkResource>::new();
+    let tile = NewMark {
+        group: Some("icon".into()),
+        ..rect("tile", 100.0, "#3050a0")
+    };
+    let sheen = NewMark {
+        id: Some("sheen".into()),
+        fill: Some("#ffffff".into()),
+        group: Some("icon".into()),
+        clip: Some("tile".into()),
+        ..NewMark::new(Shape::Ellipse {
+            cx: 100.0,
+            cy: 10.0,
+            rx: 90.0,
+            ry: 60.0,
+        })
+    };
+    let label = rect("label", 0.0, "#000000");
+    apply(
+        &mut art,
+        CanvasAction::Draw(Draw {
+            layer: None,
+            marks: vec![tile, sheen, label],
+        }),
+    )
+    .unwrap();
+    apply(
+        &mut art,
+        CanvasAction::Align(canvas::actions::Align {
+            ids: vec!["label".into()],
+            edge: Some("center".into()),
+            distribute: None,
+            to: Some("icon".into()),
+        }),
+    )
+    .unwrap();
+    let state = art.state().unwrap();
+    let centre = state.mark("label").unwrap().bounds().center();
+    assert_eq!(
+        centre.x, 125.0,
+        "centred on the tile, not the spilled sheen"
+    );
+    let sheen = state.mark("sheen").unwrap();
+    assert_eq!(
+        state.visible_bounds(sheen),
+        state.mark("tile").unwrap().bounds()
+    );
+    let hit = state.mark_at(ui::vello::kurbo::Point::new(60.0, 20.0));
+    assert!(
+        hit.is_none_or(|mark| mark.id != "sheen"),
+        "the sheen is cut away there: {hit:?}"
+    );
+}
