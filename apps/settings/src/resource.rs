@@ -121,6 +121,12 @@ impl ResourceSurface<Settings> for SettingsApp {
     fn attach(&mut self, cx: SurfaceCx<Settings>) {
         self.attach_framework(cx.dispatcher());
     }
+
+    // Preference and device rows publish their document edits as hand-built
+    // rows of the widget's own rather than through the resource.
+    fn publishes_document_actions(&self) -> bool {
+        true
+    }
 }
 
 /// Framework dispatcher shared by the preference panes.

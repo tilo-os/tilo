@@ -67,6 +67,18 @@ Inverse Automerge patches remain correct for pure CRDT actions with no outside
 consequence (a text splice). A shared file write and a calendar create are document
 actions, so they are undoable — including the compensating remote queue entry.
 
+### One published tree
+
+The palette, agents and scripts see one tree per resource, built by `publish`. Edits bound
+to where a person is (the selection, the caret, the playhead, the folder shown) are typed
+builders of the resource's `Action` published on it, from the surface or view that knows
+where they are. Live external entities a view shows — processes, devices, containers,
+journal entries, fetched catalogue rows, running jobs — are rows merged by id into the
+resource's children; they carry only `Effect` and `View` operations, because they are not
+document state. A resource or surface too large to publish whole publishes a bounded page
+and resolves the rest by id. A content widget's own publication can add live entities
+beside the resource, never a `Document` operation: the framework drops it.
+
 ### Views
 
 A resource can name more than one view (editor, reader) with a stable id. That catalogue
