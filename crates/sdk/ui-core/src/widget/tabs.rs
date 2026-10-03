@@ -47,10 +47,6 @@ const CLOSE_SCALE_END: f64 = 0.95;
 /// Terminal y-offset of the close curve; negative drifts upward.
 const CLOSE_Y_OFFSET_END: f64 = -20.0;
 
-/// Idle "+" slot dotted-outline alpha; aliases the shell-wide hairline weight
-/// (`crates/sdk/ui-core/HIG.md` §9.5) so the tab strip can't drift from the rest of the chrome.
-const PILL_BORDER_ALPHA: u8 = crate::chrome::shell::HAIRLINE_ALPHA;
-
 /// Alias of [`crate::chrome::shell::SelectionTier`] so the tab strip, top bar,
 /// quick settings, workspace disc and strip ribbon all express selection the same
 /// way.
@@ -493,8 +489,8 @@ impl TabBar {
             return;
         };
         let is_pinned = self.pinned_ids.contains(&t.id);
-        let pill_height = (self.rect.height() - 2.0 * TAB_PILL_INSET_Y).max(0.0);
-        let radius = pill_height / 2.0;
+        // Tabs are not pills: the control radius (design language, Shape).
+        let radius = f64::from(theme.tokens.radii.control);
         let Some(&target) = self.tab_rects.get(i) else {
             return;
         };
@@ -537,7 +533,7 @@ impl TabBar {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 pill_transform,
-                theme.tokens.colors.intent.inverted,
+                theme.tokens.colors.intent.you,
                 None,
                 &keyline,
             );
@@ -953,8 +949,7 @@ impl TabBar {
         theme: &Theme,
     ) {
         let r = c.pill_rect;
-        let pill_height = (r.height()).max(0.0);
-        let radius = pill_height / 2.0;
+        let radius = f64::from(theme.tokens.radii.control);
         let text_dim = theme.tokens.colors.text_dim;
         // Hovered tier, not inactive: active-id already shifted at close-start, and
         // an inactive pill is fully transparent, which would leave the title and ×
@@ -1979,7 +1974,7 @@ impl TabBar {
 //   off the grid  TAB_PILL_INSET_Y 6 (pill 32 tall inside a 44 bar — the
 //                 bar height is pinned), PILL_GAP 6, ICON_GAP 6, CLOSE_W 18,
 //                 ACTION_W 14, ICON_W 14, CLOSE_INSET 3, TITLE_CHIP_GAP 10,
-//                 CHIP_FADE_PX 10, PILL_SQUEEZE_FLOOR_PX 54, NEW_TAB_GLYPH_PX 11
+//                 CHIP_FADE_PX 10, PILL_SQUEEZE_FLOOR_PX 54
 //
 // The off-grid values are lucide glyph sizes and optical gaps around a
 // 32 px pill; they are kept, named, and audited here rather than rounded,
@@ -2001,9 +1996,6 @@ const CLOSE_INSET: f64 = 3.0;
 /// How far a maximize/search chip's pointer rect stops short of the pill's
 /// top and bottom edges.
 const ACTION_HIT_INSET_Y: f64 = 4.0;
-/// The "+" glyph inside the new-tab chip. Smaller than the action glyphs:
-/// at 14 px the arms nearly touched the dashed ring and read as crowded.
-const NEW_TAB_GLYPH_PX: f64 = 11.0;
 /// The group-focus keyline under an active pill: its thickness, and how
 /// far it floats above the pill's bottom edge.
 const FOCUS_KEYLINE_PX: f64 = 2.0;
@@ -2437,7 +2429,7 @@ impl Widget for TabBar {
 
         self.draw_pills(scene, transform, tr, theme, presence, layout_t, fade_window);
         self.draw_keyboard_focus(scene, transform, theme);
-        self.draw_new_tab_chip(scene, transform, theme);
+        self.draw_new_tab_chip(scene, transform, tr, theme);
         self.draw_closing_tabs(scene, transform, tr, theme);
         self.draw_drop_indicator(scene, transform, theme);
         self.draw_drag_ghost(scene, transform, tr, theme, presence);
@@ -2895,11 +2887,19 @@ impl TabBar {
             return;
         };
         let ring_rect = rect.inset(1.0);
-        let ring = RoundedRect::from_rect(ring_rect, (ring_rect.height() / 2.0).max(0.0));
+        let ring = RoundedRect::from_rect(
+            ring_rect,
+            f64::from(
+                theme
+                    .tokens
+                    .radii
+                    .concentric(theme.tokens.radii.control, 1.0),
+            ),
+        );
         scene.stroke(
             &vello::kurbo::Stroke::new(2.0),
             transform,
-            theme.tokens.colors.border_focus,
+            theme.tokens.colors.intent.you,
             None,
             &ring,
         );
@@ -2908,49 +2908,23 @@ impl TabBar {
     /// The idle/hover "+" new-tab chip, painted after the pills so a springing
     /// neighbour never draws over it; skipped during a drag so it can't be
     /// mistaken for a drop target.
-    fn draw_new_tab_chip(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+    fn draw_new_tab_chip(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
         if !(self.new_tab_rect.area() > 0.0 && self.pending_drag.is_none()) {
             return;
         }
-        let r = self.new_tab_rect;
-        let radius = r.height() / 2.0;
-        let shape = RoundedRect::from_rect(r, radius);
-        let colors = &theme.tokens.colors;
-        // Idle: dotted outline, not a filled button, so it doesn't compete with
-        // the active pill. Hover: the same glass a hovered pill uses.
-        if self.hover_new_tab {
-            crate::chrome::shell::paint_glass_body(
-                scene,
-                transform,
-                r,
-                radius,
-                theme,
-                &pill_appearance(theme, false, true, false),
-                1.0,
-            );
-        } else {
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0).with_dashes(0.0, [3.0, 3.0]),
-                transform,
-                Colors::hairline_on(colors.surfaces.base, PILL_BORDER_ALPHA),
-                None,
-                &shape,
-            );
-        }
-        let glyph_rect = square_at(r.center(), NEW_TAB_GLYPH_PX);
-        let glyph_color = if self.hover_new_tab {
-            colors.text_primary
-        } else {
-            colors.text_dim
-        };
-        icons::draw_icon(
-            scene,
-            transform,
-            glyph_rect,
-            icons::Icon::Plus,
-            glyph_color,
-            icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
+        // The shared icon button: bare at rest so it never competes with the
+        // active tab, a lift of the bar under the pointer.
+        let face =
+            crate::widget::ButtonFace::icon_only(self.new_tab_rect, icons::Icon::Plus, "New tab")
+                .control_size(crate::widget::ControlSize::Small)
+                .hovered(self.hover_new_tab);
+        crate::widget::Button::paint(scene, transform, tr, theme, &face);
     }
 
     /// Pills mid close-fade, retained past the fade window (at alpha 0) until
