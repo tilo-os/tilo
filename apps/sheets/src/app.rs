@@ -1066,7 +1066,7 @@ impl SheetsApp {
         self.run = RunMode::Shots;
         if matches!(
             name,
-            "file" | "format" | "more" | "docsettings" | "tabmenu" | "tabcolour"
+            "file" | "format" | "more" | "docsettings" | "tabmenu" | "tabcolour" | "tabrename"
         ) {
             self.staged_overlay = Some(name.to_owned());
         } else {
@@ -1111,6 +1111,7 @@ impl SheetsApp {
             "more" => self.open_command_menu(OpenMenu::More),
             "docsettings" => self.shots_open_doc_settings(),
             "tabmenu" => self.open_tab_menu(0),
+            "tabrename" => self.begin_tab_rename(0),
             "tabcolour" => {
                 self.open_tab_menu(0);
                 self.tab_menu.close();
