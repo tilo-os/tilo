@@ -2,9 +2,10 @@
 //!
 //! Genuine content drawing. The bar is the data (each partition's share of the
 //! device), so it paints itself; everything around it is the toolkit's: the
-//! "Whole disk" chip is a [`ChipFace`], the legend is the shared chart legend,
-//! and every colour, radius and gap comes from the theme. Partitions take
-//! their colour from the presence series, the same one every chart uses.
+//! "Whole disk" chip is a [`ChipFace`], the legend is measured by the renderer
+//! and wraps, and every colour, radius and gap comes from the theme.
+//! Partitions take their colour from the presence series, the same one every
+//! chart uses.
 
 use std::collections::HashMap;
 
@@ -459,5 +460,155 @@ impl Widget for PartitionMap {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use super::*;
+    use ui::headless::Framed;
+
+    type Picks = Rc<RefCell<Vec<Option<usize>>>>;
+
+    fn entries() -> Vec<MapEntry> {
+        let block = |partition: Option<usize>, device: &str, label: &str, size: u64| MapEntry {
+            partition,
+            device: device.into(),
+            label: label.into(),
+            size,
+        };
+        vec![
+            block(Some(0), "sda1", "EFI System 536.9 MB", 536_870_912),
+            block(Some(1), "sda2", "system 214.7 GB", 214_748_364_800),
+            block(Some(2), "sda3", "home 750.0 GB", 750_000_000_000),
+            block(None, "", "Unallocated 17.7 GB", 17_700_000_000),
+        ]
+    }
+
+    fn map(selected: Option<usize>, width: f64) -> (Framed<PartitionMap>, Picks) {
+        let picks: Picks = Rc::default();
+        let sink = Rc::clone(&picks);
+        let map = PartitionMap::new(entries(), selected, move |part| {
+            sink.borrow_mut().push(part);
+        });
+        let app = Framed::new(
+            ui::State::new(),
+            map,
+            ui::headless::viewport((width, 400.0)),
+            Theme::dark(),
+        );
+        (app, picks)
+    }
+
+    fn absolute(map: &PartitionMap, r: Rect) -> Point {
+        let c = r.center();
+        Point::new(map.rect.x0 + c.x, map.rect.y0 + c.y)
+    }
+
+    /// The bar's blocks tile the track in order, never overflowing it, and a sliver stays a target.
+    #[test]
+    fn blocks_tile_the_track_and_slivers_stay_clickable() {
+        let (app, _) = map(None, 900.0);
+        let g = &app.geometry;
+        assert_eq!(g.segments.len(), 4);
+        for pair in g.segments.windows(2) {
+            assert!(pair[0].x1 <= pair[1].x0, "blocks do not overlap: {pair:?}");
+        }
+        let last = g.segments.last().unwrap();
+        assert!(
+            last.x1 <= g.track.x1 + 0.5,
+            "the last block ends inside the track"
+        );
+        let sliver = g.segments.first().unwrap();
+        assert!(
+            sliver.width() >= 4.0,
+            "a 0.05 % partition is still a visible target, got {}",
+            sliver.width()
+        );
+        assert!(
+            g.chip.y1 < g.track.y0,
+            "the chip sits above the bar with a gap"
+        );
+        assert!(
+            g.legend.iter().all(|r| r.y0 >= g.track.y1),
+            "the legend sits below the bar"
+        );
+    }
+
+    /// A long legend wraps instead of running off the edge or overprinting.
+    #[test]
+    fn the_legend_wraps_at_narrow_widths() {
+        let (wide, _) = map(None, 900.0);
+        let (narrow, _) = map(None, 260.0);
+        let rows = |g: &Geometry| {
+            let mut tops: Vec<i64> = g.legend.iter().map(|r| r.y0 as i64).collect();
+            tops.dedup();
+            tops.len()
+        };
+        assert_eq!(rows(&wide.geometry), 1, "four short entries fit one row");
+        assert!(
+            rows(&narrow.geometry) > 1,
+            "they wrap when the width runs out"
+        );
+        assert!(
+            narrow.geometry.legend.iter().all(|r| r.x1 <= 260.5),
+            "no entry runs past the trailing edge"
+        );
+        assert!(narrow.geometry.height > wide.geometry.height);
+    }
+
+    /// Choosing a block, its legend entry or the chip reports the partition, or none for the whole disk.
+    #[test]
+    fn blocks_legend_entries_and_the_chip_report_the_choice() {
+        let (mut app, picks) = map(Some(1), 900.0);
+        let segment = absolute(&app, app.geometry.segments[2]);
+        Framed::harness_mut(&mut app).click_at(segment.x, segment.y);
+        let legend = absolute(&app, app.geometry.legend[0]);
+        Framed::harness_mut(&mut app).click_at(legend.x, legend.y);
+        let chip = absolute(&app, app.geometry.chip);
+        Framed::harness_mut(&mut app).click_at(chip.x, chip.y);
+        // The unallocated tail is not a partition: choosing it selects nothing.
+        let tail = absolute(&app, app.geometry.segments[3]);
+        Framed::harness_mut(&mut app).click_at(tail.x, tail.y);
+        assert_eq!(*picks.borrow(), vec![Some(2), Some(0), None]);
+    }
+
+    /// Every partition is a named, activatable control for assistive technology and agents.
+    #[test]
+    fn partitions_are_exposed_as_named_controls() {
+        let (mut app, picks) = map(Some(1), 900.0);
+        let node = Widget::accessibility(&*app).expect("the map exports a group");
+        let names: Vec<_> = node
+            .children
+            .iter()
+            .filter_map(|c| c.name.clone())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "Select whole disk",
+                "Select partition sda1",
+                "Select partition sda2",
+                "Select partition sda3"
+            ]
+        );
+        let selected: Vec<_> = node.children.iter().map(|c| c.state.selected).collect();
+        assert_eq!(
+            selected,
+            [false, false, true, false],
+            "the chosen partition reports selected"
+        );
+        let mut doc = ui::automerge::AutoCommit::new();
+        assert!(Widget::perform_semantic_action(
+            &mut *app,
+            "disks.part:sda3",
+            &A11yAction::Activate,
+            &mut doc,
+            &ui::automerge::ROOT,
+        ));
+        assert_eq!(*picks.borrow(), vec![Some(2)]);
     }
 }

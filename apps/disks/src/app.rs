@@ -2035,5 +2035,28 @@ mod tests {
                 "no drive list when there are no drives"
             );
         }
+
+        // --- phase: the_empty_states_rescan_action_rescans ---
+        {
+            let (app, mut doc) = seeded_app();
+            DisksDoc::write_topology(&mut doc, &Topology::default());
+            let mut state = ui::State::new();
+            assert!(state.adopt_doc(doc));
+            let mut app = Framed::new(
+                state,
+                app,
+                ui::headless::viewport((1280.0, 800.0)),
+                Theme::dark(),
+            );
+            assert!(app.drive().is_none());
+            // The action is reachable from the keyboard.
+            Framed::harness_mut(&mut app).key("Tab");
+            Framed::harness_mut(&mut app).key("Enter");
+            assert_eq!(
+                DisksDoc::status(doc_of(&app)),
+                "Rescan found 0 drives",
+                "the empty state's action reports what the rescan found"
+            );
+        }
     }
 }
