@@ -41,6 +41,15 @@ fn mouse_press() -> WindowEvent {
     }
 }
 
+/// Click the shell's sidebar toggle through the production path: the toggle
+/// is an action-bound control, which the host runs after the click.
+fn click_toggle(app: &mut Framed<NotesApp>) {
+    let btn = app.menu_btn_center_for_test();
+    Framed::harness_mut(app).click_at(btn.x, btn.y);
+    // The page tree joins the layout once the drawer is open.
+    Framed::harness_mut(app).relayout();
+}
+
 /// Mount `app` over `state` and run the production frame at `w`x`h`.
 fn settle_layout(app: NotesApp, state: ui::State, w: u16, h: u16) -> Framed<NotesApp> {
     settle_layout_with_theme(app, state, w, h, &Theme::dark())
@@ -106,13 +115,11 @@ fn narrow_windows_collapse_the_sidebar_into_a_bounded_drawer() {
             "the drawer must start closed when a window becomes narrow"
         );
 
-        // The top-bar toggle opens the drawer.
-        let btn = app.menu_btn_center_for_test();
-        dispatch(&mut app, &cursor_moved(btn.x, btn.y));
-        dispatch(&mut app, &mouse_press());
+        // The shell's sidebar toggle opens the drawer.
+        click_toggle(&mut app);
         assert!(
             app.drawer_open_for_test(),
-            "clicking the top-bar button must open the drawer"
+            "clicking the sidebar toggle must open the drawer"
         );
 
         // Picking a page from the drawer selects it and closes the drawer.
@@ -150,9 +157,7 @@ fn narrow_windows_collapse_the_sidebar_into_a_bounded_drawer() {
             app.built_narrow_for_test(),
             "480px at 2× is a drawer layout"
         );
-        let btn = app.menu_btn_center_for_test();
-        dispatch(&mut app, &cursor_moved(btn.x, btn.y));
-        dispatch(&mut app, &mouse_press());
+        click_toggle(&mut app);
         assert!(app.drawer_open_for_test(), "the toggle opens the drawer");
         // The open drawer's structure is laid out on the next settled pass.
         Framed::harness_mut(&mut app)

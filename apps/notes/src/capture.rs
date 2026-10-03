@@ -467,6 +467,45 @@ fn semantic_target_rect(
     retained(&driver.inspection().root, &predicate)
 }
 
+/// The style the block editor sets a block's lines in: its role's size at the
+/// text input's own leading, which is what a block's rect has to hold.
+fn editor_line_style(
+    theme: &ui::Theme,
+    kind: &ui::widget::BlockKind,
+) -> ui::text_render::TextStyle {
+    ui::text_render::TextStyle::new(theme.tokens.typography.size(kind.text_role()))
+}
+
+/// The shell's sidebar toggle, while the sidebar is hidden: the control a
+/// person presses to bring the page tree back.
+fn sidebar_toggle_rect(driver: &FrameHarness) -> Option<vello::kurbo::Rect> {
+    semantic_observed(driver, |node| node.name.as_deref() == Some("Show sidebar"))
+        .then(|| driver.targets().get("nav-shell-sidebar").copied())
+        .flatten()
+}
+
+/// Every accessible name the mounted tree exposes, for a scenario that cannot
+/// find the control it drives.
+fn semantic_names(driver: &FrameHarness) -> Vec<String> {
+    fn access(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
+        out.extend(node.name.clone());
+        for child in &node.children {
+            access(child, out);
+        }
+    }
+    fn retained(node: &ui::headless::InspectionNode, out: &mut Vec<String>) {
+        if let Some(semantics) = &node.semantics {
+            access(semantics, out);
+        }
+        for child in &node.children {
+            retained(child, out);
+        }
+    }
+    let mut names = Vec::new();
+    retained(&driver.inspection().root, &mut names);
+    names
+}
+
 fn semantic_name_rect(driver: &FrameHarness, name: &str) -> Option<vello::kurbo::Rect> {
     fn access(node: &ui::a11y::AccessNode, name: &str) -> Option<vello::kurbo::Rect> {
         (node.name.as_deref() == Some(name))
@@ -531,8 +570,12 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
             | "status",
         ) => {}
         Some("drawer") => {
-            let rect = semantic_target_rect(driver, |target| target == "notes.drawer")
-                .ok_or_else(|| LaunchError::Operation("narrow drawer toggle missing".into()))?;
+            let rect = sidebar_toggle_rect(driver).ok_or_else(|| {
+                LaunchError::Operation(format!(
+                    "narrow drawer toggle missing among {:?}",
+                    semantic_names(driver)
+                ))
+            })?;
             driver.click_at(rect.center().x, rect.center().y);
         }
         Some("drag") => {
@@ -581,8 +624,7 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
         }
         Some("menu") => {
             if semantic_name_rect(driver, "Launch checklist").is_none()
-                && let Some(toggle) =
-                    semantic_target_rect(driver, |target| target == "notes.drawer")
+                && let Some(toggle) = sidebar_toggle_rect(driver)
             {
                 driver.click_at(toggle.center().x, toggle.center().y);
                 driver.relayout();
@@ -614,8 +656,7 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
         }
         Some("rename" | "rename_commit") => {
             if semantic_name_rect(driver, "Launch checklist").is_none()
-                && let Some(toggle) =
-                    semantic_target_rect(driver, |target| target == "notes.drawer")
+                && let Some(toggle) = sidebar_toggle_rect(driver)
             {
                 driver.click_at(toggle.center().x, toggle.center().y);
                 driver.relayout();
@@ -631,8 +672,7 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
         }
         Some("shortcuts" | "shortcuts_bottom") => {
             if semantic_name_rect(driver, "Launch checklist").is_none()
-                && let Some(toggle) =
-                    semantic_target_rect(driver, |target| target == "notes.drawer")
+                && let Some(toggle) = sidebar_toggle_rect(driver)
             {
                 driver.click_at(toggle.center().x, toggle.center().y);
                 driver.relayout();
@@ -838,7 +878,7 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
             }
         }
         Some("sidebar_scroll") => {
-            if let Some(toggle) = semantic_target_rect(driver, |target| target == "notes.drawer") {
+            if let Some(toggle) = sidebar_toggle_rect(driver) {
                 driver.click_at(toggle.center().x, toggle.center().y);
                 driver.relayout();
             }
@@ -950,6 +990,16 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
         }
     }
     for _ in 0..3 {
+        driver.relayout();
+    }
+    if matches!(scenario, Some("status" | "saving" | "save_error")) {
+        // The pointer resting on the bubble's corner keeps it open for the
+        // capture, as it does for a person who looks at the status.
+        let window = driver.root_widget().get_rect();
+        move_pointer(
+            driver,
+            vello::kurbo::Point::new(window.x1 - 24.0, window.y1 - 24.0),
+        );
         driver.relayout();
     }
     Ok(())
@@ -1169,10 +1219,10 @@ fn validate_capture(
             let mut renderer = ui::TextRenderer::new();
             renderer.set_text_scale(theme.text_scale);
             let heights = blocks.iter().zip(&rects).all(|(block, rect)| {
-                let (_, text_height) = renderer.measure(
+                let (_, text_height) = renderer.measure_style(
                     block.text(),
-                    block.kind.font_size(),
                     Some(ui::num::f32_of_f64(rect.width())),
+                    &editor_line_style(theme, &block.kind),
                 );
                 rect.height() + 0.5 >= f64::from(text_height)
             });
@@ -1248,10 +1298,9 @@ fn validate_capture(
                 .starts_with("![Settings external accounts](asset:")
         }),
         Some("scrolled") => blocks.len() > 20,
-        Some("drawer") => semantic_observed(driver, |node| {
-            node.action_target.as_deref() == Some("notes.drawer")
-                && node.state.checked == Some(true)
-        }),
+        Some("drawer") => {
+            semantic_observed(driver, |node| node.name.as_deref() == Some("Hide sidebar"))
+        }
         Some("menu" | "note_menu") => semantic_observed(driver, |node| {
             node.role == ui::a11y::Role::Menu && !node.state.hidden
         }),
@@ -1315,10 +1364,10 @@ fn validate_capture(
                     .iter()
                     .zip(&rects)
                     .map(|(block, rect)| {
-                        let (_, text_height) = renderer.measure(
+                        let (_, text_height) = renderer.measure_style(
                             block.text(),
-                            block.kind.font_size(),
                             Some(ui::num::f32_of_f64(rect.width())),
+                            &editor_line_style(theme, &block.kind),
                         );
                         (*rect, text_height)
                     })
@@ -1361,7 +1410,7 @@ pub fn render_to_path(
     let result = drive_fixture(&mut driver, scenario)
         .and_then(|()| validate_capture(&mut driver, &records, scenario, &theme));
     if result.is_ok() {
-        driver.render_window_png(out);
+        driver.render_png(out);
     }
     driver.close_components();
     let reports = driver.take_component_close_reports();
