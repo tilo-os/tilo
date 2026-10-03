@@ -73,6 +73,9 @@ impl Action {
     }
 }
 
+/// What the engine reports as its connection when no podman answered.
+pub const UNREACHABLE: &str = "Podman didn't respond";
+
 /// Result of probing the engine. The UI only needs the snapshot; errors are
 /// folded into a fallback so the surface never goes blank.
 pub struct Probe {
@@ -94,7 +97,7 @@ pub fn probe() -> Probe {
         Some(engine) => Probe { engine },
         None => Probe {
             engine: Engine {
-                connection: "No container engine — is podman installed?".into(),
+                connection: UNREACHABLE.into(),
                 live: false,
                 ..Engine::default()
             },
@@ -131,7 +134,7 @@ fn podman_connection_label() -> String {
             || "unknown".into(),
             |o| String::from_utf8_lossy(&o.stdout).trim().to_string(),
         );
-    format!("podman {version} · rootless")
+    format!("Podman {version}, rootless")
 }
 
 // --- podman ps -------------------------------------------------------

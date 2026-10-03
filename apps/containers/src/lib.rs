@@ -1,10 +1,9 @@
 //! Containers — a rootless-podman container & distrobox manager for Tilo.
 //!
 //! The app projects the local container engine (containers, images,
-//! distroboxes) into a CRDT-native surface built on the `ui` toolkit:
-//! a navigation rail, a master list with inline lifecycle actions, a tabbed
-//! detail view (Logs / Stats / Inspect / Terminal), a create-container flow,
-//! and a distrobox section. View/navigation state lives in the shared
+//! volumes, distroboxes) into a window built from the `ui` toolkit: the
+//! sections in a sidebar, the container list beside a tabbed detail (logs,
+//! usage, settings, shell), a new-container form, and a page per section. View/navigation state lives in the shared
 //! Automerge document so undo/redo and live collaboration use the same state; the
 //! engine snapshot itself is transient host data mirrored from `podman`.
 //!
@@ -37,19 +36,18 @@
 
 pub mod actions;
 pub mod app;
-pub mod combobox;
+mod create_form;
 pub mod doc;
-pub mod draw;
 pub mod framework_history;
 #[cfg(test)]
 mod framework_history_tests;
 pub mod model;
-pub mod panels;
 pub mod podman;
-pub mod presentation;
+mod published;
 pub mod resource;
 pub mod search_provider;
 pub mod terminal;
+mod view;
 
 pub use app::ContainersApp;
 
@@ -64,11 +62,6 @@ pub fn history_test_root() -> ContainersApp {
 #[cfg(test)]
 pub fn history_test_open_create_root() -> ContainersApp {
     ContainersApp::history_test_open_create_root()
-}
-
-#[cfg(test)]
-pub fn history_test_palette_root() -> ContainersApp {
-    ContainersApp::history_test_palette_root()
 }
 
 #[cfg(test)]
@@ -110,11 +103,26 @@ pub fn app_root_offline() -> Box<dyn Widget> {
     Box::new(ContainersApp::new(false))
 }
 
-/// Offline root with a modal seeded for a deterministic `--shots` frame
-/// (`--scenario confirm` / `--scenario prompt`).
+/// Offline root staged for one deterministic `--shots` scene
+/// (`--scenario` with one of [`SCENARIOS`]).
 pub fn app_root_shot(scenario: &str) -> Box<dyn Widget> {
     let mut app = ContainersApp::new(false);
     app.seed_shot(scenario);
     Box::new(app)
 }
+/// The scenes `--shots --scenario` can stage.
+pub const SCENARIOS: &[&str] = &[
+    "confirm",
+    "prompt",
+    "create",
+    "images",
+    "volumes",
+    "distrobox",
+    "stats",
+    "inspect",
+    "terminal",
+    "pull",
+    "empty",
+];
+
 pub use resource::{Containers, ContainersShell};

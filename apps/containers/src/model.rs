@@ -321,7 +321,7 @@ pub fn sample_engine() -> Engine {
         images: sample_images(),
         volumes: sample_volumes(),
         distroboxes: sample_distroboxes(),
-        connection: "podman 5.1.1 · rootless · sample data".into(),
+        connection: "Podman 5.1.1, rootless".into(),
         live: false,
     }
 }

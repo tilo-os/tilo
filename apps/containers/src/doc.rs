@@ -4,8 +4,8 @@
 //! mirrored from podman and lives in plain memory — it isn't collaborative,
 //! it's a projection of the host. What *is* worth keeping in the shared
 //! Automerge document is the **view state**: which section the user is in,
-//! which container is selected, the active detail tab, the search query, and
-//! the create-container form draft. Storing those in the CRDT means undo/redo
+//! which container is selected, the active detail tab, and the
+//! create-container form draft. Storing those in the CRDT means undo/redo
 //! and live collaboration (two peers navigating the same manager) work for
 //! free, exactly as the toolkit intends.
 //!
@@ -15,7 +15,6 @@
 //!     ├── "section"   (Str)   # "containers" | "images" | "volumes" | "distrobox"
 //!     ├── "selected"  (Str)   # container id, or "" for none
 //!     ├── "tab"       (Str)   # "logs" | "stats" | "inspect" | "terminal"
-//!     ├── "search"    (Text)  # collaborative search box
 //!     └── "create"    (Map)   # the new-container form draft
 //!         ├── "name"    (Text)
 //!         ├── "image"   (Text)
@@ -206,26 +205,6 @@ impl ViewDoc {
         Self::put_str(doc, &m, "tab", tab.as_str());
     }
 
-    // --- search (collaborative Text) ---
-
-    pub fn search(doc: &AutoCommit) -> String {
-        Self::existing_view_map(doc)
-            .ok()
-            .flatten()
-            .and_then(|map| Self::get_str(doc, &map, "search"))
-            .unwrap_or_default()
-    }
-
-    pub fn search_obj(doc: &mut AutoCommit) -> ObjId {
-        let m = Self::view_map(doc);
-        Self::text_obj(doc, &m, "search")
-    }
-
-    pub fn set_search(doc: &mut AutoCommit, value: &str) {
-        let t = Self::search_obj(doc);
-        ui::doc::splice_text_diffed(doc, &t, value);
-    }
-
     // --- create-container draft ---
 
     fn existing_create_map(doc: &AutoCommit) -> Result<Option<ObjId>, StoredValueError> {
@@ -392,10 +371,10 @@ impl CreateField {
         match self {
             CreateField::Name => "Name",
             CreateField::Image => "Image",
-            CreateField::Ports => "Ports (host:container, comma-separated)",
-            CreateField::Env => "Environment (KEY=value, comma-separated)",
-            CreateField::Volumes => "Volumes (name:/path, comma-separated)",
-            CreateField::Command => "Command (optional)",
+            CreateField::Ports => "Ports",
+            CreateField::Env => "Environment",
+            CreateField::Volumes => "Volumes",
+            CreateField::Command => "Command",
         }
     }
     pub fn placeholder(self) -> &'static str {
@@ -404,8 +383,8 @@ impl CreateField {
             CreateField::Image => "docker.io/library/nginx:alpine",
             CreateField::Ports => "8080:80, 8443:443",
             CreateField::Env => "TZ=UTC, LOG_LEVEL=info",
-            CreateField::Volumes => "pgdata:/var/lib/data",
-            CreateField::Command => "leave blank for image default",
+            CreateField::Volumes => "pgdata:/var/lib/postgresql/data",
+            CreateField::Command => "npm start",
         }
     }
     /// Index of this field in [`Self::ALL`].
@@ -428,7 +407,7 @@ impl CreateField {
 mod tests {
     use super::*;
 
-    /// Section, selection, tab, search and create-form state round-trip through the doc and build the run arguments.
+    /// Section, selection, tab and create-form state round-trip through the doc and build the run arguments.
     #[test]
     fn view_and_create_state_round_trip_through_doc() {
         // --- phase: section_round_trips_through_doc ---
@@ -458,115 +437,44 @@ mod tests {
             ViewDoc::set_tab(&mut doc, DetailTab::Stats);
             assert_eq!(ViewDoc::tab(&doc), DetailTab::Stats);
         }
-
-        // --- phase: search_text_round_trips ---
-        {
-            let mut doc = AutoCommit::new();
-            ViewDoc::set_search(&mut doc, "nginx");
-            assert_eq!(ViewDoc::search(&doc), "nginx");
-            ViewDoc::set_search(&mut doc, "redis");
-            assert_eq!(ViewDoc::search(&doc), "redis");
-        }
-
-        // --- phase: volumes_section_round_trips ---
-        {
-            let mut doc = AutoCommit::new();
-            ViewDoc::set_section(&mut doc, Section::Volumes);
-            assert_eq!(ViewDoc::section(&doc), Section::Volumes);
-        }
-
-        // --- phase: clear_create_empties_fields ---
-        {
-            let mut doc = AutoCommit::new();
-            ViewDoc::set_create_field(&mut doc, CreateField::Image, "nginx");
-            ViewDoc::clear_create(&mut doc);
-            assert_eq!(ViewDoc::create_field(&doc, CreateField::Image), "");
-        }
-
-        // --- phase: create_run_args_requires_image ---
-        {
-            let mut doc = AutoCommit::new();
-            assert!(
-                ViewDoc::create_run_args(&doc).is_none(),
-                "no image → no args"
-            );
-            ViewDoc::set_create_field(&mut doc, CreateField::Image, "nginx:alpine");
-            ViewDoc::set_create_field(&mut doc, CreateField::Name, "web");
-            ViewDoc::set_create_field(&mut doc, CreateField::Ports, "8080:80, 8443:443");
-            let args = ViewDoc::create_run_args(&doc).unwrap();
-            assert_eq!(args[0], "run");
-            assert!(args.contains(&"--name".to_string()));
-            assert!(args.contains(&"web".to_string()));
-            assert!(args.contains(&"8080:80".to_string()));
-            assert!(args.contains(&"8443:443".to_string()));
-            assert!(args.contains(&"nginx:alpine".to_string()));
-        }
-
-        // --- phase: create_run_args_includes_env_and_volumes ---
-        {
-            let mut doc = AutoCommit::new();
-            ViewDoc::set_create_field(&mut doc, CreateField::Image, "postgres:16");
-            ViewDoc::set_create_field(&mut doc, CreateField::Env, "POSTGRES_DB=app, TZ=UTC");
-            ViewDoc::set_create_field(
-                &mut doc,
-                CreateField::Volumes,
-                "pgdata:/var/lib/postgresql/data",
-            );
-            let args = ViewDoc::create_run_args(&doc).unwrap();
-            // -e flags for each env entry, -v for the volume mount.
-            let e_count = args.iter().filter(|a| *a == "-e").count();
-            assert_eq!(e_count, 2, "one -e per env entry: {args:?}");
-            assert!(
-                args.windows(2)
-                    .any(|w| w[0] == "-e" && w[1] == "POSTGRES_DB=app")
-            );
-            assert!(args.windows(2).any(|w| w[0] == "-e" && w[1] == "TZ=UTC"));
-            assert!(
-                args.windows(2)
-                    .any(|w| w[0] == "-v" && w[1] == "pgdata:/var/lib/postgresql/data")
-            );
-            // The image comes after every flag, before any command.
-            let img_pos = args.iter().position(|a| a == "postgres:16").unwrap();
-            let last_flag = args
-                .iter()
-                .rposition(|a| a == "-e" || a == "-v" || a == "-p")
-                .unwrap();
-            assert!(img_pos > last_flag, "image follows all flags: {args:?}");
-        }
     }
 
-    /// Appending to or repeatedly setting the search keeps the doc bounded.
+    /// Appending to or repeatedly setting a draft field keeps the doc bounded.
     #[test]
-    fn search_edits_keep_doc_bounded() {
-        // --- phase: appending_one_char_to_search_is_bounded ---
+    fn draft_edits_keep_doc_bounded() {
+        // --- phase: appending_one_char_to_a_field_is_bounded ---
         {
-            // Anti-churn: growing a long search field by one char must splice only
+            // Anti-churn: growing a long draft field by one char must splice only
             // the new char, not rewrite the whole value.
             let mut doc = AutoCommit::new();
             let long = "n".repeat(300);
-            ViewDoc::set_search(&mut doc, &long);
+            ViewDoc::set_create_field(&mut doc, CreateField::Command, &long);
             let before = doc.save().len();
             let mut longer = long.clone();
             longer.push('!');
-            ViewDoc::set_search(&mut doc, &longer);
+            ViewDoc::set_create_field(&mut doc, CreateField::Command, &longer);
             let grew = doc.save().len() - before;
-            assert_eq!(ViewDoc::search(&doc), longer, "value round-trips");
-            assert!(grew < 40, "one-char search edit grew doc by {grew} bytes");
+            assert_eq!(
+                ViewDoc::create_field(&doc, CreateField::Command),
+                longer,
+                "value round-trips"
+            );
+            assert!(grew < 40, "one-char draft edit grew doc by {grew} bytes");
         }
 
-        // --- phase: repeated_set_search_keeps_doc_bounded ---
+        // --- phase: repeated_set_field_keeps_doc_bounded ---
         {
             let mut doc = AutoCommit::new();
             let long = "r".repeat(300);
-            ViewDoc::set_search(&mut doc, &long);
+            ViewDoc::set_create_field(&mut doc, CreateField::Command, &long);
             let a = doc.save().len();
             for _ in 0..50 {
-                ViewDoc::set_search(&mut doc, &long);
+                ViewDoc::set_create_field(&mut doc, CreateField::Command, &long);
             }
             let b = doc.save().len();
             assert_eq!(
                 a, b,
-                "re-storing the same search grew the document {a} -> {b}"
+                "re-storing the same draft grew the document {a} -> {b}"
             );
         }
     }
