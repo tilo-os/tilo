@@ -10,7 +10,7 @@ use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 
 /// Host programs the scripts use.
-const PROGRAMS: &[&str] = &["bash", "mkdir", "chmod", "ln", "cat", "rm"];
+const PROGRAMS: &[&str] = &["bash", "mkdir", "chmod", "chown", "ln", "cat", "rm"];
 
 pub const HELLO: &str = "hello-1.0-1.fc44.x86_64";
 pub const LIBGREET: &str = "libgreet-2.0-1.fc44.x86_64";
@@ -57,6 +57,9 @@ for p in "${pkgs[@]}"; do
       chmod 4755 /usr/bin/hello
       mkdir -p /usr/share/hello
       printf 'greeting\n' > /usr/share/hello/greeting.txt
+      # A system group's file: owned by an id only subordinate ids map.
+      chown 0:7 /usr/share/hello/greeting.txt 2>/dev/null || true
+      chmod 0640 /usr/share/hello/greeting.txt
       printf 'colour=yes\n' > /etc/hello.conf
       printf 'colour=no\n' > /etc/hello.conf.rpmnew
       printf '/usr/bin/hello\n' >> /etc/shells
@@ -116,14 +119,8 @@ pub fn runtime(root: &Path) -> Option<PathBuf> {
             }
         }
     }
-    for (name, target) in [
-        ("bin", "usr/bin"),
-        ("sbin", "usr/bin"),
-        ("lib", "usr/lib"),
-        ("lib64", "usr/lib64"),
-    ] {
-        std::os::unix::fs::symlink(target, tree.join(name)).ok()?;
-    }
+    // Like a real image: `usr/` and `etc/` only, no top-level links; the
+    // sandbox supplies `/lib64` and friends.
     write_exec(&tree.join("usr/bin/dnf"), DNF)?;
     write_exec(&tree.join("usr/bin/rpm"), RPM)?;
     std::fs::write(

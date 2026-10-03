@@ -4,14 +4,14 @@
 //! Each test returns early where the host can't create the sandbox (no
 //! bwrap, user namespaces disabled), saying so.
 
-use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use env_tools::{
-    BuildError, Builder, CacheKey, Catalog, Entry, NoCatalog, Origin, ToolStore,
-    rebuild_for_runtime,
+    BuildError, Builder, CacheKey, Catalog, Entry, NoCatalog, Origin, ToolStore, rebuild_tools,
 };
 use tilo_app_package::PackageId;
+use tilo_environment::{Environment, ToolBuildError, ToolBuilder};
 
 use crate::fixture;
 
@@ -29,7 +29,7 @@ fn sandbox_or_skip() -> bool {
 struct FakeStore {
     runtimes: Vec<(PackageId, PathBuf)>,
     kept: PathBuf,
-    stored: RefCell<Vec<(PackageId, CacheKey, Vec<String>)>>,
+    stored: Mutex<Vec<(PackageId, CacheKey, Vec<String>)>>,
 }
 
 impl FakeStore {
@@ -37,7 +37,7 @@ impl FakeStore {
         Self {
             runtimes,
             kept,
-            stored: RefCell::new(Vec::new()),
+            stored: Mutex::new(Vec::new()),
         }
     }
 }
@@ -52,7 +52,11 @@ impl ToolStore for FakeStore {
     }
 
     fn has(&self, tool: &PackageId) -> bool {
-        self.stored.borrow().iter().any(|(id, _, _)| id == tool)
+        self.stored
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(id, _, _)| id == tool)
     }
 
     fn store_tool(
@@ -66,7 +70,8 @@ impl ToolStore for FakeStore {
         std::fs::create_dir_all(&self.kept)?;
         std::fs::rename(tree, self.kept.join(id.to_hex()))?;
         self.stored
-            .borrow_mut()
+            .lock()
+            .unwrap()
             .push((id, key.clone(), requested.to_vec()));
         Ok(id)
     }
@@ -140,7 +145,7 @@ fn a_fixture_build_seals_only_what_the_packages_added() {
     let again = builder.build(&runtime, &packages(&["hello"])).unwrap();
     assert_eq!(again.tool, built.tool);
     assert_eq!(again.origin, Origin::Local);
-    assert_eq!(builder.store().stored.borrow().len(), 1);
+    assert_eq!(builder.store().stored.lock().unwrap().len(), 1);
 
     env_tools::sandbox::remove_tree(dir.path()).unwrap();
 }
@@ -198,7 +203,7 @@ fn a_catalog_hit_skips_the_build() {
     let builder = Builder::new(store, catalog, dir.path().join("state"));
     let built = builder.build(&runtime, &packages(&["hello"])).unwrap();
     assert_eq!((built.tool, built.origin), (published, Origin::Catalog));
-    assert!(builder.store().stored.borrow().is_empty());
+    assert!(builder.store().stored.lock().unwrap().is_empty());
     env_tools::sandbox::remove_tree(dir.path()).unwrap();
 }
 
@@ -226,7 +231,7 @@ fn requests_dnf_rejects_fail_before_building() {
         builder.build(&runtime, &[]),
         Err(BuildError::Empty)
     ));
-    assert!(builder.store().stored.borrow().is_empty());
+    assert!(builder.store().stored.lock().unwrap().is_empty());
     env_tools::sandbox::remove_tree(dir.path()).unwrap();
 }
 
@@ -248,23 +253,41 @@ fn set_runtime_rebuilds_every_tool_or_none() {
         dir.path().join("kept"),
     );
     let builder = Builder::new(store, NoCatalog, dir.path().join("state"));
-    let before = builder.build(&old, &packages(&["hello"])).unwrap();
 
-    let rebuilt = rebuild_for_runtime(&builder, &new, &[packages(&["hello"])]).unwrap();
-    assert_eq!(rebuilt.len(), 1);
-    assert_eq!(rebuilt[0].key.runtime, new);
+    // `pkg install hello` on the old runtime, through the record's seam.
+    let mut env = Environment::new("work", &old);
+    let mut progress = Vec::new();
+    let tool = ToolBuilder::build(&builder, &old, &packages(&["hello"]), &mut progress).unwrap();
+    env.add_tool(tool.to_string(), packages(&["hello"]))
+        .unwrap();
+    let progress = String::from_utf8(progress).unwrap();
+    assert!(progress.contains("resolving hello"), "{progress}");
+    assert!(
+        progress.contains("Complete!"),
+        "dnf's output reaches the shell: {progress}"
+    );
+
+    let rebuilt = rebuild_tools(&builder, &new, &env.tools, &mut std::io::sink()).unwrap();
+    env.set_runtime(new.to_string(), rebuilt).unwrap();
+    assert_eq!(env.runtime_id().unwrap(), new);
+    assert_eq!(env.tools.len(), 1);
+    assert_eq!(env.tools[0].packages, ["hello"]);
     assert_ne!(
-        rebuilt[0].tool, before.tool,
+        env.tools[0].id,
+        tool.to_string(),
         "a tool is bound to its runtime"
     );
 
-    let err = rebuild_for_runtime(
-        &builder,
-        &new,
-        &[packages(&["hello"]), packages(&["nosuch"])],
-    )
-    .unwrap_err();
+    let mut broken = env.clone();
+    broken
+        .add_tool(
+            PackageId::from_bytes([9; 32]).to_string(),
+            packages(&["nosuch"]),
+        )
+        .unwrap();
+    let err = rebuild_tools(&builder, &old, &broken.tools, &mut std::io::sink()).unwrap_err();
     assert_eq!(err.packages, ["nosuch"]);
+    assert!(matches!(err.source, ToolBuildError::UnknownPackage(ref n) if n == "nosuch"));
     env_tools::sandbox::remove_tree(dir.path()).unwrap();
 }
 

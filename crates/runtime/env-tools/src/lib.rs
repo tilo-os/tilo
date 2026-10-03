@@ -11,8 +11,12 @@
 //! - [`seal`]: keeping what the packages added and nothing else.
 //! - [`index`]: finding an image already built for a key, locally or in the
 //!   published catalog.
-//! - [`builder`]: all of the above in order, plus rebuilding an
-//!   environment's tools when its runtime changes.
+//! - [`builder`]: all of the above in order.
+//! - [`image`]: sealing a built tree into a signed `tool` image.
+//! - [`store`]: the device's package store as the builder's store, and
+//!   [`store::device_builder`].
+//! - [`environment`]: the record's `ToolBuilder`, and rebuilding an
+//!   environment's tools for `set-runtime`.
 //!
 //! The library needs no session: the `tilo-env-tools` binary drives it for
 //! CI's catalog and for a relay's compute worker.
@@ -29,16 +33,17 @@
 )]
 
 pub mod builder;
+pub mod environment;
+pub mod image;
 pub mod index;
 pub mod key;
 pub mod resolve;
 pub mod sandbox;
 pub mod seal;
 pub mod signing;
+pub mod store;
 
-pub use builder::{
-    BuildError, Builder, Built, Origin, RebuildError, SealedTree, Timeouts, ToolStore,
-    rebuild_for_runtime,
-};
+pub use builder::{BuildError, Builder, Built, Origin, SealedTree, Timeouts, ToolStore};
+pub use environment::{RebuildError, rebuild_tools};
 pub use index::{Catalog, Entry, LocalIndex, NoCatalog, ToolLookup};
 pub use key::{CacheKey, KeyDigest};

@@ -9,11 +9,14 @@
 //! ```
 //!
 //! uid 0 is needed only here, at build time: rpm chowns and scriptlets run
-//! as root. The namespace maps that root to the unprivileged caller and
-//! nothing else, so every file the transaction writes lands in the upper
-//! owned by the caller. bwrap drops capabilities unless asked; the
-//! transaction needs them inside its own namespace (a copied-up `/usr/lib64`
-//! is mode 0555), so they are added back there and confer nothing outside.
+//! as root. The user namespace maps that root to the unprivileged caller
+//! ([`Identity`]): with the caller's subordinate ids when it has them, so
+//! rpm can also chown to the system users and groups packages create (a
+//! `cups` file belongs to group `lp`), and the upper is handed back to the
+//! caller afterwards; else that root alone, which is enough for most
+//! packages. bwrap drops capabilities unless asked; the transaction needs
+//! them inside its own namespace (a copied-up `/usr/lib64` is mode 0555), so
+//! they are added back there and confer nothing outside.
 //!
 //! The network is shared with the caller. Package downloads are the build's
 //! only traffic, and dnf has no way to reach the launcher's egress gate,
@@ -29,8 +32,51 @@ use std::time::Duration;
 /// recreated as one.
 const MOUNTED: &[&str] = &["usr", "etc", "var", "proc", "dev", "tmp", "run"];
 
+/// The links a merged-`/usr` root has at its top, when the target exists.
+const MERGED_USR: &[(&str, &str)] = &[
+    ("bin", "usr/bin"),
+    ("sbin", "usr/sbin"),
+    ("lib", "usr/lib"),
+    ("lib64", "usr/lib64"),
+];
+
 /// The subtrees the upper covers; a tool's files live under these.
 pub const UPPER_SUBTREES: &[&str] = &["usr", "etc"];
+
+/// Who the build's root is, outside its namespace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Identity {
+    /// The caller is already root (a disposable CI container): no user
+    /// namespace is needed.
+    Root,
+    /// `unshare --map-root-user --map-auto`: root is the caller, ids 1… are
+    /// the caller's subordinate ids from `/etc/subuid` and `/etc/subgid`.
+    SubordinateIds,
+    /// bwrap's own single mapping: root is the caller, nothing else exists.
+    CallerOnly,
+}
+
+impl Identity {
+    /// The best this host offers, probed once per process.
+    pub fn detect() -> Self {
+        static DETECTED: std::sync::OnceLock<Identity> = std::sync::OnceLock::new();
+        *DETECTED.get_or_init(|| {
+            // SAFETY: geteuid has no preconditions and cannot fail.
+            if unsafe { libc::geteuid() } == 0 {
+                return Self::Root;
+            }
+            let mut probe = Command::new("unshare");
+            probe.args(["--user", "--map-root-user", "--map-auto", "--", "true"]);
+            match bounded_command::run_prepared(probe, None, 64 * 1024, Duration::from_secs(10)) {
+                Ok(out) if out.status.success() => Self::SubordinateIds,
+                _ => Self::CallerOnly,
+            }
+        })
+    }
+}
+
+/// The `unshare` prefix that enters a namespace with subordinate ids.
+const UNSHARE_SUBORDINATE: &[&str] = &["--user", "--map-root-user", "--map-auto", "--"];
 
 /// Output of a sandboxed command beyond which it is treated as runaway.
 const OUTPUT_LIMIT: usize = 32 * 1024 * 1024;
@@ -66,6 +112,7 @@ pub struct BuildSandbox {
     scratch: PathBuf,
     dnf_cache: Option<PathBuf>,
     bwrap: PathBuf,
+    identity: Identity,
 }
 
 impl BuildSandbox {
@@ -101,6 +148,7 @@ impl BuildSandbox {
             scratch: scratch.to_owned(),
             dnf_cache: None,
             bwrap: PathBuf::from("bwrap"),
+            identity: Identity::detect(),
         })
     }
 
@@ -116,6 +164,13 @@ impl BuildSandbox {
     #[must_use]
     pub fn with_bwrap(mut self, bwrap: PathBuf) -> Self {
         self.bwrap = bwrap;
+        self
+    }
+
+    /// Enter the sandbox as `identity` instead of the detected one.
+    #[must_use]
+    pub fn with_identity(mut self, identity: Identity) -> Self {
+        self.identity = identity;
         self
     }
 
@@ -141,12 +196,10 @@ impl BuildSandbox {
                 args.push(item.as_ref().to_owned());
             }
         };
+        if self.identity == Identity::CallerOnly {
+            extend(&[&"--unshare-user", &"--uid", &"0", &"--gid", &"0"]);
+        }
         extend(&[
-            &"--unshare-user",
-            &"--uid",
-            &"0",
-            &"--gid",
-            &"0",
             &"--cap-add",
             &"ALL",
             &"--unshare-pid",
@@ -228,7 +281,13 @@ impl BuildSandbox {
     /// output ceiling or the deadline. A command that runs and fails is an
     /// `Ok` with `success == false`.
     pub fn run(&self, argv: &[&str], timeout: Duration) -> Result<Ran, SandboxError> {
-        let mut command = Command::new(&self.bwrap);
+        let mut command = if self.identity == Identity::SubordinateIds {
+            let mut command = Command::new("unshare");
+            command.args(UNSHARE_SUBORDINATE).arg(&self.bwrap);
+            command
+        } else {
+            Command::new(&self.bwrap)
+        };
         command.args(self.bwrap_args(argv)?);
         tracing::debug!(?argv, runtime = %self.runtime.display(), "build sandbox");
         let out = bounded_command::run_prepared_with_limits(
@@ -237,13 +296,42 @@ impl BuildSandbox {
             OUTPUT_LIMIT,
             OUTPUT_LIMIT,
             timeout,
-        )?;
+        );
+        self.reclaim()?;
+        let out = out?;
         Ok(Ran {
             success: out.status.success(),
             code: out.status.code(),
             stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
         })
+    }
+
+    /// Give everything in the scratch directory back to the caller: files
+    /// rpm chowned to a subordinate id can't otherwise be moved, read or
+    /// removed. Ownership is not part of an image anyway.
+    ///
+    /// # Errors
+    ///
+    /// `unshare` or `chown` can't be run.
+    fn reclaim(&self) -> Result<(), SandboxError> {
+        if self.identity != Identity::SubordinateIds {
+            return Ok(());
+        }
+        let mut command = Command::new("unshare");
+        command
+            .args(UNSHARE_SUBORDINATE)
+            .args(["chown", "-R", "-h", "0:0", "--"])
+            .arg(&self.scratch);
+        let out =
+            bounded_command::run_prepared(command, None, 1024 * 1024, Duration::from_secs(600))?;
+        if !out.status.success() {
+            tracing::warn!(
+                stderr = %String::from_utf8_lossy(&out.stderr),
+                "could not take the build's files back from its subordinate ids"
+            );
+        }
+        Ok(())
     }
 
     /// Remove the scratch directory, including the overlay work dirs the
@@ -256,7 +344,10 @@ impl BuildSandbox {
         remove_tree(&self.scratch)
     }
 
-    /// The runtime's top-level symlinks (`bin -> usr/bin`, `lib64 -> …`).
+    /// The root's symlinks: the runtime's own top-level links, and the
+    /// merged-`/usr` links an image (which holds only `usr/` and `etc/`)
+    /// leaves out — `/lib64/ld-linux-x86-64.so.2` must resolve for anything
+    /// to run.
     fn top_level_links(&self) -> Result<Vec<(String, PathBuf)>, SandboxError> {
         let io = |source| SandboxError::Io {
             path: self.runtime.clone(),
@@ -272,6 +363,11 @@ impl BuildSandbox {
                 continue;
             }
             links.push((name, std::fs::read_link(entry.path()).map_err(io)?));
+        }
+        for (name, target) in MERGED_USR {
+            if !links.iter().any(|(n, _)| n == name) && self.runtime.join(target).is_dir() {
+                links.push(((*name).to_owned(), PathBuf::from(target)));
+            }
         }
         links.sort();
         Ok(links)

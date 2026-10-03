@@ -19,6 +19,8 @@ path = "src/main.rs"
 bounded-command = { path = "../../system/bounded-command" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
+tilo-environment = { path = "../environment" }
+package-store = { path = "../../packaging/package-store", features = ["store"] }
 
 anyhow.workspace = true
 blake3.workspace = true
