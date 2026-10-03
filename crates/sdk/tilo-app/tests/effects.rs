@@ -349,7 +349,7 @@ impl ResourceSurface<Mailbox, TallyEffect> for Tally {
             TallyEffect::Tally => Ok(cx.thread(
                 |_| 1,
                 |tally: &mut Self, step: u32, cx| {
-                    tally.counted += step;
+                    tally.counted = tally.counted.saturating_add(step);
                     cx.invoke(Mailbox::FETCHED.with(format!("tally {}", tally.counted)));
                     Ok(Effected::value(tally.counted))
                 },
