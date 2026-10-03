@@ -230,6 +230,7 @@ impl ResourceSurface<Monitor> for MonitorApp {
     }
 
     fn attach(&mut self, cx: SurfaceCx<Monitor>) {
+        self.follow_preferences(cx.settings());
         self.attach_framework(cx.dispatcher());
     }
 }
@@ -310,7 +311,73 @@ pub fn provide_resources(state: &MonitorState) -> Vec<PublishedResource> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::prefs::MonitorPreferences;
     use ui::widget::Widget;
+
+    /// The value of the node named `name`, depth first.
+    fn announced(node: &serde_json::Value, name: &str) -> Option<String> {
+        if node.get("name").and_then(serde_json::Value::as_str) == Some(name) {
+            return node
+                .get("value")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
+        }
+        match node {
+            serde_json::Value::Object(fields) => {
+                fields.values().find_map(|child| announced(child, name))
+            }
+            serde_json::Value::Array(items) => {
+                items.iter().find_map(|child| announced(child, name))
+            }
+            _ => None,
+        }
+    }
+
+    /// The interval the window shows, as a screen reader hears it.
+    fn shown_interval(app: &mut ui::framework::testing::TestApp<MonitorShell>) -> String {
+        let inspection: serde_json::Value =
+            serde_json::from_str(&app.harness().inspection_json().unwrap()).unwrap();
+        announced(&inspection, "Refresh interval").expect("the refresh interval is announced")
+    }
+
+    #[test]
+    fn preferences_follow_the_person_and_stay_out_of_the_document() {
+        let mut app = ui::framework::testing::TestApp::<MonitorShell>::new().unwrap();
+        assert_eq!(shown_interval(&mut app), "1.5s");
+
+        // Another of the person's devices changed them.
+        app.settings::<MonitorPreferences>()
+            .set(&MonitorPreferences {
+                interval_ms: 3000,
+                show_kernel_threads: true,
+                confirm_kill: false,
+            })
+            .unwrap();
+        app.harness().relayout();
+        assert_eq!(shown_interval(&mut app), "3s");
+
+        // A click here cycles the cadence and stores it for every device.
+        let versions = app.versions().len();
+        app.harness().click_named("Refresh interval").unwrap();
+        app.harness().relayout();
+        assert_eq!(shown_interval(&mut app), "5s");
+        assert_eq!(
+            app.settings::<MonitorPreferences>().get(),
+            MonitorPreferences {
+                interval_ms: 5000,
+                show_kernel_threads: true,
+                confirm_kill: false,
+            }
+        );
+        assert_eq!(
+            app.versions().len(),
+            versions,
+            "preferences are not document history"
+        );
+
+        let mut app = app.reopen().unwrap();
+        assert_eq!(shown_interval(&mut app), "5s");
+    }
 
     #[allow(
         clippy::too_many_lines,
