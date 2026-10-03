@@ -82,15 +82,18 @@ impl ChatSearchProvider {
             let subtitle = if channel.topic.trim().is_empty() {
                 workspace.to_string()
             } else {
-                format!("{workspace} · {}", channel.topic)
+                channel.topic.clone()
             };
             let result = SearchResult::for_action(
                 CHANNEL_KIND,
-                format!("{}{}", channel.kind.glyph(), channel.name),
+                channel.kind.label(&channel.name),
                 Self::channel_address(&channel.id),
             )
             .with_subtitle(subtitle)
-            .with_icon(Icon::Mail);
+            .with_icon(match channel.kind {
+                crate::model::ChannelKind::Voice => Icon::Volume2,
+                crate::model::ChannelKind::Text => Icon::List,
+            });
             self.upsert(
                 format!("chat.channel:{}", channel.id),
                 format!("{} {} {}", channel.name, channel.topic, workspace),
@@ -99,17 +102,12 @@ impl ChatSearchProvider {
         }
         for category in &self.categories {
             let workspace = self.workspace_name(&category.workspace);
-            let state = if category.collapsed {
-                "collapsed"
-            } else {
-                "expanded"
-            };
             let result = SearchResult::for_action(
                 CATEGORY_KIND,
                 category.name.clone(),
                 Self::category_address(&category.id),
             )
-            .with_subtitle(format!("{workspace} · {state}"));
+            .with_subtitle(workspace.to_string());
             self.upsert(
                 format!("chat.category:{}", category.id),
                 format!("{} {workspace}", category.name),
@@ -133,15 +131,16 @@ impl ChatSearchProvider {
             } else {
                 message.text.trim().chars().take(96).collect()
             };
-            let result =
-                SearchResult::for_action(MESSAGE_KIND, title, Self::message_address(&message.id))
-                    .with_subtitle(format!(
-                        "{author} · {}{} · {}",
-                        channel.kind.glyph(),
-                        channel.name,
-                        self.workspace_name(&channel.workspace)
-                    ))
-                    .with_icon(Icon::Mail);
+            let result = SearchResult::for_action(
+                MESSAGE_KIND,
+                title.clone(),
+                Self::message_address(&message.id),
+            )
+            .with_subtitle(format!("{author} in {}", channel.name))
+            .with_icon(Icon::Mail)
+            .with_row(
+                ui::search::SearchRow::message(author.clone(), channel.name.clone()).snippet(title),
+            );
             self.upsert(
                 format!("chat.message:{}", message.id),
                 format!("{author} {} {}", message.text, attachment.unwrap_or("")),
@@ -228,7 +227,7 @@ impl CatalogSearchProvider for ChatSearchProvider {
                 tilo_actions::Resource::new(
                     address.resource.clone(),
                     "chat.channel",
-                    format!("{} {}", channel.kind.glyph(), channel.name),
+                    channel.kind.label(&channel.name),
                 )
                 .with_action(crate::actions::view_operation(
                     "open",
@@ -612,7 +611,8 @@ mod tests {
                 Some(ActionAddress::new("chat.message:m_002999", "open"))
             );
 
-            let page = provider.search_page("äther-needle 🧪", None, 8, 8);
+            let page =
+                provider.search_page(&ui::search::SearchQuery::new("äther-needle 🧪"), None, 8, 8);
             assert_eq!(page.inspected, 1, "the rare gram must avoid a corpus scan");
             assert_eq!(page.results, vec![hit]);
         }
@@ -628,7 +628,12 @@ mod tests {
             let mut cursor = None;
             let mut results = Vec::new();
             loop {
-                let page = provider.search_page("abcd", cursor.as_ref(), 31, 4);
+                let page = provider.search_page(
+                    &ui::search::SearchQuery::new("abcd"),
+                    cursor.as_ref(),
+                    31,
+                    4,
+                );
                 assert!(page.inspected <= 31);
                 assert!(page.results.len() <= 4);
                 assert!(

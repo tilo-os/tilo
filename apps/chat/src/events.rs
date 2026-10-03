@@ -15,8 +15,8 @@ use ui::Widget;
 
 use crate::actions;
 use crate::app::{
-    AttachmentImportPending, AttachmentImportResult, AttachmentPickerResult, ChatApp, ContextMenu,
-    Focus, Hit, MenuAction, MenuTarget, RowSwipe, SWIPE_COMMIT_DX,
+    AttachmentImportPending, AttachmentImportResult, AttachmentPickerResult, ChatApp, Focus, Hit,
+    MenuAction, MenuTarget, RowSwipe, SWIPE_COMMIT_DX,
 };
 use crate::doc::{ChatDoc, NOW};
 use crate::model::{ChannelKind, Id};
@@ -792,32 +792,28 @@ impl ChatApp {
     /// under the cursor.
     fn on_right_click(&mut self, hit: Hit) {
         let menu = match hit {
-            Hit::Channel(id) | Hit::VoiceChannel(id) => Some(ContextMenu::new(
+            Hit::Channel(id) | Hit::VoiceChannel(id) => Some(self.context_menu(
                 MenuTarget::Channel(id),
                 self.last_mouse,
                 MenuAction::for_channel().to_vec(),
-                self.rect,
             )),
             Hit::CategoryToggle(id) | Hit::AddChannel { category: id, .. } => {
-                Some(ContextMenu::new(
+                Some(self.context_menu(
                     MenuTarget::Category(id),
                     self.last_mouse,
                     MenuAction::for_category().to_vec(),
-                    self.rect,
                 ))
             }
             // One of your own messages — offer the message actions (Edit).
-            Hit::MessageMenu { msg } => Some(ContextMenu::new(
+            Hit::MessageMenu { msg } => Some(self.context_menu(
                 MenuTarget::Message(msg),
                 self.last_mouse,
                 MenuAction::for_message().to_vec(),
-                self.rect,
             )),
-            _ => Some(ContextMenu::new(
+            _ => Some(self.context_menu(
                 MenuTarget::Workspace(self.active_ws.clone()),
                 self.last_mouse,
                 vec![MenuAction::NewCategory],
-                self.rect,
             )),
         };
         self.menu = menu;
@@ -938,8 +934,11 @@ impl ChatApp {
                 self.request_relayout();
             }
             Hit::CallLeave => self.leave_voice(doc),
-            Hit::ToggleLeftFlap => self.left_flap.toggle(self.left_mode),
-            Hit::ToggleRightFlap => self.right_flap.toggle(self.right_mode),
+            Hit::Search => self
+                .search_opener
+                .open(ui::search::SearchRequest::this_app()),
+            Hit::ToggleLeftFlap => self.left_flap.toggle(),
+            Hit::ToggleRightFlap => self.right_flap.toggle(),
             Hit::Dismiss => self.on_hit_dismiss(),
             // MessageMenu is a right-click affordance and CallDragHandle is
             // handled at press time; permission-gated fallthroughs are no-ops.
@@ -971,7 +970,7 @@ impl ChatApp {
             self.reset_timeline_to_latest();
             self.focus = Focus::Main;
             // Picking a channel in overlay mode closes the left flap.
-            if self.left_mode == crate::responsive::FlapMode::Overlay {
+            if self.left_overlay() {
                 self.left_flap.close();
             }
             // Navigation is the user-visible read boundary. Other controls in
@@ -1000,7 +999,7 @@ impl ChatApp {
         let id = new_category_id();
         self.perform_action(
             doc,
-            &actions::create_category_action(ws, &id, "New Category"),
+            &actions::create_category_action(ws, &id, "New category"),
         );
         self.begin_rename(MenuTarget::Category(id));
     }
@@ -1096,10 +1095,9 @@ impl ChatApp {
             self.emoji_target = None;
         } else if self.history_open.is_some() {
             self.history_open = None;
-        } else if self.left_mode == crate::responsive::FlapMode::Overlay && self.left_flap_open() {
+        } else if self.left_overlay() && self.left_flap_open() {
             self.left_flap.close();
-        } else if self.right_mode == crate::responsive::FlapMode::Overlay && self.right_flap_open()
-        {
+        } else if self.right_overlay() && self.right_flap_open() {
             self.right_flap.close();
         }
     }
@@ -1159,7 +1157,7 @@ impl ChatApp {
                     let id = new_category_id();
                     self.perform_action(
                         doc,
-                        &actions::create_category_action(&ws, &id, "New Category"),
+                        &actions::create_category_action(&ws, &id, "New category"),
                     );
                     self.begin_rename(MenuTarget::Category(id));
                 }
@@ -1911,12 +1909,7 @@ mod tests {
             .position(|candidate| *candidate == action)
             .expect("action belongs to this menu");
         app.rect = vello::kurbo::Rect::new(0.0, 0.0, 900.0, 700.0);
-        app.menu = Some(ContextMenu::new(
-            target,
-            Point::new(120.0, 120.0),
-            items,
-            app.rect,
-        ));
+        app.menu = Some(app.context_menu(target, Point::new(120.0, 120.0), items));
         assert!(ui::Widget::perform_semantic_action(
             app,
             &format!("context-menu:item:{index}"),
@@ -2008,11 +2001,10 @@ mod tests {
         {
             let (mut app, mut doc) = app_with_doc();
             app.rect = vello::kurbo::Rect::new(0.0, 0.0, 900.0, 700.0);
-            app.menu = Some(ContextMenu::new(
+            app.menu = Some(app.context_menu(
                 MenuTarget::Channel("c_random".into()),
                 Point::new(850.0, 680.0),
                 MenuAction::for_channel().to_vec(),
-                app.rect,
             ));
 
             let root = ui::Widget::accessibility(&app).expect("Chat semantic root");
@@ -2022,44 +2014,41 @@ mod tests {
                 .find(|node| node.role == ui::a11y::Role::Menu)
                 .expect("open shared menu is in Chat's semantic tree");
             assert_eq!(menu.children.len(), MenuAction::for_channel().len());
-            assert_eq!(menu.children[0].name.as_deref(), Some("Delete"));
+            assert_eq!(menu.children[0].name.as_deref(), Some("Rename channel"));
+            assert_eq!(menu.children[1].name.as_deref(), Some("Archive channel"));
             assert_eq!(
-                menu.children[1].name.as_deref(),
-                Some("Archive / unarchive")
-            );
-            assert!(
-                menu.children[1].state.focused,
-                "safe initial focus skips the destructive first action"
+                menu.children[4].name.as_deref(),
+                Some("Delete channel"),
+                "the destructive action comes last"
             );
             assert!(ui::Widget::traps_focus(&app));
             let capture = ui::Widget::modal_capture(&app).expect("menu captures input");
             assert!(app.rect.contains(capture.center()));
 
-            let mut handled = false;
-            app.dispatch_event(
-                &key_named(NamedKey::Enter),
-                1.0,
-                Modifiers::default(),
-                &mut doc,
-                &mut handled,
-            );
-            assert!(handled);
+            // The first row is the safe action the keyboard lands on.
+            for key in [NamedKey::ArrowDown, NamedKey::Enter] {
+                let mut handled = false;
+                app.dispatch_event(
+                    &key_named(key),
+                    1.0,
+                    Modifiers::default(),
+                    &mut doc,
+                    &mut handled,
+                );
+                assert!(handled);
+            }
             assert!(app.menu.is_none());
             assert!(
-                app.channel("c_random")
-                    .is_some_and(|channel| channel.archived),
+                matches!(&app.rename, Some(MenuTarget::Channel(id)) if id == "c_random"),
                 "Enter activates the safely focused non-destructive action"
             );
         }
 
         // Phase: swipe_left_action_matches_context_menu_primary.
         {
-            // The parity invariant: a left-swipe resolves to the same action as
-            // the channel context menu's first item.
-            assert_eq!(
-                MenuAction::channel_swipe_left(),
-                MenuAction::for_channel()[0]
-            );
+            // The parity invariant: a left-swipe resolves to the channel
+            // context menu's destructive action.
+            assert!(MenuAction::for_channel().contains(&MenuAction::channel_swipe_left()));
             assert_eq!(MenuAction::channel_swipe_left(), MenuAction::Delete);
         }
 
@@ -2906,27 +2895,18 @@ mod tests {
             // Guard against "responsive on first launch, frozen after resize": the
             // flap mode is re-derived from the *current* width every layout pass,
             // never cached from the first frame.
-            use crate::responsive::FlapMode;
             let (mut app, _doc) = app_with_doc();
             app.rect = vello::kurbo::Rect::new(0.0, 0.0, 1280.0, 720.0);
             app.reconcile_flaps();
-            assert_eq!(app.left_mode, FlapMode::Docked);
+            assert!(!app.left_overlay(), "a wide window docks the sidebar");
             // Resize narrow on the SAME instance.
             app.rect = vello::kurbo::Rect::new(0.0, 0.0, 560.0, 720.0);
             app.reconcile_flaps();
-            assert_eq!(
-                app.left_mode,
-                FlapMode::Overlay,
-                "narrowing reflows to overlay"
-            );
+            assert!(app.left_overlay(), "narrowing reflows to a drawer");
             // And widen again.
             app.rect = vello::kurbo::Rect::new(0.0, 0.0, 1280.0, 720.0);
             app.reconcile_flaps();
-            assert_eq!(
-                app.left_mode,
-                FlapMode::Docked,
-                "widening reflows back to docked"
-            );
+            assert!(!app.left_overlay(), "widening reflows back to docked");
         }
 
         // Phase: members_pill_reveals_the_roster_not_a_blank_column.
@@ -2958,9 +2938,9 @@ mod tests {
         {
             let (mut app, _doc) = app_with_doc();
             app.thread_open = Some("m_concept".into());
-            app.right_mode = crate::responsive::FlapMode::Overlay;
-            app.right_flap.snap(true);
             app.rect = vello::kurbo::Rect::new(0.0, 0.0, 390.0, 844.0);
+            app.reconcile_flaps();
+            app.right_flap.snap(true);
 
             assert_eq!(
                 app.thread_rect(),
