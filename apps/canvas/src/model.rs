@@ -78,12 +78,29 @@ pub enum Shape {
     Line { points: Vec<[f64; 2]> },
     /// SVG path data (`M 10 10 C 20 0, 40 0, 50 10 Z`).
     Path { d: String },
-    /// Text with its baseline starting at `x, y`.
+    /// Text, first baseline at `y`; `\n` breaks lines.
     Text {
         x: f64,
         y: f64,
         text: String,
         size: f64,
+        /// `sans`, `serif`, `mono` or a family name.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        font: Option<String>,
+        /// 400 regular to 700 bold.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        weight: Option<u16>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        italic: bool,
+        /// `start`, `center` or `end` at `x`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        align: Option<String>,
+        /// Times size (1.2).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        line_height: Option<f64>,
+        /// Wrap width.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        width: Option<f64>,
     },
     /// A brush stroke: a smooth curve through `points`, `size` wide.
     /// Points are `[x, y]` or `[x, y, pressure]`; a handful of points is
@@ -138,6 +155,68 @@ pub struct Style {
     /// mark (`{"load": 0.3}`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub params: BTreeMap<String, f64>,
+    /// Outline dash pattern, `[on, off, …]` in units.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dash: Vec<f64>,
+    /// Outline ends: `butt`, `round` or `square`; round when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cap: Option<String>,
+    /// Outline corners: `miter`, `round` or `bevel`; round when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub join: Option<String>,
+    /// How the mark mixes with what is beneath it; normal when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow: Option<Shadow>,
+}
+
+/// The blend modes a mark may use.
+pub const BLENDS: [&str; 16] = [
+    "normal",
+    "multiply",
+    "screen",
+    "overlay",
+    "darken",
+    "lighten",
+    "color-dodge",
+    "color-burn",
+    "hard-light",
+    "soft-light",
+    "difference",
+    "exclusion",
+    "hue",
+    "saturation",
+    "color",
+    "luminosity",
+];
+
+/// A soft shadow cast by a mark.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Shadow {
+    /// `[dx, dy]` in units.
+    #[serde(default)]
+    pub offset: [f64; 2],
+    /// Softness in units; 0 is hard.
+    #[serde(default)]
+    pub blur: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colour: Option<String>,
+}
+
+/// A picture to work from, laid over the artwork like tracing paper. It is
+/// not part of the artwork: exports never show it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Reference {
+    /// The picture's content address.
+    pub image: String,
+    /// `[x, y, width, height]`; fitted to the artwork, aspect kept, when
+    /// absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame: Option<[f64; 4]>,
+    pub opacity: f64,
+    pub visible: bool,
 }
 
 #[allow(
@@ -166,6 +245,10 @@ pub struct Mark {
     pub style: Style,
     /// An affine transform `[a, b, c, d, e, f]` applied to the geometry.
     pub transform: Option<[f64; 6]>,
+    /// The group the mark belongs to, or empty.
+    pub group: String,
+    /// The mark whose shape this mark is cut to, or empty.
+    pub clip: String,
 }
 
 /// The stored body of a mark: everything that is replaced together.
@@ -178,6 +261,10 @@ pub struct MarkBody {
     pub style: Style,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transform: Option<[f64; 6]>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub group: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub clip: String,
 }
 
 /// The whole artwork as views and actions read it.
@@ -193,6 +280,7 @@ pub struct Artwork {
     pub marks: Vec<Mark>,
     /// Media presets saved in this artwork, by id.
     pub media: BTreeMap<String, crate::media::MediumSpec>,
+    pub reference: Option<Reference>,
 }
 
 impl Default for Artwork {
@@ -205,6 +293,7 @@ impl Default for Artwork {
             layers: Vec::new(),
             marks: Vec::new(),
             media: BTreeMap::new(),
+            reference: None,
         }
     }
 }
@@ -231,8 +320,43 @@ impl Artwork {
     /// The topmost visible mark under `point`, for hit-testing.
     pub fn mark_at(&self, point: Point) -> Option<&Mark> {
         self.marks.iter().rev().find(|mark| {
-            self.layer(&mark.layer).is_some_and(|layer| layer.visible) && mark.hit(point)
+            self.layer(&mark.layer).is_some_and(|layer| layer.visible)
+                && mark.hit(point)
+                && self.clip_of(mark).is_none_or(|clip| clip.hit(point))
         })
+    }
+
+    /// The mark `mark` is cut to, if any.
+    pub fn clip_of(&self, mark: &Mark) -> Option<&Mark> {
+        (!mark.clip.is_empty())
+            .then(|| self.mark(&mark.clip))
+            .flatten()
+    }
+
+    /// What of `mark` can show: its bounds, cut to its clip's.
+    pub fn visible_bounds(&self, mark: &Mark) -> Rect {
+        let bounds = mark.bounds();
+        self.clip_of(mark)
+            .map_or(bounds, |clip| bounds.intersect(clip.bounds()))
+    }
+
+    /// The members of group `id`, bottom to top.
+    pub fn members(&self, id: &str) -> impl Iterator<Item = &Mark> + '_ {
+        let id = id.to_owned();
+        self.marks.iter().filter(move |mark| mark.group == id)
+    }
+
+    /// The groups' ids, sorted.
+    pub fn groups(&self) -> Vec<&str> {
+        let mut groups: Vec<&str> = self
+            .marks
+            .iter()
+            .map(|mark| mark.group.as_str())
+            .filter(|group| !group.is_empty())
+            .collect();
+        groups.sort_unstable();
+        groups.dedup();
+        groups
     }
 }
 
@@ -281,13 +405,47 @@ impl Shape {
                 Ok(_) => None,
                 Err(error) => Some(format!("invalid SVG path data: {error}")),
             },
-            Self::Text { x, y, text, size } => (!finite(&[*x, *y, *size])
-                || *size <= 0.0
-                || text.is_empty()
-                || text.chars().count() > 2000)
-                .then(|| {
-                    "text needs a finite position, a positive size and 1-2000 characters".into()
-                }),
+            Self::Text {
+                x,
+                y,
+                text,
+                size,
+                font,
+                weight,
+                align,
+                line_height,
+                width,
+                ..
+            } => {
+                if !finite(&[*x, *y, *size])
+                    || *size <= 0.0
+                    || text.is_empty()
+                    || text.chars().count() > 2000
+                {
+                    Some(
+                        "text needs a finite position, a positive size and 1-2000 characters"
+                            .into(),
+                    )
+                } else if align
+                    .as_deref()
+                    .is_some_and(|align| !matches!(align, "start" | "center" | "end"))
+                {
+                    Some("a text's align is start, center or end".into())
+                } else if weight.is_some_and(|weight| !(100..=900).contains(&weight)) {
+                    Some("a text's weight is 100 to 900 (400 regular, 700 bold)".into())
+                } else if line_height.is_some_and(|lh| !(0.5..=4.0).contains(&lh)) {
+                    Some("a text's line_height is 0.5 to 4".into())
+                } else if width.is_some_and(|width| !finite(&[width]) || width <= 0.0) {
+                    Some("a text's width must be positive".into())
+                } else if font
+                    .as_deref()
+                    .is_some_and(|font| font.trim().is_empty() || font.len() > 64)
+                {
+                    Some("a text's font is sans, serif, mono or a family name".into())
+                } else {
+                    None
+                }
+            }
             Self::Stroke { points, size } => {
                 if points.is_empty() || points.len() > MAX_POINTS {
                     Some(format!("a stroke needs 1 to {MAX_POINTS} points"))
@@ -341,12 +499,7 @@ impl Shape {
             Self::Polygon { points } => polyline(points, true),
             Self::Line { points } => polyline(points, false),
             Self::Path { d } => BezPath::from_svg(d).unwrap_or_default(),
-            Self::Text { x, y, text, size } => {
-                let width = size
-                    * 0.55
-                    * f64::from(u32::try_from(text.chars().count()).unwrap_or(u32::MAX));
-                Rect::new(*x, y - size * 0.8, x + width, y + size * 0.25).to_path(0.1)
-            }
+            Self::Text { .. } => self.text_box().unwrap_or_default().to_path(0.1),
             Self::Stroke { points, .. } => {
                 let mut path = BezPath::new();
                 for (index, point) in points.iter().enumerate() {
@@ -407,14 +560,18 @@ impl Shape {
             Self::Path { d } => {
                 let mut path = BezPath::from_svg(d).unwrap_or_default();
                 path.apply_affine(Affine::translate((dx, dy)));
-                Self::Path { d: path.to_svg() }
+                Self::Path {
+                    d: path_data(&path),
+                }
             }
-            Self::Text { x, y, text, size } => Self::Text {
-                x: x + dx,
-                y: y + dy,
-                text: text.clone(),
-                size: *size,
-            },
+            Self::Text { .. } => {
+                let mut moved = self.clone();
+                if let Self::Text { x, y, .. } = &mut moved {
+                    *x += dx;
+                    *y += dy;
+                }
+                moved
+            }
             Self::Stroke { points, size } => Self::Stroke {
                 points: points
                     .iter()
@@ -432,6 +589,97 @@ impl Shape {
                 size: *size,
             },
         }
+    }
+}
+
+/// A number as path data writes it: at most three decimals, no trailing
+/// zeros.
+#[must_use]
+pub fn short_number(value: f64) -> String {
+    let text = format!("{value:.3}");
+    let text = text.trim_end_matches('0').trim_end_matches('.');
+    if text == "-0" || text.is_empty() {
+        "0".into()
+    } else {
+        text.into()
+    }
+}
+
+/// SVG path data for `path`, to a thousandth of a unit.
+#[must_use]
+pub fn path_data(path: &BezPath) -> String {
+    use ui::vello::kurbo::PathEl;
+    let point = |p: Point| format!("{},{}", short_number(p.x), short_number(p.y));
+    let parts: Vec<String> = path
+        .elements()
+        .iter()
+        .map(|element| match *element {
+            PathEl::MoveTo(p) => format!("M{}", point(p)),
+            PathEl::LineTo(p) => format!("L{}", point(p)),
+            PathEl::QuadTo(a, p) => format!("Q{} {}", point(a), point(p)),
+            PathEl::CurveTo(a, b, p) => format!("C{} {} {}", point(a), point(b), point(p)),
+            PathEl::ClosePath => "Z".into(),
+        })
+        .collect();
+    parts.join(" ")
+}
+
+fn count(n: usize) -> f64 {
+    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
+}
+
+impl Shape {
+    /// The box a text's lines take, estimated from its characters: what
+    /// selection, hit-testing and `inspect` use without shaping it.
+    pub fn text_box(&self) -> Option<Rect> {
+        let Self::Text {
+            x,
+            y,
+            text,
+            size,
+            weight,
+            align,
+            line_height,
+            width,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        let advance = size
+            * if weight.unwrap_or(400) >= 600 {
+                0.6
+            } else {
+                0.55
+            };
+        let lines: Vec<f64> = text
+            .split('\n')
+            .map(|line| advance * count(line.chars().count()))
+            .collect();
+        let natural = lines.iter().copied().fold(0.0, f64::max);
+        let (rows, wide) = match width {
+            Some(width) => (
+                lines
+                    .iter()
+                    .map(|line| (line / width).ceil().max(1.0))
+                    .sum::<f64>(),
+                *width,
+            ),
+            None => (count(lines.len()), natural),
+        };
+        let left = match (width, align.as_deref()) {
+            (None, Some("center")) => x - wide / 2.0,
+            (None, Some("end")) => x - wide,
+            _ => *x,
+        };
+        let leading = size * line_height.unwrap_or(1.2);
+        let top = y - size * 0.8;
+        Some(Rect::new(
+            left,
+            top,
+            left + wide,
+            top + leading * (rows - 1.0) + size * 1.05,
+        ))
     }
 }
 
@@ -453,6 +701,19 @@ fn polyline(points: &[[f64; 2]], closed: bool) -> BezPath {
 impl Mark {
     pub fn affine(&self) -> Affine {
         self.transform.map_or(Affine::IDENTITY, Affine::new)
+    }
+
+    /// The mark moved by `(dx, dy)` artwork units: its geometry when it has
+    /// no transform, its transform when it has one.
+    #[must_use]
+    pub fn moved(&self, dx: f64, dy: f64) -> Self {
+        let mut mark = self.clone();
+        if self.transform.is_some() {
+            mark.transform = Some((Affine::translate((dx, dy)) * self.affine()).as_coeffs());
+        } else {
+            mark.shape = self.shape.translated(dx, dy);
+        }
+        mark
     }
 
     /// The mark's extent in artwork units, including stroke and outline

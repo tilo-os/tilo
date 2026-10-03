@@ -36,6 +36,9 @@ use crate::render::{Options, Renderer};
 use crate::resource::{ArtworkResource, VIEW_TYPE, ViewOp};
 use crate::view_ops;
 
+/// The largest SVG `export-svg` also answers inline, in bytes.
+const MAX_INLINE_SVG: usize = 48 * 1024;
+
 /// What the pointer does on the canvas.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tool {
@@ -290,7 +293,7 @@ impl CanvasSurface {
             Drag::Move { start, now, ids } => {
                 let (dx, dy) = (now.x - start.x, now.y - start.y);
                 if dx.hypot(dy) > 0.5 {
-                    self.dispatch(&CanvasAction::EditMarks(EditMarks {
+                    self.dispatch(&CanvasAction::edit(EditMarks {
                         ids,
                         move_by: Some([dx, dy]),
                         ..EditMarks::default()
@@ -347,18 +350,8 @@ impl CanvasSurface {
                 self.dispatch(&CanvasAction::Draw(Draw {
                     layer,
                     marks: vec![NewMark {
-                        id: None,
-                        name: None,
-                        shape,
                         fill: Some(self.tools.hex()),
-                        gradient: None,
-                        stroke: None,
-                        stroke_width: None,
-                        opacity: None,
-                        brush: None,
-                        angle: None,
-                        wet: None,
-                        params: None,
+                        ..NewMark::new(shape)
                     }],
                 }));
             }
@@ -395,7 +388,7 @@ impl CanvasSurface {
                 ..EditMarks::default()
             }
         };
-        self.dispatch(&CanvasAction::EditMarks(edit));
+        self.dispatch(&CanvasAction::edit(edit));
     }
 
     fn key(&mut self, key: &Key, modifiers: ui::winit::keyboard::ModifiersState) -> bool {
@@ -413,7 +406,7 @@ impl CanvasSurface {
         };
         match key {
             _ if step.is_some() && !self.selection.is_empty() => {
-                self.dispatch(&CanvasAction::EditMarks(EditMarks {
+                self.dispatch(&CanvasAction::edit(EditMarks {
                     ids: self.selection.clone(),
                     move_by: step,
                     ..EditMarks::default()
@@ -537,6 +530,41 @@ impl CanvasSurface {
                 let look = diff.look.unwrap_or(false);
                 picture(view_ops::diff(&mut self.renderer, text, &versions, look))
             }
+            ViewOp::Compare(compare) => picture(some(view_ops::compare(
+                &mut self.renderer,
+                text,
+                &art,
+                compare,
+            ))),
+            ViewOp::ExportSvg => {
+                let renderer = &mut self.renderer;
+                let svg = crate::svg::export(&art, |layer| {
+                    let options = Options {
+                        layers: Some(vec![layer.id.clone()]),
+                        bare: true,
+                        ..Options::default()
+                    };
+                    view_ops::render(renderer, text, &art, (art.bounds(), 1.0), &options, false)
+                        .ok()
+                        .map(|picture| picture.bytes)
+                });
+                let address = crate::resource::store(svg.as_bytes())?;
+                let mut value = json!({
+                    "format": "svg",
+                    "bytes": svg.len(),
+                    "content": address,
+                    "revision": revision,
+                });
+                if svg.len() <= MAX_INLINE_SVG
+                    && let Value::Object(fields) = &mut value
+                {
+                    fields.insert("svg".into(), svg.into());
+                }
+                Ok(ActionOutput {
+                    value: Some(value),
+                    resources: vec![address],
+                })
+            }
             ViewOp::Inspect(inspect) => {
                 let mut value = view_ops::inspect(&art, inspect)?;
                 stamp(&mut value);
@@ -544,6 +572,23 @@ impl CanvasSurface {
                     && shown.is_none()
                 {
                     fields.insert("selected".into(), json!(self.selection));
+                    if let Some(reference) = &art.reference {
+                        let frame = self.renderer.reference_frame(&art);
+                        let pixels = self
+                            .renderer
+                            .reference_image(&art)
+                            .map(|image| [image.width, image.height]);
+                        fields.insert(
+                            "reference".into(),
+                            json!({
+                                "image": reference.image,
+                                "frame": frame.map(|frame| [frame.x0, frame.y0, frame.width(), frame.height()]),
+                                "pixels": pixels,
+                                "opacity": reference.opacity,
+                                "visible": reference.visible,
+                            }),
+                        );
+                    }
                 }
                 Ok(ActionOutput {
                     value: Some(value),
@@ -722,13 +767,16 @@ impl Widget for CanvasSurface {
             None,
             &(board + ui::vello::kurbo::Vec2::new(3.0 / zoom, 4.0 / zoom)),
         );
-        self.renderer.draw(
-            &self.art,
-            scene,
-            to_screen,
-            text_renderer,
-            &Options::default(),
-        );
+        let options = Options {
+            reference: self
+                .art
+                .reference
+                .as_ref()
+                .is_some_and(|reference| reference.visible),
+            ..Options::default()
+        };
+        self.renderer
+            .draw(&self.art, scene, to_screen, text_renderer, &options);
         scene.stroke(
             &Stroke::new(1.0 / zoom),
             to_screen,
