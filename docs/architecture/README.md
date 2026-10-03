@@ -67,6 +67,17 @@ Inverse Automerge patches remain correct for pure CRDT actions with no outside
 consequence (a text splice). A shared file write and a calendar create are document
 actions, so they are undoable — including the compensating remote queue entry.
 
+### Settings, files and secrets
+
+What follows a person or a device but is not shared with a room is not the
+document. A preference is a typed `Settings<T>` whose type declares its scope:
+`Personal` roams across the person's own devices, `DeviceLocal` never leaves
+this one, `Shared` reads a per-user section every app follows (locale,
+spelling). Views and surfaces get settings, the app's files and its secrets
+from their context; a secret of one document item is keyed by the item's id,
+so the document names it and the secret stays on the device. See
+`storage.md` §13.6.
+
 ### Views
 
 A resource can name more than one view (editor, reader) with a stable id. That catalogue
