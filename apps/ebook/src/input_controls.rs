@@ -230,14 +230,15 @@ impl NumberField {
                 .with_id("ebook_line_spacing")
                 .compact()
                 .control_size(ControlSize::Small),
+            // A font's size against the reading size, as a percentage.
             Self::FontMult(id) => NumberInput::new(value)
                 .with_range(
-                    f64::from(FontEntry::MULT_MIN),
-                    f64::from(FontEntry::MULT_MAX),
+                    f64::from(FontEntry::MULT_MIN) * 100.0,
+                    f64::from(FontEntry::MULT_MAX) * 100.0,
                 )
-                .with_step(0.05)
-                .with_precision(2)
-                .with_suffix("×")
+                .with_step(5.0)
+                .with_precision(0)
+                .with_suffix("%")
                 .with_id(&format!("ebook_font_multiplier_{id}"))
                 .compact()
                 .control_size(ControlSize::Small),
@@ -1017,8 +1018,13 @@ impl SchemeColorSheet {
             .max(picker.preferred_size().0)
             .min(viewport.width() - 2.0 * pad)
             .max(0.0);
+        // The picker sets its hex field out from under its preview, past
+        // the trailing edge of the rect it is given; the sheet widens by that
+        // overhang so the field stays inside it.
         let h = picker.preferred_height(w);
-        let width = (w + 2.0 * pad).min(viewport.width());
+        picker.apply_layout_external(Rect::new(0.0, 0.0, w, h));
+        let overhang = (picker.hex_input_rect().x1 - w).max(0.0);
+        let width = (w + overhang + 2.0 * pad).min(viewport.width());
         let height = (h + 2.0 * pad).min(viewport.height());
         let x = viewport.x0 + (viewport.width() - width) / 2.0;
         let y = viewport.y0 + (viewport.height() - height) / 2.0;

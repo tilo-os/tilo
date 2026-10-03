@@ -88,9 +88,9 @@ impl ReaderBubble {
         (rect != Rect::ZERO).then(|| rect.center())
     }
 
-    /// Draw the bubble centred under the reading `column`, whose bottom edge
-    /// it floats above, and refresh the geometry consumed by
-    /// [`Self::hit_test`].
+    /// Draw the bubble centred in the reading `column`, standing on its
+    /// bottom edge (the slot the page's foot keeps for it), and refresh the
+    /// geometry consumed by [`Self::hit_test`].
     pub(crate) fn draw(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -116,9 +116,8 @@ impl ReaderBubble {
         let slot = control_slot(theme);
         let label = label(ctx.text, theme, column.x0, column.x1, position);
         let (pill_w, pill_h) = ui::status_bubble::pill_size(&label, ctx.text, theme, slot);
-        let gutter = f64::from(theme.tokens.spacing.s4);
         let cx = f64::midpoint(column.x0, column.x1);
-        let by = column.y1 - gutter - pill_h;
+        let by = column.y1 - pill_h;
         let rect = Rect::new(cx - pill_w / 2.0, by, cx + pill_w / 2.0, by + pill_h);
 
         let zone = f64::from(theme.tokens.spacing.s8);
@@ -147,7 +146,10 @@ impl ReaderBubble {
     fn draw_pill(&self, ctx: &mut PaintCtx<'_>, label: &str, alpha: f32, cursor: Point) {
         let (transform, theme) = (ctx.transform, ctx.theme);
         let PaintCtx { scene, text, .. } = ctx;
-        let shadow = f64::from(theme.tokens.spacing.s4);
+        // The fade's layer reaches as far as the panel's shadow, so the
+        // shadow is never cut into a hard edge.
+        let floating = &theme.tokens.elevation.floating;
+        let shadow = f64::from(floating.blur) * 2.0 + f64::from(floating.offset_y).abs();
         scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),

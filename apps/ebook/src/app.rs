@@ -66,7 +66,7 @@ use ui::widget::{
     EmptyState, EmptyStateContent, InputHint, Interaction, ListRowFace, MediaArt, MediaAspect,
     MediaBadge, MediaCardFace, MediaSize, ModalAction, ModalSpec, ScrollMetrics, Scrollbar,
     SegmentedFace, SegmentedStyle, SidebarDrawer, Slider, SliderFace, Toggle, ToggleFace,
-    ToggleGroup, Tone, Widget, card_column_width, card_columns,
+    ToggleGroup, Widget, card_column_width, card_columns,
 };
 
 use crate::comment_overlay::{CommentAction, CommentOverlay};
@@ -532,10 +532,11 @@ struct Pane {
 }
 
 impl Pane {
-    /// Whether a line at flow-y `ly` with height `lh` shows in this pane.
+    /// Whether a line at flow-y `ly` with height `lh` shows in this pane. A
+    /// scrolling pane shows whole lines only, so its edges never slice one.
     fn shows(&self, ly: f32, lh: f32) -> bool {
         if self.partial {
-            ly + lh > self.win_start && ly < self.win_end
+            ly >= self.win_start - 0.5 && ly + lh <= self.win_end + 0.5
         } else {
             ly >= self.win_start - 0.5 && ly < self.win_end
         }
@@ -904,6 +905,10 @@ pub struct BooksApp {
     /// Height of the window's header row in the current theme, refreshed at
     /// the top of every frame so the event path hit-tests what was painted.
     header_h: f64,
+    /// Height of the page bubble in the current theme: the page foot keeps
+    /// a slot this tall above the progress slider, so the bubble never
+    /// covers text. Refreshed with `header_h`.
+    bubble_h: f64,
     /// The reading-appearance button as last painted: where its popover
     /// opens from.
     type_button: Rect,
@@ -1270,6 +1275,7 @@ impl BooksApp {
                 .right()
                 .docked_width(f64::from(Metrics::BASE.inspector_width)),
             header_h: f64::from(Metrics::BASE.header_height),
+            bubble_h: ui::status_bubble::pill_height(&Theme::dark()),
             type_button: Rect::ZERO,
             toast_area: Rect::ZERO,
             toc_scroll: 0.0,
@@ -1636,15 +1642,18 @@ impl BooksApp {
                 self.shot_drawers = Some((true, false));
             }
             "import-error" => {
-                self.view = View::Reader;
-                // Exercise the same persistent, visible error surface used by
-                // a real failed picker/import without fabricating a book into
-                // the live library.
-                self.load_error =
-                    Some("Couldn’t open damaged.epub: The book is larger than 64 MB.".into());
+                // Books are opened from the shelf, so a failed open reports
+                // there. The same persistent error surface a real failed
+                // picker or import uses, without fabricating a book into the
+                // live library.
+                self.view = View::Library;
+                self.load_error = Some(
+                    "Couldn’t open Harbour Charts.epub: The file is damaged or isn’t an EPUB book."
+                        .into(),
+                );
             }
             "import-loading" => {
-                self.view = View::Reader;
+                self.view = View::Library;
                 self.import_loading = Some(LoadingImport {
                     generation: 1,
                     path: PathBuf::from("/home/reader/Books/Illustrated Atlas.epub"),
@@ -1672,11 +1681,22 @@ impl BooksApp {
                 if let Some(template) = template
                     && let Some(book) = Arc::make_mut(&mut self.library).first_mut()
                 {
+                    // Each chapter's own heading names it, so the contents,
+                    // the running head and the page agree.
                     Arc::make_mut(book).chapters = (0..32)
-                        .map(|index| crate::model::Chapter {
-                            title: format!("Chapter {} — a longer voyage", index + 1),
-                            href: format!("chapter-{}.xhtml", index + 1),
-                            blocks: template.blocks.clone(),
+                        .map(|index| {
+                            let title = format!("Chapter {}", index + 1);
+                            let mut blocks = template.blocks.clone();
+                            if let Some(crate::model::Block::Heading { spans, .. }) =
+                                blocks.first_mut()
+                            {
+                                *spans = vec![crate::model::Span::plain(title.clone())];
+                            }
+                            crate::model::Chapter {
+                                title,
+                                href: format!("chapter-{}.xhtml", index + 1),
+                                blocks,
+                            }
                         })
                         .collect();
                     self.chapter = 27;
@@ -4549,8 +4569,8 @@ impl BooksApp {
                 .find(|font| font.id == *id)
                 .map_or_else(|| id.clone(), |font| font.name.clone()),
             Action::SetReadTheme(theme) => format!("{} reading theme", theme.label()),
-            Action::SetMode(mode) => format!("{} reading mode", mode.label()),
-            Action::SetComposition(style) => format!("{} text composition", style.label()),
+            Action::SetMode(mode) => format!("{} layout", mode.label()),
+            Action::SetComposition(style) => format!("{} text", style.label()),
             Action::SetColor(color) => format!("Highlight {color:?}").to_lowercase(),
             Action::AddNote => "Add note".into(),
             Action::CopySelection => "Copy selected text".into(),
@@ -5062,25 +5082,43 @@ impl Widget for BooksApp {
         }
         if self.shot_long_annotations {
             self.shot_long_annotations = false;
+            // A reader's notes on the book's own paragraphs, one per
+            // paragraph through the whole book; the rail opens scrolled to
+            // one deep in the list, as a jump from search lands it.
             let book_id = self.book_id();
-            for index in 0..30 {
+            let passages: Vec<(usize, usize, String)> = self
+                .library
+                .get(self.book_idx)
+                .map(|book| {
+                    book.chapters
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(ci, chapter)| {
+                            (0..chapter.blocks.len()).filter_map(move |bi| {
+                                let text = chapter.block_text(bi);
+                                (text.split_whitespace().count() > 8).then_some((ci, bi, text))
+                            })
+                        })
+                        .take(30)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let target = passages.len().saturating_sub(5);
+            for (index, (chapter, block, text)) in passages.into_iter().enumerate() {
                 let color = HiColor::ALL
                     .get(index % HiColor::ALL.len())
                     .copied()
                     .unwrap_or(HiColor::Yellow);
-                let mut annotation = Annotation::new(&book_id, AnnoKind::Note, 0, index)
+                let mut annotation = Annotation::new(&book_id, AnnoKind::Note, chapter, block)
                     .with_color(color)
-                    .with_excerpt(format!(
-                        "Saved passage {} from the lantern keeper's journal",
-                        index + 1
-                    ));
-                annotation.note = if index == 25 {
-                    "Targeted annotation — revealed here after a jump from search.".into()
-                } else {
-                    format!("Reading note {} — a durable, shared thought.", index + 1)
-                };
+                    .with_excerpt(text);
+                annotation.note = SHOT_NOTES
+                    .get(index % SHOT_NOTES.len())
+                    .copied()
+                    .unwrap_or_default()
+                    .to_string();
                 annotation.created = unix_now_ms().saturating_add(index as u64);
-                if index == 25 {
+                if index == target {
                     self.notes_scroll_to_annotation = Some(annotation.id);
                 }
                 BooksDoc::upsert_annotation(doc, &annotation);
@@ -5300,6 +5338,7 @@ impl Widget for BooksApp {
         self.shelf_controls.begin_frame();
         self.font_dropdown.begin_frame();
         self.header_h = f64::from(theme.tokens.metrics.header_height);
+        self.bubble_h = ui::status_bubble::pill_height(theme);
         self.toast_area = self.rect;
         // Resolve the drawers against this frame's width (a breakpoint
         // crossing settles them without a slide), then advance any toggle.
@@ -5752,7 +5791,7 @@ impl Widget for BooksApp {
                     NumberField::FontMult(id) => {
                         let mut fonts = self.fonts.clone();
                         if let Some(font) = fonts.iter_mut().find(|font| font.id == id) {
-                            font.size_mult = value as f32;
+                            font.size_mult = (value / 100.0) as f32;
                             let font = font.clone();
                             self.perform_action(doc, &crate::actions::upsert_font_action(font));
                         }
@@ -6209,7 +6248,7 @@ impl BooksApp {
                 NumberField::FontMult(id) => {
                     let mut fonts = self.fonts.clone();
                     if let Some(font) = fonts.iter_mut().find(|font| font.id == id) {
-                        font.size_mult = value as f32;
+                        font.size_mult = (value / 100.0) as f32;
                         let font = font.clone();
                         self.perform_action(ctx.state, &crate::actions::upsert_font_action(font));
                     }
@@ -6735,7 +6774,7 @@ impl BooksApp {
                 } else if crate::local_library::reserved_reader_key(character.as_str()) {
                     self.shortcut_capture_error = Some(format!(
                         "{} is reserved for a built-in reader command. Choose another key.",
-                        character.to_uppercase()
+                        key_legend(character.as_str())
                     ));
                 } else {
                     self.shortcut_capture_error =
@@ -7319,7 +7358,9 @@ impl BooksApp {
         let lib = Arc::clone(&self.library);
         let r = self.rect;
         let band = self.draw_page_header(ctx);
-        self.draw_library_actions(ctx, band);
+        // An empty shelf offers "Open a book" as its one action, so the
+        // header does not repeat it.
+        self.draw_library_actions(ctx, band, !lib.is_empty());
         if !lib.is_empty() {
             let inset = f64::from(ctx.theme.tokens.spacing.s3);
             let cursor = self.cursor;
@@ -7339,27 +7380,29 @@ impl BooksApp {
         self.draw_library_body(ctx, &lib, &order, body);
     }
 
-    /// The trailing actions of the library header: Settings, and the one
-    /// primary action of the screen, "Open book" (always present, so there is
-    /// a way in that does not depend on any folder).
-    fn draw_library_actions(&mut self, ctx: &mut PaintCtx<'_>, band: Rect) {
+    /// The trailing actions of the library header: Settings, and (with
+    /// `open`) the one primary action of the screen, "Open book", a way in
+    /// that does not depend on any folder.
+    fn draw_library_actions(&mut self, ctx: &mut PaintCtx<'_>, band: Rect, open: bool) {
         let theme = ctx.theme;
         let height = ButtonFace::height(ControlSize::Regular, theme);
         let y = band.center().y - height / 2.0;
         let mut x1 = band.x1 - f64::from(theme.tokens.spacing.s3);
-        let open = "Open book";
-        let width = ButtonFace::new(Rect::ZERO, open)
-            .icon(Icon::Plus)
-            .intrinsic_width(ctx.text, theme);
-        let rect = Rect::new(x1 - width, y, x1, y + height);
-        self.button(
-            ctx,
-            ButtonFace::new(rect, open)
+        if open {
+            let label = "Open book";
+            let width = ButtonFace::new(Rect::ZERO, label)
                 .icon(Icon::Plus)
-                .role(ButtonRole::Primary),
-            Action::OpenViaPortal,
-        );
-        x1 = rect.x0 - f64::from(theme.tokens.spacing.rhythm.related);
+                .intrinsic_width(ctx.text, theme);
+            let rect = Rect::new(x1 - width, y, x1, y + height);
+            self.button(
+                ctx,
+                ButtonFace::new(rect, label)
+                    .icon(Icon::Plus)
+                    .role(ButtonRole::Primary),
+                Action::OpenViaPortal,
+            );
+            x1 = rect.x0 - f64::from(theme.tokens.spacing.rhythm.related);
+        }
         let settings = Rect::new(x1 - height, y, x1, y + height);
         self.button(
             ctx,
@@ -7562,51 +7605,62 @@ impl BooksApp {
         face.paint(ctx, cell);
         let cover = face.art_rect(cell);
 
-        // Over the cover: the book's subject as a chip at the leading top,
-        // and where the book lives as a badge at the trailing top.
+        // Over the cover: the book's subject as a chip at the leading top
+        // and, for a book on the shared workspace, a "Shared" badge at the
+        // trailing top. Both are centred on one row; when the subject leaves
+        // no room beside it, the badge takes the row below.
         let inset = f64::from(theme.tokens.spacing.s2);
-        let place = if card.shared { "Shared" } else { "Local" };
-        let badge_w = BadgeFace::intrinsic_width(place, ctx.text, theme);
+        let gap = f64::from(theme.tokens.spacing.rhythm.related);
+        let room = (cover.width() - 2.0 * inset).max(0.0);
+        let chip_h = ChipFace::height(theme);
         let badge_h = BadgeFace::height(theme);
-        let badge = Rect::new(
-            cover.x1 - inset - badge_w,
-            cover.y0 + inset,
-            cover.x1 - inset,
-            cover.y0 + inset + badge_h,
-        );
-        let style = if card.shared {
-            ChipStyle::Tinted(Tone::Info)
-        } else {
-            ChipStyle::Neutral
-        };
-        BadgeFace::new(badge, place)
-            .style(style)
-            .paint(ctx.scene, ctx.transform, ctx.text, theme);
-        if !card.book.subject.is_empty() {
-            let chip_h = ChipFace::height(theme);
-            let room = badge.x0 - inset - (cover.x0 + inset);
-            let chip_w = ChipFace::intrinsic_width(
-                &card.book.subject,
-                ChipLead::None,
-                false,
-                ctx.text,
-                theme,
-            )
-            .min(room);
-            if chip_w > chip_h {
-                let chip = Rect::new(
-                    cover.x0 + inset,
-                    cover.y0 + inset,
-                    cover.x0 + inset + chip_w,
-                    cover.y0 + inset + chip_h,
-                );
-                ChipFace::new(chip, &card.book.subject).paint(
-                    ctx.scene,
-                    ctx.transform,
+        let row_h = chip_h.max(badge_h);
+        let chip_w = (!card.book.subject.is_empty())
+            .then(|| {
+                ChipFace::intrinsic_width(
+                    &card.book.subject,
+                    ChipLead::None,
+                    false,
                     ctx.text,
                     theme,
-                );
-            }
+                )
+                .min(room)
+            })
+            .filter(|width| *width > chip_h);
+        if let Some(chip_w) = chip_w {
+            let top = cover.y0 + inset + (row_h - chip_h) / 2.0;
+            let chip = Rect::new(
+                cover.x0 + inset,
+                top,
+                cover.x0 + inset + chip_w,
+                top + chip_h,
+            );
+            ChipFace::new(chip, &card.book.subject).paint(
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                theme,
+            );
+        }
+        if card.shared {
+            let label = "Shared";
+            let badge_w = BadgeFace::intrinsic_width(label, ctx.text, theme);
+            let beside = chip_w.is_none_or(|width| width + gap + badge_w <= room);
+            let row_y = if beside {
+                cover.y0 + inset
+            } else {
+                cover.y0 + inset + row_h + gap
+            };
+            let top = row_y + (row_h - badge_h) / 2.0;
+            let badge = Rect::new(
+                cover.x1 - inset - badge_w,
+                top,
+                cover.x1 - inset,
+                top + badge_h,
+            );
+            BadgeFace::new(badge, label)
+                .style(ChipStyle::Neutral)
+                .paint(ctx.scene, ctx.transform, ctx.text, theme);
         }
 
         // The whole card opens the book; clamp it to the scrolling body so a
@@ -7617,7 +7671,8 @@ impl BooksApp {
         }
         // Share and Remove over the cover's foot while the card is hovered;
         // pushed after the card so they win where they overlap it.
-        if hovered && cover.y1 <= body.y1 && cover.y1 - badge_h >= body.y0 {
+        let actions_h = ButtonFace::height(ControlSize::Small, theme) + inset;
+        if hovered && cover.y1 <= body.y1 && cover.y1 - actions_h >= body.y0 {
             self.draw_book_card_hover_actions(ctx, cover, &card.book.id, card.shared);
         }
     }
@@ -7797,6 +7852,9 @@ struct ReaderPageGeometry {
     /// rule, so header, rule and first line never meet at any text scale.
     header_y: f64,
     rule_y: f64,
+    /// The band at the page's foot the progress slider is centred in. The
+    /// page bubble's slot lies between it and the content box.
+    slider_band: f64,
 }
 
 impl BooksApp {
@@ -7952,15 +8010,18 @@ impl BooksApp {
         let frac = self.slider_position(nchap);
         self.reading_progress = frac;
         let paper_y1 = geom.paper_y + geom.paper_h;
-        let foot = paper_y1 - (geom.content_y + f64::from(geom.content_h));
         let slider_h = ControlSize::Small.height(theme);
-        let slider_cy = paper_y1 - foot / 2.0;
-        let slider_rect = Rect::new(
+        let slider_cy = paper_y1 - geom.slider_band / 2.0;
+        let text = Rect::new(
             geom.full_content_x,
             slider_cy - slider_h / 2.0,
             geom.full_content_x + f64::from(geom.full_content_w),
             slider_cy + slider_h / 2.0,
         );
+        // The track, not the control's knob room, runs from margin to margin
+        // like the text above it.
+        let knob_room = SliderFace::new(text, 0.0).track_rect().x0 - text.x0;
+        let slider_rect = text.inflate(knob_room.max(0.0), 0.0);
         let face = SliderFace::new(slider_rect, f64::from(frac))
             .hovered(slider_rect.contains(self.cursor))
             .dragging(self.progress_dragging)
@@ -7977,11 +8038,13 @@ impl BooksApp {
         };
         Slider::paint(ctx.scene, ctx.transform, &page_theme, &face);
         self.push_hit(slider_rect, Action::SeekProgress);
-        self.toast_area = Rect::new(geom.center_x0, geom.body_y0, geom.center_x1, slider_rect.y0);
+        // The bubble's slot: between the content box and the slider band.
+        let bubble_y1 = paper_y1 - geom.slider_band;
+        self.toast_area = Rect::new(geom.center_x0, geom.body_y0, geom.center_x1, bubble_y1);
 
         // ---- chrome: header row, floating page bubble, selection HUD, drawers
         self.draw_reader_header(ctx, &lib);
-        // The bubble floats over the foot of the reading column, above the
+        // The bubble stands in its slot in the page's foot, above the
         // progress slider.
         self.reader_bubble.draw(
             ctx,
@@ -8048,50 +8111,56 @@ impl BooksApp {
         let framed = self.rect.width() >= f64::from(Metrics::BASE.compact_breakpoint);
         let center_w = (center_x1 - center_x0).max(120.0);
         let sp = ui::tokens::spacing::Spacing::BASE;
-        let (paper_x, paper_y, paper_w, paper_h, pad_x, pad_top, pad_bot, header_y, rule_y) =
-            if framed {
-                let margin = f64::from(sp.s6);
-                let paper_w = (center_w - 2.0 * margin).clamp(120.0, PAGE_MAX_W);
-                let paper_x = center_x0 + (center_w - paper_w) / 2.0;
-                let paper_y = body_y0 + margin;
-                let paper_h = (body_y1 - body_y0 - 2.0 * margin).max(120.0);
-                // Running header, then the rule an `s1` under its measured
-                // line box, then the content an `s2` under the rule. The slot
-                // follows the header's real height, so at 200 % the header
-                // grows away from the rule instead of into it (rounded so 1×
-                // keeps its pixel grid).
-                let header_y = paper_y + f64::from(sp.s6);
-                let rule_y = (header_y + self.running_header_h + f64::from(sp.s1)).round();
-                let pad_top = rule_y - paper_y + f64::from(sp.s2);
-                let pad = f64::from(sp.s12);
-                (
-                    paper_x, paper_y, paper_w, paper_h, pad, pad_top, pad, header_y, rule_y,
-                )
+        // The foot holds the progress slider in its own band and, above it,
+        // the page bubble's slot, so neither ever lies over the text.
+        let slider_band = if framed {
+            f64::from(sp.s12)
+        } else {
+            f64::from(sp.s8)
+        };
+        let pad_bot = slider_band + self.bubble_h + f64::from(sp.s2);
+        let (paper_x, paper_y, paper_w, paper_h, pad_x, pad_top, header_y, rule_y) = if framed {
+            let margin = f64::from(sp.s6);
+            let paper_w = (center_w - 2.0 * margin).clamp(120.0, PAGE_MAX_W);
+            let paper_x = center_x0 + (center_w - paper_w) / 2.0;
+            let paper_y = body_y0 + margin;
+            let paper_h = (body_y1 - body_y0 - 2.0 * margin).max(120.0);
+            // Running header, then the rule an `s1` under its measured
+            // line box, then the content an `s2` under the rule. The slot
+            // follows the header's real height, so at 200 % the header
+            // grows away from the rule instead of into it (rounded so 1×
+            // keeps its pixel grid).
+            let header_y = paper_y + f64::from(sp.s6);
+            let rule_y = (header_y + self.running_header_h + f64::from(sp.s1)).round();
+            let pad_top = rule_y - paper_y + f64::from(sp.s2);
+            let pad = f64::from(sp.s12);
+            (
+                paper_x, paper_y, paper_w, paper_h, pad, pad_top, header_y, rule_y,
+            )
+        } else {
+            let paper_x = center_x0;
+            let paper_y = body_y0;
+            let paper_w = center_w;
+            let paper_h = (body_y1 - body_y0).max(120.0);
+            // Accessibility text needs a little extra horizontal breathing
+            // room on an edge-to-edge page. The layout width follows this
+            // inset, so words reflow before reaching the viewport edge.
+            let pad_x = if self.settings.font_scale > 1.0 {
+                f64::from(sp.s8)
             } else {
-                let paper_x = center_x0;
-                let paper_y = body_y0;
-                let paper_w = center_w;
-                let paper_h = (body_y1 - body_y0).max(120.0);
-                // Accessibility text needs a little extra horizontal breathing
-                // room on an edge-to-edge page. The layout width follows this
-                // inset, so words reflow before reaching the viewport edge.
-                let pad_x = if self.settings.font_scale > 1.0 {
-                    f64::from(sp.s8)
-                } else {
-                    f64::from(sp.s6)
-                };
-                (
-                    paper_x,
-                    paper_y,
-                    paper_w,
-                    paper_h,
-                    pad_x,
-                    f64::from(sp.s6),
-                    f64::from(sp.s8),
-                    0.0,
-                    0.0,
-                )
+                f64::from(sp.s6)
             };
+            (
+                paper_x,
+                paper_y,
+                paper_w,
+                paper_h,
+                pad_x,
+                f64::from(sp.s6),
+                0.0,
+                0.0,
+            )
+        };
         let full_content_x = paper_x + pad_x;
         let full_content_w = (paper_w - 2.0 * pad_x).max(60.0) as f32;
         let content_y = paper_y + pad_top;
@@ -8133,6 +8202,7 @@ impl BooksApp {
             gutter,
             header_y,
             rule_y,
+            slider_band,
         }
     }
 
@@ -9650,6 +9720,14 @@ impl SettingsColumn {
     fn x1(self) -> f64 {
         self.x + self.w
     }
+
+    /// The span of a row whose text, separators and controls line up with
+    /// the column: the row's own inset hangs outside it, where only a
+    /// row's lift reaches.
+    fn row_span(self, theme: &Theme) -> (f64, f64) {
+        let inset = f64::from(theme.tokens.spacing.s3);
+        (self.x - inset, self.x1() + inset)
+    }
 }
 
 /// The sizes a scheme row's actions take, measured once per row.
@@ -9659,11 +9737,10 @@ struct SchemeControls {
     switch_w: f64,
     small_h: f64,
     gap: f64,
-    builtin: bool,
 }
 
 impl SchemeControls {
-    fn measure(ctx: &mut PaintCtx<'_>, builtin: bool) -> Self {
+    fn measure(ctx: &mut PaintCtx<'_>) -> Self {
         let small = ControlSize::Small;
         Self {
             duplicate_w: button_width(ctx, "Duplicate", None, small),
@@ -9671,17 +9748,19 @@ impl SchemeControls {
             switch_w: switch_size(ctx.theme).0,
             small_h: small.height(ctx.theme),
             gap: f64::from(ctx.theme.tokens.spacing.rhythm.related),
-            builtin,
         }
     }
 
-    /// The whole cluster's width.
+    /// The whole cluster's width, with a custom scheme's Edit and delete:
+    /// every row reserves it, so every row's name has the same room.
     fn width(&self) -> f64 {
-        let mut width = self.duplicate_w + self.gap + self.switch_w;
-        if !self.builtin {
-            width += self.edit_w + self.gap + self.small_h + self.gap;
-        }
-        width
+        self.edit_w
+            + self.gap
+            + self.small_h
+            + self.gap
+            + self.duplicate_w
+            + self.gap
+            + self.switch_w
     }
 }
 
@@ -9814,9 +9893,24 @@ impl BooksApp {
             }
             x += width;
         }
+        // A tab's label sits centred in its segment; the strip starts that
+        // inset before the column so the first label lines up with the
+        // title and the rows below it.
+        let label_w = |label: &str, text: &mut TextRenderer| {
+            f64::from(
+                text.measure_style(label, None, &size.label_style(theme).strong())
+                    .0,
+            )
+        };
         let mut row_y = y;
         for row in rows {
-            let mut x = col.x;
+            let lead = row
+                .first()
+                .and_then(|&i| Some((widths.get(i)?, SETTINGS_TABS.get(i)?.1)))
+                .map_or(0.0, |(width, label)| {
+                    (width - label_w(label, ctx.text)) / 2.0
+                });
+            let mut x = col.x - lead.max(0.0);
             let segments: Vec<Rect> = row
                 .iter()
                 .map(|&i| {
@@ -9871,7 +9965,7 @@ impl BooksApp {
     ) -> f64 {
         let theme = ctx.theme;
         let rhythm = &theme.tokens.spacing.rhythm;
-        let x = col.x + f64::from(theme.tokens.spacing.s3);
+        let x = col.x;
         let wrap = Some(ui::num::f32_of_f64((col.x1() - x).max(1.0)));
         ctx.text_role(
             title,
@@ -9934,23 +10028,20 @@ impl BooksApp {
                 .paint(ctx, Rect::new(x0, y, (x1 - trailing).max(x0), y + h));
         }
         if separator {
+            // Inset like a list row's own separator: from the text to the
+            // trailing edge of the controls.
+            let inset = f64::from(theme.tokens.spacing.s3);
             ui::surface::separator(
                 ctx.scene,
                 ctx.transform,
-                x0 + f64::from(theme.tokens.spacing.s3),
-                x1,
+                x0 + inset,
+                x1 - inset,
                 row.y1,
                 0.0,
                 theme.tokens.colors.surfaces.content,
             );
         }
         row
-    }
-
-    /// The trailing control area of a settings row, ending at the column's
-    /// edge minus the row inset.
-    fn row_trailing_x1(theme: &Theme, col: SettingsColumn) -> f64 {
-        col.x1() - f64::from(theme.tokens.spacing.s3)
     }
 
     /// Device-local keyboard bindings. Each row records one printable key;
@@ -9972,7 +10063,7 @@ impl BooksApp {
             Some("Choose a shortcut, then press a key. Arrow and Page keys always turn pages."),
         );
         if let Some(error) = self.shortcut_capture_error.clone() {
-            let x = col.x + f64::from(theme.tokens.spacing.s3);
+            let x = col.x;
             let wrap = Some(ui::num::f32_of_f64((col.x1() - x).max(1.0)));
             ctx.text_role(
                 &error,
@@ -9987,10 +10078,11 @@ impl BooksApp {
         let keycap_h = InputHint::keycap_height(theme);
         for (i, shortcut) in ReaderShortcut::ALL.into_iter().enumerate() {
             let capturing = self.shortcut_capture == Some(shortcut);
-            let key = self
-                .local_library
-                .shortcut(shortcut.id(), shortcut.default_key())
-                .to_uppercase();
+            let key = key_legend(
+                &self
+                    .local_library
+                    .shortcut(shortcut.id(), shortcut.default_key()),
+            );
             let labels = [key];
             let trailing = if capturing {
                 ctx.measure_role("Press a key", TextRole::Body, None).width
@@ -9999,7 +10091,7 @@ impl BooksApp {
             } + 2.0 * f64::from(theme.tokens.spacing.s3);
             let row = Self::draw_settings_row(
                 ctx,
-                (col.x, col.x1()),
+                col.row_span(theme),
                 y,
                 &SettingsRow {
                     title: shortcut.label(),
@@ -10010,7 +10102,7 @@ impl BooksApp {
                     renaming: false,
                 },
             );
-            let x1 = Self::row_trailing_x1(theme, col);
+            let x1 = col.x1();
             if capturing {
                 let w = ctx.measure_role("Press a key", TextRole::Body, None).width;
                 ctx.text_role_in_band(
@@ -10142,7 +10234,7 @@ impl BooksApp {
                 .map_or_else(|| path.clone(), |n| n.to_string_lossy().to_string());
             let row = Self::draw_settings_row(
                 ctx,
-                (col.x, col.x1()),
+                col.row_span(theme),
                 y,
                 &SettingsRow {
                     title: &name,
@@ -10153,7 +10245,7 @@ impl BooksApp {
                     renaming: false,
                 },
             );
-            let x1 = Self::row_trailing_x1(theme, col);
+            let x1 = col.x1();
             self.switch_at(
                 ctx,
                 x1,
@@ -10183,7 +10275,7 @@ impl BooksApp {
             HostedDropdown::width(fonts.iter().map(|f| f.name.as_str()), size, ctx.text, theme);
         let row = Self::draw_settings_row(
             ctx,
-            (col.x, col.x1()),
+            col.row_span(theme),
             y,
             &SettingsRow {
                 title: "Font for new books",
@@ -10194,7 +10286,7 @@ impl BooksApp {
                 renaming: false,
             },
         );
-        let x1 = Self::row_trailing_x1(theme, col);
+        let x1 = col.x1();
         let height = size.height(theme);
         self.font_dropdown.set(
             fonts
@@ -10222,7 +10314,9 @@ impl BooksApp {
             col,
             y,
             "Reading fonts",
-            Some("Fonts that are on appear in the reading settings. Select a name to rename it."),
+            Some(
+                "Turn a font off to leave it out of the reading settings. Select a name to rename it.",
+            ),
         );
         for (i, f) in fonts.iter().enumerate() {
             y = self.draw_font_row(ctx, col, y, f, i + 1 < fonts.len());
@@ -10251,9 +10345,12 @@ impl BooksApp {
             FontKind::Named(_) => "System font".to_string(),
         };
         let field = NumberField::FontMult(f.id.clone());
-        let stepper_w =
-            self.number_controls
-                .preferred_width(&field, f64::from(f.size_mult), ctx.text, theme);
+        let stepper_w = self.number_controls.preferred_width(
+            &field,
+            f64::from(f.size_mult) * 100.0,
+            ctx.text,
+            theme,
+        );
         let (switch_w, _) = switch_size(theme);
         let small = ControlSize::Small.height(theme);
         let gap = f64::from(spacing.rhythm.sibling);
@@ -10262,7 +10359,7 @@ impl BooksApp {
             matches!(&self.renaming, Some(rn) if rn.target == RenameTarget::Font(f.id.clone()));
         let row = Self::draw_settings_row(
             ctx,
-            (col.x, col.x1()),
+            col.row_span(theme),
             y,
             &SettingsRow {
                 title: &f.name,
@@ -10273,7 +10370,7 @@ impl BooksApp {
                 renaming: renaming_this,
             },
         );
-        let controls_x0 = Self::row_trailing_x1(theme, col) - controls_w;
+        let controls_x0 = col.x1() - controls_w;
         self.draw_row_name_slot(
             ctx,
             Rect::new(row.x0, row.y0, controls_x0 - gap, row.y1),
@@ -10299,7 +10396,7 @@ impl BooksApp {
         x += small + gap;
         self.number_controls.draw(
             &field,
-            f64::from(f.size_mult),
+            f64::from(f.size_mult) * 100.0,
             Rect::new(x, cy - small / 2.0, x + stepper_w, cy + small / 2.0),
             ctx.scene,
             ctx.transform,
@@ -10330,14 +10427,11 @@ impl BooksApp {
         let theme = ctx.theme;
         let pad = f64::from(theme.tokens.spacing.s3);
         if renaming {
+            // The field's edge stands on the row text's edge, in line with
+            // the separators and the column above it.
             let height = ControlSize::Small.height(theme);
             let cy = slot.center().y;
-            let field = Rect::new(
-                slot.x0 + pad - f64::from(theme.padding_standard),
-                cy - height / 2.0,
-                slot.x1,
-                cy + height / 2.0,
-            );
+            let field = Rect::new(slot.x0 + pad, cy - height / 2.0, slot.x1, cy + height / 2.0);
             if let Some(rn) = self.renaming.as_mut() {
                 rn.field.apply_layout_external(field);
                 rn.field.draw(
@@ -10366,7 +10460,7 @@ impl BooksApp {
         let label = "Add a system font";
         let size = ControlSize::Regular;
         let width = button_width(ctx, label, Some(Icon::Plus), size);
-        let x = col.x + f64::from(theme.tokens.spacing.s3);
+        let x = col.x;
         let rect = Rect::new(x, y, x + width, y + size.height(theme));
         self.button(
             ctx,
@@ -10383,7 +10477,7 @@ impl BooksApp {
             col,
             y,
             "Colour schemes",
-            Some("Schemes that are on appear in the reading settings."),
+            Some("Turn a scheme off to leave it out of the reading settings."),
         );
         let schemes = self.schemes.clone();
         for (i, s) in schemes.iter().enumerate() {
@@ -10393,7 +10487,7 @@ impl BooksApp {
         let label = "New scheme";
         let size = ControlSize::Regular;
         let width = button_width(ctx, label, Some(Icon::Plus), size);
-        let x = col.x + f64::from(theme.tokens.spacing.s3);
+        let x = col.x;
         let rect = Rect::new(x, y, x + width, y + size.height(theme));
         self.button(
             ctx,
@@ -10404,8 +10498,8 @@ impl BooksApp {
     }
 
     /// One colour-scheme row: its page, text and accent colours, its name
-    /// and whether it is in use, and its actions. The scheme in use is the
-    /// selected row. Returns the y below it.
+    /// and whether it is in use (its secondary line says so; a setting is
+    /// not a selection), and its actions. Returns the y below it.
     fn draw_scheme_row(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -10416,12 +10510,12 @@ impl BooksApp {
     ) -> f64 {
         let theme = ctx.theme;
         let spacing = &theme.tokens.spacing;
-        let selected = if s.builtin {
+        let in_use = if s.builtin {
             self.settings.scheme_id.is_empty() && self.settings.theme == ReadTheme::from_str(&s.id)
         } else {
             self.settings.scheme_id == s.id
         };
-        let status = if selected {
+        let status = if in_use {
             "In use"
         } else if s.builtin {
             "Built-in"
@@ -10429,31 +10523,18 @@ impl BooksApp {
             "Custom"
         };
         let gap = f64::from(spacing.rhythm.related);
-        let controls = SchemeControls::measure(ctx, s.builtin);
+        let controls = SchemeControls::measure(ctx);
         let controls_w = controls.width();
         let swatch = f64::from(theme.tokens.metrics.icon_lg);
         let swatches_w = 3.0 * swatch + 2.0 * gap;
         let renaming_this = self.renaming_scheme(&s.id);
-        let x0 = col.x + swatches_w + f64::from(spacing.s3);
+        // The row's text follows the swatches; its own inset is the gap.
+        let (span_x0, span_x1) = col.row_span(theme);
+        let x0 = col.x + swatches_w;
         let title = s.name.as_str();
-        if selected {
-            // The scheme in use is the selected row: one lift across the
-            // whole row, swatches included.
-            let h = ListRowFace::new(title)
-                .secondary(status)
-                .height(ctx.text, theme);
-            ui::chrome::paint_row_selection(
-                ctx.scene,
-                ctx.transform,
-                Rect::new(col.x, y, col.x1(), y + h),
-                SelectionState::active(true),
-                theme.tokens.colors.surfaces.content,
-                theme,
-            );
-        }
         let row = Self::draw_settings_row(
             ctx,
-            (x0, col.x1()),
+            (x0, span_x1),
             y,
             &SettingsRow {
                 title,
@@ -10468,24 +10549,20 @@ impl BooksApp {
             ui::surface::separator(
                 ctx.scene,
                 ctx.transform,
-                col.x + f64::from(spacing.s3),
+                col.x,
                 col.x1(),
                 row.y1,
                 0.0,
                 theme.tokens.colors.surfaces.content,
             );
         }
-        self.draw_scheme_swatches(
-            ctx,
-            Point::new(col.x + f64::from(spacing.s3), row.center().y),
-            s,
-        );
+        self.draw_scheme_swatches(ctx, Point::new(col.x, row.center().y), s);
 
-        let controls_x0 = Self::row_trailing_x1(theme, col) - controls_w;
+        let controls_x0 = col.x1() - controls_w;
         let name_slot = Rect::new(row.x0, row.y0, controls_x0 - gap, row.y1);
         if s.builtin {
             self.push_hit(
-                Rect::new(col.x, row.y0, controls_x0 - gap, row.y1),
+                Rect::new(span_x0, row.y0, controls_x0 - gap, row.y1),
                 Self::scheme_use_action(s),
             );
         } else {
@@ -10502,59 +10579,60 @@ impl BooksApp {
             );
         }
 
-        self.draw_scheme_controls(ctx, Point::new(controls_x0, row.center().y), s, &controls);
+        self.draw_scheme_controls(ctx, Point::new(col.x1(), row.center().y), s, &controls);
         row.y1
     }
 
-    /// A scheme row's actions from `start` (leading edge, vertical centre),
-    /// left to right: Duplicate, then Edit and delete for a custom scheme,
-    /// then whether it is shown.
+    /// A scheme row's actions back from `end` (trailing edge, vertical
+    /// centre): whether it is shown, Duplicate, then delete and Edit for a
+    /// custom scheme. The shared controls stand in the same columns on every
+    /// row.
     fn draw_scheme_controls(
         &mut self,
         ctx: &mut PaintCtx<'_>,
-        start: Point,
+        end: Point,
         s: &ColorScheme,
         m: &SchemeControls,
     ) {
         let small = ControlSize::Small;
-        let cy = start.y;
-        let mut x = start.x;
+        let cy = end.y;
+        let mut x1 = end.x;
         let face_rect =
-            |x: f64, w: f64| Rect::new(x, cy - m.small_h / 2.0, x + w, cy + m.small_h / 2.0);
+            |x1: f64, w: f64| Rect::new(x1 - w, cy - m.small_h / 2.0, x1, cy + m.small_h / 2.0);
+        self.switch_at(
+            ctx,
+            x1,
+            cy,
+            s.enabled,
+            Action::ToggleSchemeEnabled(s.id.clone()),
+        );
+        x1 -= m.switch_w + m.gap;
         self.button(
             ctx,
-            ButtonFace::new(face_rect(x, m.duplicate_w), "Duplicate")
+            ButtonFace::new(face_rect(x1, m.duplicate_w), "Duplicate")
                 .role(ButtonRole::Plain)
                 .control_size(small),
             Action::DuplicateScheme(s.id.clone()),
         );
-        x += m.duplicate_w + m.gap;
+        x1 -= m.duplicate_w + m.gap;
         if !s.builtin {
-            self.button(
-                ctx,
-                ButtonFace::new(face_rect(x, m.edit_w), "Edit")
-                    .role(ButtonRole::Plain)
-                    .control_size(small),
-                Action::EditScheme(s.id.clone()),
-            );
-            x += m.edit_w + m.gap;
             self.icon_button(
                 ctx,
-                Point::new(x + m.small_h / 2.0, cy),
+                Point::new(x1 - m.small_h / 2.0, cy),
                 small,
                 (Icon::Trash2, "Delete scheme"),
                 false,
                 Action::DeleteScheme(s.id.clone()),
             );
-            x += m.small_h + m.gap;
+            x1 -= m.small_h + m.gap;
+            self.button(
+                ctx,
+                ButtonFace::new(face_rect(x1, m.edit_w), "Edit")
+                    .role(ButtonRole::Plain)
+                    .control_size(small),
+                Action::EditScheme(s.id.clone()),
+            );
         }
-        self.switch_at(
-            ctx,
-            x + m.switch_w,
-            cy,
-            s.enabled,
-            Action::ToggleSchemeEnabled(s.id.clone()),
-        );
     }
 
     /// Whether the inline rename editor is open on scheme `id`.
@@ -10778,7 +10856,14 @@ impl BooksApp {
     /// in its own face; choosing one adds it.
     fn draw_font_picker(&mut self, ctx: &mut PaintCtx<'_>) {
         let theme = ctx.theme;
-        let fams = ctx.text.system_families();
+        // A colour-emoji face cannot set a book's text (nor preview its own
+        // name), so it is not offered.
+        let fams: Vec<String> = ctx
+            .text
+            .system_families()
+            .into_iter()
+            .filter(|family| !family.to_lowercase().contains("emoji"))
+            .collect();
         let row_h = ui::chrome::nav_row_height(theme);
         let wanted = fams.len() as f64 * row_h;
         let spec = ModalSpec::new("Add a system font")
@@ -10846,6 +10931,25 @@ impl BooksApp {
             ScrollMetrics::new(wanted, list.height(), self.picker_scroll),
         );
     }
+}
+
+/// A reader's notes for the long-annotations capture, cycled over the
+/// book's paragraphs.
+const SHOT_NOTES: [&str; 8] = [
+    "Compare with the keeper's log in the third chapter.",
+    "The light as a promise rather than a warning.",
+    "Read this aloud at the reading group.",
+    "Isolde never says why she stays. Ask about this on Thursday.",
+    "Lovely rhythm in this sentence.",
+    "Seven hands in the almanac: who wrote the last entry?",
+    "The same image as the opening, turned around.",
+    "Look up what a tide-house actually was.",
+];
+
+/// The legend printed on `key`'s cap in the active keyboard layout, as a
+/// shortcut row and its messages name it.
+fn key_legend(key: &str) -> String {
+    ui::KeyLegend::from_name(key).label(ui::PlatformConventions::default())
 }
 
 /// Sub-pixel x-span `[x_lo, x_hi]` of chars `[lo, hi)` within a run laid out at

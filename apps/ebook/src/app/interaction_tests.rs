@@ -4711,9 +4711,9 @@ fn font_rename_editor_commits_cancels_and_fits() {
             toggle.x0
         );
         assert!(
-            (field.x0 + f64::from(theme.padding_standard) - static_name_x).abs() < 0.01,
-            "editor text origin {} != static name x {static_name_x}",
-            field.x0 + f64::from(theme.padding_standard)
+            (field.x0 - static_name_x).abs() < 0.01,
+            "the editor's edge {} is not on the name's edge {static_name_x}",
+            field.x0
         );
     }
 }
@@ -4890,7 +4890,7 @@ fn reader_controls_fit_their_labels() {
         let mut tr = TextRenderer::new();
         let wanted = app
             .number_controls
-            .preferred_width(&field, 1.0, &mut tr, &theme);
+            .preferred_width(&field, 100.0, &mut tr, &theme);
         let rect = app
             .number_controls
             .rect(&field)

@@ -131,13 +131,13 @@ impl ReadingSettings {
                     ),
                     ReadingSettingsAction::SetMode(mode) => (
                         format!("books.reader.settings.mode:{}", mode.as_str()),
-                        format!("{} reading mode", mode.label()),
+                        format!("{} layout", mode.label()),
                         Role::RadioButton,
                         Some(settings.mode == *mode),
                     ),
                     ReadingSettingsAction::SetComposition(style) => (
                         format!("books.reader.settings.composition:{}", style.as_str()),
-                        format!("{} text composition", style.label()),
+                        format!("{} text", style.label()),
                         Role::RadioButton,
                         Some(settings.composition == *style),
                     ),
@@ -370,7 +370,7 @@ impl ReadingSettings {
             ctx,
             &layout,
             y,
-            "Text",
+            "Alignment",
             &CompositionStyle::ALL
                 .iter()
                 .map(|style| {
@@ -395,7 +395,7 @@ impl ReadingSettings {
             .iter()
             .map(|pill| Choice::new(&pill.label, pill.active, pill.action.clone()))
             .collect();
-        y = self.draw_chips(ctx, &layout, y, "Page", &schemes, &layout.scheme_widths);
+        y = self.draw_chips(ctx, &layout, y, "Colours", &schemes, &layout.scheme_widths);
         self.draw_manage(ctx, &layout, y);
     }
 
@@ -584,16 +584,19 @@ impl ReadingSettings {
             ),
         ];
         let control_h = ControlSize::Small.height(theme);
+        // Both steppers take the wider one's width, so their buttons and
+        // values stand in the same columns.
+        let width = rows
+            .iter()
+            .map(|(_, value, field)| self.numbers.preferred_width(field, *value, ctx.text, theme))
+            .fold(0.0, f64::max)
+            .min((x1 - x0) * 0.6);
         for (i, (label, value, field)) in rows.into_iter().enumerate() {
             if i > 0 {
                 y += height + f64::from(theme.tokens.spacing.rhythm.related);
             }
             let band = Rect::new(x0, y, x1, y + height);
             ctx.text_role_in_band(label, TextRole::Label, theme.text_primary, x0, band, None);
-            let width = self
-                .numbers
-                .preferred_width(&field, value, ctx.text, theme)
-                .min((x1 - x0) * 0.6);
             let cy = band.center().y;
             self.numbers.draw(
                 &field,
