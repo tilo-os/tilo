@@ -6,25 +6,28 @@
 
     uv run vendor/fonts/tilo-sans/scripts/pairs.py                # report collisions
     uv run vendor/fonts/tilo-sans/scripts/pairs.py --show 40      # also the 40 tightest pairs
-    uv run vendor/fonts/tilo-sans/scripts/pairs.py --fix          # write kerning exceptions into the sources
     uv run vendor/fonts/tilo-sans/scripts/pairs.py --text "đĩa Tĩnh"   # check the pairs in a string
 
 Checked letters: every letter Tilo Sans added beyond Instrument Sans (and
 later its Greek and Cyrillic) plus every accented letter of the Vietnamese
 alphabet, Instrument's own included ('Tìm' matters as much as 'Tĩnh').
-Each is paired both ways with every neighbour (printable ASCII, the
-Vietnamese alphabet in both cases, quotes, dashes, the ellipsis, the other
-checked letters) and shaped with HarfBuzz, so GPOS kerning applies, at every
-master location and at SemiBold. The two inks are compared as horizontal
-profiles in 4-unit bands, the left glyph's widened by the minimum gap in
-every direction, so a tone mark that comes near a neighbour's ascender
-diagonally counts as well as one that touches it.
+Each is paired both ways with the neighbours it meets in text: printable
+ASCII but the underscore, the Vietnamese letters without a tone (a ă â b c d
+đ e ê ... ơ ư, both cases), quotes, dashes and the ellipsis. Two toned
+letters never stand side by side in Vietnamese (a syllable carries one
+tone), and a lowercase letter is not followed by a capital inside a word,
+so pairs such as 'ÍÌ' or 'íY' are not checked and get no kerning. Pairs are
+shaped with HarfBuzz, so GPOS kerning applies, at the eight masters and at
+the instances between them (wght 500/550/600/650 at wdth 75 and 87.5, and
+500/550/600 at wdth 100). The two inks
+are compared as horizontal profiles in 4-unit bands, the left glyph's
+widened by the minimum gap in every direction, so a tone mark that comes
+near a neighbour's ascender diagonally counts as well as one that touches.
 
 A pair whose inks come closer than MIN_GAP (font units) is a collision.
---fix adds, per master, the kerning exception that opens every pair to
-MIN_GAP + FIX_MARGIN (on top of what the groups give, and written to every
-master of the family so the pair interpolates from defined values); rebuild
-and check again afterwards. build.py runs the check after compiling.
+scripts/kerning.py opens the colliding pairs, by kerning group, to
+MIN_GAP + FIX_MARGIN at the masters, so the instances between them stay
+clear. build.py runs this check after compiling.
 """
 
 from __future__ import annotations
@@ -44,8 +47,8 @@ from fontTools.ttLib import TTFont
 ROOT = Path(__file__).resolve().parent.parent
 FONTS = ROOT / "fonts"
 SOURCES = ROOT / "sources"
-MIN_GAP = 24
-FIX_MARGIN = 6  # --fix opens pairs to MIN_GAP + this, so instances between masters stay clear
+MIN_GAP = 16
+FIX_MARGIN = 8  # kerning.py opens pairs to MIN_GAP + this, so instances between masters stay clear
 BAND = 4
 YMIN, YMAX = -320, 1160
 
@@ -55,16 +58,21 @@ UPRIGHT = ("TiloSans[wdth,wght].ttf", {
 ITALIC = ("TiloSans-Italic[wdth,wght].ttf", {
     "CondensedItalic": (75, 400), "CondensedBoldItalic": (75, 700), "Italic": (100, 400), "BoldItalic": (100, 700),
 })
-EXTRA = {"SemiBold": (100, 600)}
+# Instances between the masters, checked but not kerned (kerning interpolates).
+BETWEEN = {f"wght{g}-wdth{w:g}": (w, g) for g in (500, 550, 600, 650) for w in (75, 87.5)}
+BETWEEN.update({"SemiBold": (100, 600), "Medium": (100, 500), "wght550-wdth100": (100, 550)})
 
-# Neighbours: ASCII, the Vietnamese alphabet with every tone (Instrument's
-# own accented letters included), quotes, dashes and the ellipsis.
+# The Vietnamese alphabet with every tone (Instrument's own accented letters
+# included), and the letters without a tone.
 VIETNAMESE = (
     "aàáảãạăằắẳẵặâầấẩẫậbcdđeèéẻẽẹêềếểễệghiìíỉĩịklmnoòóỏõọôồốổỗộơờớởỡợpqrstuùúủũụưừứửữựvxyỳýỷỹỵ"
 )
+UNTONED = "aăâbcdđeêghiklmnoôơpqrstuưvxy"
+# Neighbours: ASCII but the underscore, the untoned Vietnamese letters,
+# quotes, dashes, the ellipsis.
 CONTEXT = (
-    "".join(chr(c) for c in range(0x21, 0x7F))
-    + VIETNAMESE + VIETNAMESE.upper()
+    "".join(chr(c) for c in range(0x21, 0x7F) if chr(c) != "_")  # a dot below may sit on an underscore
+    + UNTONED + UNTONED.upper()
     + "‘’“”«»–—…·"
 )
 
@@ -206,6 +214,7 @@ def check(font_file: str, locations: dict, pairs: list[str], min_gap: float, sho
                 continue
             a, b = infos[0].codepoint, infos[1].codepoint
             shift = poss[0].x_advance + poss[1].x_offset - poss[0].x_offset
+            kern = poss[0].x_advance - hbfont.get_glyph_h_advance(a)
             la, ra, ra_dil, ra_fix = prof(a)
             lb = prof(b)[0]
             ok = np.isfinite(ra) & np.isfinite(lb)
@@ -215,7 +224,7 @@ def check(font_file: str, locations: dict, pairs: list[str], min_gap: float, sho
             okd = np.isfinite(ra_dil) & np.isfinite(lb)
             need = float(np.max(ra_dil[okd] - lb[okd] - shift)) if okd.any() else -1
             need_fix = float(np.max(ra_fix[okd] - lb[okd] - shift)) if okd.any() else -1
-            results.append((gap, master, text, need, need_fix, names.get(order[a], order[a]), names.get(order[b], order[b])))
+            results.append((gap, master, text, need, need_fix, names.get(order[a], order[a]), names.get(order[b], order[b]), kern))
     return results
 
 
@@ -228,10 +237,9 @@ def main() -> int:
     parser.add_argument("--show", type=int, default=0, help="also print the N tightest pairs")
     parser.add_argument("--text", action="append", default=[], help="check only the pairs in these strings")
     parser.add_argument("--min-gap", type=float, default=MIN_GAP)
-    parser.add_argument("--fix", action="store_true", help="add kerning exceptions to the sources for every collision")
     args = parser.parse_args()
-    problems = run(args.text, args.min_gap, args.show, args.fix)
-    return 1 if problems and not args.fix else 0
+    problems = run(args.text, args.min_gap, args.show)
+    return 1 if problems else 0
 
 
 def pair_set(font_file: str) -> list[str]:
@@ -241,33 +249,31 @@ def pair_set(font_file: str) -> list[str]:
     # alphabet: a collision in 'Tìm' is as much a Vietnamese problem as one
     # in 'Tĩnh'
     checked = sorted(set(added_letters(tt)) | {c for c in VIETNAMESE + VIETNAMESE.upper() if ord(c) in cmap and ord(c) > 0x7F})
-    ctx = sorted(set(CONTEXT) | set(checked))
+    ctx = sorted(c for c in set(CONTEXT) if ord(c) in cmap)
     pairs = set()
     for v in checked:
         for c in ctx:
             pairs.add(v + c)
             pairs.add(c + v)
-    return sorted(pairs)
+    # a lowercase letter is not followed by a capital inside a word
+    return sorted(p for p in pairs if not (p[0].islower() and p[1].isupper()))
 
 
-def run(texts=(), min_gap=MIN_GAP, show=0, fix=False, quiet=False, families=("upright", "italic")) -> list[str]:
-    """Check (and with fix=True, kern) the given families; returns the collisions."""
+def run(texts=(), min_gap=MIN_GAP, show=0, quiet=False, families=("upright", "italic"), between=True) -> list[str]:
+    """Check the given families at the masters (and the instances between
+    them); returns the collisions."""
     problems = []
-    fixes = {}
     for key, (font_file, masters) in (("upright", UPRIGHT), ("italic", ITALIC)):
         if key not in families:
             continue
         locations = dict(masters)
-        if font_file == UPRIGHT[0]:
-            locations.update(EXTRA)
+        if between:
+            locations.update(BETWEEN)
         pairs = sorted({p for t in texts for p in kerning_pairs(t)}) if texts else pair_set(font_file)
-        results = check(font_file, locations, pairs, min_gap)
-        results.sort()
-        for gap, master, text, need, need_fix, ga, gb in results:
+        results = sorted(check(font_file, locations, pairs, min_gap))
+        for gap, master, text, need, *_ in results:
             if need > 0.5:
-                problems.append(f"{master:20s} {text!r:8s} {ga} {gb}: gap {gap:.0f}, kern +{math.ceil(need)} to reach {min_gap:g}")
-            if need_fix > 0.5 and master in masters:
-                fixes.setdefault(master, {})[(ga, gb)] = math.ceil(need_fix)
+                problems.append(f"{key:7s} {master:20s} {text!r:8s}: gap {gap:.0f}, kern +{math.ceil(need)} to reach {min_gap:g}")
         if show and not quiet:
             print(f"-- {font_file}: tightest pairs")
             for gap, master, text, *_ in results[:show]:
@@ -276,40 +282,8 @@ def run(texts=(), min_gap=MIN_GAP, show=0, fix=False, quiet=False, families=("up
         for line in problems:
             print("COLLIDE " + line)
         print(f"{len(problems)} colliding pair(s) (minimum gap {min_gap:g})")
-    if fix and fixes:
-        write_fixes(fixes)
     return problems
 
-
-def write_fixes(fixes):
-    """Open each pair by `need` in its master, as a glyph-pair exception. Every
-    master of the family gets the exception (at the value its groups give
-    when it needs no fix), so the pair interpolates between defined values."""
-    italic = {"CondensedItalic", "CondensedBoldItalic", "Italic", "BoldItalic"}
-    fonts = {p.stem.replace("TiloSans-", ""): ufoLib2.Font.open(p) for p in SOURCES.glob("TiloSans-*.ufo")}
-    groups = {}
-    for m, f in fonts.items():
-        k1 = {g: n for n, ms in f.groups.items() if n.startswith("public.kern1.") for g in ms}
-        k2 = {g: n for n, ms in f.groups.items() if n.startswith("public.kern2.") for g in ms}
-        groups[m] = (k1, k2)
-
-    def value(m, a, b):
-        k1, k2 = groups[m]
-        for key in ((a, b), (a, k2.get(b, b)), (k1.get(a, a), b), (k1.get(a, a), k2.get(b, b))):
-            if key in fonts[m].kerning:
-                return fonts[m].kerning[key]
-        return 0
-
-    for master, pairs in fixes.items():
-        family = [m for m in fonts if (m in italic) == (master in italic)]
-        for (a, b), need in pairs.items():
-            for m in family:
-                if (a, b) not in fonts[m].kerning:
-                    fonts[m].kerning[(a, b)] = value(m, a, b)
-            fonts[master].kerning[(a, b)] += need
-    for f in fonts.values():
-        f.save()
-    print(f"kerning exceptions written for {sum(len(p) for p in fixes.values())} pair(s); rebuild and check again")
 
 if __name__ == "__main__":
     sys.exit(main())

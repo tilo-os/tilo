@@ -36,10 +36,11 @@ Two optical checks follow (skipped with --fast):
 
 * scripts/components.py, on the sources: the parts of every accented glyph
   keep their distance (a tone clear of the breve under it, a capital accent
-  clear of its letter) in every master;
+  clear of its letter) in every master and between them, the stacked tones
+  lean like the master's own, and no stack rises above 1030;
 * scripts/pairs.py, on the compiled fonts: no two neighbouring letters
   collide once kerned (a tone mark against an ascender, a horn against the
-  next letter, ĩ against T). `pairs.py --fix` writes the kerning that opens
+  next letter, ĩ against T). `scripts/kerning.py` writes the kerning that opens
   them. The fonts are written either way, so a failing pair can be looked at.
 """
 
@@ -403,8 +404,8 @@ def main() -> int:
         for line in problems:
             print(f"error   [clearance] {line}", file=sys.stderr)
         if problems:
-            print(f"error   [clearance] {len(problems)} accent(s) too close to their letter or mark;"
-                  " see scripts/components.py", file=sys.stderr)
+            print(f"error   [clearance] {len(problems)} accent problem(s) (too close, a stacked tone"
+                  " leaning wrong, a stack too tall); see scripts/components.py", file=sys.stderr)
             failed = True
     for key in chosen:
         family = FAMILIES[key]
@@ -438,7 +439,7 @@ def main() -> int:
         for line in collisions:
             print(f"error   [pairs] {line}", file=sys.stderr)
         if collisions:
-            print(f"error   [pairs] {len(collisions)} colliding pair(s); `uv run scripts/pairs.py --fix` kerns them",
+            print(f"error   [pairs] {len(collisions)} colliding pair(s); `uv run scripts/kerning.py` kerns them",
                   file=sys.stderr)
             failed = True
     return 1 if failed else 0

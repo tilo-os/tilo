@@ -1204,6 +1204,8 @@
     <string>tildecomb.case.glif</string>
     <key>tildecomb.narrow</key>
     <string>tildecomb.narrow.glif</string>
+    <key>tildecomb.narrow.case</key>
+    <string>tildecomb.narrow.case.glif</string>
     <key>trademark</key>
     <string>trademark.glif</string>
     <key>two</key>

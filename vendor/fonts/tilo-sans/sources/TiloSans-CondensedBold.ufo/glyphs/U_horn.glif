@@ -1,6 +1,6 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <glyph name="Uhorn" format="2">
-  <advance width="595"/>
+  <advance width="609"/>
   <unicode hex="01AF"/>
   <anchor x="249" y="0" name="bottom"/>
   <anchor x="249" y="720" name="top"/>

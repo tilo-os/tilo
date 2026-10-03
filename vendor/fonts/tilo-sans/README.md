@@ -35,8 +35,10 @@ vendor/fonts/tilo-sans/
   build.py                 compile sources/ -> fonts/ (variable TTFs)
   proof.py                 render proofs with headless Chromium -> proofs/
   scripts/measure.py       metrics, stems, overshoots, sidebearings per master
-  scripts/components.py    clearance between an accented glyph's parts, per master
-  scripts/pairs.py         neighbouring letters colliding after kerning; --fix kerns them
+  scripts/vietnamese.py    draws the Vietnamese marks, stacks and horns from a table of design values
+  scripts/kerning.py       generates the Vietnamese kerning (groups), rebuilds and checks
+  scripts/components.py    clearance between an accented glyph's parts, tone angles, stack heights
+  scripts/pairs.py         neighbouring letters colliding after kerning
   scripts/inkgeom.py       glyph ink as polygons (shared by the two checks)
   scripts/verify_upstream.py   every upstream glyph unchanged?
   scripts/import_upstream.py   how sources/ was made from upstream (do not rerun)
@@ -75,8 +77,10 @@ uv run vendor/fonts/tilo-sans/proof.py --set vietnamese --italic
 uv run vendor/fonts/tilo-sans/proof.py --set latin --fallback instrument           # regression vs upstream
 
 uv run vendor/fonts/tilo-sans/scripts/measure.py [--glyphs n o A-cy]
+uv run vendor/fonts/tilo-sans/scripts/vietnamese.py            # redraw the Vietnamese marks and stacks
+uv run vendor/fonts/tilo-sans/scripts/kerning.py [--reset]      # regenerate the Vietnamese kerning
 uv run vendor/fonts/tilo-sans/scripts/components.py [--all] [--glyphs Abreveacute]
-uv run vendor/fonts/tilo-sans/scripts/pairs.py [--show 40] [--text "đĩa Tĩnh"] [--fix]
+uv run vendor/fonts/tilo-sans/scripts/pairs.py [--show 40] [--text "đĩa Tĩnh"]
 uv run vendor/fonts/tilo-sans/scripts/verify_upstream.py
 ```
 
@@ -139,8 +143,8 @@ masters.
 UPM 1000. Identical in every master: x-height 510, cap height 720, ascender 740
 (`b d l` tops sit at 720, `d`'s top anchor at 740), descender −205, overshoot 10 above
 and below for round shapes (o, O), italic angle 13° (UFO `italicAngle` −13).
-Line metrics: typo/hhea ascender 970, descender −250, line gap 0, win 1100/350
-(upstream's win ascent is 986; the Vietnamese capital stacks need more),
+Line metrics: typo/hhea ascender 970, descender −250, line gap 0, win 1026/350
+(upstream's win ascent is 986; it follows the Vietnamese capital stacks),
 `USE_TYPO_METRICS` set.
 
 Stems (font units; italic stems measured across the stroke). From
@@ -212,12 +216,18 @@ them by hand.
 Every precomposed Vietnamese letter (all 134 with `Đ đ`) and the đồng sign `₫`,
 upright and italic, in every master. Upstream already had the letters shared with
 other languages (`à á â ã è é ê ì í ò ó ô õ ù ú ý ỳ ă đ`); the rest are composites
-on these marks, placed by the anchors (`build.py` propagates them):
+on these marks, placed by the anchors (`build.py` propagates them).
+
+The marks, stacks, horns and mark positions are drawn by
+`scripts/vietnamese.py` from Instrument's own marks and letters and a table of
+design values per master (`DESIGN`, `HORN`); it never changes upstream glyphs and
+can be rerun at any time. To change a stack, edit the table, run it, then
+`scripts/kerning.py` and `build.py`.
 
 - **Hook above** (`hookabovecomb`): the top of Instrument's question mark, a flat
-  foot, a round shoulder and a flat-cut terminal on the left, with an open curl
-  in every weight. Its stroke is a little lighter than the acute's, as the
-  question mark's curve is lighter than its stem.
+  foot, a round shoulder and a terminal on the left cut flat below the middle,
+  so the curl stays an open crescent in every weight. Its stroke is a little
+  lighter than the acute's, as the question mark's curve is lighter than its stem.
 - **Dot below** (`dotbelowcomb`): `i`'s square dot; `dotbelowcomb.ss01` is the
   round one ("Round dots"), its top level with the square dot's. `ỵ` puts the dot
   just right of the descender at the same depth (the anchor would put it on the
@@ -225,70 +235,107 @@ on these marks, placed by the anchors (`build.py` propagates them):
 - **Horns** (`ơ ư Ơ Ư`, single outlines): an arm that leaves the right of the
   stem (or the bowl's upper right) below its top, swings right and up and ends
   in a flat cut 40 units above the x-height or cap height; the stem keeps its
-  flat top. The arm carries the stem's weight in every master. The advance grows
-  by one rule in all masters: the horn may hang over the next letter's
-  sidebearing (`n`'s, or `H`'s for capitals) by all but 30 units; kerning opens
-  the pairs where it would still touch (`ư1`, `ưy`, `ƠN`). `horncomb` is `ơ`'s
-  horn alone for decomposed text (within 6% of the drawn letters' ink).
+  flat top. The arm carries the stem's weight in every master. The advance
+  follows one rule in every master (the italics measured unslanted): half way
+  between a horn that overhangs the next letter as far as a flat-topped `n`/`H`
+  allows (24 units clear) and one that clears the crossbar of `t` and the arm of
+  `T`; kerning opens `ợt`, `ỚT` and the like by the rest. Accented horn letters
+  take the horn letter's advance. `horncomb` is `ơ`'s horn alone; `ccmp`
+  composes `o O u U` + U+031B into the drawn letters, so decomposed text gets the
+  same horn and advance from shapers that do not recompose.
 - **Stacked tones** are ligature marks named as in Glyphs
   (`circumflexcomb_acutecomb`, `brevecomb_tildecomb`, …). Acute, grave and hook
-  sit to the right of the circumflex, the tone's foot 40 units below the
-  circumflex's top and 36 from its leg (the side tone is about 125 units tall,
-  shorter than a single acute, and turned 8° towards the vertical, 14–18° in the
-  bold and condensed masters and 6° more in the italic, so it hangs less over
-  the next letter); the ligature's anchor sits right of the circumflex's so the
-  pair is optically centred over the letter. The grave goes right like the
-  others. Noto Sans puts it on the left, where it would run into the ascender of
-  the `th`, `kh`, `đ`, `l` that so often precede `ầ ề ồ`; a native reader should
-  confirm the choice. Every
-  tone sits on top of the breve, the tilde on top of the circumflex, both 41
-  units clear. Over the breve the tones are the short capital forms in both
-  cases, so `ắ` does not tower over the ascenders.
-- **Capital stacks** (`Ấ Ẫ Ắ Ẳ …`) use `.case` marks: `circumflexcomb.case` is the
-  circumflex scaled to 80–86 % with its stroke restored (same construction, flat
-  top, notch), `brevecomb.case` the breve with shorter arms (same bowl and
-  stroke), `acutecomb.case`/`gravecomb.case` shorter tones (108–112 units),
-  `hookabovecomb.case` a smaller hook and `tildecomb.case` a tilde with a lower
-  wave and the stroke kept. They start 44 units above the cap height (single
-  accents on capitals stay upstream's 73). The stacks rise to 1035–1092 units,
-  315–370 above the cap height (Noto Sans: 295–340), which is above Instrument's
-  970 typo/hhea ascender; squeezing them under it costs either the clearance
-  between the marks or their weight.
-  `usWinAscent` is 1100 so Windows does not clip them; line spacing does not
-  change (`USE_TYPO_METRICS` is set; typo and hhea are upstream's).
-- **ĩ Ĩ** use `tildecomb.narrow`, the tilde narrowed to 76 % (80 % condensed)
-  with its stroke kept, so it overhangs the narrow `i` by about 20 units instead
-  of 68; decomposed `i`/`I` + U+0303 get it in `ccmp`.
+  sit to the right of the circumflex, the tone's foot 36 units below the
+  circumflex's top and 34 from its leg. The acute and grave are the master's own
+  `acutecomb`/`gravecomb`, cut shorter from the foot (106–112 units lowercase,
+  88–92 on capitals) so they keep its angle and stroke exactly: sắc and huyền
+  stay as far apart as on a single vowel, in the italics too. They overhang the
+  next letter instead of standing up; kerning opens the few pairs that would
+  touch. The ligature's anchor sits right of the circumflex's, so the pair is
+  centred over the letter. The grave goes right like the others: on the left it
+  would run into the ascender of the `th`, `kh`, `đ`, `l` that so often precede
+  `ầ ề ồ`; a native reader should confirm the choice. Every tone sits on top of
+  the breve, the tilde on top of the circumflex, 34 units clear (32 in the bold
+  masters). Over the breve the tones are the short capital forms in both cases,
+  so `ắ` does not tower over the ascenders, and the hook may move up to 40 units
+  off centre when that lets its stem dip into the breve's cup.
+- **Capital stacks** (`Ấ Ẫ Ắ Ẳ …`) use `.case` marks starting 42 units above the
+  cap height (single accents on capitals stay upstream's 73):
+  `circumflexcomb.case` is drawn like Instrument's circumflex (legs with open
+  corners under a flat top) 124–126 units tall and 86–90 % as wide, with the
+  lowercase leg stroke; the flat top keeps its share of the width and the apex
+  stays at least 80 % of the leg stroke and at most half the mark's height, so
+  the notch reads. `brevecomb.case` is 114 units tall (118 bold) with the arms'
+  width kept and the bowl's bottom thinner (54/64 units), so the counter is
+  46–53 % of the mark's height, not a shallow notch. `acutecomb.case`/
+  `gravecomb.case` are the master's tones 96–100 units tall, `tildecomb.case` a
+  lower wave (86/106 units, the bold stroke at 80 %), `hookabovecomb.case` a
+  smaller hook (132–134 units).
+  The tallest stacks reach 1003 (Regular `Ẫ`), 1008 (Bold `Ắ`), 1026 (Bold and
+  Condensed Bold `Ẫ`) and 1023 (Condensed Bold `Ẳ`); `scripts/components.py`
+  fails any added glyph above 1030. `usWinAscent` follows the tallest ink
+  (`scripts/vietnamese.py` sets it), so Windows does not clip them.
+- **Line spacing and clipping.** typo/hhea stay upstream's (970/−250,
+  `USE_TYPO_METRICS`), so line spacing is Instrument's. At Tilo's default line
+  height (`TextStyle` 1.25, lines 1250 units apart) a capital stack stays clear
+  of a `g` (−215) on the line above in every master; at CSS `normal` (1220) the
+  bold stacks come within the descender by up to about 20 units, and at 1.15
+  they touch. The stacks rise 30–56 units above the 970 ascender, so a box that
+  clips exactly to the line box (a web `overflow: hidden` label at line-height
+  `normal`) trims the top of `Ẫ`'s tilde. Decision for the Tilo toolkit: text is
+  never clipped at its line box. Clip rects come from widget shapes (an input's
+  field, a scroll viewport, a table body), which include their padding; any clip
+  that hugs a single line of text must extend at least 0.06 em above the line
+  box (usWinAscent − hhea ascender) and 0.1 em below it, the way browsers let
+  ink overflow an unclipped line. `crates/sdk/ui-core` follows this today (no
+  per-line clips); new widgets must too.
+- **ĩ Ĩ** use narrow tildes with the stroke kept: `tildecomb.narrow` (76 %,
+  80 % condensed) on `ĩ`, `tildecomb.narrow.case` (60–70 %) on `Ĩ`, which
+  overhangs `I` by 7 units in Regular and 19 in Bold (the full tilde: 40);
+  decomposed `i`/`I` + U+0303 get them in `ccmp`.
 - `i`'s and `i.ss01`'s stray bottom anchors (upstream's, up to 100 units off the
   stem in the italic) are gone; they inherit dotless i's, so `i` + U+0323 draws
   `ị` (verify_upstream reports the changed mark positions on `i`).
 - `₫` is `đ` over a bar below the baseline, as thick as `đ`'s crossbar and spanning
   bowl to stem (Noto Sans' construction); it kerns with `đ`'s groups.
-- `features/vietnamese.fea` (after `ccmp.fea`) ligates decomposed circumflex/breve
-  + tone into the stacked marks (`.case` after `A E O`), and adds the Vietnamese
-  letters to ss01 (round dot below), ss02 (single-storey a) and ss03 (alternate
-  y). `hookabovecomb` is in `@CombiningTopAccents`, so `i j` lose their dot under
-  it. A `lookupflag` inside a feature block carries over into the following
-  lookups: the lookups after the mark-filtered one reset it with `lookupflag 0`.
-- **Kerning**: each letter joins the groups of its closest upstream relative
-  (`ấ` → `â`); the horned letters have their own right-side groups (`KO_ohorn`,
-  `KO_uhorn`, `KO_Ohorn`, `KO_Uhorn`, kerned like `o u O U`). Pairs that would
-  collide carry exceptions written by `scripts/pairs.py --fix`, which also covers
-  Instrument's own accented Vietnamese letters (`Tì`, `đì`, `Íì`).
+- `features/vietnamese.fea` (after `ccmp.fea`) composes decomposed horns, ligates
+  decomposed circumflex/breve + tone into the stacked marks (`.case` after
+  `A E O`), and adds the Vietnamese letters to ss01 (round dot below), ss02
+  (single-storey a) and ss03 (alternate y). `hookabovecomb` is in
+  `@CombiningTopAccents`, so `i j` lose their dot under it. A `lookupflag` inside
+  a feature block carries over into the following lookups: the lookups after
+  the mark-filtered one reset it with `lookupflag 0`.
+- **Kerning** is by group and generated by `scripts/kerning.py`; the hand-made
+  kerning stays Instrument's. Each letter joins the groups of its closest
+  upstream relative (`ấ` → `â`); the horned letters' right-side groups
+  (`KO_ohorn`, `KO_uhorn`, `KO_Ohorn`, `KO_Uhorn`) carry copies of `o u O U`'s
+  pairs. Where a pair still collides, the accented letter's tone variants at the
+  same mark height leave its group together: `KO_a` gives up `KO_a__top`
+  (`á à ả ã ă â …`) and `KO_a__stack` (`ấ ầ ẩ ẫ ắ …`), which inherit every pair
+  of `KO_a` and get, against the neighbour's group, the smallest kern that opens
+  all their members to 24 units. So every tone of a letter spaces alike, and
+  letters get no glyph-to-glyph exceptions: a single-glyph pair appears only
+  where the neighbour is a symbol without a group (`·Đ`, `#Đ`, `ơ·`). Instrument's
+  own exceptions are raised where they govern a colliding pair (`T F K V W f '`
+  + `ì`, so `Tìm` clears; `Y` + `è`); the originals are kept in the font lib and
+  `--reset` restores them. Pairs that cannot occur in Vietnamese (two toned
+  letters, a lowercase letter before a capital) are not kerned.
 
-Two checks keep this from regressing; `build.py` runs both (not with `--fast`):
+Checks; `build.py` runs both (not with `--fast`):
 
-- `scripts/components.py` measures, in the sources, the ink distance between the
-  parts of every accented glyph: a tone or tilde on top of a breve or circumflex
-  ≥ 38, a tone beside the circumflex ≥ 32, an accent above its letter ≥ 30, a dot
-  below ≥ 24. `--all` prints every gap.
-- `scripts/pairs.py` shapes every checked letter (the added ones and every
-  accented Vietnamese letter) next to every neighbour (ASCII, the Vietnamese
-  alphabet in both cases, quotes, dashes) with HarfBuzz, so kerning applies, at
-  all eight masters and SemiBold, and fails on inks closer than 24 units.
-  `--fix` writes the exceptions (to 30 units, so instances between masters stay
-  clear); rebuild and run it again. `--text "…"` checks the pairs of a string,
-  `--show N` lists the tightest.
+- `scripts/components.py`, on the sources: the ink distance between the parts
+  of every accented glyph, in every master and at the instances between them
+  (wght 500/550/600/650 at wdth 75 and 87.5, 500/550/600 at wdth 100): a tone or
+  tilde on top of a breve or circumflex ≥ 30, a tone beside the circumflex ≥ 30,
+  an accent above its letter ≥ 30, a dot below ≥ 24. Also: the stacked acute and
+  grave lean like the master's own within 5°, and no added glyph rises above
+  1030. `--all` prints every gap.
+- `scripts/pairs.py`, on the compiled fonts: every checked letter (the added ones
+  and every accented Vietnamese letter) next to the neighbours it meets in text
+  (ASCII, the untoned Vietnamese letters in both cases, quotes, dashes), shaped
+  with HarfBuzz so kerning applies, at the masters and the same instances
+  between them; fails on inks closer than 16 units. `--text "…"` checks the
+  pairs of a string, `--show N` lists the tightest.
 
 For native review: the grave's side, the dot of `ỵ`, the horn's size and the
 height of the capital stacks.
@@ -317,8 +364,8 @@ height of the capital stacks.
    `languagesystem grek dflt;`), otherwise kerning and `locl` never reach it. Add new
    combining top marks to `@CombiningTopAccents` in `ccmp.fea` so `i`/`j` lose their
    dot under them.
-6. `build.py` (it also checks accent clearance and colliding pairs; `pairs.py
-   --fix` kerns the collisions), then `proof.py`, then `scripts/verify_upstream.py`
+6. `build.py` (it also checks accent clearance and colliding pairs;
+   `scripts/kerning.py` kerns the collisions), then `proof.py`, then `scripts/verify_upstream.py`
    (must stay clean: a Latin change shows up by glyph name).
 
 Glyph order, production names and GDEF classes for new glyphs are filled in by

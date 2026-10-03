@@ -1,13 +1,13 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <glyph name="circumflexcomb_acutecomb.case" format="2">
-  <anchor x="306" y="510" name="_top"/>
-  <anchor x="306" y="765" name="top"/>
+  <anchor x="317" y="510" name="_top"/>
+  <anchor x="317" y="732" name="top"/>
   <outline>
     <contour>
-      <point x="450" y="657" type="line"/>
-      <point x="535" y="765" type="line"/>
-      <point x="424" y="765" type="line"/>
-      <point x="368" y="657" type="line"/>
+      <point x="463" y="640" type="line"/>
+      <point x="556" y="732" type="line"/>
+      <point x="433" y="732" type="line"/>
+      <point x="367" y="640" type="line"/>
     </contour>
     <component base="circumflexcomb.case"/>
   </outline>

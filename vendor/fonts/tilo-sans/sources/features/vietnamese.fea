@@ -10,6 +10,15 @@
     brevecomb_acutecomb.case brevecomb_gravecomb.case brevecomb_hookabovecomb.case brevecomb_tildecomb.case];
 
 feature ccmp {
+    # o O u U + combining horn: the drawn letters, so decomposed text a shaper
+    # does not recompose gets the same horn and the same advance.
+    lookup vietnamese_horn {
+        sub o horncomb by ohorn;
+        sub O horncomb by Ohorn;
+        sub u horncomb by uhorn;
+        sub U horncomb by Uhorn;
+    } vietnamese_horn;
+
     # A tone after a circumflex or breve: the Vietnamese stacked form (tone beside
     # the circumflex, on top of the breve). Precomposed letters already use them;
     # this catches decomposed (NFD) input that a shaper does not recompose.
@@ -34,7 +43,8 @@ feature ccmp {
     # follow; these two must see every mark, so they reset it.
     lookup vietnamese_narrow_tilde {
         lookupflag 0;
-        sub [idotless I] tildecomb' by tildecomb.narrow;
+        sub idotless tildecomb' by tildecomb.narrow;
+        sub I tildecomb' by tildecomb.narrow.case;
     } vietnamese_narrow_tilde;
 
     # y + dot below: the dot sits beside the descender, not on it.
