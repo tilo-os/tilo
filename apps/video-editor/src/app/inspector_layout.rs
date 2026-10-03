@@ -183,20 +183,25 @@ impl VideoEditorApp {
         // descenders sat on the preset row's top border.
         l.project_format_y = *y;
         *y += 24.0;
-        let seg_w = (x1 - x0) / FRAME_PRESETS.len() as f64;
-        for (i, (_, w, h)) in FRAME_PRESETS.iter().enumerate() {
-            let sx0 = x0 + i as f64 * seg_w;
-            l.project_frames
-                .push(((*w, *h), Rect::new(sx0, *y, sx0 + seg_w, *y + 24.0)));
+        let labels: Vec<String> = FRAME_PRESETS
+            .iter()
+            .map(|(n, _, _)| (*n).to_string())
+            .collect();
+        for ((_, w, h), rect) in FRAME_PRESETS
+            .iter()
+            .zip(self.segment_rects(&labels, x0, x1, *y, 24.0))
+        {
+            l.project_frames.push(((*w, *h), rect));
         }
         *y += 32.0;
         l.project_rate_y = *y;
         *y += 20.0;
-        let rate_w = (x1 - x0) / RATE_PRESETS.len() as f64;
-        for (i, rate) in RATE_PRESETS.iter().enumerate() {
-            let sx0 = x0 + i as f64 * rate_w;
-            l.project_rates
-                .push((*rate, Rect::new(sx0, *y, sx0 + rate_w, *y + 24.0)));
+        let labels: Vec<String> = RATE_PRESETS.iter().map(|r| rate_words(*r)).collect();
+        for (rate, rect) in RATE_PRESETS
+            .iter()
+            .zip(self.segment_rects(&labels, x0, x1, *y, 24.0))
+        {
+            l.project_rates.push((*rate, rect));
         }
         *y += 32.0;
         // Offered only when there is a source to copy a shape from, and only
@@ -267,6 +272,53 @@ impl VideoEditorApp {
         (key, up, down, slider, remove)
     }
 
+    /// One segmented row across `x0..x1`, `h` tall at `y`, in the panel's
+    /// logical pixels: each segment as wide as its label needs and the room
+    /// left over shared equally, so "Dissolve" or "1080p" is never elided
+    /// beside a two-letter neighbour. Equal segments when the labels cannot
+    /// be measured yet, or would not all fit whole.
+    pub(super) fn segment_rects(
+        &self,
+        labels: &[String],
+        x0: f64,
+        x1: f64,
+        y: f64,
+        h: f64,
+    ) -> Vec<Rect> {
+        let n = labels.len().max(1) as f64;
+        let avail = (x1 - x0).max(0.0);
+        let scale = self.inspector_ui_scale();
+        let needed: Option<Vec<f64>> = self.with_dialog_layout(|_, tr, theme| {
+            labels
+                .iter()
+                .map(|label| {
+                    ui::widget::SegmentedFace::intrinsic_width(
+                        &[label.as_str()],
+                        ControlSize::Small,
+                        tr,
+                        theme,
+                    ) / scale
+                })
+                .collect()
+        });
+        let widths: Vec<f64> = match needed {
+            Some(needed) if needed.iter().sum::<f64>() <= avail => {
+                let spare = (avail - needed.iter().sum::<f64>()) / n;
+                needed.iter().map(|w| w + spare).collect()
+            }
+            _ => vec![avail / n; labels.len()],
+        };
+        let mut x = x0;
+        widths
+            .into_iter()
+            .map(|w| {
+                let rect = Rect::new(x, y, x + w, y + h);
+                x += w;
+                rect
+            })
+            .collect()
+    }
+
     /// The maximum inspector scroll offset for the current selection.
     /// `content_height` is scroll-independent (the scroll is a pure translation),
     /// so the current layout's extent is the intrinsic content height.
@@ -320,21 +372,19 @@ impl VideoEditorApp {
         let is_title = media.is_some_and(|item| item.text.is_some());
         let x0 = r.inspector.x0 + PAD;
         let x1 = r.inspector.x1 - PAD;
-        // Static header + four property rows consume a fixed block; the
-        // editable controls start below it. Everything scrolls together by
-        // `inspector_scroll` (the pane clips + is wheel-scrollable) so the
-        // effects stack can grow without clipping the actions.
+        // The fixed header (name, lane and the clip's facts) is measured by
+        // `inspector_header`; the editable controls start below it, and
+        // everything here scrolls together by `inspector_scroll` (the pane
+        // clips + is wheel-scrollable) so the effects stack can grow without
+        // clipping the actions.
         let top = body_origin - self.inspector_scroll / scale;
-        // The four property rows end on a baseline at `top + 132`; a 12px
-        // line reaches ~15px past it, so the first control label cannot start
-        // before `top + 147` without sitting on top of "Source Out".
         let mut y = top;
-        let row = 34.0; // label sits at y, the 9px track at y+19
-        let track_at = |y: f64| Rect::new(x0, y + 19.0, x1, y + 28.0);
+        let row = 40.0; // the label line at y, the 8px track under it with room for the knob
+        let track_at = |y: f64| Rect::new(x0, y + 25.0, x1, y + 33.0);
         // An animatable row indents its label past a key control at the head.
         // The indent is unconditional so the row does not shuffle sideways the
         // moment a parameter is keyed.
-        let key_at = |y: f64| Rect::new(x0, y - 3.0, x0 + KEY_BOX, y + 15.0);
+        let key_at = |y: f64| Rect::new(x0, y, x0 + KEY_BOX, y + 18.0);
 
         if is_video {
             l.opacity = Some(track_at(y));
@@ -356,30 +406,34 @@ impl VideoEditorApp {
         }
         // Fade in / out share a row (two half-width tracks).
         let half = (x1 - x0) / 2.0 - 6.0;
-        l.fade_in = Some(Rect::new(x0, y + 19.0, x0 + half, y + 28.0));
-        l.fade_out = Some(Rect::new(x1 - half, y + 19.0, x1, y + 28.0));
-        // The transition caption sits at `transition_y - 20`, five pixels
-        // higher relative to its row than a slider label does to its track,
-        // so it needs that much more advance to keep the clearance every
-        // other caption has over the knobs above it. At `+ 2` it touched them.
-        y += row + 4.0;
+        l.fade_in = Some(Rect::new(x0, y + 25.0, x0 + half, y + 33.0));
+        l.fade_out = Some(Rect::new(x1 - half, y + 25.0, x1, y + 33.0));
+        // A captioned control row takes a slider row's geometry: its control
+        // where a track would be, its caption where a label would be, so the
+        // caption keeps the clearance every label has over the knobs above.
+        y += row;
 
         // Transition segmented control.
-        let seg_w = (x1 - x0) / Transition::ALL.len() as f64;
-        l.transition_y = y + 15.0;
-        for (i, t) in Transition::ALL.iter().enumerate() {
-            let sx0 = x0 + i as f64 * seg_w;
-            l.transitions
-                .push((*t, Rect::new(sx0, y + 15.0, sx0 + seg_w, y + 37.0)));
+        l.transition_y = y + 25.0;
+        let labels: Vec<String> = Transition::ALL
+            .iter()
+            .map(|t| t.label().to_string())
+            .collect();
+        for (t, rect) in
+            Transition::ALL
+                .iter()
+                .zip(self.segment_rects(&labels, x0, x1, y + 25.0, 24.0))
+        {
+            l.transitions.push((*t, rect));
         }
-        y += 48.0;
+        y += 56.0;
         // Transition length, only when there is a transition to size.
         if clip.transition != Transition::None {
-            l.transition_len = Some(Rect::new(x0, y + 19.0, x1, y + 28.0));
+            l.transition_len = Some(Rect::new(x0, y + 25.0, x1, y + 33.0));
             y += row;
         }
         // Label color swatches.
-        l.colors_y = y + 15.0;
+        l.colors_y = y + 25.0;
         let sw = 24.0;
         for i in 0..7u8 {
             let sx0 = x0 + f64::from(i) * (sw + 4.0);
@@ -387,9 +441,9 @@ impl VideoEditorApp {
                 break;
             }
             l.colors
-                .push((i, Rect::new(sx0, y + 15.0, sx0 + sw, y + 15.0 + sw)));
+                .push((i, Rect::new(sx0, y + 25.0, sx0 + sw, y + 25.0 + sw)));
         }
-        y += 44.0;
+        y += 56.0;
         // The link control. It sits in the top block, with the clip's own
         // identity rather than down among the picture sections, because it
         // says what this clip *is* — half of a shot, or a clip on its own —
@@ -411,11 +465,15 @@ impl VideoEditorApp {
         // Tone curves, video only — it is the same grade the three sliders
         // above start, so it sits directly under them.
         if is_video && header(&mut l, &mut y, Section::Curves) {
-            let cw = (x1 - x0) / crate::curve::Channel::ALL.len() as f64;
-            for (i, ch) in crate::curve::Channel::ALL.iter().enumerate() {
-                let cx = x0 + i as f64 * cw;
-                l.curve_channels
-                    .push((*ch, Rect::new(cx, y, cx + cw, y + 24.0)));
+            let labels: Vec<String> = crate::curve::Channel::ALL
+                .iter()
+                .map(|c| c.label().to_string())
+                .collect();
+            for (ch, rect) in crate::curve::Channel::ALL
+                .iter()
+                .zip(self.segment_rects(&labels, x0, x1, y, 24.0))
+            {
+                l.curve_channels.push((*ch, rect));
             }
             y += 32.0;
             // Square, so the diagonal that means "unchanged" really is a
@@ -460,9 +518,9 @@ impl VideoEditorApp {
                 [NumField::CropTop, NumField::CropBottom],
             ] {
                 l.nums
-                    .push((pair[0], Rect::new(x0, y + 19.0, x0 + half, y + 28.0)));
+                    .push((pair[0], Rect::new(x0, y + 25.0, x0 + half, y + 33.0)));
                 l.nums
-                    .push((pair[1], Rect::new(x1 - half, y + 19.0, x1, y + 28.0)));
+                    .push((pair[1], Rect::new(x1 - half, y + 25.0, x1, y + 33.0)));
                 y += row;
             }
             // Anchor: the point scale and rotation turn about. Nine presets
@@ -510,11 +568,12 @@ impl VideoEditorApp {
         if header(&mut l, &mut y, Section::Speed) {
             l.nums.push((NumField::Speed, track_at(y)));
             y += row;
-            let pw = (x1 - x0) / SPEED_PRESETS.len() as f64;
-            for (i, rate) in SPEED_PRESETS.iter().enumerate() {
-                let px0 = x0 + i as f64 * pw;
-                l.speed_presets
-                    .push((*rate, Rect::new(px0, y, px0 + pw, y + 24.0)));
+            let labels: Vec<String> = SPEED_PRESETS.iter().map(|r| speed_words(*r)).collect();
+            for (rate, rect) in SPEED_PRESETS
+                .iter()
+                .zip(self.segment_rects(&labels, x0, x1, y, 24.0))
+            {
+                l.speed_presets.push((*rate, rect));
             }
             y += 32.0;
             l.reverse = Some(Rect::new(x0, y, x1, y + 26.0));
@@ -597,11 +656,15 @@ impl VideoEditorApp {
         if is_video {
             let open = header(&mut l, &mut y, Section::Mask);
             if open {
-                let mw = (x1 - x0) / crate::model::MaskShape::ALL.len() as f64;
-                for (i, s) in crate::model::MaskShape::ALL.iter().enumerate() {
-                    let sx = x0 + i as f64 * mw;
-                    l.mask_shapes
-                        .push((*s, Rect::new(sx, y, sx + mw, y + 24.0)));
+                let labels: Vec<String> = crate::model::MaskShape::ALL
+                    .iter()
+                    .map(|s| s.label().to_string())
+                    .collect();
+                for (shape, rect) in crate::model::MaskShape::ALL
+                    .iter()
+                    .zip(self.segment_rects(&labels, x0, x1, y, 24.0))
+                {
+                    l.mask_shapes.push((*shape, rect));
                 }
                 y += 32.0;
                 if clip.mask.is_active() {
@@ -637,11 +700,15 @@ impl VideoEditorApp {
             y += 92.0;
             l.nums.push((NumField::TitleSize, track_at(y)));
             y += row;
-            let aw = (x1 - x0) / TextAlign::ALL.len() as f64;
-            for (i, a) in TextAlign::ALL.iter().enumerate() {
-                let ax = x0 + i as f64 * aw;
-                l.title_align
-                    .push((*a, Rect::new(ax, y, ax + aw, y + 24.0)));
+            let labels: Vec<String> = TextAlign::ALL
+                .iter()
+                .map(|a| a.label().to_string())
+                .collect();
+            for (a, rect) in TextAlign::ALL
+                .iter()
+                .zip(self.segment_rects(&labels, x0, x1, y, 24.0))
+            {
+                l.title_align.push((*a, rect));
             }
             // The caption above the chooser needs its own line: at the
             // ordinary 16px gap it landed on the alignment row's buttons.

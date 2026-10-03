@@ -1970,7 +1970,7 @@ pub fn live_playhead_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
     let mut playhead = Resource::new(
         "video.playhead",
         "video.playhead",
-        format!("Playhead · {at:.2}s"),
+        format!("Playhead at {at:.2}s"),
     );
 
     let mut marked = p.clone();
