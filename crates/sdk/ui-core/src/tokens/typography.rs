@@ -9,7 +9,7 @@
 //! the theme's UI and text scale ([`TextScaling::Resolved`]), so the renderer
 //! paints it exactly once at that size.
 
-use crate::text_render::{FontChoice, NumericStyle, TextScaling, TextStyle, TextWeight};
+use crate::text_render::{FontChoice, TextKind, TextScaling, TextStyle, TextWeight};
 
 /// The body size, in logical pixels at 1×, that every role is designed
 /// against. Role sizes are `body × role_px / REFERENCE_BODY_PX`, so they land
@@ -180,6 +180,49 @@ impl FontFamily {
     }
 }
 
+/// A UI face the system ships, chosen by name in a theme's type role or by
+/// the accessibility layer. Reading and code keep their own faces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum UiFace {
+    /// The system UI face.
+    #[default]
+    Default,
+    /// Atkinson Hyperlegible Next: letterforms designed to be told apart
+    /// at low vision, with the same matched script fallbacks.
+    Hyperlegible,
+}
+
+impl UiFace {
+    pub const ALL: [Self; 2] = [Self::Default, Self::Hyperlegible];
+
+    /// The name a theme document stores and the type section shows.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Default => "Default",
+            Self::Hyperlegible => "Hyperlegible",
+        }
+    }
+
+    /// The font family the face is set in.
+    #[must_use]
+    pub const fn family(self) -> &'static str {
+        match self {
+            Self::Default => crate::text_render::UI_SANS_FAMILY,
+            Self::Hyperlegible => crate::text_render::UI_HYPERLEGIBLE_FAMILY,
+        }
+    }
+
+    /// The face a theme document names, by face name or family name.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        let name = name.trim();
+        Self::ALL.into_iter().find(|face| {
+            face.name().eq_ignore_ascii_case(name) || face.family().eq_ignore_ascii_case(name)
+        })
+    }
+}
+
 /// A theme's type: three families and the scale every role derives from.
 #[derive(Clone, Debug)]
 pub struct Typography {
@@ -208,6 +251,28 @@ pub(crate) fn stock() -> &'static Typography {
 }
 
 impl Typography {
+    /// Set the UI face from a theme document's type role: a built-in face
+    /// by name ([`UiFace::name`]) or any installed family by its name.
+    pub fn set_face(&mut self, face: &str) {
+        self.sans_family = UiFace::from_name(face)
+            .map_or_else(|| face.trim().to_owned(), |face| face.family().to_owned());
+    }
+
+    /// This typography with the UI face `face` ([`Self::set_face`]).
+    #[must_use]
+    pub fn with_face(mut self, face: &str) -> Self {
+        self.set_face(face);
+        self
+    }
+
+    /// The UI face as a theme document names it: a built-in face's name, or
+    /// the family name of any other face.
+    #[must_use]
+    pub fn face_name(&self) -> String {
+        UiFace::from_name(&self.sans_family)
+            .map_or_else(|| self.sans_family.clone(), |face| face.name().to_owned())
+    }
+
     /// Set the 1× body size every role derives from. Theme authors call this
     /// on a fresh theme, before the text or UI scale is applied.
     #[must_use]
@@ -269,11 +334,11 @@ impl TextStyle {
         self
     }
 
-    /// Tabular lining figures, so digits in a column or a changing readout
-    /// line up.
+    /// Numbers that line up in a column or change in place
+    /// ([`TextKind::Numeric`]): tabular figures where the face has them.
     #[must_use]
     pub fn numeric(self) -> Self {
-        self.with_numeric_style(NumericStyle::TabularLining)
+        self.with_kind(TextKind::Numeric)
     }
 
     /// This style's face, weight and leading at exactly `px`, as content
@@ -408,6 +473,49 @@ mod tests {
                 "{role:?}"
             );
         }
+    }
+
+    #[test]
+    fn built_in_faces_are_chosen_by_name_and_reported_back_by_name() {
+        let mut typography = Typography::default();
+        assert_eq!(typography.face_name(), "Default");
+        typography.set_face("Hyperlegible");
+        assert_eq!(
+            typography.sans_family,
+            crate::text_render::UI_HYPERLEGIBLE_FAMILY
+        );
+        assert_eq!(typography.face_name(), "Hyperlegible");
+        assert_eq!(
+            typography.style(TextRole::Body).family,
+            FontChoice::Named(crate::text_render::UI_HYPERLEGIBLE_FAMILY.into())
+        );
+        // Reading and code keep their own faces.
+        assert_eq!(
+            typography.style(TextRole::Reading).family,
+            FontChoice::Named(crate::text_render::UI_SERIF_FAMILY.into())
+        );
+        typography.set_face(" Inter ");
+        assert_eq!(typography.sans_family, "Inter");
+        assert_eq!(typography.face_name(), "Inter");
+        assert_eq!(
+            UiFace::from_name("atkinson hyperlegible next"),
+            Some(UiFace::Hyperlegible)
+        );
+        let mut document = crate::theme::Preset::Dark.document();
+        document.type_.face = "Hyperlegible".into();
+        let spec_theme = Theme::from_document(&document).unwrap();
+        assert_eq!(spec_theme.tokens.typography.face_name(), "Hyperlegible");
+    }
+
+    #[test]
+    fn numeric_is_a_kind_not_a_feature_list() {
+        let style = Typography::default().style(TextRole::Caption).numeric();
+        assert_eq!(style.kind, TextKind::Numeric);
+        assert!(style.font_features.is_empty());
+        let code = Typography::default()
+            .style(TextRole::Body)
+            .with_kind(TextKind::Code);
+        assert_eq!(code.family, FontChoice::Monospace);
     }
 
     #[test]
