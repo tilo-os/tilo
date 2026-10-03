@@ -3187,6 +3187,12 @@ jobs:
           series="$(bash os/dev/dev-image-cohort.sh "$series")"
           jobs="$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs"
           started=$(date +%s)
+          # The boards follow the lane's final result. A failed lane can be run
+          # again (run 59259's was, two minutes after an infrastructure
+          # failure); its job then returns to waiting. So a failed lane ends
+          # the wait only once it has stayed failed for RETRY_WINDOW seconds.
+          RETRY_WINDOW=600
+          ended_at=0
           while :; do
             missing=0
             for board in $(jq -r '.[]' <<< "$BOARDS"); do
@@ -3197,9 +3203,16 @@ jobs:
             lane="$(curl -fsS -H "Authorization: token $TOKEN" "$jobs" 2>/dev/null \
               | jq -r '[.[] | select(.name | startswith("build-and-push (aarch64"))] | last | .status // empty' || true)"
             case "$lane" in
-              success|failure|cancelled|skipped)
+              success|skipped)
                 echo "::warning::the aarch64 dev lane ended $lane with $missing board image(s) unpublished"
                 break ;;
+              failure|cancelled)
+                (( ended_at > 0 )) || ended_at=$(date +%s)
+                if (( $(date +%s) - ended_at >= RETRY_WINDOW )); then
+                  echo "::warning::the aarch64 dev lane ended $lane and was not run again; $missing board image(s) unpublished"
+                  break
+                fi ;;
+              *) ended_at=0 ;;
             esac
             sleep 20
           done
