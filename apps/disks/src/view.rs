@@ -17,8 +17,8 @@ use ui::widget::Widget;
 use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    Badge, Button, ButtonRole, ChipStyle, Element, EmptyState, NavItem, NavList, NavSection,
-    ProgressBar, Property, PropertyList, Row, Scrollable, Section, SegmentedStyle, Spacer,
+    Button, ButtonRole, Chip, ChipStyle, Element, EmptyState, ListRow, NavItem, NavList,
+    NavSection, Property, PropertyList, Row, Scrollable, Section, SegmentedStyle, Spacer,
     StatGroup, StatTile, Text, ToggleGroup, Tone,
 };
 
@@ -194,16 +194,21 @@ fn status_tone(status: SmartStatus) -> Tone {
     }
 }
 
+/// The drive's state at a glance: its health when it reports any, what kind
+/// of device it is, and whether it can be pulled out.
 fn badges(drive: &Drive) -> Row {
     let status = drive.smart_status();
-    let mut row = Row::new().push(Box::new(
-        Badge::text(status.label()).style(ChipStyle::Tinted(status_tone(status))),
-    ));
-    row = row.push(Box::new(
-        Badge::text(drive.kind.tag()).style(ChipStyle::Neutral),
-    ));
+    let mut row = Row::new();
+    // A device that reports nothing has no health to show; the Health tab
+    // says why.
+    if status != SmartStatus::Unknown {
+        row = row.push(Box::new(
+            Chip::new(status.label()).style(ChipStyle::Tinted(status_tone(status))),
+        ));
+    }
+    row = row.push(Box::new(Chip::new(drive.kind.tag())));
     if drive.removable {
-        row = row.push(Box::new(Badge::text("Removable").style(ChipStyle::Neutral)));
+        row = row.push(Box::new(Chip::new("Removable")));
     }
     row
 }
@@ -276,6 +281,7 @@ fn overview(model: &DetailModel<'_>, intents: &Intents) -> Element {
             device: part.name.clone(),
             label: format!("{} {}", part.display_label(), bytes_si(part.size)),
             size: part.size,
+            used: part.used_frac(),
         })
         .collect();
     if drive.free_tail() > 0 {
@@ -284,6 +290,7 @@ fn overview(model: &DetailModel<'_>, intents: &Intents) -> Element {
             device: String::new(),
             label: format!("Unallocated {}", bytes_si(drive.free_tail())),
             size: drive.free_tail(),
+            used: None,
         });
     }
     let pick = intents.clone();
@@ -299,7 +306,7 @@ fn overview(model: &DetailModel<'_>, intents: &Intents) -> Element {
         vec![Box::new(map)],
     )));
     page = page.push(group_gap());
-    page = page.push(Box::new(filesystems(drive, model.partition)));
+    page = page.push(Box::new(filesystems(drive, model.partition, intents)));
     page = page.push(group_gap());
     page = page.push(Box::new(Section::titled(
         "Details",
@@ -308,75 +315,53 @@ fn overview(model: &DetailModel<'_>, intents: &Intents) -> Element {
     Box::new(page)
 }
 
-fn filesystems(drive: &Drive, selected: Option<usize>) -> Section {
-    let mounted: Vec<(usize, &Partition)> = drive
+fn filesystems(drive: &Drive, selected: Option<usize>, intents: &Intents) -> Section {
+    let mut items: Vec<Element> = drive
         .partitions
         .iter()
         .enumerate()
         .filter(|(_, part)| part.mountpoint.is_some())
+        .map(|(index, part)| -> Element {
+            Box::new(filesystem(index, part, selected == Some(index), intents))
+        })
         .collect();
-    let mut items: Vec<Element> = Vec::new();
-    if mounted.is_empty() {
+    if items.is_empty() {
         items.push(Box::new(
             Text::new("No filesystems are mounted.")
                 .with_role(TextRole::Body)
                 .dimmed(),
         ));
     }
-    for (n, (index, part)) in mounted.into_iter().enumerate() {
-        if n > 0 {
-            items.push(group_gap());
-        }
-        items.push(Box::new(filesystem(part, selected == Some(index))));
-    }
     Section::titled("Filesystems", items)
 }
 
-fn filesystem(part: &Partition, selected: bool) -> ui::widget::Column {
-    let title = Text::new(&part.display_label()).with_role(TextRole::Label);
-    let title = if selected { title.strong() } else { title };
-    let mount = part.mount_display().unwrap_or_default();
-    let used = part.used_frac().unwrap_or(0.0);
-    let usage = match part.used {
-        Some(used) => format!(
-            "{} used of {}, {} free",
-            bytes_si(used),
-            bytes_si(part.size),
-            bytes_si(part.size.saturating_sub(used)),
-        ),
-        None => bytes_si(part.size),
+/// Share of a filesystem in use above which it needs attention.
+const NEARLY_FULL: f64 = 0.9;
+/// Share above which there is hardly any room left.
+const FULL: f64 = 0.97;
+
+/// A mounted filesystem: what it is, where it is, and how much room is left.
+fn filesystem(index: usize, part: &Partition, selected: bool, intents: &Intents) -> ListRow {
+    let pick = intents.clone();
+    let secondary = match (part.mount_display(), &part.fstype) {
+        (Some(mount), _) if mount == "Swap" => "Swap space".to_owned(),
+        (Some(mount), Some(fstype)) if !fstype.is_empty() => format!("{fstype} at {mount}"),
+        (Some(mount), _) => format!("At {mount}"),
+        (None, _) => String::new(),
     };
-    let fs = part.fstype.clone().unwrap_or_default();
-    ui::widget::Column::new()
-        .with_intrinsic_height()
-        .with_no_padding()
-        .push(Box::new(
-            Row::new()
-                .no_wrap()
-                .push(Box::new(title))
-                .push(Box::new(Spacer::new()))
-                .push(Box::new(
-                    Text::new(&mount)
-                        .with_role(TextRole::Caption)
-                        .with_kind(TextKind::Identifier)
-                        .dimmed(),
-                )),
-        ))
-        .push(Box::new(ProgressBar::new(used as f32)))
-        .push(Box::new(
-            Row::new()
-                .no_wrap()
-                .push(Box::new(
-                    Text::new(&usage)
-                        .with_role(TextRole::Caption)
-                        .numeric()
-                        .dimmed(),
-                ))
-                .push(Box::new(Spacer::new()))
-                .push(Box::new(
-                    Text::new(&fs).with_role(TextRole::Caption).dimmed(),
-                )),
-        ))
+    let mut row = ListRow::new(format!("disks-filesystem-{index}"), part.display_label())
+        .icon(Icon::Layers)
+        .secondary(secondary)
+        .selected(selected)
+        .on_activate(move || pick.push(Intent::SelectPartition(Some(index))));
+    if let Some(used) = part.used {
+        row = row.meta(format!("{} free", bytes_si(part.size.saturating_sub(used))));
+    }
+    match part.used_frac() {
+        Some(used) if used >= FULL => row.error(),
+        Some(used) if used >= NEARLY_FULL => row.warning(),
+        _ => row,
+    }
 }
 
 fn interface_name(drive: &Drive) -> String {
@@ -449,6 +434,14 @@ fn health(drive: &Drive) -> Element {
     Box::new(page)
 }
 
+/// A tile that carries a status colour only when its value means something.
+fn tile(tile: StatTile, tone: Tone) -> Element {
+    match tone {
+        Tone::Neutral => Box::new(tile),
+        tone => Box::new(tile.tone(tone)),
+    }
+}
+
 fn smart_tiles(smart: &SmartInfo) -> Vec<Element> {
     let mut tiles: Vec<Element> = Vec::new();
     if let Some(temp) = smart.temp_c {
@@ -459,10 +452,9 @@ fn smart_tiles(smart: &SmartInfo) -> Vec<Element> {
         } else {
             Tone::Neutral
         };
-        tiles.push(Box::new(
-            StatTile::new("Temperature", temp.to_string())
-                .unit("°C")
-                .tone(tone),
+        tiles.push(tile(
+            StatTile::new("Temperature", temp.to_string()).unit("°C"),
+            tone,
         ));
     }
     if let Some(hours) = smart.power_on_hours {
@@ -477,8 +469,9 @@ fn smart_tiles(smart: &SmartInfo) -> Vec<Element> {
         } else {
             Tone::Neutral
         };
-        tiles.push(Box::new(
-            StatTile::new("Reallocated sectors", sectors.to_string()).tone(tone),
+        tiles.push(tile(
+            StatTile::new("Reallocated sectors", sectors.to_string()),
+            tone,
         ));
     }
     if let Some(used) = smart.pct_used {
@@ -522,15 +515,24 @@ fn severity_label(severity: AttrSeverity) -> &'static str {
 
 // ---- Partitions -------------------------------------------------------
 
-/// One row of the partitions table.
-#[derive(Clone)]
-struct PartitionRow {
-    device: String,
-    label: Option<String>,
-    filesystem: Option<String>,
-    size: String,
-    mount: Option<String>,
-    used: Option<String>,
+/// What a partition's row says under its name: its device when the name is a
+/// label, its filesystem, and where that is mounted.
+fn partition_summary(part: &Partition, labelled: bool) -> String {
+    let mut facts: Vec<String> = Vec::new();
+    if labelled {
+        facts.push(part.name.clone());
+    }
+    facts.extend(part.fstype.clone().filter(|fs| !fs.is_empty()));
+    let sentence_start = facts.is_empty();
+    facts.push(match (part.mount_display(), sentence_start) {
+        (Some(mount), true) if mount == "Swap" => "In use".to_owned(),
+        (Some(mount), false) if mount == "Swap" => "in use".to_owned(),
+        (Some(mount), true) => format!("Mounted at {mount}"),
+        (Some(mount), false) => format!("mounted at {mount}"),
+        (None, true) => "Not mounted".to_owned(),
+        (None, false) => "not mounted".to_owned(),
+    });
+    facts.join(", ")
 }
 
 fn partitions(model: &DetailModel<'_>, intents: &Intents) -> Element {
@@ -542,46 +544,26 @@ fn partitions(model: &DetailModel<'_>, intents: &Intents) -> Element {
                 .dimmed(),
         )]));
     }
-    let rows: Vec<PartitionRow> = drive
+    let rows: Vec<Element> = drive
         .partitions
         .iter()
-        .map(|part| PartitionRow {
-            device: part.name.clone(),
-            label: part.label.clone().filter(|label| !label.is_empty()),
-            filesystem: part.fstype.clone(),
-            size: bytes_si(part.size),
-            mount: part.mount_display(),
-            used: part.used_frac().map(|f| format!("{:.0}%", f * 100.0)),
+        .enumerate()
+        .map(|(index, part)| -> Element {
+            let label = part.label.clone().filter(|label| !label.is_empty());
+            let summary = partition_summary(part, label.is_some());
+            let pick = intents.clone();
+            Box::new(
+                ListRow::new(
+                    format!("disks-partition-{index}"),
+                    label.unwrap_or_else(|| part.name.clone()),
+                )
+                .icon(Icon::Layers)
+                .secondary(summary)
+                .meta(bytes_si(part.size))
+                .selected(model.partition == Some(index))
+                .on_activate(move || pick.push(Intent::SelectPartition(Some(index)))),
+            )
         })
         .collect();
-    let mut selection = ui::selection::SelectionModel::new();
-    if let Some(index) = model.partition {
-        selection.select_only(index);
-    }
-    let pick = intents.clone();
-    let mut table = DataTable::new(vec![
-        ColumnDef::new("device", "Device", ColumnWidth::Auto)
-            .with_kind(TextKind::Identifier)
-            .with_text(|row: &PartitionRow| row.device.clone()),
-        ColumnDef::new("label", "Label", ColumnWidth::Flex(1.0))
-            .with_optional_text(|row: &PartitionRow| row.label.clone(), "No label"),
-        ColumnDef::new("filesystem", "Filesystem", ColumnWidth::Auto)
-            .with_optional_text(|row: &PartitionRow| row.filesystem.clone(), "None"),
-        ColumnDef::new("size", "Size", ColumnWidth::Auto)
-            .with_kind(TextKind::Numeric)
-            .with_text(|row: &PartitionRow| row.size.clone()),
-        ColumnDef::new("mount", "Mount", ColumnWidth::Flex(1.0))
-            .with_kind(TextKind::Identifier)
-            .with_optional_text(|row: &PartitionRow| row.mount.clone(), "Not mounted"),
-        ColumnDef::new("used", "Used", ColumnWidth::Auto)
-            .with_kind(TextKind::Numeric)
-            .with_optional_text(|row: &PartitionRow| row.used.clone(), "—"),
-    ])
-    .with_id("disks-partitions")
-    .with_accessible_name("Partitions")
-    .selectable(true)
-    .with_selection(selection)
-    .on_row_click(move |index, _, _| pick.push(Intent::SelectPartition(Some(index))));
-    table.set_rows(rows);
-    Box::new(Section::new(vec![Box::new(table)]))
+    Box::new(Section::new(rows))
 }
