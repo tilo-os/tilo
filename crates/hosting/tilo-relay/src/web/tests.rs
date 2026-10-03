@@ -226,6 +226,7 @@ async fn legacy_http_and_native_paths_enforce_authorship_roles_and_directed_inpu
                 recipient_user_public_key: Some(guest.user_public_key),
                 invitee_name: None,
                 expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
+                inviter_name: None,
             },
         )
         .await
