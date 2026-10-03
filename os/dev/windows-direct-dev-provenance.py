@@ -81,7 +81,7 @@ def verify_image(args):
     run_bytes = forgejo("api", f"repos/tilo/tilo/actions/runs/{run_id}")
     run = json.loads(run_bytes)
     require(type(run) is dict and run.get("id") == run_id
-            and run.get("workflow_id") == "os-dev.yml" and run.get("prettyref") == "main"
+            and run.get("workflow_id") in ("os-dev.yml", "os-dev-arm.yml") and run.get("prettyref") == "main"
             and run.get("is_fork_pull_request") is False
             and run.get("commit_sha") == revision
             and run.get("status") in ("success", "failure")
