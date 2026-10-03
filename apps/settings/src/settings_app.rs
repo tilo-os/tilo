@@ -444,6 +444,12 @@ impl SettingsApp {
                     .with_command_state(&self.local_pane_command)
                     .with_operation_status(&self.local_operation_status),
             ),
+            #[cfg(not(feature = "thin"))]
+            Category::Bluetooth if self.deterministic_hardware_for_shot => Box::new(
+                panes::bluetooth::BluetoothPane::for_shot()
+                    .with_command_state(&self.local_pane_command)
+                    .with_operation_status(&self.local_operation_status),
+            ),
             Category::Bluetooth => Box::new(
                 panes::bluetooth::BluetoothPane::new()
                     .with_command_state(&self.local_pane_command)
@@ -464,12 +470,13 @@ impl SettingsApp {
                     .with_command_state(&self.speaker_commands)
                     .with_operation_status(&self.local_operation_status),
             ),
-            Category::Displays if self.deterministic_hardware_for_shot => {
-                Box::new(panes::display::DisplayPane::with_dispatcher(
+            Category::Displays if self.deterministic_hardware_for_shot => Box::new(
+                panes::display::DisplayPane::with_dispatcher(
                     crate::dispatcher::dispatcher_or_real(None),
                     0.62,
-                ))
-            }
+                )
+                .with_external_monitor_for_shot(),
+            ),
             Category::Displays => Box::new(
                 panes::display::DisplayPane::new()
                     .with_command_state(&self.local_pane_command)
@@ -486,9 +493,25 @@ impl SettingsApp {
                 }
                 Box::new(pane)
             }
+            #[cfg(not(feature = "thin"))]
+            Category::TimeDate if self.deterministic_hardware_for_shot => {
+                Box::new(panes::time_date::TimeDatePane::for_shot())
+            }
             Category::TimeDate => panes::time_date::build(),
+            #[cfg(not(feature = "thin"))]
+            Category::Users if self.deterministic_hardware_for_shot => Box::new(
+                panes::users::UsersPane::for_shot()
+                    .with_command_state(&self.local_pane_command)
+                    .with_operation_status(&self.local_operation_status),
+            ),
             Category::Users => Box::new(
                 panes::users::UsersPane::new()
+                    .with_command_state(&self.local_pane_command)
+                    .with_operation_status(&self.local_operation_status),
+            ),
+            #[cfg(not(feature = "thin"))]
+            Category::Printers if self.deterministic_hardware_for_shot => Box::new(
+                panes::printers::PrintersPane::for_shot()
                     .with_command_state(&self.local_pane_command)
                     .with_operation_status(&self.local_operation_status),
             ),
@@ -496,6 +519,26 @@ impl SettingsApp {
                 panes::printers::PrintersPane::new()
                     .with_command_state(&self.local_pane_command)
                     .with_operation_status(&self.local_operation_status),
+            ),
+            #[cfg(not(feature = "thin"))]
+            Category::Power if self.deterministic_hardware_for_shot => Box::new(
+                panes::power::PowerPane::with_parts(
+                    crate::dispatcher::dispatcher_or_real(None),
+                    os_actions::BatteryInfo {
+                        present: true,
+                        capacity: 72,
+                        status: "Discharging".into(),
+                        cycle_count: Some(148),
+                        on_ac: false,
+                        full_capacity: Some(40_000_000),
+                        design_capacity: Some(50_000_000),
+                        charge_limit: Some(80),
+                    },
+                    os_actions::PowerProfile::Balanced,
+                    crate::prefs::PowerPrefs::default(),
+                )
+                .with_command_state(&self.local_pane_command)
+                .with_operation_status(&self.local_operation_status),
             ),
             Category::Power => Box::new(
                 panes::power::PowerPane::new()
@@ -572,6 +615,10 @@ impl SettingsApp {
                     .with_command_state(&self.local_pane_command)
                     .with_operation_status(&self.local_operation_status),
             ),
+            #[cfg(not(feature = "thin"))]
+            Category::About if self.deterministic_hardware_for_shot => {
+                panes::about::build_with(&panes::about::AboutInfo::for_shot())
+            }
             Category::About => panes::about::build(),
         }
     }

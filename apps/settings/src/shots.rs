@@ -87,7 +87,8 @@ pub struct Scenario {
 }
 
 impl Scenario {
-    /// The scenario named `name` (`None`: a plain `--shots`).
+    /// The scenario named `name` (`None`: a plain `--shots`). A `-narrow`
+    /// name is its base scenario in a phone-sized window.
     pub fn parse(name: Option<&str>) -> Self {
         let plain = Self {
             category: Category::Appearance,
@@ -98,12 +99,20 @@ impl Scenario {
         let Some(name) = name else {
             return plain;
         };
-        match name {
-            "nav-narrow" => Self {
+        if name == "nav-narrow" {
+            return Self {
                 category: Category::RegionFormats,
                 narrow_list: true,
                 ..plain
-            },
+            };
+        }
+        if let Some(base) = name.strip_suffix("-narrow") {
+            return Self {
+                narrow_content: true,
+                ..Self::parse(Some(base))
+            };
+        }
+        match name {
             "network" | "network-wifi" => Self {
                 category: Category::Network,
                 demo: Some(Demo::NetworkWifi),
@@ -124,16 +133,10 @@ impl Scenario {
                 demo: Some(Demo::AccountsForm),
                 ..plain
             },
-            other => {
-                let (slug, narrow) = other
-                    .strip_suffix("-narrow")
-                    .map_or((other, false), |slug| (slug, true));
-                Self {
-                    category: Category::from_slug(slug).unwrap_or(plain.category),
-                    narrow_content: narrow,
-                    ..plain
-                }
-            }
+            slug => Self {
+                category: Category::from_slug(slug).unwrap_or(plain.category),
+                ..plain
+            },
         }
     }
 }

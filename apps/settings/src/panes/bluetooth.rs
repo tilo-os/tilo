@@ -996,6 +996,110 @@ impl Widget for BluetoothPane {
                 .is_some_and(|c| c.take_structure_dirty())
     }
 }
+/// Fixture data for captures: a controller with a few devices around it.
+#[cfg(not(feature = "thin"))]
+mod fixture {
+    use super::{Arc, BluetoothControl, BluetoothPane, DeviceInfo, PairOutcome};
+
+    struct Bench;
+
+    impl BluetoothControl for Bench {
+        fn devices(&self) -> Result<Vec<DeviceInfo>, String> {
+            Ok(devices())
+        }
+        fn powered(&self) -> Result<bool, String> {
+            Ok(true)
+        }
+        fn scanning(&self) -> Result<bool, String> {
+            Ok(false)
+        }
+        fn set_powered(&self, _on: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn start_scan(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn stop_scan(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn pair(&self, _path: &str) -> Result<PairOutcome, String> {
+            Ok(PairOutcome::PairedAndConnected)
+        }
+        fn cancel_pairing(&self, _path: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn connect(&self, _path: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn disconnect(&self, _path: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_trusted(&self, _path: &str, _trusted: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_alias(&self, _path: &str, _alias: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn forget(&self, _path: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    fn device(
+        index: u8,
+        name: &str,
+        icon: &str,
+        paired: bool,
+        connected: bool,
+        battery: Option<u8>,
+        rssi: Option<i16>,
+    ) -> DeviceInfo {
+        DeviceInfo {
+            path: format!("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_{index:02X}"),
+            address: format!("AA:BB:CC:DD:EE:{index:02X}"),
+            name: name.to_string(),
+            icon: icon.to_string(),
+            paired,
+            trusted: paired,
+            connected,
+            battery,
+            rssi,
+        }
+    }
+
+    fn devices() -> Vec<DeviceInfo> {
+        vec![
+            device(1, "WH-1000XM5", "audio-headset", true, true, Some(82), None),
+            device(2, "MX Keys", "input-keyboard", true, true, Some(64), None),
+            device(
+                3,
+                "Pixel Buds Pro",
+                "audio-headphones",
+                true,
+                false,
+                None,
+                None,
+            ),
+            device(
+                4,
+                "JBL Flip 6",
+                "audio-speakers",
+                false,
+                false,
+                None,
+                Some(-58),
+            ),
+        ]
+    }
+
+    impl BluetoothPane {
+        /// The pane over a fixed controller and device list: what a capture
+        /// shows, the same on every machine.
+        pub(crate) fn for_shot() -> Self {
+            Self::with_control(Arc::new(Bench), devices(), true, false)
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

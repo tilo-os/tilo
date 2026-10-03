@@ -832,8 +832,12 @@ impl TimeDatePane {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        let now = os_actions::now_clock(self.h24).unwrap_or_else(|_| "—".to_string());
-        let today = os_actions::now_date().unwrap_or_else(|_| "—".to_string());
+        // Read through the toolkit clock so a capture shows its pinned time.
+        let local = ui::clock::local_now();
+        let now = local
+            .format(if self.h24 { "%H:%M" } else { "%I:%M %p" })
+            .to_string();
+        let today = local.format("%A, %-d %B %Y").to_string();
 
         let clock_format = if self.h24 {
             t("time-clock-24h")
@@ -851,19 +855,6 @@ impl TimeDatePane {
             .source
             .clone()
             .unwrap_or_else(|| t("time-source-unknown"));
-        let mapped = self.timezone_points.len();
-        let map_note = if mapped == 0 {
-            t("time-map-empty")
-        } else {
-            t_args(
-                "time-map-count",
-                &[(
-                    "mapped",
-                    ArgValue::from(i64::try_from(mapped).unwrap_or(i64::MAX)),
-                )],
-            )
-        };
-
         let clock = card(
             &t("time-clock-title"),
             rows(vec![
@@ -905,16 +896,17 @@ impl TimeDatePane {
             rows(vec![value_row(&t("time-clock-format"), &clock_format)]),
         );
 
-        let map = card(
-            &t("time-map-title"),
-            rows(vec![
-                Box::new(
+        // Without coordinates there is nothing to draw: the selector above
+        // is the whole control.
+        let map = (!self.timezone_points.is_empty()).then(|| {
+            card(
+                &t("time-map-title"),
+                rows(vec![Box::new(
                     TimeZoneMap::new(self.timezone_points.clone(), self.timezone.clone())
                         .on_action(time_text_action("timezone")),
-                ),
-                caption(&map_note),
-            ]),
-        );
+                )]),
+            )
+        });
 
         let source = card(
             &t("time-source-title"),
@@ -924,7 +916,9 @@ impl TimeDatePane {
             ]),
         );
 
-        let mut cards = vec![clock, map, source, formats];
+        let mut cards = vec![clock];
+        cards.extend(map);
+        cards.extend([source, formats]);
         if let Some(notice) = &self.notice {
             cards.insert(
                 0,
@@ -1052,6 +1046,75 @@ impl ui::undo::UndoPoints for TimeDatePane {
             "Time & date",
             "Change time and date preferences",
         )
+    }
+}
+/// Fixture data for captures: Berlin on a map of cities.
+#[cfg(not(feature = "thin"))]
+mod fixture {
+    use super::{Arc, NtpControl, TimeDatePane, TimeZonePoint};
+
+    struct Bench;
+
+    impl NtpControl for Bench {
+        fn set_ntp(&self, _enabled: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_timezone(&self, _timezone: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// `(zone, region, city, latitude, longitude)` in degrees.
+    const CITIES: [(&str, &str, &str, f64, f64); 14] = [
+        (
+            "America/Los_Angeles",
+            "America",
+            "Los Angeles",
+            34.05,
+            -118.24,
+        ),
+        ("America/Denver", "America", "Denver", 39.74, -104.99),
+        ("America/New_York", "America", "New York", 40.71, -74.01),
+        ("America/Sao_Paulo", "America", "Sao Paulo", -23.55, -46.63),
+        ("Europe/London", "Europe", "London", 51.51, -0.13),
+        ("Europe/Berlin", "Europe", "Berlin", 52.52, 13.41),
+        ("Europe/Athens", "Europe", "Athens", 37.98, 23.73),
+        ("Africa/Cairo", "Africa", "Cairo", 30.04, 31.24),
+        ("Asia/Dubai", "Asia", "Dubai", 25.20, 55.27),
+        ("Asia/Kolkata", "Asia", "Kolkata", 22.57, 88.36),
+        ("Asia/Shanghai", "Asia", "Shanghai", 31.23, 121.47),
+        ("Asia/Tokyo", "Asia", "Tokyo", 35.68, 139.69),
+        ("Australia/Sydney", "Australia", "Sydney", -33.87, 151.21),
+        ("Pacific/Auckland", "Pacific", "Auckland", -36.85, 174.76),
+    ];
+
+    impl TimeDatePane {
+        /// The pane set to Berlin with a fixed list of zones: what a capture
+        /// shows, the same on every machine.
+        pub(crate) fn for_shot() -> Self {
+            let mut pane = Self::with_ntp(Arc::new(Bench), true);
+            let zone = "Europe/Berlin".to_string();
+            pane.timezones = CITIES.iter().map(|city| city.0.to_string()).collect();
+            pane.timezone_points = CITIES
+                .iter()
+                .map(|(id, region, city, latitude, longitude)| TimeZonePoint {
+                    id: (*id).to_string(),
+                    region: (*region).to_string(),
+                    city: (*city).to_string(),
+                    latitude_e6: (latitude * 1e6) as i32,
+                    longitude_e6: (longitude * 1e6) as i32,
+                })
+                .collect();
+            pane.timezone.clone_from(&zone);
+            pane.last_timezone.clone_from(&zone);
+            pane.sync_status = os_actions::TimeSyncStatus {
+                timezone: Some(zone),
+                ntp_enabled: Some(true),
+                synchronized: Some(true),
+                source: Some("time.cloudflare.com".into()),
+            };
+            pane
+        }
     }
 }
 
