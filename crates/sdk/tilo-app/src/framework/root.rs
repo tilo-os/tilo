@@ -154,7 +154,6 @@ impl<R: Resource> ResourceRoot<R> {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn drawing_past(mut self, past: super::preview::DrawPast) -> Self {
         self.past = Some(past);
         self
