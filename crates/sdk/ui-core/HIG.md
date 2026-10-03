@@ -88,11 +88,12 @@ or the desktop overview/detail split (§1b).
   edge. Do **not** dock a rail, sidebar, or app-title header beside it, and do
   **not** draw the app's own logo/brand mark — the OS owns window chrome
   (see "OS owns window chrome").
-- **Controls float over the surface.** Capture/playback controls are translucent
-  glass overlays anchored to the edges (top strip for capture settings,
-  bottom-centre for the primary action + mode switch, corners for
-  secondary actions), kept legible with a soft scrim rather than an opaque panel.
-  When idle they may fade; they never box the surface in.
+- **Controls float over the surface.** Capture/playback controls sit on the
+  floating material (`Material::Floating`, §9.2) over the media itself,
+  anchored to the edges (top strip for capture settings, bottom-centre for
+  the primary action + mode switch, corners for secondary actions). Never
+  unblurred translucency. When idle they may fade; they never box the
+  surface in.
 - **Secondary screens are pushes or sheets, not rail destinations.** A library /
   gallery is **pushed** over the surface with a **back button top-left**
   (§1b push navigation); settings and pickers are **overlay sheets** with a
@@ -475,7 +476,7 @@ surfaces of the same role are automatically consistent. The values come from
 |---|---|---|---|---|---|
 | **Ground** | the desktop behind everything | — | `surfaces.base` | — | none |
 | **Bar** | docked chrome fixed to a screen edge (top bar) | — (edge to edge) | `chrome::shell::panel_ground` (opaque) | bottom hairline only | none |
-| **Panel** | a floating surface that opens over content (quick settings, palette, menus, popovers, sheets) | `radii.panel` (18) | `chrome::shell::panel_ground` (opaque) | full hairline, plus `elevation.floating_edge` inside it on a dark material | `elevation.floating` |
+| **Panel** | a floating surface that opens over content (quick settings, palette, menus, popovers, sheets) | `radii.panel` (18) | the floating material, `Material::Floating` (§9.2) | full hairline, plus `elevation.floating_edge` inside it on a dark material | `elevation.floating` |
 | **Control** | something inside a Bar or Panel that you press (action tile, list row, slider, field) | `radii.control` (8) | selection tiers (§9.3) | per tier | none |
 | **Selector** | one of a set you choose between (tab pill, tray pill, workspace chip, strip segment, scope chip) | half its height | selection tiers (§9.3) | per tier | none |
 | **Object** | a window tile | `radii.tile` (14) | `surfaces.content` | `Colors::window_edge()` | none; `elevation.floating` only while dragged |
@@ -525,15 +526,40 @@ The ink tiers `text_primary` / `text_dim` / `text_tertiary` are defined on
 `tokens::contrast::FLOORS` holds every pairing to WCAG AA for its role (AAA on
 the high-contrast material) and is swept at every hue in tests.
 
-**The material is opaque.** Floating chrome is meant to be a *blurred*
-material — the compositor blurs what is behind the panel and tints it with
-`surfaces.overlay` at 72 % (`surfaces.material`) — and without a backdrop blur
-it falls back to opaque `surfaces.overlay`. This renderer cannot blur a
-backdrop (vello can blur a *shape*, which is what a drop shadow is made of,
-but there is no backdrop filter short of rendering the scene to a texture and
-convolving it), so chrome paints the opaque form. Unblurred translucency is
-never correct: it is not glass, but a loss of contrast that changes with what
-the user happens to have open.
+A Bar is opaque: it is docked and nothing meaningful is behind it.
+
+**A Panel is the floating material.** Floating chrome — the palette, menus,
+popovers, quick settings, sheets, notifications, and chrome over media — is
+drawn over a blur of what is behind it, tinted with the panel ground at 72 %
+(`docs/design-language.md`, "Material and transparency"). A surface asks for
+it by name and never for a radius or an opacity:
+
+```rust
+ui::floating_surface::paint_material(scene, transform, &shape, Material::Floating, theme);
+// or, for the whole Panel row (fill + edge):
+ui::surface::panel(scene, transform, rect, radius, theme);
+```
+
+Vello cannot sample what it has already drawn, so the compositor blurs in a
+pass before the frame (`ui::backdrop`): while it paints, each floating surface
+draws a placeholder image under the tint and records what is below it; the
+renderer renders that backdrop at half resolution, halves it until the blur
+fits a short kernel (`surfaces.material_blur_px` is the standard deviation),
+blurs it separably and substitutes it for the placeholder. The live DRM,
+headless and nested compositors and the offscreen `shots` path all run the
+same pass, so captures match the screen.
+
+The material falls back to opaque `panel_ground` whenever the blur is not
+there: under the reduced-transparency setting
+(`appearance.accessibility.reduce_transparency`), with forced colours or a
+theme without blur (the high-contrast track), in a renderer without the pass
+(an app's own window, a scene capture), and for surfaces past the per-frame
+budget (`MAX_BACKDROP_REGIONS`). The placeholder's own pixels are that ground,
+so a missed substitution is the opaque material, never a hole. Never paint
+unblurred translucency: a translucent fill without the blur is not glass but
+a loss of contrast that changes with what the user happens to have open.
+`Material::Opaque` is the explicit opaque choice for a surface whose backdrop
+must not show through.
 
 **A Panel separates itself by value and by edge.** `panel_ground` walks the
 overlay tier away from *both* the desktop and the window ground until it
@@ -684,8 +710,8 @@ A declared border or ramp token (`border_standard`, `border_strong`,
 their count against the shards under `tests/baselines/chrome-border/`.
 
 **One painter per row of that table.** `ui::surface::card(fill)` is the edged
-opaque surface; `ui::surface::panel(theme)` is the Panel row (`panel_ground`
-fill + `panel_border` + `floating_edge`) so no app spells the set;
+opaque surface; `ui::surface::panel(theme)` is the Panel row (the floating
+material + `panel_border` + `floating_edge`) so no app spells the set;
 `ui::surface::card_on(fill, ground)` is for a translucent wash — the edge
 derives from what the eye sees, the wash composited over its ground. `edge_on`
 assumes an opaque fill. All three snap their rect to whole logical pixels and

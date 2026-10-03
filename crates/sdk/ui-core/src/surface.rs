@@ -669,22 +669,23 @@ pub fn card_on(
 }
 
 /// A floating Panel-role surface (menu, popover, sheet, toast) in one call:
-/// the theme's [`crate::chrome::panel_ground`] fill with the
-/// [`crate::chrome::panel_border`] edge on a crisp inset outline — HIG §9.5's
-/// Panel row, so an app never spells the fill + stroke pair itself. Rows
-/// inside it use [`separator`] with an `s3` inset and
-/// [`crate::chrome::selection_tier_on`] against the panel ground.
+/// the floating material ([`crate::floating_surface::Material::Floating`],
+/// the blurred backdrop under a panel-ground tint, opaque where blur is
+/// unavailable) with the [`crate::chrome::panel_border`] edge on a crisp
+/// inset outline — HIG §9.5's Panel row, so an app never spells the fill +
+/// stroke pair itself. Rows inside it use [`separator`] with an `s3` inset
+/// and [`crate::chrome::selection_tier_on`] against the panel ground.
 pub fn panel(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, theme: &Theme) {
     let rect = snap(rect);
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
-    scene.fill(
-        Fill::NonZero,
+    crate::floating_surface::paint_material(
+        scene,
         transform,
-        crate::chrome::panel_ground(theme),
-        None,
         &RoundedRect::from_rect(rect, radius),
+        crate::floating_surface::Material::Floating,
+        theme,
     );
     scene.stroke(
         &Stroke::new(1.0),
