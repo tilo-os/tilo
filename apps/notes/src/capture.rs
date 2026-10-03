@@ -63,7 +63,7 @@ fn fixture_body(scenario: Option<&str>) -> Option<String> {
             const RISK: [&str; 3] = ["Low", "Medium", "High"];
             const NEXT: [&str; 4] = ["Write the spec", "Review with design", "Ship to beta", "Collect feedback"];
             let separator = ["---"; 10].join(" | ");
-            let mut source = format!("# Programme overview\n\n| {} |\n| {separator} |\n", HEADER.join(" | "));
+            let mut source = format!("# Project overview\n\n| {} |\n| {separator} |\n", HEADER.join(" | "));
             for (row, project) in PROJECTS.iter().enumerate() {
                 let pick = |list: &[&'static str], step: usize| {
                     list.get((row * step + row / 2) % list.len().max(1)).copied().unwrap_or_default()
