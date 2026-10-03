@@ -842,6 +842,10 @@
     </dict>
     <key>so.tilo.kerning.raised</key>
     <dict>
+      <key>De-cy|je-cy</key>
+      <array/>
+      <key>Endescender-cy|je-cy</key>
+      <array/>
       <key>Epsilontonos|asciitilde</key>
       <array>
         <integer>-56</integer>
@@ -854,11 +858,25 @@
       <array>
         <integer>0</integer>
       </array>
+      <key>Geupturn-cy|iegrave-cy</key>
+      <array/>
+      <key>Ha-cy|U-cy</key>
+      <array/>
+      <key>Ha-cy|Ushort-cy</key>
+      <array/>
+      <key>Ha-cy|Ustraight-cy</key>
+      <array/>
+      <key>Ha-cy|Ustraightstroke-cy</key>
+      <array/>
+      <key>Ha-cy|ha-cy</key>
+      <array/>
       <key>Iotadieresis|backslash</key>
       <array/>
       <key>Iotadieresis|bar</key>
       <array/>
-      <key>Kadescender-cy|guillemetright</key>
+      <key>Ka-cy|ha-cy</key>
+      <array/>
+      <key>Kje-cy|ha-cy</key>
       <array/>
       <key>K|igrave</key>
       <array>
@@ -866,14 +884,42 @@
       </array>
       <key>Rho|anoteleia</key>
       <array/>
+      <key>Shcha-cy|je-cy</key>
+      <array/>
       <key>Tau|one</key>
       <array/>
+      <key>Te-cy|dje-cy</key>
+      <array/>
+      <key>Te-cy|iegrave-cy</key>
+      <array/>
       <key>Te-cy|one</key>
+      <array/>
+      <key>Te-cy|tshe-cy</key>
+      <array/>
+      <key>Te-cy|ushort-cy</key>
+      <array/>
+      <key>Tse-cy|je-cy</key>
       <array/>
       <key>T|igrave</key>
       <array>
         <integer>0</integer>
       </array>
+      <key>U-cy|iegrave-cy</key>
+      <array/>
+      <key>U-cy|yi-cy</key>
+      <array/>
+      <key>Ushort-cy|iegrave-cy</key>
+      <array/>
+      <key>Ushort-cy|yi-cy</key>
+      <array/>
+      <key>Ustraight-cy|iegrave-cy</key>
+      <array/>
+      <key>Ustraight-cy|yi-cy</key>
+      <array/>
+      <key>Ustraightstroke-cy|iegrave-cy</key>
+      <array/>
+      <key>Ustraightstroke-cy|yi-cy</key>
+      <array/>
       <key>V|igrave</key>
       <array>
         <integer>0</integer>
@@ -882,17 +928,11 @@
       <array>
         <integer>0</integer>
       </array>
+      <key>Zhe-cy|ha-cy</key>
+      <array/>
       <key>ampersand|Chi</key>
       <array/>
       <key>ampersand|Ha-cy</key>
-      <array/>
-      <key>ampersand|Ya-cy</key>
-      <array/>
-      <key>ampersand|ya-cy</key>
-      <array/>
-      <key>ampersand|zhe-cy</key>
-      <array/>
-      <key>asciicircum|be-cy</key>
       <array/>
       <key>asciitilde|Beta</key>
       <array/>
@@ -938,15 +978,11 @@
       <array/>
       <key>asciitilde|alphatonos</key>
       <array/>
-      <key>asciitilde|be-cy</key>
-      <array/>
       <key>asciitilde|delta</key>
       <array/>
       <key>asciitilde|dze-cy</key>
       <array/>
       <key>asciitilde|e-cy</key>
-      <array/>
-      <key>asciitilde|ef-cy</key>
       <array/>
       <key>asciitilde|ereversed-cy</key>
       <array/>
@@ -1036,13 +1072,7 @@
       <array/>
       <key>asciitilde|ustraightstroke-cy</key>
       <array/>
-      <key>asciitilde|ya-cy</key>
-      <array/>
       <key>asciitilde|ze-cy</key>
-      <array/>
-      <key>asciitilde|zhe-cy</key>
-      <array/>
-      <key>asterisk|be-cy</key>
       <array/>
       <key>asterisk|iotadieresis</key>
       <array/>
@@ -1056,35 +1086,11 @@
       <array/>
       <key>bar|iotadieresistonos</key>
       <array/>
-      <key>be-cy|asciitilde</key>
-      <array/>
-      <key>be-cy|asterisk</key>
-      <array/>
-      <key>be-cy|bracketright</key>
-      <array/>
-      <key>be-cy|parenright</key>
-      <array/>
-      <key>be-cy|question</key>
-      <array/>
-      <key>be-cy|quotedbl</key>
-      <array/>
-      <key>be-cy|quoteright</key>
-      <array/>
-      <key>be-cy|quotesingle</key>
-      <array/>
-      <key>braceleft|be-cy</key>
-      <array/>
       <key>braceleft|iotadieresis</key>
       <array/>
       <key>braceleft|iotadieresistonos</key>
       <array/>
       <key>braceleft|je-cy</key>
-      <array/>
-      <key>braceleft|ya-cy</key>
-      <array/>
-      <key>braceleft|zhe-cy</key>
-      <array/>
-      <key>bracketleft|be-cy</key>
       <array/>
       <key>bracketleft|iotadieresis</key>
       <array/>
@@ -1092,31 +1098,23 @@
       <array/>
       <key>bracketleft|je-cy</key>
       <array/>
-      <key>bracketleft|ya-cy</key>
-      <array/>
-      <key>bracketleft|zhe-cy</key>
-      <array/>
-      <key>de-cy|bracketright</key>
-      <array/>
-      <key>de-cy|parenright</key>
-      <array/>
-      <key>de-cy|slash</key>
-      <array/>
       <key>delta|asciitilde</key>
       <array>
         <integer>-18</integer>
       </array>
+      <key>dje-cy|je-cy</key>
+      <array/>
       <key>dollar|iotadieresis</key>
       <array/>
       <key>dollar|iotadieresistonos</key>
-      <array/>
-      <key>ef-cy|asciitilde</key>
       <array/>
       <key>eight|iotadieresis</key>
       <array/>
       <key>eight|iotadieresistonos</key>
       <array/>
       <key>endescender-cy|bracketright</key>
+      <array/>
+      <key>endescender-cy|je-cy</key>
       <array/>
       <key>endescender-cy|parenright</key>
       <array/>
@@ -1160,6 +1158,8 @@
       <array/>
       <key>geupturn-cy|quotesingle</key>
       <array/>
+      <key>geupturn-cy|yi-cy</key>
+      <array/>
       <key>gje-cy|backslash</key>
       <array/>
       <key>gje-cy|bracketright</key>
@@ -1176,6 +1176,8 @@
       <array/>
       <key>gje-cy|seven</key>
       <array/>
+      <key>gje-cy|yi-cy</key>
+      <array/>
       <key>grave|dje-cy</key>
       <array/>
       <key>grave|iotadieresis</key>
@@ -1183,6 +1185,8 @@
       <key>grave|iotadieresistonos</key>
       <array/>
       <key>grave|tshe-cy</key>
+      <array/>
+      <key>grave|yi-cy</key>
       <array/>
       <key>ha-cy|one</key>
       <array/>
@@ -1212,9 +1216,17 @@
       <array/>
       <key>ka-cy|bracketright</key>
       <array/>
+      <key>ka-cy|ha-cy</key>
+      <array/>
       <key>ka-cy|one</key>
       <array/>
-      <key>kadescender-cy|parenright</key>
+      <key>ka-cy|u-cy</key>
+      <array/>
+      <key>ka-cy|ushort-cy</key>
+      <array/>
+      <key>ka-cy|ustraight-cy</key>
+      <array/>
+      <key>ka-cy|ustraightstroke-cy</key>
       <array/>
       <key>kappa|bracketright</key>
       <array/>
@@ -1222,7 +1234,17 @@
       <array/>
       <key>kje-cy|bracketright</key>
       <array/>
+      <key>kje-cy|ha-cy</key>
+      <array/>
       <key>kje-cy|one</key>
+      <array/>
+      <key>kje-cy|u-cy</key>
+      <array/>
+      <key>kje-cy|ushort-cy</key>
+      <array/>
+      <key>kje-cy|ustraight-cy</key>
+      <array/>
+      <key>kje-cy|ustraightstroke-cy</key>
       <array/>
       <key>less|iotadieresis</key>
       <array/>
@@ -1574,37 +1596,23 @@
       <array>
         <integer>0</integer>
       </array>
-      <key>question|be-cy</key>
-      <array/>
       <key>question|iotadieresis</key>
       <array/>
       <key>question|iotadieresistonos</key>
       <array/>
-      <key>question|zhe-cy</key>
-      <array/>
-      <key>quotedblleft|be-cy</key>
+      <key>question|yi-cy</key>
       <array/>
       <key>quotedblleft|iotadieresis</key>
       <array/>
-      <key>quotedblright|be-cy</key>
-      <array/>
       <key>quotedblright|iotadieresis</key>
-      <array/>
-      <key>quotedbl|be-cy</key>
       <array/>
       <key>quotedbl|iotadieresis</key>
       <array/>
       <key>quotedbl|iotadieresistonos</key>
       <array/>
-      <key>quoteleft|be-cy</key>
-      <array/>
       <key>quoteleft|iotadieresis</key>
       <array/>
-      <key>quoteright|be-cy</key>
-      <array/>
       <key>quoteright|iotadieresis</key>
-      <array/>
-      <key>quotesingle|be-cy</key>
       <array/>
       <key>quotesingle|igrave</key>
       <array>
@@ -1618,8 +1626,6 @@
       <array/>
       <key>schwa-cy|asciitilde</key>
       <array/>
-      <key>seven|be-cy</key>
-      <array/>
       <key>seven|dje-cy</key>
       <array/>
       <key>seven|iotadieresis</key>
@@ -1628,7 +1634,11 @@
       <array/>
       <key>seven|tshe-cy</key>
       <array/>
+      <key>seven|yi-cy</key>
+      <array/>
       <key>shcha-cy|bracketright</key>
+      <array/>
+      <key>shcha-cy|je-cy</key>
       <array/>
       <key>shcha-cy|parenright</key>
       <array/>
@@ -1666,6 +1676,8 @@
       <array/>
       <key>tse-cy|bracketright</key>
       <array/>
+      <key>tse-cy|je-cy</key>
+      <array/>
       <key>tse-cy|parenright</key>
       <array/>
       <key>tse-cy|slash</key>
@@ -1674,7 +1686,17 @@
       <array/>
       <key>two|iotadieresistonos</key>
       <array/>
+      <key>u-cy|hardsign-cy</key>
+      <array/>
       <key>u-cy|one</key>
+      <array/>
+      <key>u-cy|u-cy</key>
+      <array/>
+      <key>u-cy|ushort-cy</key>
+      <array/>
+      <key>u-cy|ustraight-cy</key>
+      <array/>
+      <key>u-cy|ustraightstroke-cy</key>
       <array/>
       <key>upsilondieresistonos|asciitilde</key>
       <array>
@@ -1694,19 +1716,67 @@
       </array>
       <key>ushort-cy|bracketright</key>
       <array/>
+      <key>ushort-cy|hardsign-cy</key>
+      <array/>
       <key>ushort-cy|one</key>
       <array/>
       <key>ushort-cy|parenright</key>
       <array/>
+      <key>ushort-cy|u-cy</key>
+      <array/>
+      <key>ushort-cy|ushort-cy</key>
+      <array/>
+      <key>ushort-cy|ustraight-cy</key>
+      <array/>
+      <key>ushort-cy|ustraightstroke-cy</key>
+      <array/>
+      <key>ustraight-cy|hardsign-cy</key>
+      <array/>
       <key>ustraight-cy|one</key>
       <array/>
+      <key>ustraight-cy|u-cy</key>
+      <array/>
+      <key>ustraight-cy|ushort-cy</key>
+      <array/>
+      <key>ustraight-cy|ustraight-cy</key>
+      <array/>
+      <key>ustraight-cy|ustraightstroke-cy</key>
+      <array/>
+      <key>ustraightstroke-cy|hardsign-cy</key>
+      <array/>
       <key>ustraightstroke-cy|one</key>
+      <array/>
+      <key>ustraightstroke-cy|u-cy</key>
+      <array/>
+      <key>ustraightstroke-cy|ushort-cy</key>
+      <array/>
+      <key>ustraightstroke-cy|ustraight-cy</key>
+      <array/>
+      <key>ustraightstroke-cy|ustraightstroke-cy</key>
+      <array/>
+      <key>yi-cy|dje-cy</key>
+      <array/>
+      <key>yi-cy|one</key>
+      <array/>
+      <key>yi-cy|seven</key>
+      <array/>
+      <key>yi-cy|tshe-cy</key>
       <array/>
       <key>yu-cy|asciitilde</key>
       <array/>
       <key>zhe-cy|bracketright</key>
       <array/>
+      <key>zhe-cy|ha-cy</key>
+      <array/>
       <key>zhe-cy|one</key>
+      <array/>
+      <key>zhe-cy|u-cy</key>
+      <array/>
+      <key>zhe-cy|ushort-cy</key>
+      <array/>
+      <key>zhe-cy|ustraight-cy</key>
+      <array/>
+      <key>zhe-cy|ustraightstroke-cy</key>
       <array/>
     </dict>
   </dict>

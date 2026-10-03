@@ -1,9 +1,9 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <glyph name="Shha-cy" format="2">
-  <advance width="465"/>
+  <advance width="500"/>
   <unicode hex="04BA"/>
-  <anchor x="175" y="0" name="bottom"/>
-  <anchor x="341" y="720" name="top"/>
+  <anchor x="192" y="0" name="bottom"/>
+  <anchor x="358" y="720" name="top"/>
   <outline>
     <contour>
       <point x="12" y="0" type="line"/>
@@ -12,22 +12,22 @@
       <point x="177" y="720" type="line"/>
     </contour>
     <contour>
-      <point x="270" y="0" type="line"/>
-      <point x="338" y="0" type="line"/>
-      <point x="412" y="318" type="line" smooth="yes"/>
-      <point x="431" y="402"/>
-      <point x="382" y="461"/>
-      <point x="302" y="461" type="curve" smooth="yes"/>
-      <point x="238" y="461"/>
-      <point x="185" y="424"/>
-      <point x="153" y="351" type="curve"/>
-      <point x="143" y="271" type="line"/>
-      <point x="161" y="351"/>
-      <point x="215" y="402"/>
-      <point x="278" y="402" type="curve" smooth="yes"/>
-      <point x="327" y="402"/>
-      <point x="355" y="371"/>
-      <point x="343" y="318" type="curve" smooth="yes"/>
+      <point x="302" y="0" type="line"/>
+      <point x="373" y="0" type="line"/>
+      <point x="446" y="315" type="line" smooth="yes"/>
+      <point x="462" y="383"/>
+      <point x="418" y="442"/>
+      <point x="323" y="442" type="curve" smooth="yes"/>
+      <point x="245" y="442"/>
+      <point x="182" y="405"/>
+      <point x="151" y="341" type="curve"/>
+      <point x="145" y="277" type="line"/>
+      <point x="159" y="341"/>
+      <point x="220" y="383"/>
+      <point x="297" y="383" type="curve" smooth="yes"/>
+      <point x="356" y="383"/>
+      <point x="384" y="358"/>
+      <point x="374" y="315" type="curve" smooth="yes"/>
     </contour>
   </outline>
 </glyph>
