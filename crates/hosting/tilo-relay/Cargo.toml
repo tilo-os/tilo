@@ -43,12 +43,6 @@ path = "src/enroll.rs"
 name = "tilo-home-peer-control"
 path = "src/home_peer_control.rs"
 
-# A terminal's pty carried to an environment session on a relay; the
-# device's `ush` supervisor runs it for a relay environment target.
-[[bin]]
-name = "tilo-relay-environment"
-path = "src/environment_cli.rs"
-
 # The host / relay daemon.
 #
 # `tilo-relay` is the WAN transport + host tier of the sync/host model:
@@ -158,12 +152,6 @@ bounded-command = { path = "../../system/bounded-command" }
 launcher = { path = "../../packaging/launcher" }
 # Installed packages and their integrity records.
 package-store = { path = "../../packaging/package-store" }
-# Relay environment sessions are `ush` guests, requested over its serve
-# protocol; the pty master arrives over `SCM_RIGHTS`.
-ush = { path = "../../runtime/ush" }
-runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
-# The environment record a relay session is opened from.
-tilo-environment = { path = "../../runtime/environment" }
 # Exclusive, owner-only publication of the relay's node secret.
 private-fs = { path = "../../system/private-fs" }
 clap.workspace = true

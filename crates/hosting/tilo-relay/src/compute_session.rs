@@ -3,13 +3,6 @@
 //! This protocol intentionally does not extend the frozen relay-v1 postcard
 //! enum. It has its own ALPN, frame ceiling, client, and server handler while
 //! reusing the same certified-device challenge/response authentication.
-//!
-//! The first stream of a connection is the control stream: the handshake,
-//! then [`ComputeEnvelope`]s. Compute jobs and worker advertisements are the
-//! relay owner's devices' alone. Every further stream is one environment
-//! session, legacy-windows view or legacy launch
-//! ([`crate::environment_routing`]); those are open to any device the trust
-//! policy admits, and each is admitted by its workspace's membership.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -70,43 +63,22 @@ pub(crate) struct ComputeProtocol {
     own_cert: DeviceCert,
     own_signing_key: ed25519_dalek::SigningKey,
     revocations: Arc<std::sync::RwLock<RevocationList>>,
-    trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
-    metering: Arc<dyn crate::environment_host::Metering>,
-}
-
-/// The relay's own identity on the compute ALPN.
-pub(crate) struct ComputeIdentity {
-    pub(crate) user_public_key: [u8; 32],
-    pub(crate) cert: DeviceCert,
-    pub(crate) signing_key: ed25519_dalek::SigningKey,
 }
 
 impl ComputeProtocol {
     pub(crate) fn new(
         workspaces: WorkspaceRegistry,
-        identity: ComputeIdentity,
+        own_user_public_key: [u8; 32],
+        own_cert: DeviceCert,
+        own_signing_key: ed25519_dalek::SigningKey,
         revocations: Arc<std::sync::RwLock<RevocationList>>,
-        trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
-        metering: Arc<dyn crate::environment_host::Metering>,
     ) -> Self {
         Self {
             workspaces,
-            own_user_public_key: identity.user_public_key,
-            own_cert: identity.cert,
-            own_signing_key: identity.signing_key,
+            own_user_public_key,
+            own_cert,
+            own_signing_key,
             revocations,
-            trust_policy,
-            metering,
-        }
-    }
-
-    fn routing(&self) -> crate::environment_routing::RoutingContext {
-        crate::environment_routing::RoutingContext {
-            workspaces: self.workspaces.clone(),
-            own_user_public_key: self.own_user_public_key,
-            trust_policy: Arc::clone(&self.trust_policy),
-            revocations: Arc::clone(&self.revocations),
-            metering: Arc::clone(&self.metering),
         }
     }
 }
@@ -138,13 +110,6 @@ async fn run_server_session(
     mut receive: RecvStream,
 ) -> Result<(), ComputeSessionError> {
     let peer = authenticate_server(&protocol, &mut send, &mut receive).await?;
-    let owner = peer.user_public_key == protocol.own_user_public_key;
-    let streams = tokio::spawn(accept_streams(
-        protocol.routing(),
-        peer.clone(),
-        connection.clone(),
-    ));
-    let _abort_streams = AbortOnDrop(streams);
     let (outbound, mut outbound_rx) = mpsc::channel(COMPUTE_OUTBOUND_CAPACITY);
     let (disconnect, mut disconnect_rx) = mpsc::channel(1);
     let mut attached = Vec::new();
@@ -163,17 +128,6 @@ async fn run_server_session(
                 }
                 incoming = read_compute(&mut receive) => {
                     let incoming = incoming?;
-                    if !owner {
-                        // Another user's device reaches environments on its
-                        // own streams; the control stream is the owner's.
-                        if matches!(incoming, ComputeEnvelope::Ping) {
-                            write_compute(&mut send, &ComputeEnvelope::Pong).await?;
-                            continue;
-                        }
-                        break Err(ComputeSessionError::Protocol(
-                            "compute control is reserved to the relay owner's devices".into(),
-                        ));
-                    }
                     if let ComputeEnvelope::Attach { workspace_id } = incoming {
                         let admitted = attach_workspace(
                             &protocol.workspaces,
@@ -182,7 +136,6 @@ async fn run_server_session(
                             &outbound,
                             &disconnect,
                             &mut send,
-                            &connection,
                         ).await?;
                         if admitted && !attached.contains(&workspace_id) {
                             attached.push(workspace_id);
@@ -217,33 +170,6 @@ async fn run_server_session(
     outcome
 }
 
-/// Serve every further stream of an authenticated connection.
-async fn accept_streams(
-    routing: crate::environment_routing::RoutingContext,
-    peer: AuthenticatedPeer,
-    connection: Connection,
-) {
-    while let Ok((send, receive)) = connection.accept_bi().await {
-        let routing = routing.clone();
-        let peer = peer.clone();
-        tokio::spawn(async move {
-            if let Err(error) =
-                crate::environment_routing::serve_stream(routing, peer, send, receive).await
-            {
-                tracing::debug!(%error, "environment stream ended");
-            }
-        });
-    }
-}
-
-struct AbortOnDrop(tokio::task::JoinHandle<()>);
-
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
-
 /// Clone a workspace handle without carrying the registry lock into work on
 /// that workspace. Registry membership and workspace state have independent
 /// lock domains; nesting them needlessly serializes unrelated sessions.
@@ -265,18 +191,18 @@ async fn authenticate_server(
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
-    let policy = protocol
-        .trust_policy
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone();
     let peer = auth::accept_hello(
         &hello,
         &protocol.own_user_public_key,
-        &policy,
+        &TrustPolicy::AllowMatchingUser,
         &revocations,
         unix_now_ns(),
     )?;
+    if peer.user_public_key != protocol.own_user_public_key {
+        return Err(ComputeSessionError::Protocol(
+            "compute peer does not chain to the relay owner".into(),
+        ));
+    }
     let mut nonce = [0; 32];
     rand::Rng::fill_bytes(&mut rand::rng(), &mut nonce);
     let acknowledgement = auth::build_hello_ack(
@@ -317,7 +243,6 @@ async fn attach_workspace(
     outbound: &mpsc::Sender<ComputeEnvelope>,
     disconnect: &mpsc::Sender<()>,
     send: &mut SendStream,
-    connection: &Connection,
 ) -> Result<bool, ComputeSessionError> {
     let Some(workspace) = find_workspace(workspaces, workspace_id).await else {
         write_compute(
@@ -346,12 +271,9 @@ async fn attach_workspace(
         .map_err(|_| std::io::Error::other("compute backlog scan panicked"))?;
         match admission? {
             Some(pending) => {
-                workspace.compute.attach(
-                    device,
-                    outbound.clone(),
-                    disconnect.clone(),
-                    Some(connection.clone()),
-                );
+                workspace
+                    .compute
+                    .attach(device, outbound.clone(), disconnect.clone());
                 drop(workspace);
                 (pending, true)
             }
@@ -612,26 +534,6 @@ impl ComputeClient {
     /// Authenticated view of the relay certificate.
     pub fn relay_peer(&self) -> &AuthenticatedPeer {
         &self.relay_peer
-    }
-
-    /// The authenticated connection, for opening further streams (a
-    /// worker's legacy launches) while this client keeps the control stream.
-    #[must_use]
-    pub fn connection(&self) -> Connection {
-        self.connection.clone()
-    }
-
-    /// Wait for the relay to open a stream to this device (an environment
-    /// session or a legacy launch routed to this worker).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error once the connection is gone.
-    pub async fn accept_stream(&self) -> Result<(SendStream, RecvStream), ComputeSessionError> {
-        self.connection
-            .accept_bi()
-            .await
-            .map_err(|error| ComputeSessionError::Connection(error.to_string()))
     }
 
     /// Send one bounded typed compute envelope.
