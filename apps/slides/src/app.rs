@@ -17,41 +17,38 @@ use automerge::{AutoCommit, ObjId, ReadDoc};
 use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
-use vello::peniko::{BlendMode, Color, Fill};
+use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use tilo_rich_text::{FieldOutcome, RichTextField, RichTextSurface, SubmitKey};
-use ui::ColorCompat;
-use ui::icons::{Icon, draw_icon};
+use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextStyle, TextWeight};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Embedded;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
-    AudiencePresentationProvider, ColorPicker, DEFAULT_BREAKPOINT, FlapState, FullscreenProvider,
-    NumberInput, PageSidebar, PageSidebarEvent, Scrollable, SplitLayout, TextInput, Widget,
+    AudiencePresentationProvider, ColorPicker, FullscreenProvider, NumberInput, PageSidebar,
+    PageSidebarEvent, Scrollable, SidebarDrawer, SplitLayout, TextInput, Widget,
 };
 
 use crate::actions;
 use crate::assets::ImageStore;
-use crate::chrome;
 use crate::doc::SlidesDoc;
 use crate::help_overlay::HelpOverlay;
 use crate::model::{
     Background, Deck, Element, ElementKind, FILL_ROLES, Id, Layout, Palette, PaletteKind, SLIDE_H,
     SLIDE_W, STROKE_ROLES, Slide, TextAlign, new_id, seed_deck, starter_deck,
 };
-use crate::overview_grid::{OverviewGrid, scroll_from_thumb_drag, scrollbar_rects};
+use crate::overview_grid::OverviewGrid;
 use crate::presentation::{Blank, Command as PresentCommand, Presentation, PresentationFrame};
 use crate::render::{self, DeckAssets};
 use crate::strings::{tr, tr_args};
-use crate::toolbar_tools::{MenuPress, ToolMetrics, ToolbarTools, ToolbarToolsLayout};
 use tilo_content::ContentStore;
 use ui::i18n::ArgValue;
 
@@ -251,37 +248,6 @@ fn save_document_request(suggested_name: &str) -> DocPortalChannel {
     }
 }
 
-/// 1× floors for the editor chrome. Every row is derived from the measured
-/// line box of the text it carries plus spacing tokens (see
-/// [`ChromeMetrics`]); these floors reproduce the classic density exactly at
-/// 1× and only give way when larger text needs the room.
-const TOOLBAR_MIN_H: f64 = 56.0;
-const TOOLBAR_PILL_MIN_H: f64 = 34.0;
-const CONTROL_MIN_H: f64 = 30.0;
-const SMALL_PILL_MIN_H: f64 = 28.0;
-/// Colour swatches carry no text; they keep one fixed height.
-const SWATCH_H: f64 = 26.0;
-/// The speaker-notes box never shrinks below this, however tall the
-/// property sections above it grow.
-const NOTES_MIN_H: f64 = 188.0;
-/// Width reserved for the font-size `NumberInput` in the TYPE row.
-const FONT_INPUT_W: f64 = 136.0;
-/// Deliberately off-scale: the two lines of the toolbar title block sit this
-/// close so they read as one label with a caption, not two rows.
-const TITLE_LINE_GAP: f64 = 2.0;
-/// Base (unscaled) chrome font sizes; the renderer applies the accessibility
-/// scale once when it paints them.
-const FONT_CAPTION: f32 = 11.0;
-const FONT_SUBTITLE: f32 = 11.5;
-const FONT_PILL: f32 = 12.0;
-const FONT_CONTROL: f32 = 13.0;
-const FONT_HEADING: f32 = 16.0;
-const FONT_TITLE: f32 = 17.0;
-const RAIL_W: f64 = 212.0;
-const INSPECTOR_W: f64 = 296.0;
-/// Inset of the inspector's content column from the panel edges (top, sides
-/// and, below the last section, the bottom of its scrollable content).
-const INSPECTOR_PAD: f64 = 16.0;
 /// Half-size of a selection handle's *grab* zone (hit-test radius).
 const HANDLE: f64 = 9.0;
 /// How far outside the selected element's content box the resize handles sit,
@@ -291,15 +257,6 @@ const HANDLE: f64 = 9.0;
 /// decoration reads as a single frame *around* the content rather than over it.
 const HANDLE_OFFSET: f64 = 8.0;
 
-/// Below this allocated width (logical px) the editor switches from the
-/// docked side-by-side layout to a narrow layout where the slide rail
-/// collapses into an overlay flap. The slide canvas plus both side panels
-/// (rail + inspector) only fit comfortably above this width.
-const NARROW_BREAKPOINT: f64 = DEFAULT_BREAKPOINT;
-/// Below this allocated width the inspector also collapses to a right-edge
-/// overlay flap. It intentionally matches the rail breakpoint: a compact
-/// window must never sacrifice the canvas to two permanent sidebars.
-const INSPECTOR_BREAKPOINT: f64 = NARROW_BREAKPOINT;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Mode {
     Edit,
@@ -393,7 +350,6 @@ pub(super) enum Hit {
     Present,
     Overview,
     OpenSlide(usize),
-    CyclePalette,
     Insert(ElementKind),
     SelectSlide(usize),
     SetFill(String),
@@ -415,261 +371,10 @@ pub(super) enum Hit {
     ToggleRail,
     /// Toggle the collapsible inspector (narrow-window properties flap).
     ToggleInspector,
-    /// Toggle the toolbar's insert-tool overflow ("More") menu.
+    /// Open the menu of the insert tools that did not fit the header row.
     ToggleToolbarMenu,
-}
-
-#[derive(Clone, Copy)]
-enum LabelColor {
-    Primary,
-    Dim,
-}
-
-#[derive(Clone)]
-struct Label {
-    pos: Point,
-    text: String,
-    font: f32,
-    color: LabelColor,
-    weight: TextWeight,
-    /// When set, the painter elides `text` with the renderer's own metrics to
-    /// fit this many final pixels, so layout only has to reserve the slot.
-    max_w: Option<f64>,
-}
-
-/// Chrome text metrics for the editor's toolbar, rail and inspector, resolved
-/// once per frame from the renderer that paints them.
-///
-/// Slides hands the renderer base font sizes and lets it apply the
-/// accessibility scale once, so every value here is in *final* pixels: the
-/// measured line box of each chrome font and the measured width of each label
-/// the chrome reserves a slot for. `compute_chrome` is renderer-free (event
-/// handlers call it too), so it reads these instead of estimating; every row
-/// height and label slot it produces therefore matches what is painted and
-/// what is hit-tested. `fallback()` stands in until the first draw, whose
-/// `refresh_chrome_metrics` replaces it before that frame's chrome is built.
-#[derive(Clone, Debug, PartialEq)]
-struct ChromeMetrics {
-    /// Renderer text scale the widths and line boxes were measured under.
-    scale: f64,
-    /// Measured line boxes (final px) of the chrome fonts.
-    lh_caption: f64,
-    lh_subtitle: f64,
-    lh_pill: f64,
-    lh_control: f64,
-    lh_heading: f64,
-    lh_title: f64,
-    /// Measured label widths keyed by `(text, font × 10, weight)`.
-    labels: HashMap<(String, u16, u16), f64>,
-    /// Theme spacing tokens.
-    s1: f64,
-    s2: f64,
-    s3: f64,
-    s4: f64,
-}
-
-impl ToolMetrics for ChromeMetrics {
-    fn pill_w(&self, label: &str, icon: bool) -> f64 {
-        Self::pill_w(self, label, icon)
-    }
-
-    fn menu_row_h(&self) -> f64 {
-        self.control_h()
-    }
-}
-
-impl ChromeMetrics {
-    fn key(text: &str, font: f32, weight: TextWeight) -> (String, u16, u16) {
-        (
-            text.to_owned(),
-            (font * 10.0).round() as u16,
-            weight.to_u16(),
-        )
-    }
-
-    /// Resolve every chrome metric against `tr`; `labels` is the set of
-    /// `(text, font, weight)` the chrome reserves a slot for.
-    fn resolve<'a>(
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        labels: impl IntoIterator<Item = (&'a str, f32, TextWeight)>,
-    ) -> Self {
-        let line_h = |tr: &mut TextRenderer, font: f32| f64::from(tr.measure("Ag", font, None).1);
-        let lh_caption = line_h(tr, FONT_CAPTION);
-        let lh_subtitle = line_h(tr, FONT_SUBTITLE);
-        let lh_pill = line_h(tr, FONT_PILL);
-        let lh_control = line_h(tr, FONT_CONTROL);
-        let lh_heading = line_h(tr, FONT_HEADING);
-        let lh_title = line_h(tr, FONT_TITLE);
-        let labels = labels
-            .into_iter()
-            .map(|(text, font, weight)| {
-                let (w, _) = tr.measure_weighted(text, font, None, weight);
-                (Self::key(text, font, weight), f64::from(w))
-            })
-            .collect();
-        let sp = &theme.tokens.spacing;
-        Self {
-            scale: f64::from(tr.text_scale()),
-            lh_caption,
-            lh_subtitle,
-            lh_pill,
-            lh_control,
-            lh_heading,
-            lh_title,
-            labels,
-            s1: f64::from(sp.s1),
-            s2: f64::from(sp.s2),
-            s3: f64::from(sp.s3),
-            s4: f64::from(sp.s4),
-        }
-    }
-
-    /// The 1× metrics used before the first draw has a renderer: every row
-    /// lands on its classic floor and label slots fall back to an estimate.
-    fn fallback() -> Self {
-        let line_h = |font: f32| f64::from(font) * 1.25;
-        Self {
-            scale: 1.0,
-            lh_caption: line_h(FONT_CAPTION),
-            lh_subtitle: line_h(FONT_SUBTITLE),
-            lh_pill: line_h(FONT_PILL),
-            lh_control: line_h(FONT_CONTROL),
-            lh_heading: line_h(FONT_HEADING),
-            lh_title: line_h(FONT_TITLE),
-            labels: HashMap::new(),
-            s1: 4.0,
-            s2: 8.0,
-            s3: 12.0,
-            s4: 16.0,
-        }
-    }
-
-    /// Final-pixel width of `text` at `font`/`weight`: measured when the
-    /// renderer has seen it, otherwise a generous per-glyph estimate.
-    fn label_w(&self, text: &str, font: f32, weight: TextWeight) -> f64 {
-        self.labels
-            .get(&Self::key(text, font, weight))
-            .copied()
-            .unwrap_or_else(|| chrome::est_width(text, f64::from(font)) * self.scale)
-    }
-
-    /// A toolbar pill: label plus `s3` each side, plus an icon slot when it
-    /// carries one.
-    fn pill_w(&self, label: &str, icon: bool) -> f64 {
-        let icon_w = if icon { TOOLBAR_ICON + self.s2 } else { 0.0 };
-        icon_w + self.label_w(label, FONT_CONTROL, TextWeight::Semibold) + 2.0 * self.s3
-    }
-
-    /// Toolbar pills: the control line box plus `s4`, never below 34 px.
-    fn pill_h(&self) -> f64 {
-        (self.lh_control + self.s4).max(TOOLBAR_PILL_MIN_H)
-    }
-
-    /// Toolbar: the two-line title block plus `s2` above and below, never
-    /// below 56 px.
-    fn toolbar_h(&self) -> f64 {
-        (self.title_block_h() + 2.0 * self.s2).max(TOOLBAR_MIN_H)
-    }
-
-    /// Title line box, the fixed 2 px seam, and the subtitle line box.
-    fn title_block_h(&self) -> f64 {
-        self.lh_title + TITLE_LINE_GAP + self.lh_subtitle
-    }
-
-    /// Inspector / rail buttons: the control line box plus `s3`, never below
-    /// 30 px.
-    fn control_h(&self) -> f64 {
-        (self.lh_control + self.s3).max(CONTROL_MIN_H)
-    }
-
-    /// Layout / background / theme pills: the pill line box plus `s3`, never
-    /// below 28 px.
-    fn small_pill_h(&self) -> f64 {
-        (self.lh_pill + self.s3).max(SMALL_PILL_MIN_H)
-    }
-
-    /// Vertical advance of a "SECTION" caption: its line box plus `s2`.
-    fn caption_adv(&self) -> f64 {
-        self.lh_caption + self.s2
-    }
-
-    /// Vertical advance of a panel heading ("TEXT", "SLIDE 3"): its line box
-    /// plus `s3`.
-    fn heading_adv(&self) -> f64 {
-        self.lh_heading + self.s3
-    }
-
-    /// The rail header row (the "SLIDES" caption and the overlay's Close
-    /// button): a control plus `s1`, never below the classic 34 px.
-    fn rail_header_h(&self) -> f64 {
-        (self.control_h() + self.s1).max(TOOLBAR_PILL_MIN_H)
-    }
-}
-
-/// Icon slot inside an icon+label toolbar pill.
-const TOOLBAR_ICON: f64 = 18.0;
-/// Leading slot of a palette pill: `s2` inset, the 12 px colour dot and a
-/// 6 px gap before the label (the dot is painted at `x0+8 .. x0+20`).
-const PALETTE_DOT_SLOT: f64 = 26.0;
-
-#[derive(Clone)]
-pub(super) enum ButtonKind {
-    Text {
-        label: String,
-        active: bool,
-        danger: bool,
-    },
-    IconText {
-        icon: Icon,
-        label: String,
-        accent: bool,
-    },
-    IconOnly {
-        icon: Icon,
-        active: bool,
-    },
-    Swatch {
-        role: String,
-        selected: bool,
-    },
-    Palette {
-        kind: PaletteKind,
-        selected: bool,
-    },
-    /// Three-line "hamburger" that summons the collapsed slide rail.
-    Hamburger,
-    /// One cell of a connected segmented control (e.g. text alignment). The
-    /// `pos` decides which outer corners round so the group reads as a single
-    /// pill split into cells.
-    Segment {
-        label: String,
-        active: bool,
-        pos: SegPos,
-    },
-}
-
-/// Where a [`ButtonKind::Segment`] sits in its group, controlling corner
-/// rounding so only the outer ends are rounded.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum SegPos {
-    First,
-    Mid,
-    Last,
-}
-
-#[derive(Clone)]
-pub(super) struct UiButton {
-    pub(super) rect: Rect,
-    pub(super) kind: ButtonKind,
-    pub(super) hit: Hit,
-}
-
-/// Rects the inspector reserves for widgets it doesn't draw as `UiButton`s
-/// (the font-size [`NumberInput`], the speaker-notes box).
-struct InspectorRects {
-    notes: Option<Rect>,
-    font_input: Option<Rect>,
+    /// Open the menu of slide layouts.
+    OpenLayoutMenu,
 }
 
 /// Framework event state shared by the small embedded-widget routers.
@@ -724,75 +429,6 @@ impl TextBoxEditor {
             host: Embedded::new(surface),
         }
     }
-}
-
-/// Default size of the fill colour-picker popover, in logical px.
-const FILL_PICKER_W: f64 = 260.0;
-const FILL_PICKER_H: f64 = 220.0;
-
-struct Chrome {
-    toolbar: Rect,
-    /// Clickable region of the deck title in the toolbar — a press here starts
-    /// the inline title rename. Its top-left is [`Chrome::title_pos`].
-    title_rect: Rect,
-    /// Baseline top-left the title label is drawn at (used to place the rename
-    /// caret so it tracks the real glyphs).
-    title_pos: Point,
-    /// The rail's painted rect. When the rail is an overlay flap this slides
-    /// in from the left edge (off-screen when closed); when docked it is the
-    /// permanent left column.
-    rail: Rect,
-    inspector: Rect,
-    /// Unscrolled height of the inspector's content (sections + notes) from
-    /// the panel top, so `draw` can size the panel's scroll model.
-    inspector_content_h: f64,
-    slide_dest: Rect,
-    scale: f64,
-    /// Thumbnail slot rects `(index, rect)` for this frame, read back from the
-    /// shared [`PageSidebar`] so hit-testing / auto-scroll / the `--shots` demo
-    /// agree with what it paints.
-    thumbs: Vec<(usize, Rect)>,
-    buttons: Vec<UiButton>,
-    labels: Vec<Label>,
-    /// The scrolling viewport for the thumbnail list (between the "SLIDES"
-    /// header and the pinned Add/Dup/Del row) — the rect handed to the shared
-    /// rail's `begin_frame`.
-    rail_viewport: Rect,
-    notes_box: Option<Rect>,
-    /// Where the font-size [`NumberInput`] sits (only when a text element is
-    /// selected). Positioned + drawn by the widget itself, not as a `UiButton`.
-    font_input_rect: Option<Rect>,
-    /// Where the fill [`ColorPicker`] popover sits (only while it's open).
-    fill_picker_rect: Option<Rect>,
-    /// Responsive insert-tool layout, including the open overflow popover.
-    toolbar_tools: ToolbarToolsLayout,
-    /// How the rail resolves at the current width (docked beside content, or
-    /// an overlay flap over it).
-    layout: SplitLayout,
-    /// How the inspector resolves at the current width.
-    inspector_layout: SplitLayout,
-    /// Dimming scrim behind an open overlay flap (empty when docked/closed).
-    scrim: Rect,
-    /// Eased reveal `0..=1` of the rail, for the scrim opacity.
-    reveal: f64,
-    /// Eased reveal `0..=1` of the inspector, for the scrim opacity.
-    inspector_reveal: f64,
-}
-
-/// Rail + inspector column geometry resolved from the current width and
-/// flap reveal, plus the scrim that dims the body while either is an open
-/// overlay flap. The intermediate result [`SlidesApp::compute_panels`]
-/// builds and [`SlidesApp::compute_chrome`] assembles into a full [`Chrome`].
-struct PanelGeometry {
-    rail: Rect,
-    inspector: Rect,
-    canvas_area: Rect,
-    layout: SplitLayout,
-    reveal: f64,
-    insp_layout: SplitLayout,
-    insp_reveal: f64,
-    scrim: Rect,
-    body_top: f64,
 }
 
 #[allow(
@@ -870,35 +506,18 @@ pub struct SlidesApp {
     /// selection beside the published deck without constructing a dispatcher.
     framework_hosted: bool,
 
-    /// Responsive slide-rail flap. On a wide window the rail is docked beside
-    /// the canvas; on a narrow window it collapses to an overlay flap behind a
-    /// scrim, closed by default and summoned by the toolbar hamburger. This is
-    /// the shared toolkit easing kernel ([`FlapState`]).
-    rail_flap: FlapState,
-    /// Responsive inspector flap. The inspector docks on the right on a wide
-    /// window; below a (narrower) breakpoint it collapses to a right-edge
-    /// overlay flap so the canvas reclaims the full width. Same easing kernel
-    /// as the rail.
-    inspector_flap: FlapState,
-    /// Width below which the inspector collapses to an overlay flap. Lower than
-    /// the rail's breakpoint so a mid-width window keeps the inspector docked
-    /// (rail flap + docked inspector) and only the narrowest widths collapse
-    /// both panels.
-    inspector_breakpoint: f64,
-    /// Last instant the flap animation advanced, for frame-rate-independent
-    /// easing across `draw` calls.
-    last_flap_tick: ui::time::Instant,
-    /// Cleared after the first layout is resolved; until then the flap's eased
-    /// reveal is snapped to the resolved default so the very first frame at a
-    /// narrow width shows the (closed) flap without a one-frame flash.
+    /// The slide sidebar: docked beside the canvas on a wide window, a
+    /// floating drawer over it on a narrow one.
+    rail_drawer: SidebarDrawer,
+    /// The properties inspector at the trailing edge, docked or floating
+    /// like the sidebar.
+    inspector_drawer: SidebarDrawer,
+    /// Cleared after the first layout is resolved; until then each drawer's
+    /// reveal is snapped to its resolved default so the first frame at a
+    /// narrow width shows the closed drawers without a one-frame slide.
     flap_uninitialised: bool,
-    /// Last applied theme text scale. Chrome construction is also used for
-    /// pointer hit testing and accessibility bounds, so large-text mode is a
-    /// layout state rather than a draw-only override.
-    text_scale: f32,
-    /// Width breakpoint between the docked and overlay rail layouts. A field
-    /// (not a constant) so `--shots` can force a narrow layout deterministically.
-    breakpoint: f64,
+    /// Last frame, for the rail's frame-rate-independent drag auto-scroll.
+    last_tick: ui::time::Instant,
 
     /// Monotonic revision of the loaded deck, bumped whenever the CRDT mirror
     /// is reloaded. The presentation cache includes it in its key, so a remote
@@ -921,9 +540,9 @@ pub struct SlidesApp {
     rail_scroll: f64,
     /// Vertical scroll offset (px) of the slide-sorter overview grid.
     overview: OverviewGrid,
-    /// Responsive insert toolbar. Owns overflow state, layout, drawing, and
-    /// pointer policy; document actions returned by it are applied here.
-    toolbar_tools: ToolbarTools,
+    /// The open context menu is the insert tools that did not fit the
+    /// header row (the More button shows as on while it is).
+    toolbar_menu_open: bool,
     /// Measured chrome text metrics `compute_chrome` lays out from (see
     /// [`ChromeMetrics`]); refreshed at the top of every draw.
     chrome_metrics: ChromeMetrics,
@@ -983,6 +602,9 @@ pub struct SlidesApp {
     /// The shared editor owns multiline layout, selection, clipboard, scrolling
     /// and IME; `editing_notes` only owns the inspector's open state.
     notes_input: TextInput,
+    /// The speaker notes shown, read-only, while they are not being edited:
+    /// the same field face the editor has.
+    notes_preview: TextInput,
     /// Set when the popover opens so the next `draw` (which has the theme, hence
     /// can resolve a colour *role* to a concrete colour) seeds the picker with
     /// the selected element's current fill.
@@ -999,6 +621,39 @@ pub struct SlidesApp {
     /// delete zone on the first drawn frame, so a headless capture shows the
     /// armed "Drop to delete" target. Never set on a live launch.
     demo_delete_zone: bool,
+    /// `--shots`-only: open the slide sidebar or the inspector once the
+    /// first layout has resolved the window's size class.
+    demo_open_rail: bool,
+    demo_open_inspector: bool,
+}
+
+/// One row of a context menu: what it says and the action it performs.
+struct MenuRow {
+    label: String,
+    hit: Hit,
+    checked: Option<bool>,
+    destructive: bool,
+}
+
+impl MenuRow {
+    fn new(label: String, hit: Hit) -> Self {
+        Self {
+            label,
+            hit,
+            checked: None,
+            destructive: false,
+        }
+    }
+
+    fn checked(mut self, checked: bool) -> Self {
+        self.checked = Some(checked);
+        self
+    }
+
+    fn destructive(mut self) -> Self {
+        self.destructive = true;
+        self
+    }
 }
 
 /// Which context menu a `--shots` scenario should pop open for its capture.
@@ -1006,6 +661,8 @@ pub struct SlidesApp {
 enum DemoMenu {
     Element,
     Slide,
+    /// The insert tools behind the header row's More button.
+    Tools,
 }
 
 /// The content store an app constructed without one uses: the app's own
@@ -1054,6 +711,7 @@ impl SlidesApp {
     fn build(deck: Deck) -> Self {
         let content = default_content();
         let search_provider = crate::search_provider::SlideSearchProvider::new(&deck);
+        let (rail_drawer, inspector_drawer) = Self::new_drawers();
         let (document_worker, document_worker_error) = match DocumentWorker::new(content.clone()) {
             Ok(worker) => (Some(worker), None),
             Err(error) => (None, Some(error)),
@@ -1088,20 +746,17 @@ impl SlidesApp {
             actions: ui::ActionHost::new(),
             framework: None,
             framework_hosted: false,
-            rail_flap: FlapState::open_when_docked(),
-            inspector_flap: FlapState::open_when_docked(),
-            inspector_breakpoint: INSPECTOR_BREAKPOINT,
-            last_flap_tick: ui::time::now(),
+            rail_drawer,
+            inspector_drawer,
             flap_uninitialised: true,
-            text_scale: 1.0,
-            breakpoint: NARROW_BREAKPOINT,
+            last_tick: ui::time::now(),
             deck_rev: 0,
             search_provider,
             images: ImageStore::new(content.clone()),
             content,
             rail_scroll: 0.0,
             overview: OverviewGrid::new(),
-            toolbar_tools: ToolbarTools::default(),
+            toolbar_menu_open: false,
             chrome_metrics: ChromeMetrics::fallback(),
             inspector_scroll: Scrollable::new_vertical().always_visible(),
             tooltip_text: None,
@@ -1122,23 +777,31 @@ impl SlidesApp {
                 .with_range(8.0, 160.0)
                 .with_step(2.0)
                 .with_suffix("pt")
+                .compact()
                 .with_id("slides-font-size"),
-            fill_picker: ColorPicker::new(vello::peniko::Color::from_rgba8(90, 96, 240, 255)),
+            // Seeded from the selected element's fill when it opens.
+            fill_picker: ColorPicker::new(vello::peniko::Color::TRANSPARENT),
             fill_picker_open: false,
             fill_picker_needs_init: false,
             title_input: TextInput::local()
                 .with_kind(ui::widget::TextInputKind::Name)
-                .with_plain_chrome()
-                .with_font_size(17.0)
+                .with_text_role(ui::TextRole::Heading)
                 .with_id("slides-title"),
             notes_input: TextInput::local()
                 .multiline(true)
-                .with_plain_chrome()
-                .with_font_size(12.5)
+                .with_text_role(ui::TextRole::Body)
+                .with_placeholder(&tr("slides-notes-placeholder"))
                 .with_id("slides-speaker-notes"),
+            notes_preview: TextInput::local()
+                .multiline(true)
+                .with_text_role(ui::TextRole::Body)
+                .with_placeholder(&tr("slides-notes-placeholder"))
+                .with_id("slides-speaker-notes-preview"),
             demo_menu: None,
             demo_reorder: false,
             demo_delete_zone: false,
+            demo_open_rail: false,
+            demo_open_inspector: false,
         }
     }
 
@@ -1191,7 +854,7 @@ impl SlidesApp {
             // thumbnail list is visible at a narrow (overlay-flap) width.
             "many_rail" => {
                 self.fill_long_deck();
-                self.rail_flap.open();
+                self.demo_open_rail = true;
             }
             // Overview scrolled to its end, proving the last slide is reachable.
             "overview_end" => {
@@ -1203,10 +866,20 @@ impl SlidesApp {
             // *preference* here and leave `flap_uninitialised` set, so the
             // first-frame snap still resolves the OTHER flap to its default —
             // otherwise it would show a one-frame half-open transient.
-            "narrow" => self.rail_flap.open(),
-            "narrow_closed" => self.rail_flap.close(),
-            // Narrow layout with the inspector flap summoned open.
-            "inspector" => self.inspector_flap.open(),
+            "narrow" => self.demo_open_rail = true,
+            // The inspector for a selected text box: docked on a wide window,
+            // the drawer summoned open on a narrow one.
+            "inspector" => {
+                self.demo_open_inspector = true;
+                self.cur_slide = 1;
+                self.sel = self.deck.slides.get(1).and_then(|s| {
+                    s.elements
+                        .iter()
+                        .find(|e| e.kind == ElementKind::Text)
+                        .map(|e| e.id.clone())
+                });
+                self.bootstrapped = true;
+            }
             // "edit" (and anything unknown) keeps the default editor screen.
             "empty" => {
                 self.deck = starter_deck();
@@ -1252,7 +925,7 @@ impl SlidesApp {
             // The toolbar overflow ("More") menu, opened — proves every insert
             // tool stays pointer-reachable even when the bar can't show them all.
             "toolbar_menu" => {
-                self.toolbar_tools.set_open(true);
+                self.demo_menu = Some(DemoMenu::Tools);
                 self.sel = None;
                 self.bootstrapped = true;
             }
@@ -1328,7 +1001,7 @@ impl SlidesApp {
     /// and open the fill colour picker popover.
     fn apply_scenario_inspector_widgets(&mut self) {
         self.cur_slide = 1;
-        self.inspector_flap.open();
+        self.demo_open_inspector = true;
         self.sel = self.deck.slides.get(1).and_then(|s| {
             s.elements
                 .iter()
@@ -1428,54 +1101,54 @@ impl SlidesApp {
         self.bootstrapped = true;
     }
 
-    /// The rail layout resolved from the current allocated width. Overview and
-    /// present modes are full-window and never show the rail, but the editor
-    /// (`Mode::Edit`) consults this every frame.
+    /// The sidebar layout resolved from the current allocated width.
+    /// Overview and present modes are full-window and never show it, but the
+    /// editor (`Mode::Edit`) consults this every frame.
     fn rail_layout(&self) -> SplitLayout {
-        SplitLayout::from_width(self.rect.width(), self.breakpoint)
+        self.rail_drawer.layout_for(self.rect.width())
     }
 
-    /// Whether the rail is currently revealed (resolving the user's toggle
-    /// against the layout default: docked ⇒ open, overlay ⇒ closed).
+    /// Whether the sidebar is currently revealed (the person's choice for
+    /// this size class, else its default: docked ⇒ open, drawer ⇒ closed).
     fn rail_open(&self) -> bool {
-        self.rail_flap.is_open(self.rail_layout())
+        self.rail_drawer.is_open()
     }
 
     /// The inspector layout resolved from the current allocated width.
     fn inspector_layout(&self) -> SplitLayout {
-        SplitLayout::from_width(self.rect.width(), self.inspector_breakpoint)
+        self.inspector_drawer.layout_for(self.rect.width())
     }
 
     /// Whether the inspector is currently revealed.
     fn inspector_open(&self) -> bool {
-        self.inspector_flap.is_open(self.inspector_layout())
+        self.inspector_drawer.is_open()
     }
 
-    /// Reconcile both the rail and inspector flaps with the current width and
-    /// advance their eased reveals. On the very first resolved layout each flap
-    /// is snapped to its resolved default so a narrow first frame shows the
-    /// (closed) flaps with no one-frame flash. Returns the rail layout. Called
-    /// once per frame before `compute_chrome`.
-    fn sync_flaps(&mut self, dt: f64, reduce_motion: bool) -> SplitLayout {
-        let rail = self.rail_layout();
-        let insp = self.inspector_layout();
-        self.rail_flap.reconcile(rail);
-        self.inspector_flap.reconcile(insp);
+    /// Resolve both drawers against the current width and advance their
+    /// reveals. On the very first resolved layout each is snapped to its
+    /// default, so a narrow first frame shows the closed drawers with no
+    /// one-frame slide. Called once per frame before `compute_chrome`.
+    fn sync_flaps(&mut self, theme: Option<&Theme>) -> SplitLayout {
+        self.resolve_drawers();
         if self.flap_uninitialised {
-            self.rail_flap.snap(self.rail_flap.is_open(rail));
-            self.inspector_flap.snap(self.inspector_flap.is_open(insp));
-            // `snap` records a user preference; clear it so width changes still
-            // fall back to the layout default. Re-resolving via reconcile after
-            // a fresh open_when_docked would re-snap, so instead just mark done.
+            // A `--shots` scenario's drawer is opened for the size class the
+            // window actually resolved to.
+            if std::mem::take(&mut self.demo_open_rail) {
+                self.rail_drawer.open();
+            }
+            if std::mem::take(&mut self.demo_open_inspector) {
+                self.inspector_drawer.open();
+            }
+            let (rail, inspector) = (self.rail_open(), self.inspector_open());
+            self.rail_drawer.snap(rail);
+            self.inspector_drawer.snap(inspector);
             self.flap_uninitialised = false;
-        } else if reduce_motion {
-            self.rail_flap.snap(self.rail_flap.is_open(rail));
-            self.inspector_flap.snap(self.inspector_flap.is_open(insp));
-        } else {
-            self.rail_flap.tick(rail, dt);
-            self.inspector_flap.tick(insp, dt);
+        } else if let Some(theme) = theme {
+            self.rail_drawer.tick(theme);
+            self.inspector_drawer.tick(theme);
         }
-        rail
+        self.resolve_drawers();
+        self.rail_drawer.layout()
     }
 
     // --- CRDT mirror --------------------------------------------------------
@@ -1715,72 +1388,21 @@ impl SlidesApp {
 
     // --- rail scroll geometry ----------------------------------------------
 
-    /// The inspector column's painted rect this frame (the same geometry
-    /// `compute_chrome` uses), for pointer tests that need only the panel.
+    /// The inspector's rect this frame (docked column or floating drawer).
     fn inspector_rect(&self) -> Rect {
-        let r = self.rect;
-        let toolbar = Rect::new(r.x0, r.y0, r.x1, r.y0 + self.chrome_metrics.toolbar_h());
-        self.compute_panels(r, toolbar).inspector
+        self.inspector_drawer.sidebar_rect()
     }
 
-    /// The rail's painted rect, resolved from the current width + flap reveal.
-    /// Mirrors the computation in [`Self::compute_chrome`] so the scroll
-    /// helpers and the chrome agree.
+    /// The slide sidebar's rect this frame (docked column or floating drawer).
     fn rail_rect(&self) -> Rect {
-        let r = self.rect;
-        let body_top = r.y0 + self.chrome_metrics.toolbar_h();
-        match self.rail_layout() {
-            SplitLayout::Docked => {
-                let inset = RAIL_W * self.rail_flap.reveal();
-                Rect::new(r.x0, body_top, r.x0 + inset, r.y1)
-            }
-            SplitLayout::Overlay => {
-                let slide = self.rail_flap.slide();
-                let x0 = r.x0 - RAIL_W * (1.0 - slide);
-                Rect::new(x0, body_top, x0 + RAIL_W, r.y1)
-            }
-        }
+        self.rail_drawer.sidebar_rect()
     }
 
-    /// The scrolling viewport for the thumbnail list — the region between the
-    /// fixed "SLIDES" header and the pinned Add/Dup/Del action row. This is the
-    /// rect handed to the shared [`PageSidebar`]'s `begin_frame`; the widget
-    /// owns the thumbnail geometry + scrollbar inside it.
-    #[allow(
-        clippy::unused_self,
-        reason = "keeps the ergonomic self.rail_viewport(...) call site consistent with the \
-                  other rail geometry helpers; converting to an associated function would read \
-                  worse at every call site for no benefit"
-    )]
+    /// The thumbnail list's viewport — between the sidebar's header and its
+    /// footer actions. The shared [`PageSidebar`] owns the thumbnail
+    /// geometry and scroll bar inside it.
     fn rail_viewport(&self, rail: Rect) -> Rect {
-        let m = &self.chrome_metrics;
-        // Header row (caption / Close) above, pinned action row below, each
-        // separated from the list by `s2`.
-        let list_top = rail.y0 + m.s2 + m.rail_header_h() + m.s2;
-        let list_bottom = (rail.y1 - m.s4 - m.control_h() - m.s2).max(list_top);
-        Rect::new(rail.x0, list_top, rail.x1, list_bottom)
-    }
-
-    /// The red dashed "drop to delete" zone, pinned to the bottom of the rail
-    /// over the (drag-irrelevant) action row. Only shown — and only live — while
-    /// a slide thumbnail is being dragged. Dropping a slide here removes it
-    /// instead of reordering it, matching the app-wide drag-to-delete gesture.
-    #[allow(
-        clippy::unused_self,
-        reason = "keeps the ergonomic self.slide_delete_zone(...) call site consistent with the \
-                  other rail geometry helpers; converting to an associated function would read \
-                  worse at every call site for no benefit"
-    )]
-    fn slide_delete_zone(&self, rail: Rect) -> Rect {
-        // Covers the pinned action row it replaces (same `s4` bottom pad and
-        // control height), inset `s2` from the rail edges.
-        let m = &self.chrome_metrics;
-        Rect::new(
-            rail.x0 + m.s2,
-            rail.y1 - m.s4 - m.control_h() - m.s2,
-            rail.x1 - m.s2,
-            rail.y1 - m.s2,
-        )
+        self.rail_viewport_of(rail)
     }
 
     /// Whether a slide drag is currently hovering the delete zone (for the
@@ -1865,1278 +1487,6 @@ impl SlidesApp {
 
     // --- geometry -----------------------------------------------------------
 
-    /// Every `(text, font, weight)` the chrome reserves a slot for, so
-    /// [`ChromeMetrics::resolve`] can measure each with the style it is
-    /// painted in. Titles are elided at paint time and need no entry.
-    fn chrome_label_set(&self) -> Vec<(String, f32, TextWeight)> {
-        let control = |s: &str| (s.to_owned(), FONT_CONTROL, TextWeight::Semibold);
-        let mut set: Vec<(String, f32, TextWeight)> = vec![
-            control(&tr("slides-present")),
-            control(&tr("slides-close")),
-            control(&tr("slides-add")),
-            control(&tr("slides-dup")),
-            control(&tr("slides-del")),
-            control(&tr("slides-bring-front")),
-            control(&tr("slides-send-back")),
-            control(&tr("slides-duplicate")),
-            control(&tr("slides-delete")),
-            control(&tr("slides-custom-colour")),
-            control("B"),
-            control("I"),
-            // The TYPE row reserves its NumberInput for a three-digit value.
-            control("999 pt"),
-        ];
-        set.extend(
-            crate::toolbar_tools::bar_labels()
-                .iter()
-                .map(|s| control(s)),
-        );
-        set.extend(
-            crate::toolbar_tools::menu_labels()
-                .iter()
-                .map(|s| control(s)),
-        );
-        set.extend(TextAlign::ALL.iter().map(|a| control(a.glyph())));
-        set.extend(Layout::ALL.iter().map(|l| control(l.label())));
-        set.extend(Background::ALL.iter().map(|b| control(b.label())));
-        set.extend(
-            PaletteKind::ALL
-                .iter()
-                .map(|p| (p.label().to_owned(), FONT_PILL, TextWeight::Semibold)),
-        );
-        if let Some(el) = self.selected_element()
-            && el.fill.starts_with('#')
-        {
-            set.push(control(&custom_colour_hex(&el.fill)));
-        }
-        set
-    }
-
-    /// Re-resolve the chrome metrics against the renderer about to paint, so
-    /// this frame's chrome — and the hit-rects later events derive from the
-    /// same `compute_chrome` — is laid out from measured text.
-    fn refresh_chrome_metrics(&mut self, tr: &mut TextRenderer, theme: &Theme) {
-        let set = self.chrome_label_set();
-        // Nothing is gated on a change here — `compute_chrome` re-derives the
-        // chrome from these on every use — so the fresh set simply replaces
-        // the old one.
-        self.chrome_metrics = ChromeMetrics::resolve(
-            tr,
-            theme,
-            set.iter()
-                .map(|(text, font, weight)| (text.as_str(), *font, *weight)),
-        );
-    }
-
-    fn compute_chrome(&self) -> Chrome {
-        if self.text_scale >= 1.5 {
-            return self.compute_large_text_chrome();
-        }
-        let r = self.rect;
-        let m = &self.chrome_metrics;
-        let toolbar = Rect::new(r.x0, r.y0, r.x1, r.y0 + m.toolbar_h());
-        let panels = self.compute_panels(r, toolbar);
-        let (slide_dest, s) = Self::fit_slide(panels.canvas_area);
-
-        let mut buttons = Vec::new();
-        let mut labels = Vec::new();
-
-        // Toolbar -----------------------------------------------------------
-        let title_x =
-            Self::toolbar_hamburger(toolbar, m, panels.layout, panels.reveal, &mut buttons);
-        let bh = m.pill_h();
-        let by = toolbar.y0 + (toolbar.height() - bh) / 2.0;
-
-        // Right-anchored group first (Present · palette · overview grid · the
-        // inspector toggle) so we know the boundary the centre tool group and
-        // title must not cross.
-        let grid_rect = self.toolbar_right_group(toolbar, by, bh, &mut buttons);
-        let right_edge = self.toolbar_inspector_toggle(
-            panels.insp_layout,
-            panels.insp_reveal,
-            grid_rect,
-            by,
-            bh,
-            &mut buttons,
-        );
-
-        // Centre tool group. Every insert tool must stay pointer-reachable at
-        // any width: the ones that fit sit on the toolbar; the rest move behind
-        // a "More" (⋯) overflow button that opens a dropdown menu. Nothing is
-        // ever silently dropped.
-        let tools_x = (title_x + 196.0).max(toolbar.x0 + 320.0_f64.min(toolbar.width() * 0.34));
-        let tools_right = right_edge - m.s3;
-        let tools_first = buttons.len();
-        let toolbar_tools = self.toolbar_tools.layout(
-            &mut buttons,
-            Rect::new(tools_x, by, tools_right, by + bh),
-            toolbar,
-            m,
-        );
-        // The overflow button may sit left of the nominal tools slot when
-        // nothing else fits, so the title yields to the leftmost control that
-        // was actually placed, not to the slot.
-        let leftmost_tool = buttons
-            .get(tools_first..)
-            .unwrap_or_default()
-            .iter()
-            .filter(|b| b.rect.center().y < toolbar.y1)
-            .map(|b| b.rect.x0)
-            .fold(f64::INFINITY, f64::min);
-
-        // Title block, elided at paint time so it never runs under the tools
-        // or the right group.
-        let title_right = tools_x.min(right_edge - m.s3).min(leftmost_tool);
-        let (title_rect, title_pos) =
-            self.toolbar_title_block(toolbar, title_x, title_right, &mut labels);
-
-        // Thumbnail rail ----------------------------------------------------
-        let rail_viewport = self.build_rail_chrome(panels.rail, &mut buttons, &mut labels);
-        let thumbs = self.page_sidebar.thumb_rects();
-
-        // Inspector ---------------------------------------------------------
-        let insp_first_button = buttons.len();
-        let insp_first_label = labels.len();
-        let insp_rects = self.build_inspector(panels.inspector, &mut buttons, &mut labels);
-        let mut notes_box = insp_rects.notes;
-        let mut font_input_rect = insp_rects.font_input;
-        // The panel scrolls once its sections outgrow it (large text in a
-        // short window). Everything it owns is shifted by the offset the
-        // shared scroll model holds — clamped here against this frame's
-        // content so a shrunken panel never shows a stale gap — and whatever
-        // then lies outside the viewport is dropped, so the painter, the
-        // pointer and the accessibility tree all see the same controls.
-        let inspector = panels.inspector;
-        let content_bottom = buttons
-            .get(insp_first_button..)
-            .unwrap_or_default()
-            .iter()
-            .map(|b| b.rect.y1)
-            .chain(
-                labels
-                    .get(insp_first_label..)
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|l| l.pos.y + m.lh_caption),
-            )
-            .chain(notes_box.map(|nb| nb.y1))
-            .fold(inspector.y0, f64::max);
-        let inspector_content_h = content_bottom - inspector.y0 + INSPECTOR_PAD;
-        let max_offset = (inspector_content_h - inspector.height()).max(0.0);
-        let offset = f64::from(self.inspector_scroll.offset_y()).clamp(0.0, max_offset);
-        if offset > 0.0 {
-            let shift = vello::kurbo::Vec2::new(0.0, -offset);
-            for b in buttons.get_mut(insp_first_button..).unwrap_or_default() {
-                b.rect = b.rect + shift;
-            }
-            for l in labels.get_mut(insp_first_label..).unwrap_or_default() {
-                l.pos += shift;
-            }
-            notes_box = notes_box.map(|nb| nb + shift);
-            font_input_rect = font_input_rect.map(|fi| fi + shift);
-        }
-        // Cull by centre: what remains has its centre inside the viewport, so
-        // `in_inspector` (a centre test) keeps classifying it as panel content
-        // and nothing scrolled off the top is ever painted over the toolbar.
-        let inside = |y: f64| y >= inspector.y0 && y <= inspector.y1;
-        let kept: Vec<UiButton> = buttons
-            .drain(insp_first_button..)
-            .filter(|b| inside(b.rect.center().y))
-            .collect();
-        buttons.extend(kept);
-        let kept: Vec<Label> = labels
-            .drain(insp_first_label..)
-            .filter(|l| inside(l.pos.y + m.lh_caption / 2.0))
-            .collect();
-        labels.extend(kept);
-        // The embedded font-size field follows the same rule: once its TYPE
-        // row scrolls out it is not a hit target this frame (otherwise a
-        // field shifted into the toolbar band would still swallow the press
-        // meant for a toolbar control above it). The notes box is last in
-        // the content, so it can only ever lie below the viewport — where it
-        // meets no pointer — and keeps its (shifted, clipped) rect so the
-        // sections above it can still be checked against it.
-        font_input_rect = font_input_rect.filter(|fi| inside(fi.center().y));
-        let fill_picker_rect = self.fill_picker_popover_rect(inspector, r, panels.body_top);
-
-        Chrome {
-            toolbar,
-            title_rect,
-            title_pos,
-            rail: panels.rail,
-            inspector,
-            inspector_content_h,
-            slide_dest,
-            scale: s,
-            thumbs,
-            buttons,
-            labels,
-            rail_viewport,
-            notes_box,
-            font_input_rect,
-            fill_picker_rect,
-            toolbar_tools,
-            layout: panels.layout,
-            inspector_layout: panels.insp_layout,
-            scrim: panels.scrim,
-            reveal: panels.reveal,
-            inspector_reveal: panels.insp_reveal,
-        }
-    }
-
-    /// An intrinsically spaced editor shell for 200% type. Author content is
-    /// intentionally rendered at its authored size (a deck's typography is
-    /// not desktop chrome); all application controls use the active type scale
-    /// and the exact same rectangles feed draw, pointer routing, and a11y.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "large-text chrome is one shared geometry snapshot for drawing, pointer routing, and accessibility; keeping its complete rectangle set together prevents those paths diverging"
-    )]
-    fn compute_large_text_chrome(&self) -> Chrome {
-        let r = self.rect;
-        let toolbar = Rect::new(r.x0, r.y0, r.x1, r.y0 + 82.0);
-        let inspector_open = self.inspector_open();
-        let inspector = if inspector_open {
-            Rect::new(r.x1 - 470.0, toolbar.y1, r.x1, r.y1)
-        } else {
-            Rect::ZERO
-        };
-        let canvas = Rect::new(r.x0, toolbar.y1, inspector.x0.max(r.x0), r.y1);
-        let (slide_dest, scale) = Self::fit_slide(canvas);
-        let mut buttons = vec![
-            UiButton {
-                rect: Rect::new(r.x1 - 300.0, r.y0 + 10.0, r.x1 - 174.0, r.y0 + 72.0),
-                kind: ButtonKind::IconOnly {
-                    icon: Icon::Settings2,
-                    active: inspector_open,
-                },
-                hit: Hit::ToggleInspector,
-            },
-            UiButton {
-                rect: Rect::new(r.x1 - 154.0, r.y0 + 10.0, r.x1 - 20.0, r.y0 + 72.0),
-                kind: ButtonKind::IconText {
-                    icon: Icon::Monitor,
-                    label: "Present".into(),
-                    accent: true,
-                },
-                hit: Hit::Present,
-            },
-        ];
-        let toolbar_tools = self.toolbar_tools.layout(
-            &mut buttons,
-            Rect::new(r.x0 + 390.0, r.y0 + 10.0, r.x0 + 620.0, r.y0 + 72.0),
-            toolbar,
-            &self.chrome_metrics,
-        );
-        let mut labels = vec![Label {
-            pos: Point::new(r.x0 + 650.0, r.y0 + 22.0),
-            text: self.deck.title.clone(),
-            max_w: Some(220.0),
-            font: 17.0,
-            color: LabelColor::Primary,
-            weight: TextWeight::Bold,
-        }];
-        if inspector_open {
-            labels.push(Label {
-                pos: Point::new(inspector.x0 + 28.0, inspector.y0 + 28.0),
-                text: "PROPERTIES".into(),
-                max_w: None,
-                font: 14.0,
-                color: LabelColor::Primary,
-                weight: TextWeight::Bold,
-            });
-            if self.selected_element().is_some() {
-                buttons.extend([
-                    UiButton {
-                        rect: Rect::new(
-                            inspector.x0 + 28.0,
-                            inspector.y0 + 82.0,
-                            inspector.x0 + 218.0,
-                            inspector.y0 + 140.0,
-                        ),
-                        kind: ButtonKind::Text {
-                            label: "Bold".into(),
-                            active: false,
-                            danger: false,
-                        },
-                        hit: Hit::ToggleBold,
-                    },
-                    UiButton {
-                        rect: Rect::new(
-                            inspector.x0 + 238.0,
-                            inspector.y0 + 82.0,
-                            inspector.x1 - 28.0,
-                            inspector.y0 + 140.0,
-                        ),
-                        kind: ButtonKind::Text {
-                            label: "Italic".into(),
-                            active: false,
-                            danger: false,
-                        },
-                        hit: Hit::ToggleItalic,
-                    },
-                    UiButton {
-                        rect: Rect::new(
-                            inspector.x0 + 28.0,
-                            inspector.y0 + 162.0,
-                            inspector.x1 - 28.0,
-                            inspector.y0 + 220.0,
-                        ),
-                        kind: ButtonKind::Text {
-                            label: "Delete object".into(),
-                            active: false,
-                            danger: true,
-                        },
-                        hit: Hit::DeleteElement,
-                    },
-                ]);
-            } else {
-                labels.push(Label {
-                    pos: Point::new(inspector.x0 + 28.0, inspector.y0 + 86.0),
-                    text: "Select an object to edit its properties.".into(),
-                    max_w: Some(inspector.width() - 56.0),
-                    font: 13.0,
-                    color: LabelColor::Dim,
-                    weight: TextWeight::Regular,
-                });
-            }
-        }
-        Chrome {
-            toolbar,
-            title_rect: Rect::new(r.x0 + 640.0, r.y0, r.x1 - 310.0, toolbar.y1),
-            title_pos: Point::new(r.x0 + 650.0, r.y0 + 22.0),
-            rail: Rect::ZERO,
-            inspector,
-            inspector_content_h: inspector.height(),
-            slide_dest,
-            scale,
-            thumbs: Vec::new(),
-            buttons,
-            labels,
-            rail_viewport: Rect::ZERO,
-            notes_box: None,
-            font_input_rect: None,
-            fill_picker_rect: None,
-            toolbar_tools,
-            layout: SplitLayout::Overlay,
-            inspector_layout: SplitLayout::Docked,
-            scrim: Rect::ZERO,
-            reveal: 0.0,
-            inspector_reveal: 1.0,
-        }
-    }
-
-    /// Resolve the rail + inspector column geometry from the current width
-    /// and flap reveal, plus the scrim that dims the body while either is an
-    /// open overlay flap. Shared by [`Self::compute_chrome`].
-    fn compute_panels(&self, r: Rect, toolbar: Rect) -> PanelGeometry {
-        // Resolve both responsive flaps from the allocated width. Docked ⇒ the
-        // panel is a permanent column that insets the canvas; narrow ⇒ it
-        // collapses to an overlay flap that slides over the canvas behind a
-        // scrim, and the canvas reclaims that column's width.
-        let layout = self.rail_layout();
-        let reveal = self.rail_flap.reveal();
-        let insp_layout = self.inspector_layout();
-        let insp_reveal = self.inspector_flap.reveal();
-        let body_top = toolbar.y1;
-
-        // Rail column (left).
-        let (rail, canvas_left) = match layout {
-            SplitLayout::Docked => {
-                // Eased inset so the rail reveals/collapses smoothly when
-                // toggled even while docked.
-                let inset = RAIL_W * reveal;
-                (Rect::new(r.x0, body_top, r.x0 + inset, r.y1), r.x0 + inset)
-            }
-            SplitLayout::Overlay => {
-                // Slide in from the left edge; closed ⇒ fully off-screen.
-                let slide = self.rail_flap.slide();
-                let x0 = r.x0 - RAIL_W * (1.0 - slide);
-                (Rect::new(x0, body_top, x0 + RAIL_W, r.y1), r.x0)
-            }
-        };
-
-        // Inspector column (right) — mirror of the rail.
-        let (inspector, canvas_right) = match insp_layout {
-            SplitLayout::Docked => {
-                let inset = INSPECTOR_W * insp_reveal;
-                (Rect::new(r.x1 - inset, body_top, r.x1, r.y1), r.x1 - inset)
-            }
-            SplitLayout::Overlay => {
-                // Slide in from the right edge; closed ⇒ fully off-screen.
-                let slide = self.inspector_flap.slide();
-                let x0 = r.x1 - INSPECTOR_W * slide;
-                (Rect::new(x0, body_top, x0 + INSPECTOR_W, r.y1), r.x1)
-            }
-        };
-
-        // A single scrim dims the body whenever either overlay flap is revealed.
-        let rail_scrim = layout == SplitLayout::Overlay && reveal > 0.001;
-        let insp_scrim = insp_layout == SplitLayout::Overlay && insp_reveal > 0.001;
-        let scrim = if rail_scrim || insp_scrim {
-            Rect::new(r.x0, body_top, r.x1, r.y1)
-        } else {
-            Rect::ZERO
-        };
-        let canvas_area = Rect::new(canvas_left, body_top, canvas_right, r.y1);
-
-        PanelGeometry {
-            rail,
-            inspector,
-            canvas_area,
-            layout,
-            reveal,
-            insp_layout,
-            insp_reveal,
-            scrim,
-            body_top,
-        }
-    }
-
-    /// Fit the 16:9 slide inside `canvas_area` with padding + caption room.
-    /// Returns the destination rect and the slide→pixel scale factor.
-    fn fit_slide(canvas_area: Rect) -> (Rect, f64) {
-        let pad = 30.0;
-        let cap = 34.0;
-        let avail_w = (canvas_area.width() - 2.0 * pad).max(40.0);
-        let avail_h = (canvas_area.height() - 2.0 * pad - cap).max(40.0);
-        let s = (avail_w / SLIDE_W).min(avail_h / SLIDE_H);
-        let sw = SLIDE_W * s;
-        let sh = SLIDE_H * s;
-        let sx = canvas_area.x0 + (canvas_area.width() - sw) / 2.0;
-        let sy = canvas_area.y0 + pad + (avail_h - sh) / 2.0;
-        (Rect::new(sx, sy, sx + sw, sy + sh), s)
-    }
-
-    /// The rail hamburger (offered whenever the rail can collapse — it's an
-    /// overlay flap, or docked but closed). Sits at the far left toolbar edge;
-    /// returns the x the title block should start at, past it.
-    fn toolbar_hamburger(
-        toolbar: Rect,
-        m: &ChromeMetrics,
-        layout: SplitLayout,
-        reveal: f64,
-        buttons: &mut Vec<UiButton>,
-    ) -> f64 {
-        let rail_collapsible = layout == SplitLayout::Overlay || reveal < 0.999;
-        if rail_collapsible {
-            let size = m.pill_h();
-            let hy = toolbar.y0 + (toolbar.height() - size) / 2.0;
-            let hb = Rect::new(toolbar.x0 + m.s4, hy, toolbar.x0 + m.s4 + size, hy + size);
-            buttons.push(UiButton {
-                rect: hb,
-                kind: ButtonKind::Hamburger,
-                hit: Hit::ToggleRail,
-            });
-            hb.x1 + m.s4
-        } else {
-            toolbar.x0 + m.s4
-        }
-    }
-
-    /// Right-anchored toolbar group: Present · palette · overview grid.
-    /// Returns the grid button's rect, which the inspector toggle and the
-    /// centre tool group both measure from.
-    fn toolbar_right_group(
-        &self,
-        toolbar: Rect,
-        by: f64,
-        bh: f64,
-        buttons: &mut Vec<UiButton>,
-    ) -> Rect {
-        let m = &self.chrome_metrics;
-        let present_w = m.pill_w(&tr("slides-present"), true);
-        let present_rect = Rect::new(
-            toolbar.x1 - m.s4 - present_w,
-            by,
-            toolbar.x1 - m.s4,
-            by + bh,
-        );
-        // On a narrow toolbar the palette pill collapses to just its colour dot
-        // (the swatch button already hides its label below 40px wide).
-        let pal_w = if toolbar.width() > 640.0 {
-            Self::palette_pill_width(m, self.deck.palette.label())
-        } else {
-            bh
-        };
-        let pal_rect = Rect::new(
-            present_rect.x0 - m.s2 - pal_w,
-            by,
-            present_rect.x0 - m.s2,
-            by + bh,
-        );
-        let grid_rect = Rect::new(pal_rect.x0 - m.s2 - bh, by, pal_rect.x0 - m.s2, by + bh);
-        buttons.push(UiButton {
-            rect: present_rect,
-            kind: ButtonKind::IconText {
-                icon: Icon::Monitor,
-                label: tr("slides-present"),
-                accent: true,
-            },
-            hit: Hit::Present,
-        });
-        buttons.push(UiButton {
-            rect: pal_rect,
-            kind: ButtonKind::Palette {
-                kind: self.deck.palette,
-                selected: false,
-            },
-            hit: Hit::CyclePalette,
-        });
-        buttons.push(UiButton {
-            rect: grid_rect,
-            kind: ButtonKind::IconOnly {
-                icon: Icon::LayoutGrid,
-                active: self.mode == Mode::Overview,
-            },
-            hit: Hit::Overview,
-        });
-        grid_rect
-    }
-
-    /// Inspector toggle — offered whenever the inspector can collapse (it's
-    /// an overlay flap, or docked but not fully open). Mirrors the rail
-    /// hamburger on the opposite edge. Returns the left edge the centre tool
-    /// group must stay clear of.
-    fn toolbar_inspector_toggle(
-        &self,
-        insp_layout: SplitLayout,
-        insp_reveal: f64,
-        grid_rect: Rect,
-        by: f64,
-        bh: f64,
-        buttons: &mut Vec<UiButton>,
-    ) -> f64 {
-        let inspector_collapsible = insp_layout == SplitLayout::Overlay || insp_reveal < 0.999;
-        if inspector_collapsible {
-            let gap = self.chrome_metrics.s2;
-            let ib = Rect::new(grid_rect.x0 - gap - bh, by, grid_rect.x0 - gap, by + bh);
-            buttons.push(UiButton {
-                rect: ib,
-                kind: ButtonKind::IconOnly {
-                    icon: Icon::Settings2,
-                    active: self.inspector_open(),
-                },
-                hit: Hit::ToggleInspector,
-            });
-            ib.x0
-        } else {
-            grid_rect.x0
-        }
-    }
-
-    /// The deck-title label(s) in the toolbar, elided so they never run under
-    /// the tools or right group. Returns the rename click-target rect and the
-    /// label's origin (used to place the rename caret).
-    fn toolbar_title_block(
-        &self,
-        toolbar: Rect,
-        title_x: f64,
-        title_right: f64,
-        labels: &mut Vec<Label>,
-    ) -> (Rect, Point) {
-        // A 390px phone toolbar has room for the rail toggle, the one unified
-        // insert overflow and the always-available presentation controls, but
-        // not a useful title fragment. Leave that slot empty rather than paint
-        // ellipsis under a focusable control.
-        let m = &self.chrome_metrics;
-        let title_max = if toolbar.width() < 480.0 {
-            0.0
-        } else {
-            (title_right - m.s3 - title_x).max(0.0)
-        };
-        // The two-line block (title, 2 px seam, subtitle) is centred on the
-        // toolbar, so its lines keep their spacing at every text scale.
-        let block_top = toolbar.y0 + (toolbar.height() - m.title_block_h()) / 2.0;
-        let title_pos = Point::new(title_x, block_top);
-        // While renaming, the inline TextInput draws the title (with selection +
-        // caret), so the static label is blanked; otherwise the painter elides
-        // it with the renderer's own metrics to `title_max`.
-        let title_text = if self.editing_title || title_max < 1.0 {
-            String::new()
-        } else {
-            self.deck.title.clone()
-        };
-        labels.push(Label {
-            pos: title_pos,
-            text: title_text,
-            font: FONT_TITLE,
-            color: LabelColor::Primary,
-            weight: TextWeight::Bold,
-            max_w: Some(title_max),
-        });
-        // The whole two-line title block is the click target for renaming.
-        let title_rect = Rect::new(
-            title_x - m.s1,
-            block_top - m.s1,
-            title_x + title_max,
-            block_top + m.title_block_h() + m.s1,
-        );
-        if title_max >= 1.0 {
-            labels.push(Label {
-                pos: Point::new(title_x, block_top + m.lh_title + TITLE_LINE_GAP),
-                text: tr_args(
-                    "slides-rail-subtitle",
-                    &[
-                        ("current", ArgValue::from(self.cur_slide + 1)),
-                        ("total", ArgValue::from(self.deck.slides.len())),
-                        ("palette", ArgValue::from(self.deck.palette.label())),
-                    ],
-                ),
-                font: FONT_SUBTITLE,
-                color: LabelColor::Dim,
-                weight: TextWeight::Regular,
-                max_w: Some(title_max),
-            });
-        }
-        (title_rect, title_pos)
-    }
-
-    /// Thumbnail rail chrome: the "SLIDES" header and the pinned Add/Dup/Del
-    /// row. The shared [`PageSidebar`] owns the list geometry, scroll and
-    /// reorder drag inside the returned viewport (between this header and the
-    /// pinned action row) itself.
-    fn build_rail_chrome(
-        &self,
-        rail: Rect,
-        buttons: &mut Vec<UiButton>,
-        labels: &mut Vec<Label>,
-    ) -> Rect {
-        let m = &self.chrome_metrics;
-        let pad = m.s4;
-        let rail_viewport = self.rail_viewport(rail);
-        // Header row: the caption and (for an overlay) its Close button share
-        // one centre line.
-        let header = Rect::new(
-            rail.x0,
-            rail.y0 + m.s2,
-            rail.x1,
-            rail.y0 + m.s2 + m.rail_header_h(),
-        );
-        labels.push(Label {
-            pos: Point::new(
-                rail.x0 + pad,
-                header.y0 + (header.height() - m.lh_caption) / 2.0,
-            ),
-            text: tr("slides-slides"),
-            font: FONT_CAPTION,
-            color: LabelColor::Dim,
-            weight: TextWeight::Semibold,
-            max_w: None,
-        });
-        // The toolbar hamburger remains a toggle, but an open overlay must
-        // also advertise its local escape route where the user's attention is:
-        // the flap header. This keeps the narrow panel dismissible without a
-        // hunt back to the global toolbar (and gives AT a named button).
-        if self.rail_layout() == SplitLayout::Overlay && self.rail_flap.reveal() > 0.001 {
-            let close_w =
-                m.label_w(&tr("slides-close"), FONT_CONTROL, TextWeight::Semibold) + 2.0 * m.s3;
-            let close_h = m.control_h();
-            let close_y = header.y0 + (header.height() - close_h) / 2.0;
-            let close = Rect::new(
-                rail.x1 - pad - close_w,
-                close_y,
-                rail.x1 - pad,
-                close_y + close_h,
-            );
-            buttons.push(UiButton {
-                rect: close,
-                kind: ButtonKind::Text {
-                    label: tr("slides-close"),
-                    active: false,
-                    danger: false,
-                },
-                hit: Hit::ToggleRail,
-            });
-        }
-        // Rail action buttons at the bottom: three equal controls, `s2` apart.
-        let rb_h = m.control_h();
-        let rb_y = rail.y1 - pad - rb_h;
-        let rb_w = (rail.width() - 2.0 * pad - 2.0 * m.s2) / 3.0;
-        let mk = |idx: f64, label: &str, danger: bool, hit: Hit| -> UiButton {
-            let x = rail.x0 + pad + idx * (rb_w + m.s2);
-            UiButton {
-                rect: Rect::new(x, rb_y, x + rb_w, rb_y + rb_h),
-                kind: ButtonKind::Text {
-                    label: label.to_string(),
-                    active: false,
-                    danger,
-                },
-                hit,
-            }
-        };
-        buttons.push(mk(0.0, &tr("slides-add"), false, Hit::NewSlide));
-        buttons.push(mk(1.0, &tr("slides-dup"), false, Hit::DuplicateSlide));
-        buttons.push(mk(2.0, &tr("slides-del"), true, Hit::DeleteSlide));
-        rail_viewport
-    }
-
-    /// Fill picker popover, anchored inside the inspector, clamped on-screen.
-    /// `None` while the picker isn't open.
-    fn fill_picker_popover_rect(&self, inspector: Rect, r: Rect, body_top: f64) -> Option<Rect> {
-        if !self.fill_picker_open {
-            return None;
-        }
-        // The shared picker spans its sliders across the rect it is given,
-        // so the reserve's width grows with the text scale; its height does
-        // not (the picker's vertical layout is fixed). Its hex / rgb readouts
-        // still overrun the rect at 2× — a `ColorPicker` defect, recorded for
-        // its owner in the A7 round-two review.
-        let m = &self.chrome_metrics;
-        let scale = m.scale;
-        let (w, h) = (FILL_PICKER_W * scale, FILL_PICKER_H);
-        // Leave ~64px of slack on the right: the picker's hex field extends
-        // past its preview swatch, so a flush-right anchor would clip it.
-        let x = (inspector.x0 + INSPECTOR_PAD)
-            .min(r.x1 - w - 64.0 * scale)
-            .max(r.x0 + m.s2);
-        // Sit below the top property controls, above the notes box, and
-        // keep the whole popover panel (caption row above, `s3` below) at
-        // least `s1` inside the body so it never paints over the toolbar.
-        let (top_inset, bottom_inset) = self.fill_picker_panel_insets();
-        let y = (inspector.y0 + 300.0)
-            .min(r.y1 - h - bottom_inset - m.s1)
-            .max(body_top + top_inset + m.s1);
-        Some(Rect::new(x, y, x + w, y + h))
-    }
-
-    /// How far the fill-picker popover panel extends beyond the picker's own
-    /// rect above (its caption row: `s2` + the caption line box + `s2`) and
-    /// below (`s3`); the sides are `s3`.
-    fn fill_picker_panel_insets(&self) -> (f64, f64) {
-        let m = &self.chrome_metrics;
-        (m.s2 + m.lh_caption + m.s2, m.s3)
-    }
-
-    /// The popover panel painted around the fill picker at `picker` — the
-    /// same rect `draw_inspector_widgets` paints and the pointer dismisses
-    /// against, so a click on the caption row never closes the popover.
-    fn fill_picker_panel_rect(&self, picker: Rect) -> Rect {
-        let (top, bottom) = self.fill_picker_panel_insets();
-        let side = self.chrome_metrics.s3;
-        Rect::new(
-            picker.x0 - side,
-            picker.y0 - top,
-            picker.x1 + side,
-            picker.y1 + bottom,
-        )
-    }
-
-    /// Lay out the inspector contents; returns the speaker-notes box rect.
-    fn build_inspector(
-        &self,
-        inspector: Rect,
-        buttons: &mut Vec<UiButton>,
-        labels: &mut Vec<Label>,
-    ) -> InspectorRects {
-        let pad = INSPECTOR_PAD;
-        let x0 = inspector.x0 + pad;
-        let x1 = inspector.x1 - pad;
-        let inner_w = x1 - x0;
-        let y = inspector.y0 + pad;
-
-        let (y, font_input_rect) = if let Some(el) = self.selected_element() {
-            self.build_inspector_element(el, x0, x1, inner_w, y, buttons, labels)
-        } else {
-            (
-                self.build_inspector_slide_props(x0, x1, y, buttons, labels),
-                None,
-            )
-        };
-
-        let nb = self.build_inspector_notes(inspector, x0, x1, pad, y, labels, buttons);
-
-        InspectorRects {
-            notes: Some(nb),
-            font_input: font_input_rect,
-        }
-    }
-
-    /// Push a small dim "SECTION" header label at `x0, *y` and advance `*y`
-    /// past it. Shared by every inspector section.
-    fn push_inspector_header(
-        m: &ChromeMetrics,
-        labels: &mut Vec<Label>,
-        x0: f64,
-        y: &mut f64,
-        t: &str,
-    ) {
-        labels.push(Label {
-            pos: Point::new(x0, *y),
-            text: t.to_string(),
-            font: FONT_CAPTION,
-            color: LabelColor::Dim,
-            weight: TextWeight::Semibold,
-            max_w: None,
-        });
-        *y += m.caption_adv();
-    }
-
-    /// Inspector contents for a selected element: type label, fill/stroke
-    /// swatches, (text elements only) the TYPE row, and the arrange actions.
-    /// Returns the y just past the arrange row and the font-size input's
-    /// rect (`Some` only for a selected text element).
-    fn build_inspector_element(
-        &self,
-        el: &Element,
-        x0: f64,
-        x1: f64,
-        inner_w: f64,
-        y: f64,
-        buttons: &mut Vec<UiButton>,
-        labels: &mut Vec<Label>,
-    ) -> (f64, Option<Rect>) {
-        let m = &self.chrome_metrics;
-        let mut y = y;
-        labels.push(Label {
-            pos: Point::new(x0, y),
-            text: el.kind.label().to_uppercase(),
-            font: FONT_HEADING,
-            color: LabelColor::Primary,
-            weight: TextWeight::Bold,
-            max_w: None,
-        });
-        y += m.heading_adv();
-
-        // Rhythm: rows inside a section are `s2` apart; sections are `s4`
-        // apart. Fill swatches (theme presets) plus a Custom… button that
-        // opens the embeddable colour picker for an arbitrary fill.
-        Self::push_inspector_header(m, labels, x0, &mut y, &tr("slides-fill"));
-        y = self.swatch_grid(buttons, x0, inner_w, y, &FILL_ROLES, &el.fill, true);
-        y += m.s2;
-        let custom = Rect::new(x0, y, x1, y + m.control_h());
-        buttons.push(UiButton {
-            rect: custom,
-            kind: ButtonKind::Text {
-                // Show the active colour role / hex on the button.
-                label: if el.fill.starts_with('#') {
-                    custom_colour_hex(&el.fill)
-                } else {
-                    tr("slides-custom-colour")
-                },
-                active: el.fill.starts_with('#'),
-                danger: false,
-            },
-            hit: Hit::OpenFillPicker,
-        });
-        y += m.control_h() + m.s4;
-
-        // Stroke swatches.
-        Self::push_inspector_header(m, labels, x0, &mut y, &tr("slides-stroke"));
-        y = self.swatch_grid(buttons, x0, inner_w, y, &STROKE_ROLES, &el.stroke, false);
-        y += m.s4;
-
-        let font_input_rect = if el.kind == ElementKind::Text {
-            let (new_y, rect) =
-                Self::build_inspector_type_row(m, el, x0, x1, inner_w, y, buttons, labels);
-            y = new_y;
-            rect
-        } else {
-            None
-        };
-
-        y = Self::build_inspector_arrange_row(m, x0, x1, inner_w, y, buttons, labels);
-
-        (y, font_input_rect)
-    }
-
-    /// The ARRANGE row for a selected element: bring-front/send-back and
-    /// duplicate/delete, each pair a half-width button. Returns the y just
-    /// past it.
-    fn build_inspector_arrange_row(
-        m: &ChromeMetrics,
-        x0: f64,
-        x1: f64,
-        inner_w: f64,
-        y: f64,
-        buttons: &mut Vec<UiButton>,
-        labels: &mut Vec<Label>,
-    ) -> f64 {
-        let mut y = y;
-        Self::push_inspector_header(m, labels, x0, &mut y, &tr("slides-arrange"));
-        let bh = m.control_h();
-        let half = (inner_w - m.s2) / 2.0;
-        let front = Rect::new(x0, y, x0 + half, y + bh);
-        let back = Rect::new(x0 + half + m.s2, y, x1, y + bh);
-        buttons.push(UiButton {
-            rect: front,
-            kind: ButtonKind::Text {
-                label: tr("slides-bring-front"),
-                active: false,
-                danger: false,
-            },
-            hit: Hit::BringFront,
-        });
-        buttons.push(UiButton {
-            rect: back,
-            kind: ButtonKind::Text {
-                label: tr("slides-send-back"),
-                active: false,
-                danger: false,
-            },
-            hit: Hit::SendBack,
-        });
-        y += bh + m.s2;
-        let dup = Rect::new(x0, y, x0 + half, y + bh);
-        let del = Rect::new(x0 + half + m.s2, y, x1, y + bh);
-        buttons.push(UiButton {
-            rect: dup,
-            kind: ButtonKind::Text {
-                label: tr("slides-duplicate"),
-                active: false,
-                danger: false,
-            },
-            hit: Hit::DuplicateElement,
-        });
-        buttons.push(UiButton {
-            rect: del,
-            kind: ButtonKind::Text {
-                label: tr("slides-delete"),
-                active: false,
-                danger: true,
-            },
-            hit: Hit::DeleteElement,
-        });
-        y + bh + m.s4
-    }
-
-    /// The TYPE row for a selected text element: the font-size input's
-    /// reserved rect, bold/italic toggles, and an alignment segmented
-    /// control. Returns the y just past it and the font-size input's rect.
-    fn build_inspector_type_row(
-        m: &ChromeMetrics,
-        el: &Element,
-        x0: f64,
-        x1: f64,
-        inner_w: f64,
-        y: f64,
-        buttons: &mut Vec<UiButton>,
-        labels: &mut Vec<Label>,
-    ) -> (f64, Option<Rect>) {
-        let mut y = y;
-        Self::push_inspector_header(m, labels, x0, &mut y, &tr("slides-type"));
-        let bh = m.control_h();
-        // The font size is a click-to-type NumberInput (with ± steppers)
-        // — the widget draws itself, so we only reserve its rect here: two
-        // square steppers around a three-digit "pt" value, never narrower than
-        // the classic 136 px.
-        let font_input_w =
-            (2.0 * bh + m.label_w("999 pt", FONT_CONTROL, TextWeight::Semibold) + 2.0 * m.s2)
-                .max(FONT_INPUT_W);
-        let font_input_rect = Some(Rect::new(x0, y, x0 + font_input_w, y + bh));
-        // Bold / italic toggles: square-ish controls sized to their glyph,
-        // right-anchored beside the input while both fit, otherwise on their
-        // own row `s2` below it so neither ever paints over the other.
-        let toggle_w = (m.label_w("B", FONT_CONTROL, TextWeight::Semibold) + 2.0 * m.s3).max(bh);
-        let toggles_w = 2.0 * toggle_w + m.s2;
-        let toggles_y = if font_input_w + m.s2 + toggles_w <= inner_w + 0.5 {
-            y
-        } else {
-            y + bh + m.s2
-        };
-        let bold = Rect::new(x1 - toggle_w, toggles_y, x1, toggles_y + bh);
-        buttons.push(UiButton {
-            rect: bold,
-            kind: ButtonKind::Text {
-                label: "B".into(),
-                active: el.bold,
-                danger: false,
-            },
-            hit: Hit::ToggleBold,
-        });
-        let italic = Rect::new(
-            x1 - toggle_w - m.s2 - toggle_w,
-            toggles_y,
-            x1 - toggle_w - m.s2,
-            toggles_y + bh,
-        );
-        buttons.push(UiButton {
-            rect: italic,
-            kind: ButtonKind::Text {
-                label: "I".into(),
-                active: el.italic,
-                danger: false,
-            },
-            hit: Hit::ToggleItalic,
-        });
-        y = toggles_y + bh + m.s4;
-        Self::push_inspector_header(m, labels, x0, &mut y, &tr("slides-align"));
-        // A proper segmented control: left · center · right · justify,
-        // the current alignment highlighted. Replaces the old single
-        // button that only cycled through the options blind. When the widest
-        // label (plus `s2` each side) no longer fits an equal share of the
-        // row, the group wraps into two connected rows of two, `s2` apart.
-        let n = TextAlign::ALL.len();
-        let widest = TextAlign::ALL
-            .iter()
-            .map(|a| m.label_w(a.glyph(), FONT_CONTROL, TextWeight::Semibold))
-            .fold(0.0_f64, f64::max);
-        let cols = if widest + 2.0 * m.s2 <= inner_w / n as f64 {
-            n
-        } else {
-            2
-        };
-        let seg_w = inner_w / cols as f64;
-        for (i, a) in TextAlign::ALL.iter().enumerate() {
-            let col = i % cols;
-            let row = (i / cols) as f64;
-            let sx = x0 + col as f64 * seg_w;
-            let ex = if col + 1 == cols {
-                x1
-            } else {
-                x0 + (col as f64 + 1.0) * seg_w
-            };
-            let pos = if col == 0 {
-                SegPos::First
-            } else if col + 1 == cols {
-                SegPos::Last
-            } else {
-                SegPos::Mid
-            };
-            let sy = y + row * (bh + m.s2);
-            buttons.push(UiButton {
-                rect: Rect::new(sx, sy, ex, sy + bh),
-                kind: ButtonKind::Segment {
-                    label: a.glyph().to_string(),
-                    active: *a == el.align,
-                    pos,
-                },
-                hit: Hit::SetAlign(*a),
-            });
-        }
-        let rows = n.div_ceil(cols) as f64;
-        y += rows * bh + (rows - 1.0) * m.s2 + m.s4;
-        (y, font_input_rect)
-    }
-
-    /// Inspector contents when nothing is selected: the slide-level layout /
-    /// background pills and the deck-theme pills. Returns the y just past
-    /// them.
-    fn build_inspector_slide_props(
-        &self,
-        x0: f64,
-        x1: f64,
-        y: f64,
-        buttons: &mut Vec<UiButton>,
-        labels: &mut Vec<Label>,
-    ) -> f64 {
-        let m = &self.chrome_metrics;
-        let mut y = y;
-        labels.push(Label {
-            pos: Point::new(x0, y),
-            text: tr_args(
-                "slides-slide-n",
-                &[("n", ArgValue::from(self.cur_slide + 1))],
-            ),
-            font: FONT_HEADING,
-            color: LabelColor::Primary,
-            weight: TextWeight::Bold,
-            max_w: None,
-        });
-        y += m.heading_adv();
-
-        Self::push_inspector_header(m, labels, x0, &mut y, &tr("slides-layout"));
-        let cur_layout = self.slide().map_or(Layout::TitleContent, |s| s.layout);
-        y = self.wrap_pills(
-            buttons,
-            x0,
-            x1,
-            y,
-            Layout::ALL
-                .iter()
-                .map(|l| (l.label().to_string(), *l == cur_layout, Hit::SetLayout(*l))),
-        );
-        y += m.s4;
-
-        Self::push_inspector_header(m, labels, x0, &mut y, &tr("slides-background"));
-        let cur_bg = self.slide().map_or(Background::Surface, |s| s.background);
-        y = self.wrap_pills(
-            buttons,
-            x0,
-            x1,
-            y,
-            Background::ALL
-                .iter()
-                .map(|b| (b.label().to_string(), *b == cur_bg, Hit::SetBackground(*b))),
-        );
-        y += m.s4;
-
-        Self::push_inspector_header(m, labels, x0, &mut y, &tr("slides-deck-theme"));
-        y = self.wrap_palette_pills(buttons, x0, x1, y);
-        y += m.s4;
-
-        y
-    }
-
-    /// Speaker notes box (always shown at the bottom of the inspector).
-    /// Returns its rect.
-    fn build_inspector_notes(
-        &self,
-        inspector: Rect,
-        x0: f64,
-        x1: f64,
-        pad: f64,
-        y: f64,
-        labels: &mut Vec<Label>,
-        buttons: &mut Vec<UiButton>,
-    ) -> Rect {
-        let m = &self.chrome_metrics;
-        // The notes block sits under the property sections, pulled up to leave
-        // it `NOTES_MIN_H` when there is room. When the sections outgrow the
-        // panel (large text in a short window) it flows on below them rather
-        // than folding back over them or inverting: the box is always at
-        // least one control tall and its top is always below the sections.
-        let notes_top = y.max(inspector.y1 - NOTES_MIN_H);
-        labels.push(Label {
-            pos: Point::new(x0, notes_top),
-            text: if self.editing_notes {
-                tr("slides-speaker-notes-editing")
-            } else {
-                tr("slides-speaker-notes")
-            },
-            font: FONT_CAPTION,
-            color: LabelColor::Dim,
-            weight: TextWeight::Semibold,
-            max_w: Some(x1 - x0),
-        });
-        let nb_y0 = notes_top + m.caption_adv();
-        let nb = Rect::new(
-            x0,
-            nb_y0,
-            x1,
-            (inspector.y1 - pad).max(nb_y0 + m.control_h()),
-        );
-        buttons.push(UiButton {
-            rect: nb,
-            kind: ButtonKind::Text {
-                label: String::new(),
-                active: false,
-                danger: false,
-            },
-            hit: Hit::EditNotes,
-        });
-        nb
-    }
-
-    #[allow(
-        clippy::unused_self,
-        reason = "keeps the ergonomic self.swatch_grid(...) call site consistent with the \
-                  other inspector layout helpers; converting to an associated function would \
-                  read worse at every call site for no benefit"
-    )]
-    fn swatch_grid(
-        &self,
-        buttons: &mut Vec<UiButton>,
-        x0: f64,
-        inner_w: f64,
-        mut y: f64,
-        roles: &[&str],
-        current: &str,
-        is_fill: bool,
-    ) -> f64 {
-        let cols = 4.0;
-        let gap = self.chrome_metrics.s2;
-        let sw = (inner_w - (cols - 1.0) * gap) / cols;
-        let sh = SWATCH_H;
-        for (i, role) in roles.iter().enumerate() {
-            let col = (i as f64) % cols;
-            let row = ((i as f64) / cols).floor();
-            let x = x0 + col * (sw + gap);
-            let yy = y + row * (sh + gap);
-            buttons.push(UiButton {
-                rect: Rect::new(x, yy, x + sw, yy + sh),
-                kind: ButtonKind::Swatch {
-                    role: role.to_string(),
-                    selected: *role == current,
-                },
-                hit: if is_fill {
-                    Hit::SetFill(role.to_string())
-                } else {
-                    Hit::SetStroke(role.to_string())
-                },
-            });
-        }
-        let rows = ((roles.len() as f64) / cols).ceil();
-        y += rows * (sh + gap) - gap;
-        y
-    }
-
-    /// Width a palette pill needs to show its full label without truncation:
-    /// the colour dot (drawn at `x0+8 .. x0+20`), a 6px gap, the measured
-    /// label, and a trailing `s3` pad.
-    fn palette_pill_width(m: &ChromeMetrics, label: &str) -> f64 {
-        PALETTE_DOT_SLOT + m.label_w(label, FONT_PILL, TextWeight::Semibold) + m.s3
-    }
-
-    /// Lay out the five deck-theme pills, each sized to fit its full name and
-    /// wrapping onto a new row when the next pill would overflow `x1`. This is
-    /// what keeps every theme name ("Indigo", "Emerald", …) fully readable in
-    /// the docked inspector at any width, instead of packing five fixed-width
-    /// pills that clip their labels. Returns the y just past the last row.
-    fn wrap_palette_pills(&self, buttons: &mut Vec<UiButton>, x0: f64, x1: f64, mut y: f64) -> f64 {
-        let m = &self.chrome_metrics;
-        let bh = m.small_pill_h();
-        let gap = m.s2;
-        let mut x = x0;
-        for p in &PaletteKind::ALL {
-            let w = Self::palette_pill_width(m, p.label()).min(x1 - x0);
-            if x > x0 && x + w > x1 + 0.5 {
-                x = x0;
-                y += bh + gap;
-            }
-            buttons.push(UiButton {
-                rect: Rect::new(x, y, x + w, y + bh),
-                kind: ButtonKind::Palette {
-                    kind: *p,
-                    selected: *p == self.deck.palette,
-                },
-                hit: Hit::SetPalette(*p),
-            });
-            x += w + gap;
-        }
-        y + bh
-    }
-
-    #[allow(
-        clippy::unused_self,
-        reason = "keeps the ergonomic self.wrap_pills(...) call site consistent with the other \
-                  inspector layout helpers; converting to an associated function would read \
-                  worse at every call site for no benefit"
-    )]
-    fn wrap_pills(
-        &self,
-        buttons: &mut Vec<UiButton>,
-        x0: f64,
-        x1: f64,
-        mut y: f64,
-        items: impl Iterator<Item = (String, bool, Hit)>,
-    ) -> f64 {
-        let m = &self.chrome_metrics;
-        let bh = m.small_pill_h();
-        let gap = m.s2;
-        let mut x = x0;
-        for (label, active, hit) in items {
-            // Pills paint as `Text` buttons at the control font, so the slot is
-            // measured with that same style.
-            let w = m.label_w(&label, FONT_CONTROL, TextWeight::Semibold) + 2.0 * m.s3;
-            if x > x0 && x + w > x1 {
-                x = x0;
-                y += bh + gap;
-            }
-            buttons.push(UiButton {
-                rect: Rect::new(x, y, x + w, y + bh),
-                kind: ButtonKind::Text {
-                    label,
-                    active,
-                    danger: false,
-                },
-                hit,
-            });
-            x += w + gap;
-        }
-        y + bh
-    }
-
     // --- mouse → slide coords ----------------------------------------------
 
     #[allow(
@@ -3192,13 +1542,9 @@ impl SlidesApp {
     // --- actions ------------------------------------------------------------
 
     fn apply_hit(&mut self, doc: &mut AutoCommit, hit: Hit) {
-        // Any action other than toggling the overflow menu itself dismisses it
-        // (picking a tool from it, or any other toolbar action).
-        if !matches!(hit, Hit::ToggleToolbarMenu) {
-            self.toolbar_tools.dismiss();
-        }
         match hit {
-            Hit::ToggleToolbarMenu => self.toolbar_tools.toggle(),
+            Hit::ToggleToolbarMenu => self.open_tools_menu(),
+            Hit::OpenLayoutMenu => self.open_layout_menu(),
             Hit::NewSlide => self.new_slide(doc),
             Hit::DuplicateSlide => self.duplicate_slide(doc),
             Hit::DeleteSlide => self.delete_slide(doc),
@@ -3216,12 +1562,6 @@ impl SlidesApp {
                 self.cur_slide = i.min(self.deck.slides.len().saturating_sub(1));
                 self.sel = None;
                 self.mode = Mode::Edit;
-            }
-            Hit::CyclePalette => {
-                self.perform_action(
-                    doc,
-                    &actions::set_deck_palette_action(self.deck.palette.next()),
-                );
             }
             // Images can't be conjured from nothing — the tool opens the host
             // portal file chooser; the chosen file is inserted when it resolves.
@@ -3299,32 +1639,27 @@ impl SlidesApp {
         self.reload(doc);
     }
 
-    /// Compact editing exposes one drawer at a time. Opening the slide rail
-    /// immediately dismisses an overlay inspector, keeping the slide usable
+    /// Compact editing exposes one drawer at a time. Opening the slide
+    /// sidebar dismisses a floating inspector, keeping the slide usable
     /// behind the drawer instead of sandwiching it between two panels.
     fn toggle_rail_flap(&mut self) {
-        let layout = self.rail_layout();
-        if layout == SplitLayout::Overlay
-            && self.inspector_layout() == SplitLayout::Overlay
-            && !self.rail_open()
+        if self.rail_drawer.is_overlay() && self.inspector_drawer.is_overlay() && !self.rail_open()
         {
-            self.inspector_flap.snap(false);
+            self.inspector_drawer.snap(false);
         }
-        self.rail_flap.toggle(layout);
+        self.rail_drawer.toggle();
     }
 
-    /// Mirror [`Self::toggle_rail_flap`] for the Properties drawer. Docked
-    /// panels remain independent on roomy windows; mutual exclusion applies
-    /// only where both are overlays.
+    /// Mirror [`Self::toggle_rail_flap`] for the inspector. Docked panels
+    /// stay independent on roomy windows.
     fn toggle_inspector_flap(&mut self) {
-        let layout = self.inspector_layout();
-        if layout == SplitLayout::Overlay
-            && self.rail_layout() == SplitLayout::Overlay
+        if self.inspector_drawer.is_overlay()
+            && self.rail_drawer.is_overlay()
             && !self.inspector_open()
         {
-            self.rail_flap.snap(false);
+            self.rail_drawer.snap(false);
         }
-        self.inspector_flap.toggle(layout);
+        self.inspector_drawer.toggle();
     }
 
     fn set_sel_str(&mut self, doc: &mut AutoCommit, key: &str, v: &str) {
@@ -4020,22 +2355,22 @@ impl SlidesApp {
         self.mark();
     }
 
-    /// The rect the inline title editor occupies in the toolbar.
-    #[allow(
-        clippy::unused_self,
-        reason = "keeps the ergonomic self.title_input_rect(...) call site consistent with the \
-                  other chrome geometry helpers; converting to an associated function would \
-                  read worse at every call site for no benefit"
-    )]
+    /// The rect the inline title editor occupies in the header row: a
+    /// field whose text lands exactly where the static title was.
     fn title_input_rect(&self, chrome: &Chrome) -> Rect {
-        // The editor wraps the title's measured line box with `s1` above and
-        // below, so its glyphs land exactly where the static label was.
         let m = &self.chrome_metrics;
+        let pad = m.field_pad;
+        let x1 = chrome
+            .buttons
+            .iter()
+            .filter(|b| b.rect.y0 < chrome.toolbar.y1 && b.rect.x0 > chrome.title_pos.x)
+            .map(|b| b.rect.x0 - m.s2)
+            .fold(chrome.toolbar.x1 - m.s3, f64::min);
         Rect::new(
-            chrome.title_pos.x,
-            chrome.title_pos.y - m.s1,
-            chrome.title_rect.x1,
-            chrome.title_pos.y + m.lh_title + m.s1,
+            chrome.title_pos.x - pad,
+            chrome.title_rect.y0,
+            x1.max(chrome.title_pos.x + m.target),
+            chrome.title_rect.y1,
         )
     }
 
@@ -4171,167 +2506,9 @@ impl SlidesApp {
 
     // --- drawing ------------------------------------------------------------
 
-    /// Whether a chrome point (a button/label centre) falls inside the
-    /// rail panel — geometric: below the toolbar, within the panel's
-    /// (possibly off-screen / sliding) x-span.
-    fn in_rail(chrome: &Chrome, center: Point) -> bool {
-        center.y >= chrome.rail.y0
-            && center.x >= chrome.rail.x0 - 0.5
-            && center.x <= chrome.rail.x1 + 0.5
-    }
-
-    /// Same as [`Self::in_rail`], for the inspector panel.
-    fn in_inspector(chrome: &Chrome, center: Point) -> bool {
-        center.y >= chrome.inspector.y0
-            && center.x >= chrome.inspector.x0 - 0.5
-            && center.x <= chrome.inspector.x1 + 0.5
-    }
-
-    /// Whether a chrome point falls inside either side panel — content
-    /// here is deferred to a final pass so an open overlay flap paints on
-    /// top of the dimming scrim.
-    fn in_panel(chrome: &Chrome, center: Point) -> bool {
-        Self::in_rail(chrome, center) || Self::in_inspector(chrome, center)
-    }
-
-    fn draw_editor(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        chrome: &Chrome,
-    ) {
-        let pal = self.palette(theme);
-        let c = &theme.tokens.colors;
-        let rail_overlay = chrome.layout == SplitLayout::Overlay;
-        let insp_overlay = chrome.inspector_layout == SplitLayout::Overlay;
-        // Panel dividers are the raised panels' own derived edge (HIG §9.5);
-        // the declared `border_standard` is within a shade of dark `raised`.
-        let div = ui::surface::edge_on(c.surfaces.raised);
-
-        let chrome_text_scale = tr.text_scale();
-        tr.set_text_scale(1.0);
-
-        {
-            let mut paint = PaintCtx {
-                scene,
-                transform: t,
-                text: tr,
-                theme,
-            };
-            self.draw_editor_panels_base(&mut paint, chrome, rail_overlay, insp_overlay, div);
-        }
-        self.draw_editor_canvas(scene, t, tr, theme, chrome, &pal);
-        self.draw_text_editor(scene, t, tr, theme, chrome, &pal);
-        tr.set_text_scale(chrome_text_scale);
-        self.draw_editor_base_chrome(scene, t, tr, theme, chrome, &pal);
-
-        // Inline title rename: an accent underline reads the toolbar title as an
-        // editable field; the shared TextInput (drawn in `Widget::draw`) paints
-        // the text, caret and selection.
-        if self.editing_title {
-            let underline_y = chrome.title_pos.y + 22.0;
-            stroke_line(
-                scene,
-                t,
-                chrome.title_pos.x,
-                underline_y,
-                chrome.title_rect.x1,
-                underline_y,
-                pal.accent,
-            );
-        }
-
-        // Scrim behind an open overlay flap, dimming the editor body.
-        if chrome.scrim.width() > 0.0 {
-            let reveal = chrome.reveal.max(chrome.inspector_reveal);
-            let alpha = (reveal * 0.5) as f32;
-            ui::chrome::fill_scrim(scene, t, chrome.scrim, alpha, theme);
-        }
-
-        {
-            let mut paint = PaintCtx {
-                scene,
-                transform: t,
-                text: tr,
-                theme,
-            };
-            self.draw_editor_rail(&mut paint, chrome, &pal, rail_overlay, div);
-            self.draw_editor_inspector_layer(&mut paint, chrome, &pal, insp_overlay, div);
-        }
-
-        // Toolbar overflow menu — painted last so it floats above all chrome.
-        ToolbarTools::draw(scene, t, theme, &chrome.toolbar_tools, |scene, button| {
-            self.draw_button(scene, t, tr, theme, &pal, button);
-        });
-    }
-
-    /// Base-layer panel fills + divider lines (toolbar, rail, inspector).
-    /// A docked panel is part of this base layer; an overlay flap is
-    /// painted later, on top of the dimming scrim.
-    fn draw_editor_panels_base(
-        &self,
-        paint: &mut PaintCtx<'_>,
-        chrome: &Chrome,
-        rail_overlay: bool,
-        insp_overlay: bool,
-        div: Color,
-    ) {
-        let c = &paint.theme.tokens.colors;
-        // Panels (base layer). A docked panel is part of the base; an overlay
-        // flap is painted later, on top of the dimming scrim.
-        chrome::fill_rect(paint.scene, paint.transform, self.rect, c.surfaces.base);
-        if !rail_overlay {
-            chrome::fill_rect(paint.scene, paint.transform, chrome.rail, c.surfaces.raised);
-        }
-        if !insp_overlay {
-            chrome::fill_rect(
-                paint.scene,
-                paint.transform,
-                chrome.inspector,
-                c.surfaces.raised,
-            );
-        }
-        let toolbar_fill = mix_panel(c.surfaces.raised, c.surfaces.base);
-        chrome::fill_rect(paint.scene, paint.transform, chrome.toolbar, toolbar_fill);
-        // Divider lines: each panel's derived edge on its own last pixel
-        // row / column, crisp (a stroke centred on the boundary blurred
-        // across two pixels).
-        chrome::hairline_h(
-            paint.scene,
-            paint.transform,
-            chrome.toolbar.x0,
-            chrome.toolbar.x1,
-            chrome.toolbar.y1 - 1.0,
-            ui::surface::edge_on(toolbar_fill),
-        );
-        if !rail_overlay {
-            chrome::hairline_v(
-                paint.scene,
-                paint.transform,
-                chrome.rail.x1 - 1.0,
-                chrome.rail.y0,
-                chrome.rail.y1,
-                div,
-            );
-        }
-        if !insp_overlay {
-            chrome::hairline_v(
-                paint.scene,
-                paint.transform,
-                chrome.inspector.x0,
-                chrome.inspector.y0,
-                chrome.inspector.y1,
-                div,
-            );
-        }
-    }
-
-    /// The canvas slide itself: drop shadow, the rendered slide, its
-    /// border, the selection ring/handles or live text caret+selection, the
-    /// snap guides, and the caption underneath. No-op while the deck has no
-    /// current slide.
+    /// The canvas slide itself: the rendered slide seated on the content
+    /// ground, the selection frame and handles, and the snap guides. No-op
+    /// while the deck has no current slide.
     fn draw_editor_canvas(
         &self,
         scene: &mut Scene,
@@ -4342,15 +2519,7 @@ impl SlidesApp {
         pal: &Palette,
     ) {
         let Some(slide) = self.slide() else { return };
-        let c = &theme.tokens.colors;
-        // Drop shadow from the theme elevation ladder.
-        ui::surface::shadow(
-            scene,
-            t,
-            chrome.slide_dest,
-            14.0,
-            &theme.tokens.elevation.e3,
-        );
+        let radius = f64::from(theme.tokens.radii.control);
         // The text box being edited draws its words through its editor.
         let editing = self
             .text_editor
@@ -4365,204 +2534,99 @@ impl SlidesApp {
             },
             slide,
             chrome.slide_dest,
-            14.0,
+            radius,
             editing,
         );
-        chrome::stroke_round(
-            scene,
-            t,
-            chrome.slide_dest,
-            14.0,
-            render::with_alpha(c.text_primary, 28),
-            1.0,
-        );
-
-        self.draw_editor_selection_chrome(scene, t, chrome, pal);
-        self.draw_editor_guides(scene, t, chrome, pal);
-
-        // Caption under the slide.
-        let cap = format!("{}  ·  {}", slide.layout.label(), slide.background.label());
-        tr.draw_text_weighted(
-            scene,
-            &cap,
-            12.0,
-            c.text_dim,
-            t * Affine::translate((chrome.slide_dest.x0, chrome.slide_dest.y1 + 10.0)),
-            None,
-            TextWeight::Regular,
-        );
+        render::seat_slide(scene, t, chrome.slide_dest, radius, theme);
+        self.draw_editor_selection_chrome(scene, t, theme, chrome);
+        self.draw_editor_guides(scene, t, theme, chrome);
     }
 
-    /// The selection ring + resize handles around the selected element, or
-    /// (while editing) the live text selection + caret. No-op with nothing
-    /// selected.
+    /// How far the selection frame stands outside the selected element: a
+    /// small step, never so far that it runs over a neighbouring element
+    /// (a title's accent rule just under it).
+    fn selection_outset(&self, chrome: &Chrome, el: &Element) -> f64 {
+        let m = &self.chrome_metrics;
+        let er = render::element_dest(chrome.slide_dest, chrome.scale, el);
+        let grip = m.target * 0.25;
+        let mut outset = m.s2;
+        if let Some(slide) = self.slide() {
+            for other in slide.elements.iter().filter(|other| other.id != el.id) {
+                let or = render::element_dest(chrome.slide_dest, chrome.scale, other);
+                if er.intersect(or).area() > 0.0 {
+                    continue;
+                }
+                let dx = (or.x0 - er.x1).max(er.x0 - or.x1);
+                let dy = (or.y0 - er.y1).max(er.y0 - or.y1);
+                let gap = dx.max(dy);
+                if gap > 0.0 && dx.min(dy) < 0.0 {
+                    // A neighbour beside the element along one axis: keep
+                    // the frame and its handles clear of it.
+                    outset = outset.min(gap - grip / 2.0 - 1.0);
+                }
+            }
+        }
+        outset.max(1.0)
+    }
+
+    /// The selection frame and resize handles around the selected element.
+    /// While its text is being edited the editor draws the caret and
+    /// selection instead of handles. No-op with nothing selected.
     fn draw_editor_selection_chrome(
         &self,
         scene: &mut Scene,
         t: Affine,
+        theme: &Theme,
         chrome: &Chrome,
-        pal: &Palette,
     ) {
         let Some(el) = self.selected_element() else {
             return;
         };
         let er = render::element_dest(chrome.slide_dest, chrome.scale, el);
-        let sel_col = pal.accent;
-        // Ring is drawn at the handle outset so it passes through the
-        // handle centres — the whole selection frame sits *around* the
-        // content, never over the first glyph.
-        chrome::stroke_round(
-            scene,
+        let you = theme.tokens.colors.intent.you;
+        let outset = self.selection_outset(chrome, el);
+        let line = f64::from(theme.tokens.metrics.chrome_rule_px) * 1.5;
+        scene.stroke(
+            &Stroke::new(line),
             t,
-            er.inflate(HANDLE_OFFSET, HANDLE_OFFSET),
-            5.0,
-            sel_col,
-            1.5,
+            you,
+            None,
+            &er.inflate(outset, outset),
         );
-        // The text box being edited draws its own caret and selection.
         if !self.editing_text {
+            let grip = self.chrome_metrics.target * 0.25;
             for (_, hr) in self.handles_of(chrome.slide_dest, chrome.scale, el) {
-                // The returned rect is the generous grab zone (±HANDLE);
-                // paint a smaller visual pip centred on it so the handle
-                // clears the content edge on every side.
-                let vis = hr.inflate(-4.0, -4.0);
-                chrome::fill_round(scene, t, vis, 2.5, Color::WHITE);
-                chrome::stroke_round(scene, t, vis, 2.5, sel_col, 1.5);
+                let pip = Rect::from_center_size(hr.center(), (grip, grip));
+                scene.fill(
+                    Fill::NonZero,
+                    t,
+                    theme.tokens.colors.surfaces.raised,
+                    None,
+                    &pip,
+                );
+                scene.stroke(&Stroke::new(line), t, you, None, &pip);
             }
         }
     }
 
     /// Live alignment guides (only while a drag is snapping).
-    fn draw_editor_guides(&self, scene: &mut Scene, t: Affine, chrome: &Chrome, pal: &Palette) {
+    fn draw_editor_guides(&self, scene: &mut Scene, t: Affine, theme: &Theme, chrome: &Chrome) {
+        let you = theme.tokens.colors.intent.you;
+        let dest = chrome.slide_dest;
+        let line = Stroke::new(f64::from(theme.tokens.metrics.chrome_rule_px));
         for g in &self.active_guides {
-            let gc = render::with_alpha(pal.accent, 220);
-            match g {
+            let segment = match g {
                 Guide::Vertical(sx) => {
-                    let x = chrome.slide_dest.x0 + sx * chrome.scale;
-                    stroke_line(
-                        scene,
-                        t,
-                        x,
-                        chrome.slide_dest.y0,
-                        x,
-                        chrome.slide_dest.y1,
-                        gc,
-                    );
+                    let x = dest.x0 + sx * chrome.scale;
+                    Line::new(Point::new(x, dest.y0), Point::new(x, dest.y1))
                 }
                 Guide::Horizontal(sy) => {
-                    let y = chrome.slide_dest.y0 + sy * chrome.scale;
-                    stroke_line(
-                        scene,
-                        t,
-                        chrome.slide_dest.x0,
-                        y,
-                        chrome.slide_dest.x1,
-                        y,
-                        gc,
-                    );
+                    let y = dest.y0 + sy * chrome.scale;
+                    Line::new(Point::new(dest.x0, y), Point::new(dest.x1, y))
                 }
-            }
+            };
+            scene.stroke(&line, t, you, None, &segment);
         }
-    }
-
-    /// Base-layer buttons + labels: everything NOT inside the rail or
-    /// inspector panel (their content is deferred to its own layer so an
-    /// open overlay flap paints on top of the dimming scrim).
-    fn draw_editor_base_chrome(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        chrome: &Chrome,
-        pal: &Palette,
-    ) {
-        // Content that lives inside a side panel is deferred to a final pass so
-        // an open overlay flap paints on top of the dimming scrim. Membership is
-        // geometric: below the toolbar, within the panel's (possibly off-screen
-        // / sliding) x-span.
-        // Base-layer buttons + labels (toolbar chrome only; panel content is
-        // deferred below).
-        for b in &chrome.buttons {
-            if !Self::in_panel(chrome, b.rect.center()) {
-                self.draw_button(scene, t, tr, theme, pal, b);
-            }
-        }
-        for l in &chrome.labels {
-            if !Self::in_panel(chrome, Point::new(l.pos.x, l.pos.y)) {
-                self.draw_label(scene, t, tr, theme, pal, l);
-            }
-        }
-    }
-
-    /// Rail group on top: panel fill (overlay only), then the fixed header
-    /// and action buttons, then the scrolling thumbnail list clipped to its
-    /// viewport so it can never bleed over the pinned Add/Dup/Del row.
-    fn draw_editor_rail(
-        &mut self,
-        paint: &mut PaintCtx<'_>,
-        chrome: &Chrome,
-        pal: &Palette,
-        rail_overlay: bool,
-        div: Color,
-    ) {
-        let c = &paint.theme.tokens.colors;
-        // Rail group on top: panel fill (overlay only), then the fixed header
-        // + action buttons, then the scrolling thumbnail list clipped to its
-        // viewport so it can never bleed over the pinned Add/Dup/Del row.
-        if rail_overlay && chrome.reveal > 0.001 {
-            chrome::fill_rect(paint.scene, paint.transform, chrome.rail, c.surfaces.raised);
-            chrome::hairline_v(
-                paint.scene,
-                paint.transform,
-                chrome.rail.x1 - 1.0,
-                chrome.rail.y0,
-                chrome.rail.y1,
-                div,
-            );
-        }
-        // Fixed rail chrome (SLIDES header + Add/Dup/Del) — never scrolls. While
-        // a thumbnail is being dragged, the pinned action row is replaced by the
-        // red "drop to delete" zone drawn below, so suppress the buttons it
-        // covers (otherwise they bleed through the zone's translucent fill).
-        let drag_zone = self
-            .page_sidebar
-            .is_dragging()
-            .then(|| self.slide_delete_zone(chrome.rail));
-        for b in &chrome.buttons {
-            if Self::in_rail(chrome, b.rect.center())
-                && !drag_zone.is_some_and(|z| z.contains(b.rect.center()))
-            {
-                self.draw_button(
-                    paint.scene,
-                    paint.transform,
-                    paint.text,
-                    paint.theme,
-                    pal,
-                    b,
-                );
-            }
-        }
-        for l in &chrome.labels {
-            if Self::in_rail(chrome, Point::new(l.pos.x, l.pos.y)) {
-                self.draw_label(
-                    paint.scene,
-                    paint.transform,
-                    paint.text,
-                    paint.theme,
-                    pal,
-                    l,
-                );
-            }
-        }
-        self.draw_editor_rail_thumbnails(
-            paint.scene,
-            paint.transform,
-            paint.text,
-            paint.theme,
-            chrome,
-            pal,
-        );
     }
 
     /// Scrolling thumbnail list — the shared `PageSidebar` paints the
@@ -4588,6 +2652,7 @@ impl SlidesApp {
         let mut sb = std::mem::replace(&mut self.page_sidebar, PageSidebar::new(SLIDE_H / SLIDE_W));
         let deck = &self.deck;
         let images = &self.images;
+        let radius = f64::from(theme.tokens.radii.control);
         sb.render(scene, t, tr, theme, |scene, tr, base, i, rect| {
             if let Some(slide) = deck.slides.get(i) {
                 render::draw_slide(
@@ -4598,150 +2663,11 @@ impl SlidesApp {
                     },
                     slide,
                     rect,
-                    6.0,
+                    radius,
                 );
             }
         });
         self.page_sidebar = sb;
-
-        if self.page_sidebar.is_dragging() {
-            self.draw_editor_delete_zone(scene, t, tr, theme, chrome);
-        }
-    }
-
-    /// Drop-to-delete zone: a red dashed target pinned to the bottom of the
-    /// rail, revealed only while a slide is being dragged. Dropping a
-    /// thumbnail here removes that slide.
-    fn draw_editor_delete_zone(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        chrome: &Chrome,
-    ) {
-        let zone = self.slide_delete_zone(chrome.rail);
-        let armed = self.over_delete_zone();
-        let danger = theme.tokens.colors.semantic.danger;
-        if armed {
-            chrome::fill_round(scene, t, zone, 10.0, render::with_alpha(danger, 40));
-        }
-        scene.stroke(
-            &Stroke::new(if armed { 2.0 } else { 1.5 }).with_dashes(0.0, [6.0, 4.0]),
-            t,
-            danger,
-            None,
-            &vello::kurbo::RoundedRect::from_rect(zone, 10.0),
-        );
-        // Icon + label cluster centred on the zone, both axes measured with
-        // the style the label is painted in.
-        let m = &self.chrome_metrics;
-        let icon_sz = TOOLBAR_ICON;
-        let label = crate::strings::tr("slides-drop-to-delete");
-        let font = 12.5;
-        let (lw, lh) = tr.measure_weighted(&label, font, None, TextWeight::Medium);
-        let total = icon_sz + m.s2 + f64::from(lw);
-        let cx = zone.x0 + (zone.width() - total) / 2.0;
-        let cy = zone.y0 + zone.height() / 2.0;
-        draw_icon(
-            scene,
-            t,
-            Rect::new(cx, cy - icon_sz / 2.0, cx + icon_sz, cy + icon_sz / 2.0),
-            Icon::Trash,
-            danger,
-            1.8,
-        );
-        tr.draw_text_weighted(
-            scene,
-            &label,
-            font,
-            danger,
-            t * Affine::translate((cx + icon_sz + m.s2, cy - f64::from(lh) / 2.0)),
-            None,
-            TextWeight::Medium,
-        );
-    }
-
-    /// Inspector group on top: panel fill (overlay only), buttons, notes,
-    /// labels.
-    fn draw_editor_inspector_layer(
-        &mut self,
-        paint: &mut PaintCtx<'_>,
-        chrome: &Chrome,
-        pal: &Palette,
-        insp_overlay: bool,
-        div: Color,
-    ) {
-        let c = &paint.theme.tokens.colors;
-        // Inspector group on top: panel fill (overlay only), buttons, notes, labels.
-        if insp_overlay && chrome.inspector_reveal > 0.001 {
-            chrome::fill_rect(
-                paint.scene,
-                paint.transform,
-                chrome.inspector,
-                c.surfaces.raised,
-            );
-            chrome::hairline_v(
-                paint.scene,
-                paint.transform,
-                chrome.inspector.x0,
-                chrome.inspector.y0,
-                chrome.inspector.y1,
-                div,
-            );
-        }
-        // The content is clipped to the panel: a scrolled panel's first and
-        // last rows are cut at its edges instead of bleeding into the toolbar
-        // or under the window edge.
-        paint.scene.push_layer(
-            Fill::NonZero,
-            BlendMode::default(),
-            1.0,
-            paint.transform,
-            &chrome.inspector,
-        );
-        for b in &chrome.buttons {
-            if Self::in_inspector(chrome, b.rect.center()) {
-                self.draw_button(
-                    paint.scene,
-                    paint.transform,
-                    paint.text,
-                    paint.theme,
-                    pal,
-                    b,
-                );
-            }
-        }
-        if let (Some(nb), Some(notes)) = (
-            chrome.notes_box,
-            self.slide().map(|slide| slide.notes.clone()),
-        ) {
-            self.draw_notes(
-                paint.scene,
-                paint.transform,
-                paint.text,
-                paint.theme,
-                nb,
-                &notes,
-            );
-        }
-        for l in &chrome.labels {
-            if Self::in_inspector(chrome, Point::new(l.pos.x, l.pos.y)) {
-                self.draw_label(
-                    paint.scene,
-                    paint.transform,
-                    paint.text,
-                    paint.theme,
-                    pal,
-                    l,
-                );
-            }
-        }
-        paint.scene.pop_layer();
-        if chrome.inspector.width() > 1.0 {
-            self.inspector_scroll
-                .draw_bar_overlay(paint.scene, paint.transform, paint.theme);
-        }
     }
 
     /// Position the inspector's embedded `ui` widgets (font-size field, fill
@@ -4766,9 +2692,9 @@ impl SlidesApp {
         }
     }
 
-    /// Draw the inspector's embedded widgets on top of the editor chrome: the
-    /// font-size [`NumberInput`] and, when open, the fill [`ColorPicker`]
-    /// popover (with its own panel + shadow).
+    /// Draw the inspector's embedded widgets: the font-size field, in the
+    /// inspector's ground, and, when open, the fill colour popover floating
+    /// over the window.
     fn draw_inspector_widgets(
         &mut self,
         scene: &mut Scene,
@@ -4780,16 +2706,17 @@ impl SlidesApp {
     ) {
         self.position_inspector_widgets(chrome);
         if chrome.font_input_rect.is_some() {
-            // Clipped like the rest of the panel content: the field scrolls
-            // with its TYPE row rather than floating over the toolbar.
+            // Clipped like the rest of the inspector body: the field scrolls
+            // with its section rather than floating over the header.
+            let local = self.inspector_theme(theme);
             scene.push_layer(
                 Fill::NonZero,
                 BlendMode::default(),
                 1.0,
                 t,
-                &chrome.inspector,
+                &chrome.inspector_body,
             );
-            self.font_input.draw(scene, t, tr, theme, presence);
+            self.font_input.draw(scene, t, tr, &local, presence);
             scene.pop_layer();
         }
         if let Some(rect) = chrome.fill_picker_rect {
@@ -4807,23 +2734,22 @@ impl SlidesApp {
                 self.fill_picker.set_color(col);
                 self.fill_picker_needs_init = false;
             }
-            let c = &theme.tokens.colors;
             let panel = self.fill_picker_panel_rect(rect);
-            chrome::panel(scene, t, theme, panel, f64::from(theme.tokens.radii.lg));
-            tr.draw_text_weighted(
-                scene,
+            ui::widget::floating_surface::paint(scene, t, panel, theme);
+            let local = theme.on_ground(ui::chrome::panel_ground(theme));
+            let m = &self.chrome_metrics;
+            PaintCtx::new(scene, t, tr, &local).text_role(
                 &crate::strings::tr("slides-fill-colour"),
-                FONT_CAPTION,
-                c.text_dim,
-                t * Affine::translate((rect.x0, panel.y0 + self.chrome_metrics.s2)),
+                ui::TextRole::Subheading,
+                local.tokens.colors.text_primary,
+                Point::new(rect.x0, panel.y0 + m.s4),
                 None,
-                TextWeight::Semibold,
             );
-            self.fill_picker.draw(scene, t, tr, theme, presence);
+            self.fill_picker.draw(scene, t, tr, &local, presence);
         }
     }
 
-    /// Draw the inline title [`TextInput`] over the toolbar while renaming.
+    /// Draw the inline title [`TextInput`] over the header row while renaming.
     fn draw_title_input(
         &mut self,
         scene: &mut Scene,
@@ -4833,406 +2759,38 @@ impl SlidesApp {
         presence: &PresenceCtx,
         chrome: &Chrome,
     ) {
+        let _ = theme;
         let rect = self.title_input_rect(chrome);
         self.title_input.apply_layout_external(rect);
         self.title_input.draw(scene, t, tr, theme, presence);
     }
 
-    fn draw_label(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        pal: &Palette,
-        l: &Label,
-    ) {
-        let col = self.label_color(l.color, theme, pal);
-        // Elide with the renderer's own metrics, so the ellipsis lands where
-        // the glyphs really end rather than where a per-glyph estimate did.
-        let text = match l.max_w {
-            Some(max_w) if max_w <= 0.0 => String::new(),
-            Some(max_w) => tr.elide_to_width_weighted(&l.text, l.font, max_w as f32, l.weight),
-            None => l.text.clone(),
-        };
-        tr.draw_text_weighted(
-            scene,
-            &text,
-            l.font,
-            col,
-            t * Affine::translate((l.pos.x, l.pos.y)),
-            None,
-            l.weight,
-        );
-    }
-
-    #[allow(
-        clippy::unused_self,
-        reason = "keeps the ergonomic self.label_color(...) call site consistent with the \
-                  other chrome draw helpers; converting to an associated function would read \
-                  worse at every call site for no benefit"
-    )]
-    fn label_color(&self, lc: LabelColor, theme: &Theme, _pal: &Palette) -> Color {
-        match lc {
-            LabelColor::Primary => theme.tokens.colors.text_primary,
-            LabelColor::Dim => theme.tokens.colors.text_dim,
-        }
-    }
-
-    fn draw_button(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        pal: &Palette,
-        b: &UiButton,
-    ) {
-        let c = &theme.tokens.colors;
-        let mut paint = PaintCtx {
-            scene,
-            transform: t,
-            text: tr,
-            theme,
-        };
-        match &b.kind {
-            ButtonKind::Text {
-                label,
-                active,
-                danger,
-            } => Self::draw_button_text(&mut paint, pal, b.rect, label, *active, *danger),
-            ButtonKind::IconText {
-                icon,
-                label,
-                accent,
-            } => Self::draw_button_icon_text(&mut paint, pal, b.rect, *icon, label, *accent),
-            ButtonKind::IconOnly { icon, active } => {
-                Self::draw_button_icon_only(
-                    paint.scene,
-                    paint.transform,
-                    c,
-                    pal,
-                    b.rect,
-                    *icon,
-                    *active,
-                );
-            }
-            ButtonKind::Swatch { role, selected } => {
-                Self::draw_button_swatch(
-                    paint.scene,
-                    paint.transform,
-                    c,
-                    pal,
-                    b.rect,
-                    role,
-                    *selected,
-                );
-            }
-            ButtonKind::Palette { kind, selected } => {
-                Self::draw_button_palette(&mut paint, b.rect, *kind, *selected);
-            }
-            ButtonKind::Segment { label, active, pos } => {
-                Self::draw_button_segment(&mut paint, pal, b.rect, label, *active, *pos);
-            }
-            ButtonKind::Hamburger => {
-                self.draw_button_hamburger(paint.scene, paint.transform, c, pal, b.rect);
-            }
-        }
-    }
-
-    fn draw_button_text(
-        paint: &mut PaintCtx<'_>,
-        pal: &Palette,
-        rect: Rect,
-        label: &str,
-        active: bool,
-        danger: bool,
-    ) {
-        let c = &paint.theme.tokens.colors;
-        // Rest: the base face with its derived edge (HIG §9.5 "Button
-        // Neutral"); active: the accent fill alone; danger: the tint
-        // composited over the face first, so its edge and ink are measured
-        // against what is on screen.
-        let fg = if danger {
-            let chip = c.tinted_chip_on(
-                c.surfaces.base,
-                c.semantic.danger,
-                DANGER_WASH,
-                ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
-            );
-            ui::surface::card(paint.scene, paint.transform, rect, 8.0, chip.fill);
-            chip.ink
-        } else if active {
-            chrome::fill_round(paint.scene, paint.transform, rect, 8.0, pal.accent);
-            on_accent(c, pal)
-        } else {
-            ui::surface::card(paint.scene, paint.transform, rect, 8.0, c.surfaces.base);
-            c.text_primary
-        };
-        if !label.is_empty() {
-            chrome::text_centered(
-                paint,
-                label,
-                rect,
-                &TextStyle::new(13.0).with_weight(TextWeight::Semibold),
-                fg,
-            );
-        }
-    }
-
-    fn draw_button_icon_text(
-        paint: &mut PaintCtx<'_>,
-        pal: &Palette,
-        rect: Rect,
-        icon: Icon,
-        label: &str,
-        accent: bool,
-    ) {
-        let c = &paint.theme.tokens.colors;
-        let fg = if accent {
-            chrome::fill_round(paint.scene, paint.transform, rect, 8.0, pal.accent);
-            on_accent(c, pal)
-        } else {
-            ui::surface::card(paint.scene, paint.transform, rect, 8.0, c.surfaces.base);
-            c.text_primary
-        };
-        let ir = Rect::new(rect.x0 + 11.0, rect.y0 + 8.0, rect.x0 + 29.0, rect.y1 - 8.0);
-        draw_icon(paint.scene, paint.transform, ir, icon, fg, 1.8);
-        chrome::text_vcenter(
-            paint,
-            label,
-            Rect {
-                x0: ir.x1 + 5.0,
-                ..rect
-            },
-            &TextStyle::new(13.0).with_weight(TextWeight::Semibold),
-            fg,
-        );
-    }
-
-    fn draw_button_icon_only(
-        scene: &mut Scene,
-        t: Affine,
-        c: &ui::tokens::Colors,
-        pal: &Palette,
-        rect: Rect,
-        icon: Icon,
-        active: bool,
-    ) {
-        let fg = if active {
-            chrome::fill_round(scene, t, rect, 7.0, pal.accent);
-            on_accent(c, pal)
-        } else {
-            ui::surface::card(scene, t, rect, 7.0, c.surfaces.base);
-            c.text_primary
-        };
-        let ir = rect.inflate(-6.0, -6.0);
-        draw_icon(scene, t, ir, icon, fg, 1.8);
-    }
-
-    fn draw_button_swatch(
-        scene: &mut Scene,
-        t: Affine,
-        c: &ui::tokens::Colors,
-        pal: &Palette,
-        rect: Rect,
-        role: &str,
-        selected: bool,
-    ) {
-        if let Some(col) = pal.resolve_role(role) {
-            // The swatch's edge is derived from the swatch itself, so a
-            // near-black and a near-white role both keep a visible frame.
-            ui::surface::card(scene, t, rect, 6.0, col);
-        } else {
-            // "none" → hatched empty box
-            ui::surface::card(scene, t, rect, 6.0, c.surfaces.base);
-            stroke_line(
-                scene,
-                t,
-                rect.x0 + 4.0,
-                rect.y1 - 4.0,
-                rect.x1 - 4.0,
-                rect.y0 + 4.0,
-                c.semantic.danger,
-            );
-        }
-        if selected {
-            chrome::stroke_round(scene, t, rect.inflate(2.5, 2.5), 8.0, pal.accent, 2.0);
-        }
-    }
-
-    fn draw_button_palette(
-        paint: &mut PaintCtx<'_>,
-        rect: Rect,
-        kind: PaletteKind,
-        selected: bool,
-    ) {
-        let c = &paint.theme.tokens.colors;
-        let col = Palette::resolve(kind, paint.theme).accent;
-        ui::surface::card(paint.scene, paint.transform, rect, 8.0, c.surfaces.base);
-        if selected {
-            chrome::stroke_round(paint.scene, paint.transform, rect, 8.0, col, 2.0);
-        }
-        let dot = Rect::new(
-            rect.x0 + 8.0,
-            rect.center().y - 6.0,
-            rect.x0 + 20.0,
-            rect.center().y + 6.0,
-        );
-        chrome::fill_round(paint.scene, paint.transform, dot, 6.0, col);
-        if rect.width() > 40.0 {
-            // Clip the name to the pill so a slight text-metric over-run can
-            // never bleed onto the next pill. Pills are sized (see
-            // `palette_pill_width`) so the full name fits, making this a
-            // belt-and-suspenders guard, not a truncation.
-            paint.scene.push_layer(
-                Fill::NonZero,
-                BlendMode::default(),
-                1.0,
-                paint.transform,
-                &rect,
-            );
-            chrome::text_vcenter(
-                paint,
-                kind.label(),
-                Rect {
-                    x0: dot.x1 + 6.0,
-                    ..rect
-                },
-                &TextStyle::new(12.0).with_weight(TextWeight::Semibold),
-                c.text_primary,
-            );
-            paint.scene.pop_layer();
-        }
-    }
-
-    fn draw_button_segment(
-        paint: &mut PaintCtx<'_>,
-        pal: &Palette,
-        rect: Rect,
-        label: &str,
-        active: bool,
-        pos: SegPos,
-    ) {
-        let c = &paint.theme.tokens.colors;
-        let (bg, fg) = if active {
-            (pal.accent, on_accent(c, pal))
-        } else {
-            (c.surfaces.base, c.text_primary)
-        };
-        // Round only the outer corners so the row reads as one pill.
-        let r = 8.0;
-        let shape_of = |rect: Rect, r: f64| match pos {
-            SegPos::First => {
-                vello::kurbo::RoundedRect::new(rect.x0, rect.y0, rect.x1, rect.y1, (r, 0.0, 0.0, r))
-            }
-            SegPos::Last => {
-                vello::kurbo::RoundedRect::new(rect.x0, rect.y0, rect.x1, rect.y1, (0.0, r, r, 0.0))
-            }
-            SegPos::Mid => vello::kurbo::RoundedRect::from_rect(rect, 0.0),
-        };
-        paint
-            .scene
-            .fill(Fill::NonZero, paint.transform, bg, None, &shape_of(rect, r));
-        // Each cell's edge derives from its own fill and sits half a pixel
-        // inside it (the `ui::surface::card` geometry, per-corner radii).
-        paint.scene.stroke(
-            &Stroke::new(1.0),
-            paint.transform,
-            ui::surface::edge_on(bg),
-            None,
-            &shape_of(rect.inset(-0.5), r - 0.5),
-        );
-        chrome::text_centered(
-            paint,
-            label,
-            rect,
-            &TextStyle::new(12.5).with_weight(TextWeight::Semibold),
-            fg,
-        );
-    }
-
-    fn draw_button_hamburger(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        c: &ui::tokens::Colors,
-        pal: &Palette,
-        rect: Rect,
-    ) {
-        let active = self.rail_open();
-        let fg = if active {
-            chrome::fill_round(scene, t, rect, 8.0, pal.accent);
-            on_accent(c, pal)
-        } else {
-            ui::surface::card(scene, t, rect, 8.0, c.surfaces.base);
-            c.text_primary
-        };
-        // Three evenly-spaced horizontal lines.
-        let cx0 = rect.x0 + 9.0;
-        let cx1 = rect.x1 - 9.0;
-        let cy = rect.center().y;
-        for dy in [-5.0, 0.0, 5.0] {
-            stroke_line(scene, t, cx0, cy + dy, cx1, cy + dy, fg);
-        }
-    }
-
-    fn draw_notes(
+    /// The speaker notes: the editing field while they are being edited,
+    /// otherwise the same field showing them read-only.
+    pub(super) fn draw_notes(
         &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
         nb: Rect,
-        notes: &str,
     ) {
-        let c = &theme.tokens.colors;
-        // A text field: the base face with its derived rest edge; editing
-        // lays the accent wash and ring over it (focus state, not an edge).
-        ui::surface::card(scene, t, nb, 8.0, c.surfaces.base);
-        if self.editing_notes {
-            let accent = self.palette(theme).accent;
-            chrome::fill_round(scene, t, nb, 8.0, render::with_alpha(accent, 28));
-            scene.stroke(
-                &Stroke::new(1.0),
-                t,
-                accent,
-                None,
-                &ui::surface::edge_outline(nb, 8.0),
-            );
-        }
         if self.editing_notes {
             self.notes_input.apply_layout_external(nb);
-            if self.notes_input.value().is_empty() {
-                tr.draw_text_weighted(
-                    scene,
-                    &crate::strings::tr("slides-notes-placeholder"),
-                    12.5,
-                    c.text_dim,
-                    t * Affine::translate((nb.x0 + 10.0, nb.y0 + 9.0)),
-                    Some((nb.width() - 20.0) as f32),
-                    TextWeight::Regular,
-                );
-            }
             self.notes_input
                 .draw(scene, t, tr, theme, &PresenceCtx::empty());
-        } else {
-            let placeholder = crate::strings::tr("slides-notes-placeholder");
-            let (display, col) = if notes.is_empty() {
-                (placeholder.as_str(), c.text_dim)
-            } else {
-                (notes, c.text_primary)
-            };
-            tr.draw_text_weighted(
-                scene,
-                display,
-                12.5,
-                col,
-                t * Affine::translate((nb.x0 + 10.0, nb.y0 + 9.0)),
-                Some((nb.width() - 20.0) as f32),
-                TextWeight::Regular,
-            );
+            return;
         }
+        let notes = self
+            .slide()
+            .map(|slide| slide.notes.clone())
+            .unwrap_or_default();
+        if self.notes_preview.value() != notes {
+            self.notes_preview.set_text(&notes);
+        }
+        self.notes_preview.apply_layout_external(nb);
+        self.notes_preview
+            .draw(scene, t, tr, theme, &PresenceCtx::empty());
     }
 
     fn draw_present(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
@@ -5252,18 +2810,81 @@ impl SlidesApp {
         self.overview.geometry(self.rect, self.deck.slides.len())
     }
 
+    /// The overview's header row: the deck title, the overview toggle (on)
+    /// that returns to the editor, and Present.
+    fn overview_header(&self) -> (Vec<editor_chrome::UiButton>, Point, f64) {
+        let m = &self.chrome_metrics;
+        let header = self.overview.header(self.rect);
+        let control_y = header.y0 + (header.height() - m.control_h) / 2.0;
+        let present_label = tr("slides-present");
+        let present_w = m.width(
+            &present_label,
+            editor_chrome::Measure::Button { icon: true },
+        );
+        let present = Rect::new(
+            header.x1 - m.s6 - present_w,
+            control_y,
+            header.x1 - m.s6,
+            control_y + m.control_h,
+        );
+        let toggle = self.chip(header, present.x0 - m.s2 - m.target);
+        let buttons = vec![
+            editor_chrome::UiButton {
+                rect: toggle,
+                kind: ButtonKind::Icon {
+                    icon: Icon::LayoutGrid,
+                    name: tr("slides-a11y-slide-overview"),
+                    active: true,
+                },
+                hit: Hit::Overview,
+            },
+            editor_chrome::UiButton {
+                rect: present,
+                kind: ButtonKind::Command {
+                    label: present_label,
+                    icon: Some(Icon::Play),
+                    role: ui::widget::ButtonRole::Primary,
+                },
+                hit: Hit::Present,
+            },
+        ];
+        let title = Point::new(
+            header.x0 + m.s6,
+            header.y0 + (header.height() - m.lh_heading) / 2.0,
+        );
+        let title_max = (toggle.x0 - m.s4 - title.x).max(0.0);
+        (buttons, title, title_max)
+    }
+
     fn draw_overview(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let palette = self.palette(theme);
+        // A slide's type is sized in slide units, whatever the reader's text
+        // scale; the cards' own text is set in its roles.
         self.overview.draw(
             &mut PaintCtx::new(scene, t, tr, theme),
             self.rect,
             &self.deck,
             self.cur_slide,
+            Some(self.last_mouse),
             DeckAssets {
                 palette: &palette,
                 images: &self.images,
             },
         );
+        let (buttons, title, title_max) = self.overview_header();
+        let style = theme.text(ui::TextRole::Heading);
+        let shown = tr.elide_to_width_style(&self.deck.title, title_max as f32, &style);
+        tr.draw_style(
+            scene,
+            &shown,
+            theme.tokens.colors.text_primary,
+            t * Affine::translate((title.x, title.y)),
+            None,
+            &style,
+        );
+        for button in &buttons {
+            self.draw_button(scene, t, tr, theme, &palette, button);
+        }
     }
 }
 
@@ -5306,35 +2927,6 @@ fn is_pptx(path: &std::path::Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("pptx"))
 }
 
-fn mix_panel(a: Color, b: Color) -> Color {
-    Color::from_rgba8(
-        u16::midpoint(u16::from(a.r()), u16::from(b.r())) as u8,
-        u16::midpoint(u16::from(a.g()), u16::from(b.g())) as u8,
-        u16::midpoint(u16::from(a.b()), u16::from(b.b())) as u8,
-        255,
-    )
-}
-
-fn stroke_line(scene: &mut Scene, t: Affine, x0: f64, y0: f64, x1: f64, y1: f64, color: Color) {
-    let line = Line::new(Point::new(x0, y0), Point::new(x1, y1));
-    scene.stroke(&Stroke::new(1.0), t, color, None, &line);
-}
-
-/// Wash strength of a danger-tinted Neutral button (the Delete actions):
-/// a faint tint over the button face, matched to the classic `danger/38`.
-const DANGER_WASH: f32 = 0.15;
-
-/// Ink on the deck palette's accent fill (active buttons): white where it
-/// reads, stepped toward the contrasting extreme on a bright accent — one
-/// answer per palette, so a row of active pills never mixes polarities.
-fn on_accent(c: &ui::tokens::Colors, pal: &Palette) -> Color {
-    c.ink_on_any(
-        &[pal.accent],
-        Color::WHITE,
-        ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
-    )
-}
-
 /// Write a small, unmistakably-photographic test raster to a temp PNG and
 /// return its path. Used only by the `image` `--shots` scenario so a headless
 /// screenshot can show the real decode path; never called on a live launch.
@@ -5375,7 +2967,6 @@ impl SlidesApp {
                     |slide| format!("slides.slide:{}", slide.id),
                 )
             }
-            Hit::CyclePalette => "slides.control.cycle-palette".into(),
             Hit::Insert(kind) => format!("slides.control.insert:{}", kind.as_str()),
             Hit::SetFill(role) => format!("slides.control.fill:{role}"),
             Hit::SetStroke(role) => format!("slides.control.stroke:{role}"),
@@ -5396,6 +2987,7 @@ impl SlidesApp {
             Hit::ToggleRail => "slides.control.toggle-slides".into(),
             Hit::ToggleInspector => "slides.control.toggle-properties".into(),
             Hit::ToggleToolbarMenu => "slides.control.more-tools".into(),
+            Hit::OpenLayoutMenu => "slides.control.layout-menu".into(),
         }
     }
 
@@ -5439,14 +3031,6 @@ impl SlidesApp {
                     &[("n", ArgValue::from(*index + 1))],
                 ),
                 AccessState::new().selected(*index == self.cur_slide),
-            ),
-            Hit::CyclePalette => (
-                Role::Button,
-                tr_args(
-                    "slides-a11y-change-theme",
-                    &[("name", ArgValue::from(self.deck.palette.label()))],
-                ),
-                AccessState::new(),
             ),
             Hit::Insert(kind) => (
                 Role::Button,
@@ -5561,24 +3145,37 @@ impl SlidesApp {
             Hit::ToggleToolbarMenu => (
                 Role::Button,
                 tr("slides-a11y-more-tools"),
-                AccessState::new().expanded(self.toolbar_tools.is_open()),
+                AccessState::new().expanded(self.ctx_menu.is_open() && self.toolbar_menu_open),
+            ),
+            Hit::OpenLayoutMenu => (
+                Role::Button,
+                tr_args(
+                    "slides-a11y-layout-menu",
+                    &[(
+                        "name",
+                        ArgValue::from(self.slide().map_or("", |slide| slide.layout.label())),
+                    )],
+                ),
+                AccessState::new(),
             ),
         }
     }
 
+    /// The tooltip of the control under `point`: an icon-only control's
+    /// name, or a swatch's colour.
     fn tooltip_at(&self, point: Point) -> Option<String> {
+        if self.mode != Mode::Edit {
+            return None;
+        }
         let chrome = self.compute_chrome();
         chrome
             .buttons
             .iter()
-            .chain(chrome.toolbar_tools.menu_buttons.iter())
             .find(|button| button.rect.contains(point))
-            .and_then(|button| match button.hit {
-                Hit::ToggleRail => Some(tr("slides-tip-toggle-slides")),
-                Hit::ToggleInspector => Some(tr("slides-tip-toggle-properties")),
-                Hit::Overview => Some(tr("slides-tip-overview")),
-                Hit::CyclePalette => Some(tr("slides-tip-theme")),
-                Hit::ToggleToolbarMenu => Some(tr("slides-tip-more-tools")),
+            .and_then(|button| match &button.kind {
+                ButtonKind::Icon { name, .. } => Some(name.clone()),
+                ButtonKind::Swatch { role, .. } => Some(editor_chrome::role_name(role)),
+                ButtonKind::Theme { kind, .. } => Some(kind.label().to_owned()),
                 _ => None,
             })
     }
@@ -5852,6 +3449,7 @@ impl Widget for SlidesApp {
             origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
+        self.resolve_drawers();
     }
 
     fn draw(
@@ -5865,25 +3463,29 @@ impl Widget for SlidesApp {
         if self.rect.width() < 2.0 {
             return;
         }
-        self.text_scale = theme.text_scale;
         // Fold in any images that finished decoding on their worker thread. A
         // freshly-decoded image must re-shape the cached present-mode slide.
         if self.images.pump() {
             self.presentation.invalidate_cache();
         }
         // Expire a settled cross-fade so `needs_animation_frame` can rest.
+        self.presentation
+            .set_fade(theme.tokens.motion.durations.base());
         self.presentation.expire_transition(theme.reduce_motion);
-        // Measure first, so everything this frame lays out — the flap and rail
-        // sync below, `compute_chrome`, and the hit-rects later events derive
-        // from it — comes from the renderer that is about to paint it.
+        // Measure first, so everything this frame lays out — the drawers,
+        // `compute_chrome`, and the hit-rects later events derive from it —
+        // comes from the theme and renderer that are about to paint it.
         self.refresh_chrome_metrics(text_renderer, theme);
-        // Reconcile the rail flap with the current width (so resizing across
-        // the breakpoint returns to the layout default) and advance its eased
-        // reveal using real elapsed time, frame-rate independent.
+        self.sync_flaps(Some(theme));
+        self.page_sidebar.begin_frame_with_theme(
+            theme,
+            self.rail_viewport(self.rail_rect()),
+            self.deck.slides.len(),
+            self.cur_slide,
+        );
         let now = ui::time::now();
-        let dt = (now - self.last_flap_tick).as_secs_f64().min(0.1);
-        self.last_flap_tick = now;
-        self.sync_flaps(dt, theme.reduce_motion);
+        let dt = (now - self.last_tick).as_secs_f64().min(0.1);
+        self.last_tick = now;
         self.sync_scroll_offsets(dt);
         self.stage_shots_demo();
         match self.mode {
@@ -5892,9 +3494,10 @@ impl Widget for SlidesApp {
                 // Hand the inspector's scroll model this frame's viewport and
                 // content extent; it clamps the stored offset and paints its
                 // bar from the same numbers `compute_chrome` shifted by.
-                self.inspector_scroll.set_viewport_rect(chrome.inspector);
+                self.inspector_scroll
+                    .set_viewport_rect(chrome.inspector_body);
                 self.inspector_scroll.set_content_size(
-                    chrome.inspector.width() as f32,
+                    chrome.inspector_body.width() as f32,
                     chrome.inspector_content_h as f32,
                 );
                 self.draw_editor(scene, transform, text_renderer, theme, &chrome);
@@ -5920,12 +3523,6 @@ impl Widget for SlidesApp {
             Mode::Overview => self.draw_overview(scene, transform, text_renderer, theme),
             Mode::Present => self.draw_present(scene, transform, text_renderer, theme),
         }
-        // The help overlay draws over every mode — including Present, where it
-        // must appear (and be dismissable), otherwise a `?` press would set the
-        // flag, suppress the overlay, and swallow all later navigation keys.
-        let palette = self.palette(theme);
-        self.help_overlay
-            .draw(scene, transform, text_renderer, theme, self.rect, &palette);
         if let Some((message, kind)) = self.io_toast.as_ref() {
             paint_transient(
                 scene,
@@ -5937,9 +3534,31 @@ impl Widget for SlidesApp {
                 &ToastCard::new(message, *kind),
             );
         }
-        // Right-click context menu floats above everything else.
+    }
+
+    /// The window's top layer: the open text fields' own menus, the open
+    /// context menu, and the keyboard reference sheet, which shows over
+    /// every mode (including Present, where `?` must also dismiss it).
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if self.editing_title {
+            self.title_input
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+        if self.editing_notes {
+            self.notes_input
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
         self.ctx_menu
             .draw(scene, transform, text_renderer, theme, presence);
+        self.help_overlay
+            .draw(scene, transform, text_renderer, theme, self.rect);
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -5952,8 +3571,8 @@ impl Widget for SlidesApp {
         // so it re-renders on navigation/input rather than spinning at vsync
         // for a once-a-second clock. See the note on the redraw cadence below.
         self.presentation.needs_animation_frame()
-            || self.rail_flap.is_animating(self.rail_layout())
-            || self.inspector_flap.is_animating(self.inspector_layout())
+            || self.rail_drawer.is_animating()
+            || self.inspector_drawer.is_animating()
             || self.images.any_loading()
             // A live thumbnail reorder pumps frames so the ghost tracks the
             // cursor and the rail auto-scrolls at its edges.
@@ -5963,11 +3582,9 @@ impl Widget for SlidesApp {
     fn set_motion_reduced(&mut self, reduced: bool) {
         if reduced {
             self.presentation.expire_transition(true);
-            let rail = self.rail_layout();
-            let inspector = self.inspector_layout();
-            self.rail_flap.snap(self.rail_flap.is_open(rail));
-            self.inspector_flap
-                .snap(self.inspector_flap.is_open(inspector));
+            let (rail, inspector) = (self.rail_open(), self.inspector_open());
+            self.rail_drawer.snap(rail);
+            self.inspector_drawer.snap(inspector);
         }
     }
 
@@ -6075,24 +3692,13 @@ impl Widget for SlidesApp {
         use ui::a11y::{AccessNode, AccessState, Politeness, Role};
 
         if self.help_overlay.is_visible() {
-            let shortcuts = [
-                "N: New slide",
-                "P: Start presentation",
-                "G: Slide overview",
-                "T, R, O, L: Insert text, rectangle, ellipse, or line",
-                "Tab: Cycle objects on the slide",
-                "Enter: Edit selected text",
-                "Arrow keys: Move the selected object",
-                "Control Z and Control Y: Undo and redo",
-                "Question mark or Escape: Close keyboard shortcuts",
-            ]
-            .into_iter()
-            .map(|shortcut| AccessNode::new(Role::StaticText).with_name(shortcut))
-            .collect();
+            let shortcuts = HelpOverlay::spoken_rows()
+                .into_iter()
+                .map(|shortcut| AccessNode::new(Role::StaticText).with_name(shortcut))
+                .collect();
             return Some(
                 AccessNode::new(Role::Dialog)
-                    .with_name("Keyboard shortcuts")
-                    .with_description("Slides keyboard reference")
+                    .with_name(tr("slides-shortcuts-title"))
                     .with_state(AccessState::new().modal(true))
                     .with_children(vec![
                         AccessNode::new(Role::List)
@@ -6189,7 +3795,7 @@ impl Widget for SlidesApp {
         let controls = chrome
             .buttons
             .iter()
-            .chain(chrome.toolbar_tools.menu_buttons.iter())
+            .chain(chrome.overflow.iter())
             .filter(|button| self.rect.contains(button.rect.center()))
             .filter_map(|button| {
                 let target = self.semantic_target(&button.hit);
@@ -6343,7 +3949,7 @@ impl Widget for SlidesApp {
         let hit = chrome
             .buttons
             .iter()
-            .chain(chrome.toolbar_tools.menu_buttons.iter())
+            .chain(chrome.overflow.iter())
             .find(|button| self.semantic_target(&button.hit) == target)
             .map(|button| button.hit.clone());
         if let Some(hit) = hit {
@@ -6749,6 +4355,7 @@ impl SlidesApp {
                     );
                     self.open_element_menu(p);
                 }
+                DemoMenu::Tools => self.open_tools_menu(),
                 DemoMenu::Slide => {
                     // Open the shared rail's own duplicate / move / delete menu on
                     // the current slide's thumbnail.
@@ -6875,12 +4482,10 @@ impl SlidesApp {
         } = self.drag.clone()
         {
             let (area, _, max_scroll) = self.compute_overview();
-            self.overview.set_scroll(scroll_from_thumb_drag(
-                area,
-                orig_scroll,
-                max_scroll,
-                p.y - start_y,
-            ));
+            let scroll =
+                self.overview
+                    .scroll_from_thumb_drag(area, orig_scroll, max_scroll, p.y - start_y);
+            self.overview.set_scroll(scroll);
             return;
         }
         let chrome = self.compute_chrome();
@@ -6975,9 +4580,16 @@ impl SlidesApp {
             return;
         }
         if self.mode == Mode::Overview {
+            let (buttons, _, _) = self.overview_header();
+            if let Some(button) = buttons.iter().find(|b| b.rect.contains(p)) {
+                let hit = button.hit.clone();
+                self.apply_hit(doc, hit);
+                *handled = true;
+                return;
+            }
             let (area, _, max_scroll) = self.compute_overview();
             // Scrollbar thumb → start a scroll drag.
-            if let Some((_, thumb)) = scrollbar_rects(
+            if let Some((_, thumb)) = self.overview.scrollbar_rects(
                 area,
                 self.overview.scroll().clamp(0.0, max_scroll),
                 max_scroll,
@@ -7008,7 +4620,7 @@ impl SlidesApp {
     fn on_press_editor(&mut self, doc: &mut AutoCommit, p: Point, handled: &mut bool) {
         let chrome = self.compute_chrome();
 
-        if self.on_press_editor_menus(doc, &chrome, p, handled) {
+        if self.on_press_editor_menus(doc, p, handled) {
             return;
         }
 
@@ -7018,9 +4630,41 @@ impl SlidesApp {
             self.mark();
         }
 
-        // Buttons first (the hamburger toggle lives here, so it wins over the
-        // scrim dismissal below).
-        for b in &chrome.buttons {
+        // An open floating drawer is modal over the window: a press outside
+        // it, on the scrim, closes it.
+        if chrome.scrim.width() > 0.0 {
+            let rail_floating = chrome.layout == SplitLayout::Overlay && self.rail_open();
+            let inspector_floating =
+                chrome.inspector_layout == SplitLayout::Overlay && self.inspector_open();
+            let in_drawer = (rail_floating && Self::in_rail(&chrome, p))
+                || (inspector_floating && Self::in_inspector(&chrome, p));
+            if !in_drawer && (rail_floating || inspector_floating) {
+                if rail_floating {
+                    self.rail_drawer.close();
+                }
+                if inspector_floating {
+                    self.inspector_drawer.close();
+                }
+                *handled = true;
+                return;
+            }
+        }
+        // Buttons. Over an open floating drawer only the drawer's own count:
+        // it stands over the header row.
+        let over = if Self::in_rail(&chrome, p) && chrome.layout == SplitLayout::Overlay {
+            Some(editor_chrome::Zone::Rail)
+        } else if Self::in_inspector(&chrome, p) && chrome.inspector_layout == SplitLayout::Overlay
+        {
+            Some(editor_chrome::Zone::Inspector)
+        } else {
+            None
+        };
+        for (i, b) in chrome.buttons.iter().enumerate().rev() {
+            if matches!(b.kind, ButtonKind::Notes)
+                || over.is_some_and(|zone| chrome.button_zone(i) != zone)
+            {
+                continue;
+            }
             if b.rect.contains(p) {
                 let hit = b.hit.clone();
                 self.apply_hit(doc, hit);
@@ -7028,30 +4672,17 @@ impl SlidesApp {
                 return;
             }
         }
-        // Deck title → inline rename (the title sits between the hamburger and
-        // the centre tool group, so it never overlaps a button).
-        if chrome.title_rect.contains(p) {
-            self.begin_title_edit();
+        // The notes field opens the notes for editing.
+        if chrome.notes_box.is_some_and(|notes| notes.contains(p)) {
+            self.apply_hit(doc, Hit::EditNotes);
             *handled = true;
             return;
         }
-        // Scrim dismissal: with an overlay flap open, a click in the dimmed body
-        // (outside both panels) closes whichever flap is open — like tapping the
-        // scrim in Adwaita's flap.
-        if chrome.scrim.contains(p) && !chrome.rail.contains(p) && !chrome.inspector.contains(p) {
-            let mut dismissed = false;
-            if chrome.layout == SplitLayout::Overlay && self.rail_open() {
-                self.rail_flap.close();
-                dismissed = true;
-            }
-            if chrome.inspector_layout == SplitLayout::Overlay && self.inspector_open() {
-                self.inspector_flap.close();
-                dismissed = true;
-            }
-            if dismissed {
-                *handled = true;
-                return;
-            }
+        // Deck title → inline rename.
+        if chrome.title_rect.contains(p) && !Self::in_panel(&chrome, p) {
+            self.begin_title_edit();
+            *handled = true;
+            return;
         }
         // The slide-thumbnail rail. The shared PageSidebar owns selection and
         // the drag-to-reorder gesture: a press selects the slide and arms a
@@ -7082,14 +4713,12 @@ impl SlidesApp {
         }
     }
 
-    /// The two modal-while-open menus a press can land on: the shared rail's
-    /// own context menu, and the toolbar overflow dropdown. Returns `true`
-    /// (and sets `*handled` as appropriate) when the press was consumed by
-    /// either, so [`Self::on_press_editor`] should stop.
+    /// The shared rail's own context menu is modal while open. Returns
+    /// `true` (and sets `*handled`) when the press was consumed by it, so
+    /// [`Self::on_press_editor`] should stop.
     fn on_press_editor_menus(
         &mut self,
         doc: &mut AutoCommit,
-        chrome: &Chrome,
         p: Point,
         handled: &mut bool,
     ) -> bool {
@@ -7104,21 +4733,6 @@ impl SlidesApp {
             return true;
         }
 
-        match self
-            .toolbar_tools
-            .on_press(&chrome.toolbar_tools, &chrome.buttons, p)
-        {
-            MenuPress::PassThrough => {}
-            MenuPress::Consumed => {
-                *handled = true;
-                return true;
-            }
-            MenuPress::Action(hit) => {
-                self.apply_hit(doc, hit);
-                *handled = true;
-                return true;
-            }
-        }
         false
     }
 
@@ -7263,41 +4877,109 @@ impl SlidesApp {
         }
     }
 
-    /// Build + open the context menu at `p`, mapping each row to the action it
-    /// performs. `None` rows are separators. Clamps the 220px-wide menu so it
-    /// stays fully on-screen.
-    fn open_menu_at(&mut self, p: Point, rows: &[Option<(String, Hit)>]) {
+    /// Build the shared context menu from `rows`, mapping each row to the
+    /// action it performs. `None` rows are separators.
+    fn build_menu(&mut self, rows: &[Option<MenuRow>]) -> ContextMenu {
         let mut menu = ContextMenu::new();
         let mut hits: Vec<Option<Hit>> = Vec::new();
         for row in rows {
-            if let Some((label, hit)) = row {
-                menu.push(MenuItem::action(label.clone(), || {}));
-                hits.push(Some(hit.clone()));
+            if let Some(row) = row {
+                let item = if row.destructive {
+                    MenuItem::destructive_action(row.label.clone(), || {})
+                } else {
+                    MenuItem::action(row.label.clone(), || {})
+                };
+                menu.push(match row.checked {
+                    Some(checked) => item.with_checked(checked),
+                    None => item,
+                });
+                hits.push(Some(row.hit.clone()));
             } else {
                 menu.push(MenuItem::separator());
                 hits.push(None);
             }
         }
-        let x = (p.x.min(self.rect.x1 - 228.0)).max(self.rect.x0 + 4.0);
-        menu.open_at([x as f32, p.y as f32]);
-        let h = menu.get_rect().height();
-        let y = (p.y.min(self.rect.y1 - 6.0 - h)).max(self.rect.y0 + 4.0);
-        menu.open_at([x as f32, y as f32]);
-        self.ctx_menu = menu;
         self.ctx_hits = hits;
+        self.toolbar_menu_open = false;
+        menu
+    }
+
+    /// Open a context menu at the pointer `p`, kept inside the window.
+    fn open_menu_at(&mut self, p: Point, rows: &[Option<MenuRow>]) {
+        let mut menu = self.build_menu(rows);
+        menu.open_at_clamped([p.x as f32, p.y as f32], self.rect);
+        self.ctx_menu = menu;
+    }
+
+    /// Open a menu under the control at `anchor`.
+    fn open_menu_under(&mut self, anchor: Rect, rows: &[Option<MenuRow>]) {
+        let mut menu = self.build_menu(rows);
+        menu.open_anchored(anchor, self.rect);
+        self.ctx_menu = menu;
     }
 
     fn open_element_menu(&mut self, p: Point) {
         self.open_menu_at(
             p,
             &[
-                Some((tr("slides-a11y-bring-front"), Hit::BringFront)),
-                Some((tr("slides-a11y-send-back"), Hit::SendBack)),
+                Some(MenuRow::new(tr("slides-a11y-bring-front"), Hit::BringFront)),
+                Some(MenuRow::new(tr("slides-a11y-send-back"), Hit::SendBack)),
                 None,
-                Some((tr("slides-duplicate"), Hit::DuplicateElement)),
-                Some((tr("slides-delete"), Hit::DeleteElement)),
+                Some(MenuRow::new(tr("slides-duplicate"), Hit::DuplicateElement)),
+                Some(MenuRow::new(tr("slides-delete"), Hit::DeleteElement).destructive()),
             ],
         );
+    }
+
+    /// The insert tools that did not fit the header row, under its More
+    /// button.
+    fn open_tools_menu(&mut self) {
+        let chrome = self.compute_chrome();
+        let Some(more) = chrome
+            .buttons
+            .iter()
+            .find(|b| matches!(b.hit, Hit::ToggleToolbarMenu))
+            .map(|b| b.rect)
+        else {
+            return;
+        };
+        let rows: Vec<Option<MenuRow>> = chrome
+            .overflow
+            .iter()
+            .filter_map(|b| match &b.kind {
+                ButtonKind::Command { label, .. } => {
+                    Some(Some(MenuRow::new(label.clone(), b.hit.clone())))
+                }
+                _ => None,
+            })
+            .collect();
+        self.open_menu_under(more, &rows);
+        self.toolbar_menu_open = true;
+    }
+
+    /// The slide layouts, the current one checked, under the inspector's
+    /// layout button.
+    fn open_layout_menu(&mut self) {
+        let chrome = self.compute_chrome();
+        let Some(anchor) = chrome
+            .buttons
+            .iter()
+            .find(|b| matches!(b.hit, Hit::OpenLayoutMenu))
+            .map(|b| b.rect)
+        else {
+            return;
+        };
+        let current = self.slide().map(|s| s.layout);
+        let rows: Vec<Option<MenuRow>> = Layout::ALL
+            .iter()
+            .map(|l| {
+                Some(
+                    MenuRow::new(l.label().to_owned(), Hit::SetLayout(*l))
+                        .checked(current == Some(*l)),
+                )
+            })
+            .collect();
+        self.open_menu_under(anchor, &rows);
     }
 
     /// Forward an event to the open context menu and apply any chosen action.
@@ -7555,7 +5237,7 @@ impl SlidesApp {
             self.apply_rail_events(doc);
             self.rail_scroll = self.page_sidebar.scroll();
             if was_click && self.rail_layout() == SplitLayout::Overlay {
-                self.rail_flap.close();
+                self.rail_drawer.close();
             }
             *handled = true;
             return;
@@ -7678,11 +5360,11 @@ impl SlidesApp {
         {
             let mut dismissed = false;
             if self.rail_layout() == SplitLayout::Overlay && self.rail_open() {
-                self.rail_flap.close();
+                self.rail_drawer.close();
                 dismissed = true;
             }
             if self.inspector_layout() == SplitLayout::Overlay && self.inspector_open() {
-                self.inspector_flap.close();
+                self.inspector_drawer.close();
                 dismissed = true;
             }
             if dismissed {
@@ -8116,15 +5798,15 @@ impl SlidesApp {
         let Some((_, element)) = self.editing_text_box() else {
             return;
         };
-        let background = self.slide().map(|slide| slide.background);
+        let color = self.slide().map_or(pal.text, |slide| {
+            render::text_ink(&pal.on(slide.background), slide, &element)
+        });
         let Some(editor) = self.text_editor.as_mut() else {
             return;
         };
         if editor.element_id != element.id {
             return;
         }
-        let palette = background.map_or(*pal, |background| pal.on(background));
-        let color = palette.resolve_role(&element.fill).unwrap_or(palette.text);
         let surface = editor.host.widget_mut();
         surface.editor_mut().set_body_size(element.font_size as f32);
         surface
@@ -8160,6 +5842,11 @@ impl SlidesApp {
 fn custom_colour_hex(hex: &str) -> String {
     tr_args("slides-custom-colour-hex", &[("hex", ArgValue::from(hex))])
 }
+
+mod editor_chrome;
+#[cfg(test)]
+use editor_chrome::UiButton;
+use editor_chrome::{ButtonKind, Chrome, ChromeMetrics};
 
 #[cfg(test)]
 #[path = "app/r2_inspector_scroll.rs"]
@@ -8308,30 +5995,38 @@ mod tests {
             );
         }
 
-        // Case `clicking_an_overflow_menu_row_inserts_that_element`.
+        // Case `choosing_a_tool_behind_more_inserts_that_element`.
         {
-            let mut app = app_sized(560.0);
+            let (mut app, mut tr) = measured_app(480.0, 1.0);
             let mut doc = seeded_doc(&app);
             app.reload(&doc);
-            app.toolbar_tools.set_open(true);
+            app.refresh_chrome_metrics(&mut tr, &Theme::dark());
             let before = app.slide().unwrap().elements.len();
 
             let chrome = app.compute_chrome();
-            let row = chrome
-                .toolbar_tools
-                .menu_buttons
+            let hidden = chrome
+                .overflow
                 .iter()
-                .find(|b| matches!(b.hit, Hit::Insert(ElementKind::Rect)))
-                .expect("the Rectangle tool is in the overflow menu at 560px");
-            let p = row.rect.center();
-            let mut handled = false;
-            app.last_mouse = p;
-            app.on_press(&mut doc, p, &mut handled);
-            assert!(handled, "clicking a menu row is handled");
+                .find_map(|b| match b.hit {
+                    Hit::Insert(kind) if kind != ElementKind::Image => Some(kind),
+                    _ => None,
+                })
+                .expect("a narrow header row puts a shape tool behind More");
+            app.apply_hit(&mut doc, Hit::ToggleToolbarMenu);
             assert!(
-                !app.toolbar_tools.is_open(),
-                "picking a tool closes the menu"
+                app.ctx_menu.is_open(),
+                "More opens the menu of hidden tools"
             );
+            let row = app
+                .ctx_hits
+                .iter()
+                .position(|hit| matches!(hit, Some(Hit::Insert(kind)) if *kind == hidden))
+                .expect("the menu offers the hidden tool");
+            app.ctx_menu.click_item(row);
+            let chosen = app.ctx_menu.take_selection().expect("the row is chosen");
+            let hit = app.ctx_hits[chosen].clone().expect("a tool row");
+            app.apply_hit(&mut doc, hit);
+            assert!(!app.ctx_menu.is_open(), "picking a tool closes the menu");
             assert_eq!(
                 app.slide().unwrap().elements.len(),
                 before + 1,
@@ -8762,7 +6457,7 @@ mod tests {
             app.rect = Rect::new(0.0, 0.0, 1280.0, 720.0);
             // Settle the flaps so nothing is mid-animation.
             for _ in 0..3 {
-                app.sync_flaps(1.0, false);
+                app.sync_flaps(None);
             }
             assert!(
                 !app.needs_animation_frame(),
@@ -8801,7 +6496,7 @@ mod tests {
         s.add(Element::text("hello", 96.0, 90.0, 1088.0, 100.0, 54.0));
         let mut a = app_with(s);
         a.rect = Rect::new(0.0, 0.0, w, 800.0);
-        a.sync_flaps(0.0, false);
+        a.sync_flaps(None);
         a
     }
 
@@ -8813,23 +6508,36 @@ mod tests {
         let mut tr = TextRenderer::new();
         tr.set_text_scale(theme.text_scale);
         app.refresh_chrome_metrics(&mut tr, &theme);
+        app.sync_flaps(None);
         (app, tr)
     }
 
-    /// Toolbar controls other than the rail hamburger, left to right.
+    /// The content column's header-row controls, left to right (the
+    /// sidebar toggle excluded).
     fn toolbar_controls(chrome: &Chrome) -> Vec<&UiButton> {
         let mut controls: Vec<&UiButton> = chrome
-            .buttons
-            .iter()
-            .filter(|b| {
-                !matches!(b.kind, ButtonKind::Hamburger) && b.rect.center().y < chrome.toolbar.y1
-            })
+            .zone_buttons(editor_chrome::Zone::Content)
+            .filter(|b| !matches!(b.hit, Hit::ToggleRail))
             .collect();
         controls.sort_by(|a, b| a.rect.x0.total_cmp(&b.rect.x0));
         controls
     }
 
-    /// Toolbar/rail/inspector chrome density at 1x and 2x, narrow titles, large text and fitting pills/segments.
+    /// An app at `w` with its inspector drawer summoned open (it docks on a
+    /// wide window anyway).
+    fn inspector_app(w: f64, text_scale: f32) -> (SlidesApp, TextRenderer) {
+        let (mut app, tr) = measured_app(w, text_scale);
+        app.sel = app
+            .slide()
+            .and_then(|s| s.elements.first().map(|e| e.id.clone()));
+        app.inspector_drawer.open();
+        app.inspector_drawer.snap(true);
+        app.sync_flaps(None);
+        (app, tr)
+    }
+
+    /// The editor chrome follows measured text and the theme's metrics at 1x
+    /// and 2x, on wide and phone widths.
     #[test]
     #[expect(
         clippy::too_many_lines,
@@ -8837,17 +6545,15 @@ mod tests {
     )]
     fn chrome_density_follows_measured_text_at_every_width() {
         // Case `title_yields_to_the_leftmost_placed_toolbar_control_at_480`.
-        // At 480 px the insert tools all move behind the overflow button, which
-        // is then pulled left of the nominal tool slot. The title must yield to
-        // that placed control, not to the slot — otherwise the ellipsis paints
-        // under the "⋯" button.
+        // At 480 px every insert tool is behind More; the title is elided to
+        // the room before it rather than painted under it.
         {
             let (app, _tr) = measured_app(480.0, 1.0);
             let chrome = app.compute_chrome();
             let first = toolbar_controls(&chrome)
                 .first()
                 .map(|b| b.rect.x0)
-                .expect("toolbar controls");
+                .expect("header controls");
             assert!(
                 chrome.title_rect.x1 <= first + 0.01,
                 "title slot ends at {:.1} but a control starts at {first:.1}",
@@ -8858,142 +6564,145 @@ mod tests {
                 .iter()
                 .find(|l| l.pos == chrome.title_pos)
                 .expect("title label");
-            let max_w = title.max_w.expect("title is elided at paint time");
-            assert!(max_w > 0.0, "480 px still shows a title fragment");
-            assert!(chrome.title_pos.x + max_w <= first - app.chrome_metrics.s3 + 0.01);
+            let max_w = title.max_w.expect("the title is elided at paint time");
+            assert!(chrome.title_pos.x + max_w <= first + 0.01);
+            assert!(
+                chrome
+                    .buttons
+                    .iter()
+                    .any(|b| matches!(b.hit, Hit::ToggleToolbarMenu)),
+                "the hidden tools stay reachable through More"
+            );
         }
 
-        // Case `one_x_chrome_density_is_unchanged`.
-        // At 1× the measured chrome reproduces the classic density exactly:
-        // 56 px toolbar, 34 px pills, 30 px rail controls, 28 px inspector pills.
+        // Case `one_x_chrome_follows_the_theme_metrics`.
         {
-            let (app, _tr) = measured_app(NARROW_BREAKPOINT + 400.0, 1.0);
+            let (app, _tr) = measured_app(1280.0, 1.0);
             let chrome = app.compute_chrome();
-            assert!((chrome.toolbar.height() - 56.0).abs() < 0.01, "toolbar");
+            let theme = Theme::dark();
+            let metrics = &theme.tokens.metrics;
+            assert!(
+                (chrome.toolbar.height() - f64::from(metrics.header_height)).abs() < 0.01,
+                "the header row is the shell's"
+            );
             let present = chrome
                 .buttons
                 .iter()
                 .find(|b| matches!(b.hit, Hit::Present))
                 .expect("Present");
-            assert!((present.rect.height() - 34.0).abs() < 0.01, "toolbar pill");
+            assert!(
+                (present.rect.height() - ControlSizeHeight::regular()).abs() < 0.01,
+                "a Regular control"
+            );
+            assert!(
+                matches!(
+                    present.kind,
+                    ButtonKind::Command {
+                        role: ui::widget::ButtonRole::Primary,
+                        ..
+                    }
+                ),
+                "Present is the one primary action"
+            );
             let add = chrome
                 .buttons
                 .iter()
                 .find(|b| matches!(b.hit, Hit::NewSlide) && chrome.rail.contains(b.rect.center()))
-                .expect("rail Add");
-            assert!((add.rect.height() - 30.0).abs() < 0.01, "rail control");
-            let layout_pill = chrome
-                .buttons
-                .iter()
-                .find(|b| matches!(b.hit, Hit::SetLayout(_)))
-                .expect("layout pill");
+                .expect("the sidebar's new-slide action");
             assert!(
-                (layout_pill.rect.height() - 28.0).abs() < 0.01,
-                "inspector pill"
+                (add.rect.height() - f64::from(metrics.min_pointer_target)).abs() < 0.01,
+                "a pointer-target square"
+            );
+            // Exactly one primary control in the window.
+            assert_eq!(
+                chrome
+                    .buttons
+                    .iter()
+                    .filter(|b| matches!(
+                        b.kind,
+                        ButtonKind::Command {
+                            role: ui::widget::ButtonRole::Primary,
+                            ..
+                        }
+                    ))
+                    .count(),
+                1
             );
         }
 
         // Case `two_x_chrome_rows_follow_measured_text`.
-        // At 2× every toolbar pill, rail control and inspector row follows the
-        // measured text: labels fit their slots, pills share one centre line,
-        // and no section caption is painted under the control below it.
+        // At 2× every header control and inspector row follows the measured
+        // text: labels fit their slots, header controls share one centre line,
+        // and no section label is painted under the control below it.
         {
-            let (mut app, mut tr) = measured_app(NARROW_BREAKPOINT + 400.0, 2.0);
-            // Select the text element so the inspector shows every section.
-            app.sel = app
-                .slide()
-                .and_then(|s| s.elements.first().map(|e| e.id.clone()));
+            let (app, mut tr) = inspector_app(1440.0, 2.0);
+            let theme = Theme::dark().with_text_scale(2.0);
             let chrome = app.compute_chrome();
             let m = app.chrome_metrics.clone();
-            assert!(m.lh_control > 30.0, "2x control line box {}", m.lh_control);
             assert!(
-                chrome.toolbar.height() >= m.title_block_h() + 2.0 * m.s2 - 0.01
-                    && chrome.toolbar.height() > 56.0,
-                "toolbar grew to its two-line title block"
+                chrome.toolbar.height() >= m.control_h + 2.0 * m.s3 - 0.01,
+                "the header row holds a 2x control"
             );
 
             let controls = toolbar_controls(&chrome);
             let centre = controls[0].rect.center().y;
             for b in &controls {
                 assert!((b.rect.center().y - centre).abs() < 0.01, "one centre line");
-                assert!(
-                    b.rect.height() >= m.lh_control + m.s4 - 0.01,
-                    "pill fits its line box"
-                );
-                if let ButtonKind::Text { label, .. } | ButtonKind::IconText { label, .. } = &b.kind
-                {
-                    let (w, _) =
-                        tr.measure_weighted(label, FONT_CONTROL, None, TextWeight::Semibold);
-                    assert!(
-                        b.rect.width() >= f64::from(w) + 2.0 * m.s3 - 0.01,
-                        "'{label}' needs {w:.1} + padding, pill is {:.1}",
-                        b.rect.width()
-                    );
-                }
             }
             for pair in controls.windows(2) {
                 assert!(
                     pair[0].rect.x1 <= pair[1].rect.x0 + 0.01,
-                    "toolbar controls never overlap"
+                    "header controls never overlap"
                 );
             }
+            for b in &chrome.buttons {
+                if let ButtonKind::Command { label, icon, .. } = &b.kind {
+                    let face = ui::widget::ButtonFace::new(b.rect, label);
+                    let face = match icon {
+                        Some(icon) => face.icon(*icon),
+                        None => face,
+                    };
+                    let need = face.intrinsic_width(&mut tr, &theme);
+                    assert!(
+                        b.rect.width() >= need - 1.0,
+                        "'{label}' needs {need:.1}, has {:.1}",
+                        b.rect.width()
+                    );
+                }
+            }
 
-            // Inspector: captions keep clear of the control that follows them,
-            // and every text control is at least its line box tall.
-            let in_inspector = |r: Rect| chrome.inspector.contains(r.center());
+            // Inspector: section labels keep clear of the control that
+            // follows them; segments fit their labels.
+            let in_inspector = |r: Rect| chrome.inspector_body.contains(r.center());
             for l in chrome.labels.iter().filter(|l| {
-                (l.font - FONT_CAPTION).abs() < 0.01 && chrome.inspector.contains(l.pos)
+                l.role == ui::TextRole::Subheading && chrome.inspector_body.contains(l.pos)
             }) {
-                let caption = Rect::new(l.pos.x, l.pos.y, l.pos.x + 1.0, l.pos.y + m.lh_caption);
+                let label = Rect::new(l.pos.x, l.pos.y, l.pos.x + 1.0, l.pos.y + m.lh_subheading);
                 for b in chrome.buttons.iter().filter(|b| in_inspector(b.rect)) {
                     assert!(
-                        b.rect.y0 >= caption.y1 - 0.01 || b.rect.y1 <= caption.y0 + 0.01,
-                        "'{}' caption at y {:.1}..{:.1} collides with a control at {:.1}..{:.1}",
+                        b.rect.y0 >= label.y1 - 0.01 || b.rect.y1 <= label.y0 + 0.01,
+                        "'{}' label collides with a control at {:.1}..{:.1}",
                         l.text,
-                        caption.y0,
-                        caption.y1,
                         b.rect.y0,
                         b.rect.y1
                     );
                 }
             }
+            let style = ui::widget::ControlSize::Regular
+                .label_style(&theme)
+                .strong();
             for b in chrome.buttons.iter().filter(|b| in_inspector(b.rect)) {
-                match &b.kind {
-                    ButtonKind::Text { label, .. } if !label.is_empty() => {
-                        assert!(
-                            b.rect.height() >= m.lh_control - 0.01,
-                            "'{label}' row fits its text"
-                        );
-                    }
-                    // Alignment segments wrap to two rows rather than clip their
-                    // labels once a quarter-width cell is too narrow for them.
-                    ButtonKind::Segment { label, .. } => {
-                        let (w, _) =
-                            tr.measure_weighted(label, FONT_CONTROL, None, TextWeight::Semibold);
-                        assert!(
-                            b.rect.width() >= f64::from(w) + 2.0 * m.s2 - 0.01,
-                            "segment '{label}' needs {w:.1}, cell is {:.1}",
-                            b.rect.width()
-                        );
-                    }
-                    _ => {}
+                if let ButtonKind::Segment { label, .. } = &b.kind {
+                    let (w, _) = tr.measure_style(label, None, &style);
+                    assert!(
+                        b.rect.width() >= f64::from(w) + 2.0 * m.s3 - 0.5,
+                        "segment '{label}' needs {w:.1}, cell is {:.1}",
+                        b.rect.width()
+                    );
                 }
             }
-            // The font-size input reserve fits two square steppers plus a
-            // three-digit value at the scaled control size, and the B/I toggles
-            // never paint over it (they wrap below when the row is too narrow).
-            let font_input = chrome
-                .font_input_rect
-                .expect("text element shows the TYPE row");
-            let (w, _) = tr.measure_weighted("999 pt", FONT_CONTROL, None, TextWeight::Semibold);
-            assert!(font_input.width() >= 2.0 * m.control_h() + f64::from(w) + 2.0 * m.s2 - 0.01);
-            // The speaker-notes box never inverts or folds back over the sections:
-            // it is at least one control tall and starts below the last control.
+            // The notes follow the sections and never fold back over them.
             let notes = chrome.notes_box.expect("notes box");
-            assert!(
-                notes.height() >= m.control_h() - 0.01,
-                "notes box {notes:?}"
-            );
             let sections_bottom = chrome
                 .buttons
                 .iter()
@@ -9002,15 +6711,15 @@ mod tests {
                 .fold(0.0_f64, f64::max);
             assert!(
                 notes.y0 >= sections_bottom - 0.01,
-                "notes box starts under the sections"
+                "notes under the sections"
             );
-            let inspector_controls: Vec<Rect> = chrome
+            let mut inspector_controls: Vec<Rect> = chrome
                 .buttons
                 .iter()
                 .filter(|b| in_inspector(b.rect))
                 .map(|b| b.rect)
-                .chain([font_input, notes])
                 .collect();
+            inspector_controls.extend(chrome.font_input_rect);
             for (i, a) in inspector_controls.iter().enumerate() {
                 for b in inspector_controls.iter().skip(i + 1) {
                     let overlap = a.intersect(*b);
@@ -9020,120 +6729,68 @@ mod tests {
                     );
                 }
             }
-            // Rail: the pinned action row grew with its labels.
-            for b in chrome
-                .buttons
-                .iter()
-                .filter(|b| chrome.rail.contains(b.rect.center()))
-            {
-                if let ButtonKind::Text { label, .. } = &b.kind {
-                    assert!(
-                        b.rect.height() >= m.lh_control - 0.01,
-                        "rail '{label}' fits"
-                    );
-                }
-            }
         }
 
-        // Case `phone_toolbar_elides_title_before_compact_controls`.
+        // Case `phone_header_elides_the_title_before_its_controls`.
         {
             let app = app_sized(390.0);
             let chrome = app.compute_chrome();
-            let first_right_control = chrome
-                .buttons
-                .iter()
-                .filter(|button| {
-                    !matches!(button.kind, ButtonKind::Hamburger)
-                        && button.rect.center().y < chrome.toolbar.y1
-                })
-                .map(|button| button.rect.x0)
-                .min_by(f64::total_cmp)
+            let first_control = toolbar_controls(&chrome)
+                .first()
+                .map(|b| b.rect.x0)
                 .unwrap();
             assert!(
-                chrome.title_rect.x1 <= first_right_control,
-                "the two-line title must not paint under compact toolbar controls"
+                chrome.title_rect.x1 <= first_control + 0.01,
+                "the title never runs under the header controls"
             );
         }
 
-        // Case `large_text_chrome_keeps_hidden_tools_on_discoverable_routes`.
+        // Case `large_text_keeps_every_route_reachable`.
         {
-            let mut app = SlidesApp::demo(None);
-            sized(&mut app, 1440.0, 960.0);
-            app.text_scale = 2.0;
+            let (app, _tr) = measured_app(1440.0, 2.0);
             let chrome = app.compute_chrome();
-            assert!(
-                chrome
-                    .buttons
-                    .iter()
-                    .any(|button| matches!(button.hit, Hit::ToggleToolbarMenu))
-            );
-            assert!(
-                chrome
-                    .buttons
-                    .iter()
-                    .any(|button| matches!(button.hit, Hit::ToggleInspector))
-            );
-            assert!(
-                chrome
-                    .buttons
-                    .iter()
-                    .any(|button| matches!(button.hit, Hit::Present))
-            );
+            for hit in [Hit::ToggleInspector, Hit::ToggleRail, Hit::Present] {
+                let target = app.semantic_target(&hit);
+                assert!(
+                    chrome
+                        .buttons
+                        .iter()
+                        .any(|b| app.semantic_target(&b.hit) == target),
+                    "{target} stays reachable at 2x"
+                );
+            }
             assert!(
                 chrome.slide_dest.width() > 600.0,
                 "large type keeps a practical authored-slide canvas"
             );
         }
 
-        // Case `deck_theme_pills_fit_their_full_labels_and_never_overlap`.
+        // Case `deck_theme_swatches_are_named_and_never_overlap`.
         {
-            // Docked inspector, nothing selected → the slide-level inspector shows
-            // the five deck-theme pills. Each must be wide enough that its full name
-            // fits (drawn from `dot.x1 + 6`), and pills on a row must not overlap —
-            // this is the exact geometry `draw_button` paints, so the assertion is
-            // on the real path.
             let mut app = app_sized(1280.0);
             app.sel = None;
             let chrome = app.compute_chrome();
-            let pills: Vec<&UiButton> = chrome
+            let swatches: Vec<&UiButton> = chrome
                 .buttons
                 .iter()
-                .filter(|b| {
-                    matches!(b.kind, ButtonKind::Palette { .. })
-                        && chrome.inspector.contains(b.rect.center())
-                })
+                .filter(|b| matches!(b.kind, ButtonKind::Theme { .. }))
                 .collect();
-            assert_eq!(
-                pills.len(),
-                PaletteKind::ALL.len(),
-                "all five theme pills are present"
-            );
-            for b in &pills {
-                if let ButtonKind::Palette { kind, .. } = &b.kind {
-                    let label_right = b.rect.x0 + 26.0 + chrome::est_width(kind.label(), 12.0);
-                    assert!(
-                        label_right <= b.rect.x1 + 0.5,
-                        "'{}' pill is wide enough for its full label (label right {:.1} <= pill right {:.1})",
-                        kind.label(),
-                        label_right,
-                        b.rect.x1
-                    );
-                }
+            assert_eq!(swatches.len(), PaletteKind::ALL.len());
+            for pair in swatches.windows(2) {
+                assert!(
+                    pair[0].rect.x1 <= pair[1].rect.x0 + 0.5,
+                    "theme swatches never overlap"
+                );
             }
-            for (i, a) in pills.iter().enumerate() {
-                for b in &pills[i + 1..] {
-                    let same_row = (a.rect.y0 - b.rect.y0).abs() < 1.0;
-                    if same_row {
-                        assert!(
-                            a.rect.x1 <= b.rect.x0 + 0.5 || b.rect.x1 <= a.rect.x0 + 0.5,
-                            "deck-theme pills on the same row must not overlap"
-                        );
-                    }
-                }
+            for b in &swatches {
+                assert!(
+                    app.tooltip_at(b.rect.center()).is_some(),
+                    "each theme is named"
+                );
             }
         }
 
-        // Case `text_alignment_segments_fill_the_shared_inspector_columns`.
+        // Case `alignment_segments_fill_the_inspector_column`.
         {
             let (mut app, _doc, _id) = selected_text_app();
             sized(&mut app, 1280.0, 800.0);
@@ -9141,192 +6798,155 @@ mod tests {
             let segments: Vec<Rect> = chrome
                 .buttons
                 .iter()
-                .filter_map(|button| {
-                    matches!(button.kind, ButtonKind::Segment { .. }).then_some(button.rect)
-                })
+                .filter_map(|button| matches!(button.hit, Hit::SetAlign(_)).then_some(button.rect))
                 .collect();
-
             assert_eq!(segments.len(), TextAlign::ALL.len());
-            let left = chrome.inspector.x0 + 16.0;
-            let right = chrome.inspector.x1 - 16.0;
-            assert_eq!(segments[0].x0, left);
-            assert_eq!(segments.last().unwrap().x1, right);
-            let width = segments[0].width();
+            let m = &app.chrome_metrics;
+            let left = chrome.inspector.x0 + m.s3;
+            let right = chrome.inspector.x1 - m.s3;
+            assert!((segments[0].x0 - left).abs() < 0.01);
+            assert!((segments.last().unwrap().x1 - right).abs() < 0.01);
             for pair in segments.windows(2) {
                 if (pair[0].y0 - pair[1].y0).abs() < 0.5 {
-                    assert_eq!(pair[0].x1, pair[1].x0, "segments meet without gaps");
-                } else {
-                    assert_eq!(pair[0].x1, right, "each wrapped row fills the right edge");
-                    assert_eq!(pair[1].x0, left, "each wrapped row starts at the left edge");
+                    assert!((pair[0].x1 - pair[1].x0).abs() < 0.01, "segments meet");
                 }
-                assert_eq!(pair[1].width(), width, "segments divide the row evenly");
             }
         }
     }
 
-    /// The thumbnail rail docks when wide and becomes a toggled overlay flap when narrow.
+    /// A height a Regular control has under the stock theme.
+    struct ControlSizeHeight;
+
+    impl ControlSizeHeight {
+        fn regular() -> f64 {
+            ui::widget::ControlSize::Regular.height(&Theme::dark())
+        }
+    }
+
+    /// The slide sidebar docks when wide and is a floating drawer when narrow.
     #[test]
     fn rail_docks_wide_and_overlays_narrow() {
+        let base = ui::tokens::Metrics::BASE;
         // Case `wide_window_docks_the_rail_beside_the_canvas`.
         {
-            let app = app_sized(NARROW_BREAKPOINT + 200.0);
+            let app = app_sized(1280.0);
             assert_eq!(app.rail_layout(), SplitLayout::Docked);
-            assert!(app.rail_open(), "docked rail is open by default");
+            assert!(app.rail_open(), "a docked sidebar is open by default");
             let chrome = app.compute_chrome();
             assert_eq!(chrome.layout, SplitLayout::Docked);
-            // The rail occupies the full left column and the canvas starts past it.
             assert!((chrome.rail.x0 - app.rect.x0).abs() < 1e-6);
             assert!(
-                chrome.rail.width() > RAIL_W - 1.0,
-                "docked rail is full width"
+                (chrome.rail.width() - f64::from(base.sidebar_min_width)).abs() < 0.5,
+                "docked at the shell's narrow sidebar width"
             );
             assert!(
                 chrome.slide_dest.x0 > chrome.rail.x1 - 1.0,
-                "canvas sits to the right of the docked rail"
+                "the canvas sits beside the docked sidebar"
             );
             assert_eq!(chrome.scrim.width(), 0.0, "no scrim while docked");
-            // No hamburger when the rail is docked + fully open.
+            let toggle = chrome
+                .buttons
+                .iter()
+                .find(|b| matches!(b.hit, Hit::ToggleRail))
+                .expect("the sidebar toggle");
             assert!(
-                !chrome
-                    .buttons
-                    .iter()
-                    .any(|b| matches!(b.kind, ButtonKind::Hamburger)),
-                "no hamburger needed when the rail is docked open"
+                chrome.rail.contains(toggle.rect.center()),
+                "the toggle sits at the sidebar's top-leading corner"
             );
         }
 
-        // Case `narrow_window_collapses_rail_to_a_closed_overlay`.
+        // Case `narrow_window_collapses_the_rail_to_a_closed_drawer`.
         {
-            let app = app_sized(NARROW_BREAKPOINT - 200.0);
+            let app = app_sized(600.0);
             assert_eq!(app.rail_layout(), SplitLayout::Overlay);
-            assert!(!app.rail_open(), "overlay rail is closed by default");
+            assert!(!app.rail_open(), "a drawer is closed by default");
             let chrome = app.compute_chrome();
             assert_eq!(chrome.layout, SplitLayout::Overlay);
-            // Canvas spans the full width (rail no longer insets it).
-            assert!(
-                (chrome.slide_dest.x0 - app.rect.x0) < (RAIL_W * 0.5),
-                "narrow canvas reclaims the rail's column"
-            );
-            // The closed flap is fully off the left edge, and no scrim shows.
-            assert!(
-                chrome.rail.x1 <= app.rect.x0 + 1.0,
-                "closed flap is off-screen left"
-            );
-            assert_eq!(
-                chrome.scrim.width(),
-                0.0,
-                "no scrim while the flap is closed"
-            );
-            // A hamburger is offered to summon it.
-            assert!(
-                chrome
-                    .buttons
-                    .iter()
-                    .any(|b| matches!(b.kind, ButtonKind::Hamburger)),
-                "narrow layout offers a hamburger to summon the rail"
-            );
+            assert_eq!(chrome.rail.width(), 0.0, "a closed drawer shows nothing");
+            assert_eq!(chrome.scrim.width(), 0.0, "no scrim while it is closed");
+            let toggle = chrome
+                .buttons
+                .iter()
+                .find(|b| matches!(b.hit, Hit::ToggleRail))
+                .expect("the header row offers the sidebar toggle");
+            assert!(chrome.toolbar.contains(toggle.rect.center()));
         }
 
-        // Case `opening_the_overlay_flap_reveals_the_rail_over_a_scrim`.
+        // Case `opening_the_drawer_floats_the_rail_over_a_scrim`.
         {
-            let mut app = app_sized(NARROW_BREAKPOINT - 200.0);
-            // Summon via the production toggle path, then settle the animation.
-            app.rail_flap.toggle(app.rail_layout());
-            app.rail_flap.snap(true);
+            let mut app = app_sized(600.0);
+            app.rail_drawer.toggle();
+            app.rail_drawer.snap(true);
+            app.sync_flaps(None);
             assert!(app.rail_open());
             let chrome = app.compute_chrome();
-            assert_eq!(chrome.layout, SplitLayout::Overlay);
-            // Fully revealed: the flap is flush with the left edge over a scrim.
             assert!(
-                (chrome.rail.x0 - app.rect.x0).abs() < 1.0,
-                "open flap is flush left"
+                chrome.rail.x0 > app.rect.x0,
+                "the drawer floats inside the window"
             );
+            assert!(chrome.scrim.width() > 0.0, "an open drawer dims the window");
             assert!(
-                chrome.scrim.width() > 0.0,
-                "an open overlay flap dims the body"
-            );
-            assert!(
-                chrome.buttons.iter().any(|button| {
-                    matches!(&button.kind, ButtonKind::Text { label, .. } if label == "Close")
-                        && matches!(button.hit, Hit::ToggleRail)
-                }),
-                "the open overlay has a named Close control in its own header"
+                chrome
+                    .zone_buttons(editor_chrome::Zone::Rail)
+                    .any(|b| matches!(b.hit, Hit::ToggleRail)),
+                "the open drawer carries its own toggle"
             );
         }
 
-        // Case `hamburger_hit_toggles_the_overlay_flap`.
+        // Case `the_toggle_hit_opens_and_closes_the_drawer`.
         {
-            let mut app = app_sized(NARROW_BREAKPOINT - 200.0);
+            let mut app = app_sized(600.0);
             let mut doc = AutoCommit::new();
             assert!(!app.rail_open());
-            // Drive the real action dispatcher, not a private setter.
             app.apply_hit(&mut doc, Hit::ToggleRail);
-            assert!(app.rail_open(), "ToggleRail opens the collapsed flap");
+            assert!(app.rail_open(), "ToggleRail opens the drawer");
             app.apply_hit(&mut doc, Hit::ToggleRail);
             assert!(!app.rail_open(), "ToggleRail closes it again");
         }
     }
 
-    /// The inspector docks when wide and becomes a toggled overlay flap when narrow.
+    /// The inspector docks when wide and is a floating drawer when narrow.
     #[test]
     fn inspector_docks_wide_and_overlays_narrow() {
+        let base = ui::tokens::Metrics::BASE;
         // Case `wide_window_docks_the_inspector`.
         {
-            let app = app_sized(NARROW_BREAKPOINT + 200.0);
+            let app = app_sized(1280.0);
             assert_eq!(app.inspector_layout(), SplitLayout::Docked);
-            assert!(app.inspector_open(), "docked inspector is open by default");
+            assert!(app.inspector_open());
             let chrome = app.compute_chrome();
             assert_eq!(chrome.inspector_layout, SplitLayout::Docked);
-            // Docked inspector is a full-width right column and the canvas ends at
-            // its left edge.
             assert!(
-                chrome.inspector.width() > INSPECTOR_W - 1.0,
-                "docked inspector is full width"
+                (chrome.inspector.width() - f64::from(base.inspector_width)).abs() < 0.5,
+                "docked at the shell's inspector width"
             );
-            assert!(
-                chrome.slide_dest.x1 < chrome.inspector.x0 + 1.0,
-                "canvas sits to the left of the docked inspector"
-            );
+            assert!(chrome.slide_dest.x1 < chrome.inspector.x0 + 1.0);
         }
 
-        // Case `narrow_window_collapses_inspector_to_a_closed_overlay`.
+        // Case `narrow_window_collapses_the_inspector_to_a_closed_drawer`.
         {
-            // Below the inspector breakpoint the inspector becomes a closed flap and
-            // the canvas reclaims its column (spanning to the right edge).
-            let app = app_sized(INSPECTOR_BREAKPOINT - 120.0);
+            let app = app_sized(700.0);
             assert_eq!(app.inspector_layout(), SplitLayout::Overlay);
-            assert!(
-                !app.inspector_open(),
-                "overlay inspector is closed by default"
-            );
+            assert!(!app.inspector_open());
             let chrome = app.compute_chrome();
-            assert!(
-                chrome.inspector.x0 >= app.rect.x1 - 1.0,
-                "closed inspector is off-screen right"
-            );
-            // A toggle is offered to summon it.
+            assert_eq!(chrome.inspector.width(), 0.0);
             assert!(
                 chrome
                     .buttons
                     .iter()
                     .any(|b| matches!(b.hit, Hit::ToggleInspector)),
-                "narrow layout offers an inspector toggle"
+                "the header row offers the inspector toggle"
             );
         }
 
-        // Case `inspector_toggle_hit_opens_the_overlay_flap`.
+        // Case `the_toggle_hit_opens_the_drawer`.
         {
-            let mut app = app_sized(INSPECTOR_BREAKPOINT - 120.0);
+            let mut app = app_sized(700.0);
             let mut doc = AutoCommit::new();
+            app.apply_hit(&mut doc, Hit::ToggleInspector);
+            assert!(app.inspector_open());
+            app.apply_hit(&mut doc, Hit::ToggleInspector);
             assert!(!app.inspector_open());
-            // Drive the real action dispatcher, not a private setter.
-            app.apply_hit(&mut doc, Hit::ToggleInspector);
-            assert!(
-                app.inspector_open(),
-                "ToggleInspector opens the collapsed flap"
-            );
-            app.apply_hit(&mut doc, Hit::ToggleInspector);
-            assert!(!app.inspector_open(), "ToggleInspector closes it again");
         }
     }
 
@@ -9341,18 +6961,18 @@ mod tests {
             assert_eq!(chrome.inspector_layout, SplitLayout::Overlay);
             assert!(
                 chrome.slide_dest.width() > 700.0,
-                "closed drawers leave a useful slide canvas at compact laptop widths"
+                "closed drawers leave a useful slide canvas at compact widths"
             );
             assert!(
                 chrome
                     .buttons
                     .iter()
-                    .any(|button| matches!(button.hit, Hit::ToggleRail))
+                    .any(|b| matches!(b.hit, Hit::ToggleRail))
                     && chrome
                         .buttons
                         .iter()
-                        .any(|button| matches!(button.hit, Hit::ToggleInspector)),
-                "both drawers retain explicit toolbar controls"
+                        .any(|b| matches!(b.hit, Hit::ToggleInspector)),
+                "both drawers keep their toggles in the header row"
             );
         }
 
@@ -9364,67 +6984,44 @@ mod tests {
             assert!(app.rail_open());
             assert!(!app.inspector_open());
             app.apply_hit(&mut doc, Hit::ToggleInspector);
-            assert!(app.inspector_open(), "properties drawer opens");
-            assert!(
-                !app.rail_open(),
-                "opening properties closes the slide drawer immediately"
-            );
+            assert!(app.inspector_open(), "the inspector opens");
+            assert!(!app.rail_open(), "opening it closes the slide drawer");
         }
 
-        // Case `resizing_across_the_breakpoint_returns_to_the_layout_default`.
+        // Case `each_size_class_keeps_its_own_choice`.
         {
-            let mut app = app_sized(NARROW_BREAKPOINT - 200.0);
-            // User opens the flap while narrow.
-            app.rail_flap.reconcile(app.rail_layout());
+            let mut app = app_sized(600.0);
             app.apply_hit(&mut AutoCommit::new(), Hit::ToggleRail);
             assert!(app.rail_open());
-            // Widen past the breakpoint: the stale preference drops and the rail
-            // adopts the docked default (open). Then narrow again → closed default.
-            app.rect = Rect::new(0.0, 0.0, NARROW_BREAKPOINT + 200.0, 800.0);
-            app.rail_flap.reconcile(app.rail_layout());
+            // Wide: the docked sidebar is open by default.
+            app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            app.sync_flaps(None);
             assert_eq!(app.rail_layout(), SplitLayout::Docked);
             assert!(app.rail_open(), "docked default is open");
-            app.rect = Rect::new(0.0, 0.0, NARROW_BREAKPOINT - 200.0, 800.0);
-            app.rail_flap.reconcile(app.rail_layout());
-            assert!(
-                !app.rail_open(),
-                "overlay default is closed after re-narrowing"
-            );
+            // Hide it while wide; narrow again: the drawer is as it was left.
+            app.apply_hit(&mut AutoCommit::new(), Hit::ToggleRail);
+            assert!(!app.rail_open());
+            app.rect = Rect::new(0.0, 0.0, 600.0, 800.0);
+            app.sync_flaps(None);
+            assert_eq!(app.rail_layout(), SplitLayout::Overlay);
+            app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            app.sync_flaps(None);
+            assert!(!app.rail_open(), "the wide window remembers it was hidden");
         }
 
         // Case `same_instance_reflows_both_panels_wide_then_narrow`.
         {
-            // The breakpoint MUST be re-derived from the *current* width every
-            // frame, not cached at construction — resize a single instance wide,
-            // then narrow, and confirm both panels flip layout.
             let mut app = app_sized(1280.0);
             assert_eq!(app.rail_layout(), SplitLayout::Docked);
             assert_eq!(app.inspector_layout(), SplitLayout::Docked);
-            let wide = app.compute_chrome();
-            assert_eq!(wide.layout, SplitLayout::Docked);
-            assert_eq!(wide.inspector_layout, SplitLayout::Docked);
-
-            // Simulate a resize down to a phone-ish width and run the per-frame
-            // flap sync (the real path) — both panels must become overlay flaps and
-            // the canvas must span the full width.
             app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
-            app.sync_flaps(0.0, false);
-            assert_eq!(
-                app.rail_layout(),
-                SplitLayout::Overlay,
-                "rail reflows to overlay"
-            );
-            assert_eq!(
-                app.inspector_layout(),
-                SplitLayout::Overlay,
-                "inspector reflows to overlay"
-            );
+            app.sync_flaps(None);
+            assert_eq!(app.rail_layout(), SplitLayout::Overlay);
+            assert_eq!(app.inspector_layout(), SplitLayout::Overlay);
             let narrow = app.compute_chrome();
-            assert_eq!(narrow.layout, SplitLayout::Overlay);
-            assert_eq!(narrow.inspector_layout, SplitLayout::Overlay);
             assert!(
-                narrow.slide_dest.x1 > 560.0 - RAIL_W,
-                "canvas reclaims the collapsed panels' width when narrow"
+                narrow.slide_dest.width() > 560.0 - 2.0 * 24.0 - 1.0,
+                "the canvas reclaims the collapsed panels' width"
             );
         }
     }
@@ -9448,7 +7045,7 @@ mod tests {
         a.cur_slide = 0;
         a.bootstrapped = true;
         a.rect = Rect::new(0.0, 0.0, 1280.0, h);
-        a.sync_flaps(0.0, false);
+        a.sync_flaps(None);
         a
     }
 
@@ -9499,12 +7096,12 @@ mod tests {
             app.deck = crate::model::seed_deck();
             app.bootstrapped = true;
             app.mode = Mode::Overview;
-            // 800x600 is exactly the size the prior review reported cutting off slide 5.
-            app.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+            // A short window, so the 5-slide deck overflows the grid.
+            app.rect = Rect::new(0.0, 0.0, 800.0, 400.0);
             let (_, _, max_scroll) = app.compute_overview();
             assert!(
                 max_scroll > 0.0,
-                "the 5-slide deck overflows the 800x600 overview"
+                "the 5-slide deck overflows the 800x400 overview"
             );
 
             let mut handled = false;
@@ -9537,9 +7134,12 @@ mod tests {
             app.deck = crate::model::seed_deck();
             app.bootstrapped = true;
             app.mode = Mode::Overview;
-            app.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+            app.rect = Rect::new(0.0, 0.0, 800.0, 400.0);
             let (area, _, max_scroll) = app.compute_overview();
-            let (_, thumb) = scrollbar_rects(area, 0.0, max_scroll).expect("overflow ⇒ scrollbar");
+            let (_, thumb) = app
+                .overview
+                .scrollbar_rects(area, 0.0, max_scroll)
+                .expect("an overflowing grid has a scroll bar");
             // Start a thumb drag (the real on_press path constructs this), then move.
             app.drag = Drag::ScrollOverview {
                 start_y: thumb.center().y,
@@ -9591,7 +7191,7 @@ mod tests {
             let mut app = app_with(s);
             app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
             app.sel = Some(id);
-            app.sync_flaps(0.0, false);
+            app.sync_flaps(None);
             let chrome = app.compute_chrome();
             let el = app.selected_element().expect("a selected element").clone();
             let er = render::element_dest(chrome.slide_dest, chrome.scale, &el);
@@ -10644,7 +8244,7 @@ mod tests {
     }
     fn sized(app: &mut SlidesApp, w: f64, h: f64) {
         app.rect = Rect::new(0.0, 0.0, w, h);
-        app.sync_flaps(0.0, false);
+        app.sync_flaps(None);
     }
 
     // --- deck title rename (was display-only: set_title had no caller) ------
@@ -10766,15 +8366,8 @@ mod tests {
             let theme = Theme::dark();
             let mut tr = TextRenderer::new();
             let mut scene = Scene::new();
-            let palette = app.palette(&theme);
-            app.help_overlay.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                app.rect,
-                &palette,
-            );
+            app.help_overlay
+                .draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, app.rect);
 
             // While open it is modal (a nav key is swallowed, does not advance).
             let before = app.cur_slide;
@@ -10963,14 +8556,7 @@ mod tests {
         let mut scene = Scene::new();
         let mut tr = TextRenderer::new();
         let theme = Theme::dark();
-        app.draw_notes(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            nb,
-            "line one\nsecond",
-        );
+        app.draw_notes(&mut scene, Affine::IDENTITY, &mut tr, &theme, nb);
 
         // ArrowUp jumps to the first line (keeping the column), ArrowDown back.
         app_dispatch(&mut app, &mut doc, &named_ev(NamedKey::ArrowUp));

@@ -2167,11 +2167,7 @@ fn slide_resource(sr: &SlideResource, eager_children: bool, ctx: &SlidesResource
     let mut slide = Resource::new(
         slide_resource_id(&sr.data.id),
         "slides.slide",
-        format!(
-            "Slide {} · {}",
-            idx + 1,
-            Layout::from_str(&sr.data.layout).label()
-        ),
+        format!("Slide {}", idx + 1),
     )
     .with_action(operation(
         "open",
