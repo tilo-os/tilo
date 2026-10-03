@@ -14,7 +14,7 @@ use std::ops::Range;
 use taffy::style_helpers::{length, percent};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -1202,18 +1202,24 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 self.rect.x1,
                 self.rect.y0 + top + height,
             );
-            if self.selection.is_selected(&row.key) {
-                crate::widget::data_table::paint_selected_row(
-                    scene, transform, theme, row_rect, 1.0,
-                );
-            }
+            // The same selection and focus a ListRow paints, so a list of
+            // ListRows reads identically to a painted one.
+            crate::widget::list_row::paint_row_fill(
+                scene,
+                transform,
+                theme,
+                row_rect,
+                self.selection.is_selected(&row.key),
+                false,
+            );
             if self.is_focused && self.focused_key.as_ref() == Some(&row.key) {
-                scene.stroke(
-                    &Stroke::new(2.0),
+                let radius = f64::from(theme.tokens.radii.item);
+                crate::widget::paint_focus_ring(
+                    scene,
                     transform,
-                    theme.tokens.colors.border_focus,
-                    None,
-                    &row_rect,
+                    row_rect.inset(-2.0),
+                    (radius - 2.0).max(0.0),
+                    theme,
                 );
             }
             row.widget

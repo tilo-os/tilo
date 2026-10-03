@@ -66,9 +66,10 @@ fn portable_frame_composites_real_dropdown_overlay_above_later_siblings() {
         .push(Box::new(
             crate::widget::Dropdown::new(vec!["First".into(), "Second".into()], "choice").open(),
         ))
-        .push(Box::new(
-            Container::new().with_fill(blocker).with_size(240.0, 80.0),
-        ));
+        .push(Box::new(Blocker {
+            color: blocker,
+            rect: Rect::ZERO,
+        }));
     let frame = frame(Box::new(root));
     let scene = frame.frame_output().scene;
 
@@ -86,6 +87,65 @@ fn portable_frame_composites_real_dropdown_overlay_above_later_siblings() {
         overlay_position > blocker_position,
         "overlay paint must occupy the top layer"
     );
+}
+
+/// A later sibling that paints one fixture colour over its rect.
+struct Blocker {
+    color: vello::peniko::Color,
+    rect: Rect,
+}
+
+impl Widget for Blocker {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+    ) -> taffy::NodeId {
+        let node = taffy
+            .new_leaf(taffy::Style {
+                size: taffy::Size {
+                    width: taffy::style_helpers::length(240.0_f32),
+                    height: taffy::style_helpers::length(80.0_f32),
+                },
+                ..Default::default()
+            })
+            .expect("leaf");
+        map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: taffy::NodeId, origin: Point) {
+        let l = taffy.layout(node).copied().unwrap_or_default();
+        self.rect = Rect::from_origin_size(
+            (
+                origin.x + f64::from(l.location.x),
+                origin.y + f64::from(l.location.y),
+            ),
+            (f64::from(l.size.width), f64::from(l.size.height)),
+        );
+    }
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: vello::kurbo::Affine,
+        _text: &mut crate::text_render::TextRenderer,
+        _theme: &Theme,
+        _presence: &crate::presence::PresenceCtx,
+    ) {
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            self.color,
+            None,
+            &self.rect,
+        );
+    }
+    fn name(&self) -> &'static str {
+        "Blocker"
+    }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 }
 
 struct OverlayProbe {

@@ -14,14 +14,15 @@
 //! anchor while changing thumbnail density.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::a11y::{AccessNode, AccessState, Action, Role};
-use crate::num::{f32_of_f64, f64_of_usize};
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::num::f32_of_f64;
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::{PressOutcome, ScrollMetrics, Scrollbar};
 
 /// The highest number of date markers a single frame paints or exports to
@@ -217,9 +218,10 @@ impl DateIndexedScrollbar {
         if markers.is_empty() || self.rect.height() <= 0.0 {
             return Vec::new();
         }
+        // A marker without a label would paint as a mark nobody can read.
         let mut ordered: Vec<_> = markers
             .iter()
-            .filter(|marker| marker.position.is_finite())
+            .filter(|marker| marker.position.is_finite() && !marker.label.trim().is_empty())
             .collect();
         ordered.sort_by(|left, right| {
             left.clamped_position()
@@ -591,61 +593,65 @@ impl DateIndexedScrollbar {
         let active = self.hovered || self.focused || self.bar.is_active();
         self.paint_track(scene, transform, theme, active);
         let projected = self.project_markers(markers, MAX_PROJECTED_MARKERS);
-        self.paint_markers(scene, transform, theme, &projected);
+        self.paint_markers(scene, transform, theme, &projected, active);
         self.paint_thumb(scene, transform, theme, metrics, active);
         self.paint_preview(scene, transform, text_renderer, theme, lane, &projected);
     }
 
     fn paint_track(&self, scene: &mut Scene, transform: Affine, theme: &Theme, _active: bool) {
-        let colors = &theme.tokens.colors;
         // The broad lane is an invisible acquisition target. Painting it on
         // hover turned a scrollbar into an opaque side panel over photos.
+        // The visible track is the shared scrollbar track.
+        let radius = self.rect.width() / 2.0;
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            colors.neutral[3],
+            crate::widget::scrollbar::track_color(theme),
             None,
-            &RoundedRect::from_rect(self.rect, self.rect.width() / 2.0),
+            &RoundedRect::from_rect(self.rect, radius),
         );
-        scene.stroke(
-            &Stroke::new(if self.focused { 1.5 } else { 1.0 }),
-            transform,
-            if self.focused {
-                theme.border_focus
-            } else {
-                theme.border_standard
-            },
-            None,
-            &RoundedRect::from_rect(self.rect, self.rect.width() / 2.0),
-        );
+        if self.focused {
+            crate::widget::paint_focus_ring(scene, transform, self.rect, radius, theme);
+        }
     }
 
+    /// Year boundaries always show; month boundaries only while the index is
+    /// in use, when the preview names the one under the pointer. A mark at
+    /// rest is never a stray, unnamed tick.
     fn paint_markers(
         &self,
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
         markers: &[ProjectedDateMarker],
+        active: bool,
     ) {
+        let spacing = &theme.tokens.spacing;
+        let rule = f64::from(theme.tokens.metrics.chrome_rule_px);
+        let gap = f64::from(spacing.s1);
         for marker in markers {
-            let width = if marker.kind == DateIndexMarkerKind::Major {
-                9.0
+            let major = marker.kind == DateIndexMarkerKind::Major;
+            if !major && !active {
+                continue;
+            }
+            let width = if major {
+                f64::from(spacing.s2)
             } else {
-                5.0
+                f64::from(spacing.s1)
             };
             let tick = Rect::new(
-                self.rect.x0 - width - 3.0,
-                marker.axis - 0.75,
-                self.rect.x0 - 3.0,
-                marker.axis + 0.75,
+                self.rect.x0 - width - gap,
+                marker.axis - rule / 2.0,
+                self.rect.x0 - gap,
+                marker.axis + rule / 2.0,
             );
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                if marker.kind == DateIndexMarkerKind::Major {
-                    theme.tokens.colors.intent.inverted
+                if major {
+                    theme.text_dim
                 } else {
-                    crate::tokens::Colors::hairline_on(theme.tokens.colors.surfaces.base, 51)
+                    theme.text_tertiary
                 },
                 None,
                 &tick,
@@ -661,24 +667,11 @@ impl DateIndexedScrollbar {
         metrics: ScrollMetrics,
         active: bool,
     ) {
-        let colors = &theme.tokens.colors;
         if let Some(thumb) = self.bar.thumb_rect(self.rect, metrics) {
-            let fill = if active {
-                theme.tokens.colors.intent.inverted
-            } else {
-                colors.lift(0.45)
-            };
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                fill,
-                None,
-                &RoundedRect::from_rect(thumb, thumb.width() / 2.0),
-            );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                crate::tokens::Colors::hairline_on(fill, 51),
+                crate::widget::scrollbar::thumb_color(theme, active),
                 None,
                 &RoundedRect::from_rect(thumb, thumb.width() / 2.0),
             );
@@ -700,38 +693,37 @@ impl DateIndexedScrollbar {
         let Some(marker) = markers.iter().find(|marker| marker.id == preview.id) else {
             return;
         };
-        let label_w = (f64_of_usize(preview.label.chars().count()) * 7.2 + 22.0)
-            .clamp(64.0, PREVIEW_BUBBLE_MAX_WIDTH);
-        let label_h = 26.0;
-        let x1 = self.rect.x0 - 10.0;
-        let label = Rect::new(
-            x1 - label_w,
-            (marker.axis - label_h / 2.0).clamp(lane.y0, lane.y1 - label_h),
-            x1,
-            (marker.axis + label_h / 2.0).clamp(lane.y0 + label_h, lane.y1),
-        );
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &RoundedRect::from_rect(label, 6.0),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.border_standard,
-            None,
-            &RoundedRect::from_rect(label, 6.0),
-        );
-        text_renderer.draw_text_weighted(
-            scene,
+        // A small floating bubble beside the track names the date: the
+        // floating material, a `Caption` label measured to fit.
+        let spacing = &theme.tokens.spacing;
+        let style = theme.text(TextRole::Caption).strong();
+        let pad_x = f64::from(spacing.s2);
+        let pad_y = f64::from(spacing.s1);
+        let text = text_renderer.elide_to_width_style(
             &preview.label,
-            11.0,
+            f32_of_f64(PREVIEW_BUBBLE_MAX_WIDTH - 2.0 * pad_x),
+            &style,
+        );
+        let (w, h) = text_renderer.measure_style(&text, None, &style);
+        let label_w = f64::from(w) + 2.0 * pad_x;
+        let label_h = f64::from(h) + 2.0 * pad_y;
+        let x1 = self.rect.x0 - f64::from(spacing.s2);
+        let top = (marker.axis - label_h / 2.0).clamp(lane.y0, (lane.y1 - label_h).max(lane.y0));
+        let label = Rect::new(x1 - label_w, top, x1, top + label_h);
+        crate::surface::panel(
+            scene,
+            transform,
+            label,
+            f64::from(theme.tokens.radii.control),
+            theme,
+        );
+        text_renderer.draw_style(
+            scene,
+            &text,
             theme.text_primary,
-            translated(transform, label.x0 + 9.0, label.y0 + 7.0),
-            Some(f32_of_f64(label.width() - 18.0)),
-            TextWeight::Medium,
+            translated(transform, label.x0 + pad_x, label.y0 + pad_y),
+            None,
+            &style,
         );
     }
 }
@@ -913,5 +905,18 @@ mod tests {
         keyboard_and_accessibility_share_absolute_scroll_intents();
         semantics_are_bounded_and_have_stable_action_targets();
         plus_and_minus_offer_non_gesture_density_parity();
+    }
+
+    #[test]
+    fn an_unlabelled_marker_is_never_painted() {
+        let bar = scrollbar();
+        let markers = [
+            DateIndexMarker::new("2025", "2025", 0.1, DateIndexMarkerKind::Major),
+            DateIndexMarker::new("blank", "  ", 0.5, DateIndexMarkerKind::Minor),
+            DateIndexMarker::new("2026", "2026", 0.9, DateIndexMarkerKind::Major),
+        ];
+        let projected = bar.project_markers(&markers, MAX_PROJECTED_MARKERS);
+        assert_eq!(projected.len(), 2);
+        assert!(projected.iter().all(|m| !m.label.trim().is_empty()));
     }
 }

@@ -1,366 +1,438 @@
-//! Avatar widget — a circular profile chip that renders either a
-//! caller-supplied image clipped to a circle, or a coloured circle with
-//! the user's initials when no image is available.
+//! Avatar: a person's (or an account's) picture, or their initials when no
+//! picture exists.
 //!
-//! Initials-avatar colour is sampled deterministically from the theme's
-//! accent ramp by hashing the initials ([`Avatar::background_color`]), so
-//! the same person's chip is the same colour everywhere it's drawn,
-//! without the OS shipping per-user theming.
-
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+//! An avatar is a person, so its fallback wears that person's presence
+//! colour: the hue comes from their identity ([`PresenceHue::of_identity`])
+//! or from the presence colour the caller already holds for them, never
+//! from a position in a list. The initials take whichever ink of the theme
+//! reads best on that colour. A picture is cover-fitted into the shape and
+//! may load lazily from an [`ImageStore`]; the initials stay until it lands.
+//!
+//! Two forms with one geometry: the retained [`Avatar`] widget and the
+//! immediate [`AvatarFace`] painter for rows, gutters and clusters that a
+//! caller lays out itself.
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Rect, Vec2};
-use vello::peniko::{self, BlendMode, Color, Fill};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::peniko::{self, Color, Fill};
 
+use crate::ImageStore;
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::tokens::colors::PresenceHue;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
-/// The separator ring painted behind an avatar chip in an overlapping
-/// cluster: `width` px of `color` around the chip.
+/// How large an avatar is. Each size reads from the theme's metrics, so it
+/// follows the UI scale.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AvatarSize {
+    /// Inline with a line of text: a mention, a chip, an attribution.
+    Small,
+    /// A list row or a roster entry.
+    #[default]
+    Regular,
+    /// A card or a conversation header.
+    Large,
+    /// The subject of a detail view (a contact, an account).
+    Hero,
+}
+
+impl AvatarSize {
+    /// The side in logical pixels under `theme`.
+    #[must_use]
+    pub fn side(self, theme: &Theme) -> f64 {
+        let metrics = &theme.tokens.metrics;
+        let target = f64::from(metrics.min_pointer_target);
+        match self {
+            Self::Small => f64::from(metrics.icon_md),
+            Self::Regular => target,
+            Self::Large => target * 1.5,
+            Self::Hero => target * 2.5,
+        }
+    }
+}
+
+/// Whose colour a fallback avatar wears.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct AvatarRing {
-    pub color: Color,
-    pub width: f64,
+enum Tint<'a> {
+    Identity(&'a str),
+    Presence(Color),
 }
 
-/// Circular profile chip — see module docs.
-pub struct Avatar {
-    image: Option<peniko::ImageData>,
-    /// Uppercased, ≤ 2-char initials, normalised at construction so
-    /// [`Avatar::display_initials`] is a cheap getter tests can pin.
-    initials: String,
-    size: f32,
-    rect: Rect,
-    /// Scene cache. Avatars have no hover/press/focus visuals, so the
-    /// cache invalidates only when the rect size changes (`apply_layout`).
-    cached: vello::Scene,
-    dirty: bool,
-    /// Rect the cache was emitted at — compared by size; pure
-    /// translation handled by the append transform in `draw`.
-    cache_rect: Rect,
+/// Immediate-mode avatar: the same picture, initials, colour and shape as
+/// [`Avatar`], painted into a rect the caller laid out.
+#[derive(Clone, Copy, Debug)]
+pub struct AvatarFace<'a> {
+    name: &'a str,
+    tint: Tint<'a>,
+    image: Option<&'a peniko::ImageData>,
+    square: bool,
+    ring_on: Option<Color>,
 }
 
-impl Avatar {
-    /// Construct an avatar that paints a circle-clipped image, sized to
-    /// fill the `size × size` square before the circular clip is applied.
-    pub fn new(image: peniko::ImageData, size: f32) -> Self {
+impl<'a> AvatarFace<'a> {
+    /// `name` gives the initials; `identity` (a stable id: a peer id, an
+    /// address, an account key) picks the presence hue.
+    #[must_use]
+    pub fn new(name: &'a str, identity: &'a str) -> Self {
         Self {
-            image: Some(image),
-            initials: String::new(),
-            size,
-            rect: Rect::ZERO,
-            cached: vello::Scene::new(),
-            dirty: true,
-            cache_rect: Rect::ZERO,
-        }
-    }
-
-    /// Construct an avatar that paints a deterministically-coloured circle
-    /// with the supplied initials, uppercased and truncated to 2 chars.
-    pub fn from_initials(initials: &str, size: f32) -> Self {
-        let initials: String = initials.to_uppercase().chars().take(2).collect();
-        Self {
+            name,
+            tint: Tint::Identity(identity),
             image: None,
-            initials,
-            size,
-            rect: Rect::ZERO,
-            cached: vello::Scene::new(),
-            dirty: true,
-            cache_rect: Rect::ZERO,
+            square: false,
+            ring_on: None,
         }
     }
 
-    /// The exact string `draw` hands to the text renderer for the
-    /// initials variant; empty for the image variant.
-    pub fn display_initials(&self) -> &str {
-        &self.initials
+    /// Use a collaborator's own presence colour (their chosen identity
+    /// colour) instead of hashing an id. It is painted at the theme's
+    /// presence lightness and chroma, like every other presence mark.
+    #[must_use]
+    pub fn presence(mut self, colour: Color) -> Self {
+        self.tint = Tint::Presence(colour);
+        self
     }
 
-    /// Hashes the (uppercased, truncated) initials with `DefaultHasher`
-    /// and picks that slot of the theme's presence palette: an avatar is a
-    /// person, so it wears a presence colour. `pub` so tests can call it
-    /// without rendering into a scene.
-    pub fn background_color(&self, theme: &Theme) -> Color {
+    /// The person's picture. Without one the initials show.
+    #[must_use]
+    pub fn image(mut self, image: Option<&'a peniko::ImageData>) -> Self {
+        self.image = image;
+        self
+    }
+
+    /// A rounded square instead of a circle: an account, a site or an
+    /// organisation rather than a person.
+    #[must_use]
+    pub fn square(mut self) -> Self {
+        self.square = true;
+        self
+    }
+
+    /// Paint a separator ring of `ground` around the avatar, for avatars that
+    /// overlap in a cluster. `ground` is the surface the cluster sits on.
+    #[must_use]
+    pub fn ringed_on(mut self, ground: Color) -> Self {
+        self.ring_on = Some(ground);
+        self
+    }
+
+    /// The initials this face shows: the first letter of the first two
+    /// words, upper-cased.
+    #[must_use]
+    pub fn initials(&self) -> String {
+        initials_for_name(self.name)
+    }
+
+    /// The fallback fill under `theme`.
+    #[must_use]
+    pub fn colour(&self, theme: &Theme) -> Color {
         let presence = &theme.tokens.colors.presence;
-        let mut hasher = DefaultHasher::new();
-        self.initials.hash(&mut hasher);
-        presence.get(ramp_index(
-            hasher.finish(),
-            crate::tokens::colors::PRESENCE_LEN,
-        ))
+        match self.tint {
+            Tint::Identity(id) => presence.hue(PresenceHue::of_identity(id)),
+            Tint::Presence(colour) => presence.of(colour),
+        }
     }
 
-    /// Circle-clip, fill the image scaled to the avatar square (so the
-    /// circular crop catches the image's centre regardless of source
-    /// aspect), pop the clip.
-    fn paint_image(&self, scene: &mut Scene, transform: Affine, img: &peniko::ImageData) {
-        let centre = self.rect.center();
-        let radius = self.rect.width().min(self.rect.height()) * 0.5;
-        let clip = Circle::new(centre, radius);
-
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &clip);
-
-        let iw = f64::from(img.width.max(1));
-        let ih = f64::from(img.height.max(1));
-        let sx = self.rect.width() / iw;
-        let sy = self.rect.height() / ih;
-        let brush_transform =
-            Affine::translate((self.rect.x0, self.rect.y0)).pre_scale_non_uniform(sx, sy);
-
-        let image_brush = peniko::ImageBrush::new(img.clone());
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            &image_brush,
-            Some(brush_transform),
-            &self.rect,
-        );
-
-        scene.pop_layer();
+    fn shape(&self, rect: Rect, theme: &Theme) -> RoundedRect {
+        let side = rect.width().min(rect.height());
+        let rect = Rect::from_center_size(rect.center(), (side, side));
+        let radius = if self.square {
+            let radii = &theme.tokens.radii;
+            if side <= f64::from(theme.tokens.metrics.icon_lg) {
+                f64::from(radii.detail)
+            } else if side <= f64::from(theme.tokens.metrics.min_pointer_target) {
+                f64::from(radii.item)
+            } else {
+                f64::from(radii.control)
+            }
+        } else {
+            side / 2.0
+        };
+        RoundedRect::from_rect(rect, radius)
     }
 
-    /// Immediate-mode: paints directly into `scene` at `rect` with no
-    /// layout node, caching, or widget instance — for callers that lay out
-    /// their own rows (peer lists, mention chips, comment gutters).
-    /// `initials` is normalised exactly like [`Avatar::from_initials`]; an
-    /// empty `initials` paints just the circle.
-    pub fn draw_at(
-        scene: &mut Scene,
-        transform: Affine,
-        rect: Rect,
-        initials: &str,
-        color: Color,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
-    ) {
+    /// Paint into `rect` (the shorter side is the avatar's side, centred).
+    pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
         }
-        let centre = rect.center();
-        let radius = rect.width().min(rect.height()) * 0.5;
-        let circle = Circle::new(centre, radius);
-        scene.fill(Fill::NonZero, transform, color, None, &circle);
-
-        let initials: String = initials.to_uppercase().chars().take(2).collect();
+        let shape = self.shape(rect, ctx.theme);
+        if let Some(ground) = self.ring_on {
+            let ring = f64::from(ctx.theme.tokens.metrics.chrome_rule_px) * 2.0;
+            let outer = shape.rect().inflate(ring, ring);
+            let radius = if self.square {
+                shape.radii().top_left + ring
+            } else {
+                outer.width() / 2.0
+            };
+            ctx.scene.fill(
+                Fill::NonZero,
+                ctx.transform,
+                ground,
+                None,
+                &RoundedRect::from_rect(outer, radius),
+            );
+        }
+        if let Some(image) = self.image {
+            crate::image_store::paint_image_cover(
+                ctx.scene,
+                ctx.transform,
+                shape.rect(),
+                image,
+                shape.radii().top_left,
+            );
+            return;
+        }
+        let fill = self.colour(ctx.theme);
+        ctx.scene
+            .fill(Fill::NonZero, ctx.transform, fill, None, &shape);
+        let initials = self.initials();
         if initials.is_empty() {
             return;
         }
-        // Same 0.4× ratio the widget uses, but keyed off the rect rather
-        // than a stored `size` field so callers don't have to thread one.
-        let style = initials_style(theme, px(rect.width().min(rect.height())) * 0.4);
-        let (tw, th) = text_renderer.measure_style(&initials, None, &style);
-        let tx = centre.x - f64::from(tw) / 2.0;
-        let ty = centre.y - f64::from(th) / 2.0;
-        text_renderer.draw_style(
-            scene,
+        let side = shape.rect().width();
+        let style = initials_style(ctx.theme, side);
+        let (width, height) = ctx.text.measure_style(&initials, None, &style);
+        let centre = shape.rect().center();
+        ctx.text(
             &initials,
-            Self::initial_ink(color),
-            transform.pre_translate(Vec2::new(tx, ty)),
-            None,
             &style,
+            initial_ink(fill, ctx.theme),
+            Point::new(
+                centre.x - f64::from(width) / 2.0,
+                centre.y - f64::from(height) / 2.0,
+            ),
+            None,
         );
     }
 
-    /// Identity colours are picked to tell people apart, not to sit under
-    /// white text, and the light half of any palette is bright enough that
-    /// a white initial is unreadable on it — so relative luminance decides:
-    /// dark chips keep white, light ones take near-black ink. Uses sRGB
-    /// relative luminance (Rec. 709) on the raw channels rather than the
-    /// gamma-correct form, which costs three `powf` calls per glyph for a
-    /// threshold shift of a couple of palette entries.
-    pub fn initial_ink(fill: Color) -> Color {
-        let c = fill.to_rgba8();
-        let l = 0.2126 * f32::from(c.r) + 0.7152 * f32::from(c.g) + 0.0722 * f32::from(c.b);
-        if l > 140.0 {
-            Color::from_rgb8(0x14, 0x16, 0x1a)
-        } else {
-            Color::WHITE
-        }
-    }
-
-    /// [`Avatar::draw_at`] preceded by a separator ring, for overlapping
-    /// avatars in a cluster.
-    pub fn draw_ringed_at(
+    /// The "+N more people" disc that ends an overlapping cluster: the
+    /// raised surface with secondary ink. `count == 0` paints nothing.
+    /// `ring_on` is the ground of an overlapping cluster, as in
+    /// [`Self::ringed_on`].
+    pub fn paint_overflow(
         ctx: &mut PaintCtx<'_>,
         rect: Rect,
-        initials: &str,
-        color: Color,
-        ring: AvatarRing,
+        count: usize,
+        ring_on: Option<Color>,
     ) {
-        if rect.width() <= 0.0 || rect.height() <= 0.0 {
-            return;
-        }
-        Self::draw_ring(ctx.scene, ctx.transform, rect, ring);
-        Self::draw_at(
-            ctx.scene,
-            ctx.transform,
-            rect,
-            initials,
-            color,
-            ctx.theme,
-            ctx.text,
-        );
-    }
-
-    /// Trailing "+N overflow" chip — same separator ring as
-    /// [`Avatar::draw_ringed_at`], but the theme's neutral raised fill and a
-    /// dim, non-truncated `"+{count}"` label, since it reads as "N more
-    /// people" rather than another identity. `count == 0` paints nothing.
-    pub fn draw_overflow_at(ctx: &mut PaintCtx<'_>, rect: Rect, count: usize, ring: AvatarRing) {
         if count == 0 || rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
         }
-        let colors = &ctx.theme.tokens.colors;
-        Self::draw_ring(ctx.scene, ctx.transform, rect, ring);
-        let centre = rect.center();
-        let radius = rect.width().min(rect.height()) * 0.5;
+        let side = rect.width().min(rect.height());
+        let disc = Rect::from_center_size(rect.center(), (side, side));
+        if let Some(ground) = ring_on {
+            let ring = f64::from(ctx.theme.tokens.metrics.chrome_rule_px) * 2.0;
+            let outer = disc.inflate(ring, ring);
+            ctx.scene.fill(
+                Fill::NonZero,
+                ctx.transform,
+                ground,
+                None,
+                &RoundedRect::from_rect(outer, outer.width() / 2.0),
+            );
+        }
+        let raised = ctx.theme.tokens.colors.surfaces.raised;
         ctx.scene.fill(
             Fill::NonZero,
             ctx.transform,
-            colors.surfaces.raised,
+            raised,
             None,
-            &Circle::new(centre, radius),
+            &RoundedRect::from_rect(disc, side / 2.0),
         );
-        // "+N" can be 2–3 glyphs, so key the size a touch below the 0.4×
-        // initials ratio to keep "+12" inside the chip.
         let label = format!("+{count}");
-        let style = initials_style(ctx.theme, px(rect.width().min(rect.height())) * 0.36);
-        let (tw, th) = ctx.text.measure_style(&label, None, &style);
-        let tx = centre.x - f64::from(tw) / 2.0;
-        let ty = centre.y - f64::from(th) / 2.0;
-        ctx.text(&label, &style, colors.text_dim, Point::new(tx, ty), None);
-    }
-
-    /// A filled `ring.color` disc `ring.width` px larger than `rect`,
-    /// painted before the chip fill so the ring shows through the gap
-    /// between neighbouring chips.
-    fn draw_ring(scene: &mut Scene, transform: Affine, rect: Rect, ring: AvatarRing) {
-        let centre = rect.center();
-        let radius = rect.width().min(rect.height()) * 0.5;
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            ring.color,
-            None,
-            &Circle::new(centre, radius + ring.width),
-        );
-    }
-
-    /// First character of each of the first two whitespace-separated
-    /// words, uppercased — `"Ada Lovelace"` → `"AL"`. Distinct from
-    /// [`Avatar::from_initials`], which only truncates and never splits on
-    /// words. Callers supply their own fallback for the empty-name case.
-    pub fn initials_for_name(name: &str) -> String {
-        name.split_whitespace()
-            .filter_map(|w| w.chars().next())
-            .take(2)
-            .collect::<String>()
-            .to_uppercase()
-    }
-
-    /// Same hash as [`Avatar::from_initials`], exposed standalone so
-    /// immediate-mode callers of [`Avatar::draw_at`] can derive it without
-    /// constructing an `Avatar`.
-    pub fn color_for_initials(initials: &str, theme: &Theme) -> Color {
-        // The normalised copy is read via `Hash::hash` below; clippy's
-        // collection_is_never_read doesn't recognize hashing as a read.
-        #[allow(
-            clippy::collection_is_never_read,
-            reason = "read by Hash::hash two lines down, which this lint doesn't track as a use"
-        )]
-        let initials: String = initials.to_uppercase().chars().take(2).collect();
-        let presence = &theme.tokens.colors.presence;
-        let mut hasher = DefaultHasher::new();
-        initials.hash(&mut hasher);
-        presence.get(ramp_index(
-            hasher.finish(),
-            crate::tokens::colors::PRESENCE_LEN,
-        ))
-    }
-
-    fn paint_initials(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let centre = self.rect.center();
-        let radius = self.rect.width().min(self.rect.height()) * 0.5;
-        let circle = Circle::new(centre, radius);
-        let bg = self.background_color(theme);
-        scene.fill(Fill::NonZero, transform, bg, None, &circle);
-
-        if self.initials.is_empty() {
-            return;
-        }
-
-        // Text size is proportional to the avatar size so a 24px chip
-        // and a 64px header avatar both look balanced.
-        let style = initials_style(theme, self.size * 0.4);
-        let (tw, th) = text_renderer.measure_style(&self.initials, None, &style);
-        let tx = centre.x - f64::from(tw) / 2.0;
-        let ty = centre.y - f64::from(th) / 2.0;
-        text_renderer.draw_style(
-            scene,
-            &self.initials,
-            Self::initial_ink(bg),
-            transform.pre_translate(Vec2::new(tx, ty)),
-            None,
+        let style = overflow_style(ctx.theme, side);
+        let (width, height) = ctx.text.measure_style(&label, None, &style);
+        let centre = disc.center();
+        let ink = ctx.theme.text_dim;
+        ctx.text(
+            &label,
             &style,
+            ink,
+            Point::new(
+                centre.x - f64::from(width) / 2.0,
+                centre.y - f64::from(height) / 2.0,
+            ),
+            None,
         );
     }
+}
+
+/// The first letters of the first and the last word, upper-cased:
+/// `"Ada Lovelace"` gives `"AL"`, `"Grace Brewster Hopper"` gives `"GH"`,
+/// `"ada"` gives `"A"`.
+#[must_use]
+pub fn initials_for_name(name: &str) -> String {
+    let letters: Vec<char> = name
+        .split_whitespace()
+        .filter_map(|word| word.chars().find(|c| c.is_alphanumeric()))
+        .collect();
+    let picked: Vec<char> = match letters.as_slice() {
+        [] => Vec::new(),
+        [only] => vec![*only],
+        [first, .., last] => vec![*first, *last],
+    };
+    picked.into_iter().flat_map(char::to_uppercase).collect()
+}
+
+/// The initials ink on `fill`: of the theme's own inks (its primary text and
+/// its content ground), whichever contrasts more with the fill.
+#[must_use]
+pub fn initial_ink(fill: Color, theme: &Theme) -> Color {
+    let candidates = [theme.text_primary, theme.tokens.colors.surfaces.content];
+    candidates
+        .into_iter()
+        .max_by(|a, b| {
+            crate::color::contrast_ratio(*a, fill)
+                .total_cmp(&crate::color::contrast_ratio(*b, fill))
+        })
+        .unwrap_or(theme.text_primary)
 }
 
 /// Initials are sized by the disc they sit in, not by the reader's text
-/// scale: the theme's emphasised label face at `px`, as content.
-fn initials_style(theme: &Theme, px: f32) -> TextStyle {
-    theme.text(TextRole::Label).strong().with_content_size(px)
+/// scale: the theme's emphasised label face at 40 % of the side.
+fn initials_style(theme: &Theme, side: f64) -> TextStyle {
+    theme
+        .text(TextRole::Label)
+        .strong()
+        .with_content_size(crate::num::f32_of_f64(side * 0.4))
 }
 
-/// Index into a colour ramp of length `len` from a 64-bit hash. `len` is
-/// always a small, fixed ramp size, so the truncation the lint warns
-/// about can't actually occur; `checked_rem` handles `len == 0` safely.
-fn ramp_index(hash: u64, len: usize) -> usize {
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "the low bits of a 64-bit hash modulo a small ramp length always fit in usize"
-    )]
-    let hash = hash as usize;
-    hash.checked_rem(len).unwrap_or(0)
+/// "+12" is up to three glyphs, so it sits a little smaller than initials.
+fn overflow_style(theme: &Theme, side: f64) -> TextStyle {
+    theme
+        .text(TextRole::Label)
+        .strong()
+        .with_content_size(crate::num::f32_of_f64(side * 0.36))
 }
 
-/// Narrows a small, on-screen chip dimension to `f32` for text sizing.
-/// Avatar chips are always a handful to a few hundred logical pixels,
-/// nowhere near `f32::MAX`.
-fn px(v: f64) -> f32 {
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "v is an avatar chip dimension, never approaching f32::MAX"
-    )]
-    let out = v as f32;
-    out
+/// Where a retained avatar's picture comes from.
+enum Picture {
+    None,
+    /// Resolved from the store on `sync`, so a picture that finishes loading
+    /// repaints the avatar without rebuilding the tree.
+    Lazy {
+        store: ImageStore,
+        url: String,
+    },
+}
+
+/// A person's avatar as a retained widget. See the module docs.
+pub struct Avatar {
+    name: String,
+    identity: String,
+    presence: Option<Color>,
+    picture: Picture,
+    image: Option<peniko::ImageData>,
+    size: AvatarSize,
+    square: bool,
+    side: f64,
+    rect: Rect,
+    dirty: bool,
+}
+
+impl Avatar {
+    /// An avatar for `name`, coloured by `identity`.
+    pub fn person(name: impl Into<String>, identity: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            identity: identity.into(),
+            presence: None,
+            picture: Picture::None,
+            image: None,
+            size: AvatarSize::Regular,
+            square: false,
+            side: 0.0,
+            rect: Rect::ZERO,
+            dirty: true,
+        }
+    }
+
+    /// See [`AvatarFace::presence`].
+    #[must_use]
+    pub fn with_presence(mut self, colour: Color) -> Self {
+        self.presence = Some(colour);
+        self
+    }
+
+    /// The person's picture, already decoded.
+    #[must_use]
+    pub fn with_image(mut self, image: peniko::ImageData) -> Self {
+        self.picture = Picture::None;
+        self.image = Some(image);
+        self
+    }
+
+    /// The person's picture, loaded from `store` in the background. The
+    /// initials show until it arrives; an empty `url` keeps them.
+    #[must_use]
+    pub fn with_image_url(mut self, store: ImageStore, url: impl Into<String>) -> Self {
+        self.picture = Picture::Lazy {
+            store,
+            url: url.into(),
+        };
+        self
+    }
+
+    #[must_use]
+    pub fn size(mut self, size: AvatarSize) -> Self {
+        self.size = size;
+        self
+    }
+
+    /// See [`AvatarFace::square`].
+    #[must_use]
+    pub fn square(mut self) -> Self {
+        self.square = true;
+        self
+    }
+
+    /// The initials the fallback shows.
+    #[must_use]
+    pub fn initials(&self) -> String {
+        initials_for_name(&self.name)
+    }
+
+    fn face(&self) -> AvatarFace<'_> {
+        let mut face = AvatarFace::new(&self.name, &self.identity).image(self.image.as_ref());
+        if let Some(colour) = self.presence {
+            face = face.presence(colour);
+        }
+        if self.square {
+            face = face.square();
+        }
+        face
+    }
 }
 
 impl Widget for Avatar {
+    fn sync(&mut self, _state: &mut crate::widget::AppModel, _path: &crate::widget::ModelPath) {
+        if self.image.is_none()
+            && let Picture::Lazy { store, url } = &self.picture
+            && let Some(image) = store.get(url)
+        {
+            self.image = Some(image);
+            self.dirty = true;
+        }
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.side = self.size.side(theme);
+        let side = crate::num::f32_of_f64(self.side);
         let node = taffy.leaf_node(Style {
             size: Size {
-                width: Dimension::length(self.size),
-                height: Dimension::length(self.size),
+                width: Dimension::length(side),
+                height: Dimension::length(side),
             },
             flex_shrink: 0.0,
             ..Default::default()
@@ -371,75 +443,50 @@ impl Widget for Avatar {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let layout = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-            origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
-            origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
+        let rect = Rect::from_origin_size(
+            (
+                origin.x + f64::from(layout.location.x),
+                origin.y + f64::from(layout.location.y),
+            ),
+            (f64::from(layout.size.width), f64::from(layout.size.height)),
         );
-        // Exact comparison is intentional: any width/height delta, however
-        // small, must invalidate the render cache — an epsilon would let a
-        // genuine sub-pixel size change go undetected.
-        #[allow(
-            clippy::float_cmp,
-            reason = "cache-dirtying must catch any delta, not just deltas past an epsilon"
-        )]
-        let size_changed = self.rect.width() != self.cache_rect.width()
-            || self.rect.height() != self.cache_rect.height();
-        if size_changed {
+        if rect != self.rect {
             self.dirty = true;
         }
+        self.rect = rect;
     }
 
     fn draw(
         &mut self,
-        out_scene: &mut Scene,
-        out_transform: Affine,
+        scene: &mut Scene,
+        transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
-        if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
+        if presence.should_cull(self.rect) {
             return;
         }
-        let needs_emit = self.dirty || self.cache_rect == Rect::ZERO;
-        if !needs_emit {
-            // Pure translation since the cache was emitted.
-            let dx = self.rect.x0 - self.cache_rect.x0;
-            let dy = self.rect.y0 - self.cache_rect.y0;
-            out_scene.append(
-                &self.cached,
-                Some(out_transform.pre_translate(Vec2::new(dx, dy))),
-            );
-            return;
-        }
-        // paint_* helpers borrow `&self`, so move the cache out, mutate
-        // via them, move it back; `Scene` is a `Vec<…>` underneath, so
-        // the move is cheap.
-        let mut cached = std::mem::take(&mut self.cached);
-        cached.reset();
-        // paint_image / paint_initials anchor on `self.rect`, so this
-        // emits at current absolute coords.
-        if let Some(img) = self.image.clone() {
-            self.paint_image(&mut cached, Affine::IDENTITY, &img);
-        } else {
-            self.paint_initials(&mut cached, Affine::IDENTITY, text_renderer, theme);
-        }
-        out_scene.append(&cached, Some(out_transform));
-        self.cached = cached;
-        self.cache_rect = self.rect;
+        let face = self.face();
+        face.paint(
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
+            self.rect,
+        );
     }
 
     fn needs_redraw(&self) -> bool {
         self.dirty
     }
+
     fn mark_drawn(&mut self) {
         self.dirty = false;
     }
-    /// `Rect::ZERO` sentinel until the first `apply_layout`; stable
-    /// after that since avatars are fixed-size leaves.
+
+    /// Keyed off the laid-out rect, never a draw-time cache: an avatar
+    /// culled off-screen is never drawn, and must not report a pending
+    /// measure on every scroll frame because of it.
     fn is_layout_dirty(&self) -> bool {
-        self.cache_rect == Rect::ZERO
+        self.rect == Rect::ZERO
     }
 
     fn name(&self) -> &'static str {
@@ -452,16 +499,10 @@ impl Widget for Avatar {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
-        // The image variant carries empty initials, so collapse that to no name.
-        let initials = self.display_initials();
-        let name = (!initials.is_empty()).then(|| initials.to_string());
+        let name = (!self.name.trim().is_empty()).then(|| self.name.clone());
         Some(AccessNode::new(Role::Image).with_optional_name(name))
     }
 }
-
-// =====================================================================
-// Tests
-// =====================================================================
 
 #[cfg(test)]
 mod tests {
@@ -470,387 +511,157 @@ mod tests {
     use vello::peniko::{Blob, ImageAlphaType, ImageData as PenikoImage, ImageFormat as Format};
     use vello_encoding::DrawTag;
 
-    fn paint(avatar: &mut Avatar) -> Scene {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let presence = PresenceCtx::default();
+    fn image(width: u32, height: u32) -> PenikoImage {
+        let pixels = usize::try_from(width * height * 4).unwrap();
+        PenikoImage {
+            data: Blob::new(Arc::new(vec![200; pixels])),
+            format: Format::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width,
+            height,
+        }
+    }
+
+    fn paint_face(face: AvatarFace<'_>, theme: &Theme) -> Scene {
+        let mut text = TextRenderer::new();
         let mut scene = Scene::new();
-        avatar.rect = Rect::new(0.0, 0.0, f64::from(avatar.size), f64::from(avatar.size));
-        avatar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        face.paint(
+            &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, theme),
+            Rect::new(0.0, 0.0, 40.0, 40.0),
+        );
         scene
     }
 
-    #[test]
-    fn avatar_widget_paints_initials_or_image_with_deterministic_colour() {
-        fn avatar_with_initials_paints_initials_text() {
-            let mut a = Avatar::from_initials("QD", 40.0);
-            assert_eq!(
-                a.display_initials(),
-                "QD",
-                "from_initials must keep already-uppercase 2-char input verbatim",
-            );
-
-            let lower = Avatar::from_initials("qd", 40.0);
-            assert_eq!(
-                lower.display_initials(),
-                "QD",
-                "must uppercase lowercase input"
-            );
-            let long = Avatar::from_initials("Tilo", 40.0);
-            assert_eq!(
-                long.display_initials(),
-                "TI",
-                "must truncate to first 2 chars after uppercasing",
-            );
-
-            let scene = paint(&mut a);
-            let enc = scene.encoding();
-            let color_fills = enc
-                .draw_tags
-                .iter()
-                .filter(|t| **t == DrawTag::COLOR)
-                .count();
-            assert!(
-                color_fills >= 1,
-                "Avatar::from_initials must emit at least one COLOR fill (the \
-             background circle); got {color_fills}",
-            );
-            assert!(
-                !enc.resources.glyph_runs.is_empty(),
-                "Avatar::from_initials must push a glyph run for the initials text \
-             into the scene; resources.glyph_runs is empty",
-            );
-        }
-
-        fn accessibility_reports_image_role_and_initials_name() {
-            use crate::a11y::Role;
-            let a = Avatar::from_initials("qd", 40.0);
-            let node = Widget::accessibility(&a).expect("avatar is not presentational");
-            assert_eq!(node.role, Role::Image);
-            assert_eq!(node.name.as_deref(), Some("QD"));
-            assert!(!node.state.focusable, "an avatar is not focusable");
-
-            // Image variant: no initials → no accessible name.
-            let bytes: Vec<u8> = vec![0u8; 4];
-            let blob = Blob::new(Arc::new(bytes));
-            let img = PenikoImage {
-                data: blob,
-                format: Format::Rgba8,
-                alpha_type: ImageAlphaType::Alpha,
-                width: 1,
-                height: 1,
-            };
-            let photo = Avatar::new(img, 40.0);
-            assert_eq!(Widget::accessibility(&photo).unwrap().name, None);
-        }
-
-        fn avatar_with_initials_background_is_deterministic_for_same_initials() {
-            let theme = Theme::dark();
-            let a = Avatar::from_initials("QD", 40.0);
-            let b = Avatar::from_initials("QD", 40.0);
-            assert_eq!(
-                a.background_color(&theme),
-                b.background_color(&theme),
-                "background_color must be deterministic for the same initials",
-            );
-
-            // The modulo can collide on any specific pair, so scan a small
-            // alphabet and require at least one difference.
-            let candidates = ["AA", "BB", "CC", "DD", "EE", "FF", "GG"];
-            let qd_color = a.background_color(&theme);
-            let any_different = candidates
-                .iter()
-                .any(|s| Avatar::from_initials(s, 40.0).background_color(&theme) != qd_color);
-            assert!(
-                any_different,
-                "background_color collapsed all initials to one ramp stop — \
-             hash distribution is broken or the modulo is wrong",
-            );
-        }
-
-        fn initials_for_name_takes_first_char_of_first_two_words() {
-            assert_eq!(Avatar::initials_for_name("Ada Lovelace"), "AL");
-            assert_eq!(Avatar::initials_for_name("ada lovelace"), "AL");
-            assert_eq!(Avatar::initials_for_name("mononym"), "M");
-            assert_eq!(
-                Avatar::initials_for_name("Grace Brewster Murray Hopper"),
-                "GB"
-            );
-            assert_eq!(Avatar::initials_for_name("   spaced   out  "), "SO");
-            assert_eq!(
-                Avatar::initials_for_name(""),
-                "",
-                "empty name yields empty — caller supplies its own fallback glyph"
-            );
-        }
-
-        /// Identity palettes span both halves of the value range, and a white
-        /// letter on the light half is the "illegible label on a coloured
-        /// fill" the HIG names.
-        fn a_monogram_takes_readable_ink_for_its_fill() {
-            let white = Color::WHITE;
-            let black = Color::from_rgb8(0x14, 0x16, 0x1a);
-            // Dark identity colours keep the white monogram.
-            for dark in [
-                Color::from_rgb8(0x3b, 0x82, 0xf6), // blue
-                Color::from_rgb8(0xa8, 0x55, 0xf7), // purple
-                Color::from_rgb8(0x00, 0x00, 0x00),
-            ] {
-                assert_eq!(
-                    Avatar::initial_ink(dark),
-                    white,
-                    "a dark chip keeps white initials: {dark:?}"
-                );
-            }
-            // Light ones take the dark ink instead of vanishing.
-            for light in [
-                Color::from_rgb8(0x6e, 0xe7, 0xb7), // mint
-                Color::from_rgb8(0xfd, 0xe0, 0x47), // yellow
-                Color::WHITE,
-            ] {
-                assert_eq!(
-                    Avatar::initial_ink(light),
-                    black,
-                    "a light chip must not keep white initials: {light:?}"
-                );
-            }
-        }
-
-        /// The draw stream must contain `BEGIN_CLIP` → `IMAGE` → `END_CLIP` in
-        /// that order; losing the clip would render the image as a square. A 1×1
-        /// transparent image keeps the test independent of any on-disk
-        /// fixture — only tag order is inspected, not pixel content.
-        fn avatar_with_image_paints_circle_clipped_image() {
-            let bytes: Vec<u8> = vec![0u8; 4];
-            let blob = Blob::new(Arc::new(bytes));
-            let img = PenikoImage {
-                data: blob,
-                format: Format::Rgba8,
-                alpha_type: ImageAlphaType::Alpha,
-                width: 1,
-                height: 1,
-            };
-
-            let mut a = Avatar::new(img, 40.0);
-            let scene = paint(&mut a);
-            let tags: Vec<DrawTag> = scene.encoding().draw_tags.clone();
-
-            let begin = tags
-                .iter()
-                .position(|t| *t == DrawTag::BEGIN_CLIP)
-                .expect("Avatar::new must push a clip before the image draw");
-            let image = tags
-                .iter()
-                .position(|t| *t == DrawTag::IMAGE)
-                .expect("Avatar::new must emit an IMAGE draw tag");
-            let end = tags
-                .iter()
-                .rposition(|t| *t == DrawTag::END_CLIP)
-                .expect("Avatar::new must pop the clip after the image draw");
-
-            // `DrawTag` doesn't implement Debug, so render the raw u32s for
-            // the diagnostic if the ordering ever drifts.
-            let raw: Vec<u32> = tags.iter().map(|t| t.0).collect();
-            assert!(
-                begin < image && image < end,
-                "draw tags must be ordered BEGIN_CLIP < IMAGE < END_CLIP; got \
-             positions begin={begin}, image={image}, end={end} in {raw:?}",
-            );
-        }
-
-        avatar_with_initials_paints_initials_text();
-        accessibility_reports_image_role_and_initials_name();
-        avatar_with_initials_background_is_deterministic_for_same_initials();
-        initials_for_name_takes_first_char_of_first_two_words();
-        a_monogram_takes_readable_ink_for_its_fill();
-        avatar_with_image_paints_circle_clipped_image();
+    fn tags(scene: &Scene, tag: DrawTag) -> usize {
+        scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|t| **t == tag)
+            .count()
     }
 
     #[test]
-    fn immediate_avatar_painters_draw_chips_rings_and_overflow() {
-        fn draw_at_paints_circle_and_initials() {
-            let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
-            let mut scene = Scene::new();
-            Avatar::draw_at(
-                &mut scene,
-                Affine::IDENTITY,
-                Rect::new(0.0, 0.0, 40.0, 40.0),
-                "qd",
-                Avatar::color_for_initials("qd", &theme),
-                &theme,
-                &mut tr,
-            );
-            let enc = scene.encoding();
-            let color_fills = enc
-                .draw_tags
-                .iter()
-                .filter(|t| **t == DrawTag::COLOR)
-                .count();
-            assert!(color_fills >= 1, "draw_at must fill the background circle");
-            assert!(
-                !enc.resources.glyph_runs.is_empty(),
-                "draw_at must paint the initials glyph run",
-            );
+    fn initials_come_from_the_name_and_colour_from_the_identity() {
+        assert_eq!(initials_for_name("Ada Lovelace"), "AL");
+        assert_eq!(initials_for_name("  grace   brewster hopper "), "GH");
+        assert_eq!(initials_for_name("(Ops) team"), "OT");
+        assert_eq!(initials_for_name(""), "");
+
+        let theme = Theme::dark();
+        // The same person is the same colour wherever they appear, and two
+        // people with the same initials are not forced to share one.
+        let a = AvatarFace::new("Ada Lovelace", "ada@example.org").colour(&theme);
+        let again = AvatarFace::new("A. Lovelace", "ada@example.org").colour(&theme);
+        assert_eq!(a, again);
+        let expected = theme
+            .tokens
+            .colors
+            .presence
+            .hue(PresenceHue::of_identity("ada@example.org"));
+        assert_eq!(a, expected);
+        // A collaborator's own colour lands on the theme's presence L/C.
+        let own = AvatarFace::new("Bob", "bob")
+            .presence(Color::from_rgb8(0xe0, 0x60, 0x20))
+            .colour(&theme);
+        assert_eq!(
+            own,
+            theme
+                .tokens
+                .colors
+                .presence
+                .of(Color::from_rgb8(0xe0, 0x60, 0x20))
+        );
+    }
+
+    #[test]
+    fn initials_ink_reads_on_every_presence_hue_in_every_preset() {
+        for theme in [Theme::dark(), Theme::light()] {
+            for hue in PresenceHue::ALL {
+                let fill = theme.tokens.colors.presence.hue(hue);
+                let ink = initial_ink(fill, &theme);
+                let ratio = crate::color::contrast_ratio(ink, fill);
+                assert!(
+                    ratio >= 3.0,
+                    "{}: initials on {hue:?} reach only {ratio:.2}:1",
+                    theme.name
+                );
+            }
         }
+    }
 
-        fn draw_at_large_text_scales_once_inside_scaled_geometry() {
-            let theme = Theme::dark().with_text_scale(2.0);
-            let mut tr = TextRenderer::new();
-            tr.set_text_scale(2.0);
-            let mut scene = Scene::new();
-            Avatar::draw_at(
-                &mut scene,
-                Affine::IDENTITY,
-                Rect::new(0.0, 0.0, 80.0, 80.0),
-                "QD",
-                Avatar::color_for_initials("QD", &theme),
-                &theme,
-                &mut tr,
-            );
-            let run = scene
-                .encoding()
-                .resources
-                .glyph_runs
-                .first()
-                .expect("monogram glyph run");
-            assert_eq!(run.font_size, 32.0, "80px geometry keeps the 0.4 ratio");
-        }
+    #[test]
+    fn a_picture_replaces_the_initials_and_is_cover_fitted() {
+        let theme = Theme::dark();
+        let picture = image(64, 32);
+        let with_image = paint_face(
+            AvatarFace::new("Ada Lovelace", "ada").image(Some(&picture)),
+            &theme,
+        );
+        assert_eq!(tags(&with_image, DrawTag::IMAGE), 1);
+        assert_eq!(tags(&with_image, DrawTag::COLOR), 0, "no initials disc");
+        let fallback = paint_face(AvatarFace::new("Ada Lovelace", "ada"), &theme);
+        assert_eq!(tags(&fallback, DrawTag::IMAGE), 0);
+        assert!(tags(&fallback, DrawTag::COLOR) >= 2, "disc and glyphs");
+    }
 
-        fn draw_at_keeps_initials_when_motion_is_reduced() {
-            let theme = Theme::dark().with_reduce_motion(true);
-            let mut tr = TextRenderer::new();
-            let mut scene = Scene::new();
-            Avatar::draw_at(
-                &mut scene,
-                Affine::IDENTITY,
-                Rect::new(0.0, 0.0, 72.0, 72.0),
-                "AL",
-                Avatar::color_for_initials("AL", &theme),
-                &theme,
-                &mut tr,
-            );
-            assert!(
-                !scene.encoding().resources.glyph_runs.is_empty(),
-                "reduced motion must freeze animation only, never omit static identity text"
-            );
-        }
+    #[test]
+    fn sizes_follow_the_metrics_and_square_avatars_use_concentric_radii() {
+        let theme = Theme::dark();
+        let small = AvatarSize::Small.side(&theme);
+        let regular = AvatarSize::Regular.side(&theme);
+        let large = AvatarSize::Large.side(&theme);
+        let hero = AvatarSize::Hero.side(&theme);
+        assert!(small < regular && regular < large && large < hero);
+        let scaled = Theme::dark().with_ui_scale(2.0);
+        assert!((AvatarSize::Regular.side(&scaled) - regular * 2.0).abs() < 0.5);
 
-        fn draw_at_color_matches_widget_background() {
-            let theme = Theme::dark();
-            let a = Avatar::from_initials("QD", 40.0);
-            assert_eq!(
-                Avatar::color_for_initials("qd", &theme),
-                a.background_color(&theme),
-                "immediate-mode colour must equal the widget's background colour",
-            );
-            assert_eq!(
-                Avatar::color_for_initials("AB", &theme),
-                Avatar::color_for_initials("ab", &theme),
-            );
-        }
+        let face = AvatarFace::new("Site", "site").square();
+        let shape = face.shape(Rect::new(0.0, 0.0, 48.0, 48.0), &theme);
+        assert!((shape.radii().top_left - f64::from(theme.tokens.radii.control)).abs() < 0.01);
+        let circle = AvatarFace::new("Ada", "ada").shape(Rect::new(0.0, 0.0, 48.0, 30.0), &theme);
+        assert!((circle.radii().top_left - 15.0).abs() < 0.01);
+        assert!(
+            (circle.rect().width() - 30.0).abs() < 0.01,
+            "centred square"
+        );
+    }
 
-        fn draw_ringed_at_paints_ring_then_chip() {
-            let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
-            let mut scene = Scene::new();
-            Avatar::draw_ringed_at(
-                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
-                Rect::new(0.0, 0.0, 40.0, 40.0),
-                "qd",
-                Avatar::color_for_initials("qd", &theme),
-                AvatarRing {
-                    color: Color::from_rgb8(0, 0, 0),
-                    width: 2.0,
-                },
-            );
-            let enc = scene.encoding();
-            let color_fills = enc
-                .draw_tags
-                .iter()
-                .filter(|t| **t == DrawTag::COLOR)
-                .count();
-            assert!(
-                color_fills >= 2,
-                "draw_ringed_at must fill the ring disc AND the chip circle; got \
-             {color_fills} COLOR fills",
-            );
-            assert!(
-                !enc.resources.glyph_runs.is_empty(),
-                "draw_ringed_at must still paint the initials glyph run",
-            );
-        }
+    #[test]
+    fn a_culled_avatar_does_not_stay_layout_dirty() {
+        let mut avatar = Avatar::person("Ada Lovelace", "ada");
+        let mut taffy = TaffyTree::new();
+        let mut map = std::collections::HashMap::new();
+        let node = avatar.build_layout(&mut taffy, &Theme::dark(), &mut map);
+        taffy
+            .compute_layout(node, <taffy::Size<taffy::AvailableSpace> as taffy::prelude::TaffyMaxContent>::MAX_CONTENT)
+            .unwrap();
+        avatar.apply_layout(&taffy, node, Point::new(0.0, 4000.0));
+        // Never drawn (off-screen), yet the layout is settled.
+        assert!(!avatar.is_layout_dirty());
+        let node = Widget::accessibility(&avatar).unwrap();
+        assert_eq!(node.name.as_deref(), Some("Ada Lovelace"));
+    }
 
-        fn draw_overflow_at_paints_chip_and_label() {
-            let theme = Theme::dark();
-            let colors = &theme.tokens.colors;
-            let mut tr = TextRenderer::new();
-
-            let mut scene = Scene::new();
-            Avatar::draw_overflow_at(
-                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
-                Rect::new(0.0, 0.0, 40.0, 40.0),
-                5,
-                AvatarRing {
-                    color: colors.surfaces.overlay,
-                    width: 2.0,
-                },
-            );
-            let enc = scene.encoding();
-            let color_fills = enc
-                .draw_tags
-                .iter()
-                .filter(|t| **t == DrawTag::COLOR)
-                .count();
-            assert!(
-                color_fills >= 2,
-                "draw_overflow_at must fill the ring AND the chip; got {color_fills}",
-            );
-            assert!(
-                !enc.resources.glyph_runs.is_empty(),
-                "draw_overflow_at must paint the \"+N\" label glyph run",
-            );
-
-            // count == 0 → nothing at all.
-            let mut empty = Scene::new();
-            Avatar::draw_overflow_at(
-                &mut PaintCtx::new(&mut empty, Affine::IDENTITY, &mut tr, &theme),
-                Rect::new(0.0, 0.0, 40.0, 40.0),
-                0,
-                AvatarRing {
-                    color: colors.surfaces.overlay,
-                    width: 2.0,
-                },
-            );
-            assert_eq!(
-                empty.encoding().draw_tags.len(),
-                0,
-                "draw_overflow_at with count 0 must paint nothing",
-            );
-        }
-
-        fn draw_at_zero_rect_is_noop() {
-            let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
-            let mut scene = Scene::new();
-            Avatar::draw_at(
-                &mut scene,
-                Affine::IDENTITY,
-                Rect::ZERO,
-                "QD",
-                Color::WHITE,
-                &theme,
-                &mut tr,
-            );
-            assert_eq!(scene.encoding().draw_tags.len(), 0);
-        }
-
-        draw_at_paints_circle_and_initials();
-        draw_at_large_text_scales_once_inside_scaled_geometry();
-        draw_at_keeps_initials_when_motion_is_reduced();
-        draw_at_color_matches_widget_background();
-        draw_ringed_at_paints_ring_then_chip();
-        draw_overflow_at_paints_chip_and_label();
-        draw_at_zero_rect_is_noop();
+    #[test]
+    fn overflow_disc_paints_on_its_ground() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let mut scene = Scene::new();
+        AvatarFace::paint_overflow(
+            &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
+            Rect::new(0.0, 0.0, 32.0, 32.0),
+            4,
+            Some(theme.tokens.colors.surfaces.content),
+        );
+        assert!(tags(&scene, DrawTag::COLOR) >= 3, "ring, disc, label");
+        let mut empty = Scene::new();
+        AvatarFace::paint_overflow(
+            &mut PaintCtx::new(&mut empty, Affine::IDENTITY, &mut text, &theme),
+            Rect::new(0.0, 0.0, 32.0, 32.0),
+            0,
+            Some(theme.tokens.colors.surfaces.content),
+        );
+        assert_eq!(tags(&empty, DrawTag::COLOR), 0);
     }
 }

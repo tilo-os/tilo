@@ -1812,15 +1812,17 @@ impl SidebarWheelDisc {
             // matching the cursor/avatar sites.
             let p = polar(geom.c, dot_r, slot.mid + off);
             let dot_rect = Rect::new(p.x - 3.0, p.y - 3.0, p.x + 3.0, p.y + 3.0);
-            ui::widget::Avatar::draw_at(
-                ctx.scene,
-                ctx.transform,
-                dot_rect,
-                "",
-                Color::from_rgb8(rr, gg, bb),
-                ctx.theme,
-                ctx.text_renderer,
-            );
+            ui::widget::AvatarFace::new("", "")
+                .presence(Color::from_rgb8(rr, gg, bb))
+                .paint(
+                    &mut ui::paint::PaintCtx::new(
+                        ctx.scene,
+                        ctx.transform,
+                        ctx.text_renderer,
+                        ctx.theme,
+                    ),
+                    dot_rect,
+                );
         }
     }
 

@@ -11,6 +11,7 @@ registry::scenario_modules! {
     Shots;
     ctrl_k_palette, "ctrl_k_palette.rs", "unified Ctrl+K palette states";
     chart_gallery_shots, "chart_gallery_shots.rs", "responsive light and dark chart catalogue";
+    content_shots, "content_shots.rs", "content composites: rows, cards, media, stats, states";
     data_table, "data_table.rs", "virtualized data-table states";
     denied_state_shots, "denied_state_shots.rs", "permission-denied control states";
     fractional_scale_shots, "fractional_scale_shots.rs", "fractional-scale gallery renders";
@@ -24,7 +25,6 @@ registry::scenario_modules! {
     scrollbar_shots, "scrollbar_shots.rs", "scrollbar states";
     search_showcase, "search_showcase.rs", "search-field states and results";
     soft_shadow_shots, "soft_shadow_shots.rs", "soft-shadow rendering";
-    table_shots, "table_shots.rs", "table layouts and states";
     text_shots, "text_shots.rs", "typography rendering";
     textinput_ext_shots, "textinput_ext_shots.rs", "extended text input states";
     undo_controls_shots, "undo_controls_shots.rs", "undo and redo availability states";

@@ -37,8 +37,8 @@ use tilo_ui::widget::toggle_group::Segment;
 use tilo_ui::widget::toolbar::Orientation as ToolbarOrientation;
 use tilo_ui::widget::tree_view::TreeNode;
 use tilo_ui::widget::{
-    Avatar, Badge, Breadcrumb, ColorPicker, Column, DatePicker, ProgressBar, Row, ScrollAxis,
-    Scrollable, Spinner, Text, TimePicker, ToggleGroup, Toolbar, TreeView, Widget,
+    Avatar, AvatarSize, Badge, Breadcrumb, ColorPicker, Column, DatePicker, ProgressBar, Row,
+    ScrollAxis, Scrollable, Spinner, Text, TimePicker, ToggleGroup, Toolbar, TreeView, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
@@ -113,9 +113,17 @@ fn build_tree() -> Box<dyn Widget> {
                 .push(caption("row_avatar_badge"))
                 .push(Box::new(
                     Row::new()
-                        .push(Box::new(Avatar::from_initials("QD", 48.0)))
-                        .push(Box::new(Avatar::from_initials("AL", 48.0)))
-                        .push(Box::new(Avatar::new(placeholder_image(), 48.0)))
+                        .push(Box::new(
+                            Avatar::person("Quinn Daley", "quinn.daley").size(AvatarSize::Large),
+                        ))
+                        .push(Box::new(
+                            Avatar::person("Ada Lovelace", "ada.lovelace").size(AvatarSize::Large),
+                        ))
+                        .push(Box::new(
+                            Avatar::person("Sam Okafor", "sam.okafor")
+                                .with_image(placeholder_image())
+                                .size(AvatarSize::Large),
+                        ))
                         .push(Box::new(Badge::dot()))
                         .push(Box::new(Badge::count(7)))
                         .push(Box::new(Badge::count(120))),
