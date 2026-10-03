@@ -46,7 +46,4 @@ pub fn app_root_open(path: &std::path::Path) -> Box<dyn ui::widget::Widget> {
 pub fn app_root_offline() -> Box<dyn ui::widget::Widget> {
     Box::new(WindowsApp::new_offline())
 }
-pub fn app_root_scenario(scenario: &str) -> Box<dyn ui::widget::Widget> {
-    Box::new(WindowsApp::new_offline_scenario(scenario))
-}
 pub use resource::{Windows, WindowsShell};
