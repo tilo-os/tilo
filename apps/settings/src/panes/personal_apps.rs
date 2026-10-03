@@ -9,14 +9,14 @@ use automerge::{AutoCommit, transaction::Transactable};
 use desktop_policy::{AppCandidate, DefaultAppResolver, PersonalDefaults, ResourceKind};
 use taffy::{NodeId, TaffyTree};
 use ui::theme::Theme;
-use ui::widget::{Button, Dropdown, Widget};
+use ui::widget::{Button, Dropdown, Row, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_text_action};
 use crate::i18n::{t, t_args};
-use crate::widgets::{caption, card, choice_row_described, rows, value_row};
+use crate::widgets::{caption, card, choice_row, rows};
 use ui::i18n::ArgValue;
 
 pub struct PersonalAppsPane {
@@ -99,8 +99,19 @@ impl PersonalAppsPane {
         apps
     }
 
-    fn option(app: &AppCandidate) -> String {
-        format!("{} — {}", app.display_name, app.package_id)
+    /// The dropdown entry for `app`: its name, with its package id only when
+    /// another application shares the name.
+    fn option(all: &[AppCandidate], app: &AppCandidate) -> String {
+        let shared = all
+            .iter()
+            .filter(|other| other.display_name == app.display_name)
+            .count()
+            > 1;
+        if shared {
+            format!("{} ({})", app.display_name, app.package_id)
+        } else {
+            app.display_name.clone()
+        }
     }
 
     fn key(resource: &ResourceKind) -> String {
@@ -115,7 +126,10 @@ impl PersonalAppsPane {
             if apps.is_empty() {
                 continue;
             }
-            let options: Vec<String> = apps.iter().map(|a| Self::option(a)).collect();
+            let options: Vec<String> = apps
+                .iter()
+                .map(|a| Self::option(&self.candidates, a))
+                .collect();
             let current = self
                 .defaults
                 .handlers
@@ -123,48 +137,37 @@ impl PersonalAppsPane {
                 .and_then(|id| apps.iter().find(|a| &a.package_id == id))
                 .map_or_else(
                     || options.first().cloned().unwrap_or_default(),
-                    |a| Self::option(a),
+                    |a| Self::option(&self.candidates, a),
                 );
             let label = Self::resource_label(resource);
             let picker_path = Self::draft_key(&Self::key(resource));
             let picker = Dropdown::new(options, &picker_path)
                 .with_id(&format!("personal-default.{}", resource.as_str()))
                 .with_placeholder(&current);
-            file_rows.push(choice_row_described(
-                &label,
-                &t("settings-personal-apps-choice-follows"),
-                Box::new(picker),
-            ));
+            file_rows.push(choice_row(&label, Box::new(picker)));
         }
         let body = if file_rows.is_empty() {
             rows(vec![caption(&t("settings-personal-apps-empty"))])
         } else {
             rows(file_rows)
         };
-        let scope = card(
-            &t("settings-personal-apps-scope"),
-            rows(vec![
-                value_row(
-                    &t("settings-personal-apps-applies-to"),
-                    &t("settings-personal-apps-applies-value"),
-                ),
-                Box::new(
-                    Button::new(
-                        "open-workspace-app-defaults",
-                        &t("settings-personal-apps-open-workspace"),
-                        None,
-                    )
-                    .on_effect(|| {
-                        let _ = os_actions::open_tool(os_actions::ToolIntent::WorkspaceSettings {
-                            route: os_actions::WorkspaceSettingsRoute::AppsFiles,
-                        });
-                    }),
-                ),
-            ]),
+        let workspace_rules: Box<dyn Widget> = Box::new(
+            Row::new().push(Box::new(
+                Button::new(
+                    "open-workspace-app-defaults",
+                    &t("settings-personal-apps-open-workspace"),
+                    None,
+                )
+                .on_effect(|| {
+                    let _ = os_actions::open_tool(os_actions::ToolIntent::WorkspaceSettings {
+                        route: os_actions::WorkspaceSettingsRoute::AppsFiles,
+                    });
+                }),
+            )),
         );
         crate::widgets::cards(vec![
-            scope,
             card(&t("settings-personal-apps-files-title"), body),
+            workspace_rules,
         ])
     }
 
@@ -264,7 +267,8 @@ impl Widget for PersonalAppsPane {
                             .iter()
                             .find(|a| a.package_id == selected.package_id)
                     {
-                        initial_values.push((Self::key(&resource), Self::option(app)));
+                        initial_values
+                            .push((Self::key(&resource), Self::option(&self.candidates, app)));
                     }
                 }
                 initial_values
@@ -294,7 +298,7 @@ impl Widget for PersonalAppsPane {
                             .into_iter()
                             .find(|app| &app.package_id == id)
                     })
-                    .map(Self::option)
+                    .map(|app| Self::option(&self.candidates, app))
                     .as_deref()
                 && draft.as_deref().is_some_and(|draft| draft != option)
             {
@@ -313,7 +317,7 @@ impl Widget for PersonalAppsPane {
             let Some(app) = self
                 .apps_for(&resource)
                 .into_iter()
-                .find(|a| Self::option(a) == option)
+                .find(|a| Self::option(&self.candidates, a) == option)
             else {
                 continue;
             };
@@ -442,6 +446,50 @@ impl ui::undo::UndoPoints for PersonalAppsPane {
     }
 }
 
+/// Fixture data for captures: a handful of installed applications.
+#[cfg(not(feature = "thin"))]
+mod fixture {
+    use super::{AppCandidate, PersonalAppsPane, PersonalDefaults, ResourceKind};
+
+    fn app(package_id: &str, name: &str, resources: Vec<Option<ResourceKind>>) -> AppCandidate {
+        AppCandidate {
+            package_id: package_id.to_string(),
+            display_name: name.to_string(),
+            resources: resources.into_iter().flatten().collect(),
+        }
+    }
+
+    impl PersonalAppsPane {
+        /// The pane over a fixed set of applications: what a capture shows,
+        /// the same on every machine.
+        pub(crate) fn for_shot() -> Self {
+            let ext = |name| ResourceKind::extension(name).ok();
+            let scheme = |name| ResourceKind::scheme(name).ok();
+            let candidates = vec![
+                app(
+                    "so.tilo.browser",
+                    "Browser",
+                    vec![scheme("https"), scheme("http"), ext("html")],
+                ),
+                app("so.tilo.mail", "Mail", vec![scheme("mailto")]),
+                app("so.tilo.pdf-viewer", "PDF viewer", vec![ext("pdf")]),
+                app("so.tilo.photos", "Photos", vec![ext("png"), ext("jpg")]),
+                app(
+                    "so.tilo.image-editor",
+                    "Image editor",
+                    vec![ext("png"), ext("jpg")],
+                ),
+                app(
+                    "so.tilo.code-editor",
+                    "Code editor",
+                    vec![ext("txt"), ext("rs"), ext("md")],
+                ),
+            ];
+            Self::with_state(candidates, PersonalDefaults::default(), None)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -483,12 +531,8 @@ mod tests {
             );
             let mut doc = AutoCommit::new();
             pane.sync(&mut doc, &automerge::ROOT);
-            doc.put(
-                &automerge::ROOT,
-                "default_apps.ext.pdf",
-                "so.tilo.b — so.tilo.b",
-            )
-            .unwrap();
+            doc.put(&automerge::ROOT, "default_apps.ext.pdf", "so.tilo.b")
+                .unwrap();
             pane.sync(&mut doc, &automerge::ROOT);
             assert_eq!(
                 pane.defaults
@@ -535,11 +579,11 @@ mod tests {
             assert!(!path.exists(), "opening the pane persists nothing");
             assert_eq!(
                 read_str(&doc, &automerge::ROOT, "default_apps.mime.text/html").as_deref(),
-                Some("Browser — so.tilo.browser")
+                Some("Browser")
             );
             assert_eq!(
                 read_str(&doc, &automerge::ROOT, "default_apps.scheme.https").as_deref(),
-                Some("Browser — so.tilo.browser")
+                Some("Browser")
             );
         }
     }

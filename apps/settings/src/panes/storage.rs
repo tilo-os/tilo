@@ -651,6 +651,78 @@ impl Widget for StoragePane {
     }
 }
 
+/// Fixture data for captures: a device with some apps, their data and cache.
+#[cfg(not(feature = "thin"))]
+mod fixture {
+    use super::StoragePane;
+    use desktop_policy::{StorageCategory, StorageEntry, StorageRoots, StorageSnapshot};
+    use runtime_fs::storage::SyncStorageSnapshot;
+    use std::path::PathBuf;
+
+    fn entry(
+        category: StorageCategory,
+        owner: &str,
+        megabytes: u64,
+        files: u64,
+        reclaimable: bool,
+    ) -> StorageEntry {
+        StorageEntry {
+            category,
+            owner: owner.to_string(),
+            path: PathBuf::from(format!("/var/lib/tilo/{owner}")),
+            bytes: megabytes * 1_000_000,
+            files,
+            reclaimable,
+        }
+    }
+
+    impl StoragePane {
+        /// The pane over a fixed storage snapshot: what a capture shows, the
+        /// same on every machine.
+        pub(crate) fn for_shot() -> Self {
+            let mut pane = Self::with_roots(StorageRoots {
+                app_payloads: None,
+                room_data: None,
+                app_cache: None,
+                sync_replica: None,
+            });
+            pane.snapshot = StorageSnapshot {
+                entries: vec![
+                    entry(StorageCategory::InstalledApps, "Browser", 312, 1_840, false),
+                    entry(StorageCategory::InstalledApps, "Photos", 148, 920, false),
+                    entry(StorageCategory::InstalledApps, "Mail", 64, 410, false),
+                    entry(StorageCategory::AppData, "Photos", 4_820, 12_406, false),
+                    entry(StorageCategory::AppData, "Mail", 1_260, 38_220, false),
+                    entry(StorageCategory::AppData, "Notes", 86, 1_204, false),
+                    entry(StorageCategory::Cache, "Browser", 540, 9_310, true),
+                    entry(StorageCategory::Cache, "Photos", 210, 3_480, true),
+                ],
+                unavailable: Vec::new(),
+            };
+            // The cleanup preview is measured from real (sparse) files so the
+            // pane runs its production path, not a hand-built preview.
+            let cache =
+                std::env::temp_dir().join(format!("settings-shot-cache-{}", std::process::id()));
+            if std::fs::create_dir_all(&cache).is_ok() {
+                for (name, megabytes) in [("Browser", 540_u64), ("Photos", 210)] {
+                    if let Ok(file) = std::fs::File::create(cache.join(name)) {
+                        let _ = file.set_len(megabytes * 1_000_000);
+                    }
+                }
+                pane.cleanup = desktop_policy::preview_cache_cleanup(&cache).ok();
+                let _ = std::fs::remove_dir_all(&cache);
+            }
+            pane.sync_snapshot = Some(SyncStorageSnapshot {
+                online: true,
+                files: Vec::new(),
+                workspaces: Vec::new(),
+                apps: Vec::new(),
+            });
+            pane
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
