@@ -33,6 +33,7 @@ use ui::winit::window::CursorIcon;
 use ui::{PresenceCtx, TextRenderer, Theme};
 
 use crate::actions::{CanvasAction, Draw, EditMarks, NewMark, NewStroke, Paint, RemoveMarks};
+use crate::gesture::area::{self, AreaGesture};
 use crate::gesture::brush::BrushDraft;
 use crate::gesture::outline::{Outline, Part, PenDraft, PointRef, constrain_45};
 use crate::gesture::snap::{Guide, Snap, snap_point, snap_rect};
@@ -107,6 +108,8 @@ enum Drag {
         start: Point,
         moved: bool,
     },
+    /// An area being selected ([`AreaGesture`] holds it).
+    Area,
 }
 
 /// A path's points being edited: its outline in the mark's own coordinates.
@@ -142,6 +145,8 @@ pub struct CanvasSurface {
     /// Marks just made or pasted, selected before the artwork has them.
     expected: Vec<String>,
     pen: Option<PenDraft>,
+    /// An area being selected.
+    area: AreaGesture,
     points: Option<PointEdit>,
     text: Option<TextSession>,
     guides: Vec<Guide>,
@@ -197,6 +202,7 @@ impl CanvasSurface {
             selection: Vec::new(),
             expected: Vec::new(),
             pen: None,
+            area: AreaGesture::default(),
             points: None,
             text: None,
             guides: Vec::new(),
@@ -335,6 +341,7 @@ impl CanvasSurface {
         self.tool = tool;
         self.finish_pen();
         self.finish_text();
+        self.area.cancel();
         if tool != Tool::Select {
             self.points = None;
         }
@@ -522,7 +529,70 @@ impl CanvasSurface {
                 self.tools.pick(colour);
                 None
             }
+            Tool::Marquee | Tool::Oval => {
+                self.area.press(at, Some(tool == Tool::Oval));
+                Some(Drag::Area)
+            }
+            Tool::Lasso => {
+                if double && !self.area.polygon.is_empty() {
+                    let mode = self.area_mode();
+                    if let Some(action) = self.area.finish(mode) {
+                        self.dispatch(&action);
+                    }
+                    return;
+                }
+                self.area.press(at, None);
+                Some(Drag::Area)
+            }
+            Tool::Wand | Tool::Bucket => {
+                self.find_colour(at, tool == Tool::Bucket);
+                None
+            }
         };
+    }
+
+    /// How a new area meets the selection, from the held keys.
+    fn area_mode(&self) -> Option<String> {
+        area::mode(self.modifiers.shift_key(), self.modifiers.alt_key())
+    }
+
+    /// The magic wand's or the fill bucket's click: like colour touching
+    /// `at`, as the canvas shows it, selected or filled.
+    fn find_colour(&mut self, at: Point, fill: bool) {
+        if !self.art.bounds().contains(at) {
+            return;
+        }
+        let query = crate::author::ColourQuery {
+            at: Some(at),
+            tolerance: crate::author::TOLERANCE,
+            // Ctrl finds the colour everywhere, touching or not.
+            everywhere: !fill && self.modifiers.control_key(),
+            ..crate::author::ColourQuery::default()
+        };
+        let text = self.look_text.get_or_insert_with(TextRenderer::new);
+        let found = crate::author::colour_region(
+            &mut self.tools.renderer.borrow_mut(),
+            text,
+            &self.art,
+            &query,
+        );
+        // A canvas that cannot draw a picture of itself finds nothing.
+        let Ok(found) = found else {
+            return;
+        };
+        let action = if fill {
+            area::bucket(
+                &self.art,
+                &found,
+                self.ink(),
+                edit::fresh_id(&self.art, "fill", &[]),
+            )
+        } else {
+            Some(area::found(&found, self.area_mode()))
+        };
+        if let Some(action) = action {
+            self.dispatch(&action);
+        }
     }
 
     /// A press while a path's points are edited: `true` when it was the
@@ -672,6 +742,7 @@ impl CanvasSurface {
                 *now = at;
             }
             Some(Drag::Stroke { draft, .. }) => draft.push(at, seconds, zoom),
+            Some(Drag::Area) => self.area.drag_to(at, 2.0 / zoom),
             Some(Drag::Pen) => {
                 if let Some(pen) = &mut self.pen {
                     pen.pull(at);
@@ -867,6 +938,12 @@ impl CanvasSurface {
                         opacity: None,
                         wet: Some(true),
                         params,
+                        // Painting keeps inside the selection while there is one.
+                        clip: self
+                            .art
+                            .selection
+                            .is_some()
+                            .then(|| crate::actions::SELECTION_CLIP.to_owned()),
                         ..NewStroke::default()
                     }],
                 }));
@@ -887,6 +964,16 @@ impl CanvasSurface {
                     self.commit_points();
                 }
             }
+            Drag::Area => self.release_area(),
+        }
+    }
+
+    /// An area tool let go: the area it selected, if any.
+    fn release_area(&mut self) {
+        let slop = self.units(self.click_slop());
+        let mode = self.area_mode();
+        if let Some(action) = self.area.release(slop, mode) {
+            self.dispatch(&action);
         }
     }
 
@@ -1062,6 +1149,9 @@ impl CanvasSurface {
         if self.points.is_some() && self.points_key(key, modifiers) {
             return true;
         }
+        if self.area_key(key) {
+            return true;
+        }
         if self.pen.is_some() {
             match key {
                 Key::Named(NamedKey::Enter | NamedKey::Escape) => {
@@ -1130,6 +1220,48 @@ impl CanvasSurface {
         }
     }
 
+    /// Keys for the selected area: Enter ends a lasso being clicked out,
+    /// Escape drops it or the selection, Delete clears the selection from
+    /// the layer. Marks picked on the canvas come first.
+    fn area_key(&mut self, key: &Key) -> bool {
+        let Key::Named(named) = key else {
+            return false;
+        };
+        if !self.area.polygon.is_empty() {
+            match named {
+                NamedKey::Enter => {
+                    let mode = self.area_mode();
+                    if let Some(action) = self.area.finish(mode) {
+                        self.dispatch(&action);
+                    }
+                    return true;
+                }
+                NamedKey::Escape => {
+                    self.area.cancel();
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        if !self.selection.is_empty() || self.art.selection.is_none() {
+            return false;
+        }
+        match named {
+            NamedKey::Escape => self.dispatch(&area::none()),
+            NamedKey::Delete | NamedKey::Backspace => {
+                self.dispatch(&CanvasAction::UseSelection(
+                    crate::selection::UseSelection {
+                        what: "clear".into(),
+                        layer: self.ink().layer,
+                        ..crate::selection::UseSelection::default()
+                    },
+                ));
+            }
+            _ => return false,
+        }
+        true
+    }
+
     /// Ctrl/Cmd with a letter: the clipboard, select all, duplicate, group.
     fn command_key(&mut self, ch: &str, shift: bool) -> bool {
         let offset = Vec2::new(
@@ -1169,6 +1301,15 @@ impl CanvasSurface {
                 };
                 self.dispatch_all(&actions);
                 self.select_made(made);
+            }
+            ("d", false) if self.selection.is_empty() && self.art.selection.is_some() => {
+                self.dispatch(&area::none());
+            }
+            ("i", true) if self.art.selection.is_some() => {
+                self.dispatch(&CanvasAction::Select(Box::new(crate::selection::Select {
+                    invert: Some(true),
+                    ..crate::selection::Select::default()
+                })));
             }
             ("d", false) => {
                 if self.selection.is_empty() {
@@ -1586,11 +1727,23 @@ impl CanvasSurface {
         theme: &Theme,
         text: &mut TextRenderer,
     ) {
+        self.overlay_area(scene, to_screen);
         self.overlay_selection(scene, to_screen, theme);
         self.overlay_drag(scene, to_screen, theme, text);
         self.overlay_paths(scene, to_screen, theme);
         if let Some(session) = &self.text {
             self.draw_caret(scene, to_screen, theme, text, session);
+        }
+    }
+
+    /// The selected area's outline, and the area being selected.
+    fn overlay_area(&self, scene: &mut Scene, to_screen: Affine) {
+        if let Some(path) = area::selection_path(&self.art, to_screen) {
+            area::draw_outline(scene, &path, 0.0);
+        }
+        if let Some(mut path) = self.area.outline(self.content_point(self.cursor)) {
+            path.apply_affine(to_screen);
+            area::draw_outline(scene, &path, 0.0);
         }
     }
 
@@ -2262,7 +2415,12 @@ impl Widget for CanvasSurface {
             | Tool::Brush
             | Tool::Rect
             | Tool::Ellipse
-            | Tool::Line => CursorIcon::Crosshair,
+            | Tool::Line
+            | Tool::Marquee
+            | Tool::Oval
+            | Tool::Lasso
+            | Tool::Wand
+            | Tool::Bucket => CursorIcon::Crosshair,
         })
     }
 
@@ -2316,6 +2474,8 @@ impl ResourceSurface<ArtworkResource> for CanvasSurface {
             self.text = None;
         }
         self.art = Rc::clone(state);
+        // What the window shows is what the magic wand finds colour in.
+        crate::author::see(&self.tools.renderer, &self.art);
     }
 
     fn attach(&mut self, cx: SurfaceCx<ArtworkResource>) {
