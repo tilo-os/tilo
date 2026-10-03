@@ -3,6 +3,7 @@
 import fcntl
 import importlib.util
 import json
+import hashlib
 import os
 from pathlib import Path
 import socket
@@ -136,6 +137,28 @@ def apply(files, receipt):
         os.close(descriptor)
 
 
+def backend_probe(files):
+    helper = files.get('usr/libexec/tilo-install', b'')
+    if b'# TILO_VM_CODE_REFRESH_PROBE_V1:' not in helper:
+        return None
+    arguments = ['/usr/libexec/tilo-install', '--dev-code-refresh-probe']
+    bootstrap = BASE / 'bootstrap.json'
+    if Path('/dev/disk/by-id/virtio-tilo-code-fixture').exists():
+        arguments.append('--cached-target')
+    result = subprocess.run(arguments, input=b'',
+                            capture_output=True, timeout=30)
+    require(result.returncode == 0 and len(result.stdout) <= 16384,
+            'refreshed backend execution probe failed (exit ' + str(result.returncode) + '): '
+            + (result.stdout[-4096:] + result.stderr[-4096:]).decode('utf-8', 'replace'))
+    rows = [json.loads(line) for line in result.stdout.splitlines() if line.startswith(b'{')]
+    require(len(rows) == 1 and rows[0].get('schema') == 'tilo.installer-code-backend-probe.v1'
+            and rows[0].get('transient') == 1 and rows[0].get('enforcing') is True
+            and rows[0].get('helper_sha256') == hashlib.sha256(helper).hexdigest()
+            and rows[0].get('domain', '').split(':')[2:3] in (['init_t'], ['unconfined_service_t']),
+            'backend probe does not match the executed enforcing transient helper')
+    return rows[0]
+
+
 def ready():
     address = os.environ.get('NOTIFY_SOCKET')
     if address:
@@ -146,6 +169,26 @@ def ready():
             client.sendall(b'READY=1')
 
 
+def bootstrap_receive(stream):
+    for attempt in range(64):
+        hello = stream.readline(1025)
+        require(0 < len(hello) <= 1024, 'bootstrap hello missing or oversized')
+        if hello == b'TILO-CODE-HELLO-1\n':
+            break
+    else:
+        raise ValueError('bootstrap hello was not recognized')
+    for attempt in range(64):
+        protocol.write_all(stream, b'{"schema":"tilo.installer-code-ready.v1"}\n')
+        prefix = protocol.read_exact(stream, 4)
+        if prefix == b'TILO':
+            require(protocol.read_exact(stream, 14) == b'-CODE-HELLO-1\n', 'invalid repeated bootstrap hello')
+            continue
+        size = protocol.struct.unpack('!I', prefix)[0]
+        require(0 < size <= protocol.LIMIT, 'code refresh packet exceeds its bound')
+        return protocol.validate(protocol.read_exact(stream, size))
+    raise ValueError('too many repeated bootstrap hellos')
+
+
 def main():
     gate()
     ready_sent = False
@@ -154,13 +197,17 @@ def main():
         # guest port rather than spinning on EOF or treating it as new code.
         with PORT.open('r+b', buffering=0) as stream:
             try:
-                files, receipt = protocol.receive(stream)
+                if os.environ.get('TILO_CODE_BOOTSTRAP_HANDSHAKE') == '1':
+                    files, receipt = bootstrap_receive(stream)
+                else:
+                    files, receipt = protocol.receive(stream)
                 applied = apply(files, receipt)
-                response = {'ok': True, 'receipt': applied}
+                response = {'ok': True, 'receipt': applied, 'runtime': {
+                    'schema':'tilo.installer-code-runtime-probe.v1', 'backend':backend_probe(files)}}
                 if not ready_sent:
                     ready()
                     ready_sent = True
-            except (ValueError, OSError, json.JSONDecodeError) as error:
+            except (ValueError, OSError, json.JSONDecodeError, subprocess.TimeoutExpired) as error:
                 response = {'ok': False, 'error': str(error)}
             try:
                 protocol.write_all(stream, protocol.canonical(response) + b'\n')
