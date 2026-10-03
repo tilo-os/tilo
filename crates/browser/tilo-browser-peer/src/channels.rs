@@ -766,7 +766,7 @@ mod tests {
         let browser = SigningKey::from_bytes(&[3; 32]);
         let foreign = SigningKey::from_bytes(&[4; 32]);
         let server = SigningKey::from_bytes(&[5; 32]);
-        let mut channels = Channels::new(device(&browser), device(&user));
+        let mut channels = Channels::new(device(&browser), device(&user), [4; 32]);
         let note = route("note-1");
         channels.open(&note, 0);
         let mut foreign_capabilities = DeviceCapabilities::primary();
