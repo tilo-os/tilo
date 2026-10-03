@@ -274,6 +274,11 @@ impl InputHint {
         rects.last().map_or(0.0, |(_, rect)| rect.x1 - origin.x)
     }
 
+    /// The height of one keycap in `theme`, for centring a row of them.
+    pub fn keycap_height(theme: &Theme) -> f64 {
+        token_height(theme)
+    }
+
     pub fn measure_keycap_labels(
         labels: &[String],
         text_renderer: &mut TextRenderer,
