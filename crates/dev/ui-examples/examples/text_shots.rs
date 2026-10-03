@@ -137,7 +137,7 @@ pub fn run(_args: &[String]) {
     let h = 400u32;
     let mut r = OffscreenRenderer::new(w, h);
     let out = dir.join("text-primitives.png");
-    r.render_png(&scene, theme.bg_app, &out);
+    r.render_png(&scene, theme.tokens.colors.surfaces.content, &out);
     println!("wrote {}", out.display());
 
     // Sanity assertions on the exercised state.

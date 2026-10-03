@@ -289,12 +289,15 @@ impl Checkbox {
         }
 
         // HIG §9.5: unchecked is the raised control surface with an edge
-        // derived from it — `bg_active` was the pressed tier at rest, and a
-        // declared `border_standard` vanished on a raised dark card.
+        // derived from it, and hover is that surface's lift; a declared
+        // `border_standard` vanished on a raised dark card.
         let box_color = if face.checked {
             theme.tokens.colors.intent.inverted
         } else if face.interact.hovered {
-            theme.bg_hover
+            theme
+                .tokens
+                .colors
+                .lift_on(theme.tokens.colors.surfaces.raised, 0.5)
         } else {
             theme.tokens.colors.surfaces.raised
         };

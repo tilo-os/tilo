@@ -626,7 +626,7 @@ impl Widget for NumberInput {
         ] {
             let shape = RoundedRect::from_rect(btn_rect, radius);
             let bg = if hovered && !disabled {
-                theme.bg_active
+                colors.lift_on(colors.surfaces.raised, 0.5)
             } else {
                 colors.surfaces.raised
             };

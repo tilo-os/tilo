@@ -14,8 +14,10 @@
 //!      scrim behind, collapse chevron.
 //!   4. `nav_shell-narrow-detail.png`   — detail slid over the overview + Back button.
 //!
-//! Run: `cargo run -p ui-examples --example ui-shots -- nav_shell_shots`
-//! Output dir: `$NAV_SHELL_SHOTS_OUT` (default `/tmp/nav_shell_shots`).
+//! Run: `cargo run -p ui-examples --example ui-shots -- nav_shell_shots [OUT_DIR]`
+//! Output dir: `OUT_DIR`, else `$NAV_SHELL_SHOTS_OUT`, else
+//! `/tmp/nav_shell_shots`. The wide state is also written once per material
+//! (`nav_shell-wide-{dark,light,high-contrast}.png`).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -24,7 +26,6 @@ use automerge::AutoCommit;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
 
 use tilo_ui::TextRole;
 use tilo_ui::offscreen::OffscreenRenderer;
@@ -33,34 +34,26 @@ use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::{Column, Container, NavPane, NavShell, Row, Spacer, Text, Widget};
 
-/// A titled list panel filled with `fill`, a header band, and rows. The header
-/// title is indented by `header_indent` px so it clears the shell's top-left
-/// affordance chip (which floats over whichever panel sits at the left edge).
-fn panel(
-    theme: &Theme,
-    fill: Color,
-    header_fill: Color,
-    title: &str,
-    header_indent: f32,
-    rows: &[(&str, &str)],
-) -> Box<dyn Widget> {
+/// A titled list panel: a header row and rows, on whatever region ground the
+/// shell paints beneath it (the panel paints no ground of its own). The
+/// header title is indented by `header_indent` px so it clears the shell's
+/// top-left affordance chip (which floats over whichever panel sits at the
+/// left edge).
+fn panel(theme: &Theme, title: &str, header_indent: f32, rows: &[(&str, &str)]) -> Box<dyn Widget> {
     let mut col = Column::new().with_no_padding();
 
     // Header band — a rigid leading spacer indents the title past the chip.
-    let header = Container::new()
-        .with_fill(header_fill)
-        .with_height(56.0)
-        .with_child(Box::new(
-            Row::new()
-                .push(Box::new(
-                    Container::new().with_width(header_indent).with_height(1.0),
-                ))
-                .push(Box::new(
-                    Text::new(title)
-                        .with_role(TextRole::Title)
-                        .with_color(theme.text_primary),
-                )),
-        ));
+    let header = Container::new().with_height(56.0).with_child(Box::new(
+        Row::new()
+            .push(Box::new(
+                Container::new().with_width(header_indent).with_height(1.0),
+            ))
+            .push(Box::new(
+                Text::new(title)
+                    .with_role(TextRole::Title)
+                    .with_color(theme.text_primary),
+            )),
+    ));
     col = col.push(Box::new(header));
 
     // Rows.
@@ -85,19 +78,12 @@ fn panel(
     }
     col = col.push(Box::new(Spacer::new()));
 
-    Box::new(
-        Container::new()
-            .with_fill(fill)
-            .filling()
-            .with_child(Box::new(col)),
-    )
+    Box::new(Container::new().filling().with_child(Box::new(col)))
 }
 
 fn make_shell(theme: &Theme) -> NavShell {
     let sidebar = panel(
         theme,
-        theme.bg_app,
-        theme.tokens.colors.surfaces.base,
         "Calendars",
         52.0,
         &[
@@ -109,8 +95,6 @@ fn make_shell(theme: &Theme) -> NavShell {
     );
     let overview = panel(
         theme,
-        theme.bg_primary,
-        theme.bg_active,
         "September 2026",
         52.0,
         &[
@@ -123,8 +107,6 @@ fn make_shell(theme: &Theme) -> NavShell {
     );
     let detail = panel(
         theme,
-        theme.bg_app,
-        theme.tokens.colors.intent.inverted,
         "Design review",
         116.0,
         &[
@@ -160,13 +142,19 @@ fn to_f32(v: u32) -> f32 {
 /// the panes (open drawer, pushed detail) must be applied *before* the final
 /// layout pass. `apply_layout` at an unchanged size is a no-op for the flap
 /// reconcile (same breakpoint side), so it preserves the snapped state.
-fn shoot(shell: &mut NavShell, w: u32, h: u32, out: &Path, set: impl Fn(&mut NavShell)) {
-    let theme = shot_theme();
+fn shoot(
+    shell: &mut NavShell,
+    theme: &Theme,
+    w: u32,
+    h: u32,
+    out: &Path,
+    set: impl Fn(&mut NavShell),
+) {
     let mut tr = TextRenderer::new();
 
     let mut taffy = TaffyTree::<()>::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let root = shell.build_layout(&mut taffy, &theme, &mut node_map);
+    let root = shell.build_layout(&mut taffy, theme, &mut node_map);
 
     // First layout establishes the breakpoint side + default state; the second
     // re-places the children after `set` picks the drawer / pane state.
@@ -198,16 +186,19 @@ fn shoot(shell: &mut NavShell, w: u32, h: u32, out: &Path, set: impl Fn(&mut Nav
 
     let mut scene = Scene::new();
     let presence = PresenceCtx::default();
-    shell.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    shell.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
 
     let mut r = OffscreenRenderer::new(w, h);
-    r.render_png(&scene, theme.bg_app, out);
+    r.render_png(&scene, theme.tokens.colors.surfaces.content, out);
     println!("wrote {}", out.display());
 }
 
-pub fn run(_args: &[String]) {
-    let dir =
-        std::env::var("NAV_SHELL_SHOTS_OUT").unwrap_or_else(|_| "/tmp/nav_shell_shots".to_string());
+pub fn run(args: &[String]) {
+    let dir = args
+        .first()
+        .cloned()
+        .or_else(|| std::env::var("NAV_SHELL_SHOTS_OUT").ok())
+        .unwrap_or_else(|| "/tmp/nav_shell_shots".to_string());
     if let Err(e) = std::fs::create_dir_all(&dir) {
         eprintln!("failed to create output dir {dir}: {e}");
         return;
@@ -215,14 +206,29 @@ pub fn run(_args: &[String]) {
     let dir = PathBuf::from(dir);
     let theme = shot_theme();
 
-    // 1. WIDE: three abreast, docked sidebar (open), collapse chevron.
+    // 1. WIDE: three abreast, docked sidebar (open), collapse chevron; the
+    // sidebar region against the window ground in every material.
     let mut s = make_shell(&theme);
-    shoot(&mut s, 1240, 780, &dir.join("nav_shell-wide.png"), |_| {});
+    shoot(
+        &mut s,
+        &theme,
+        1240,
+        780,
+        &dir.join("nav_shell-wide.png"),
+        |_| {},
+    );
+    for material in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+        let name = material.name.to_lowercase().replace(' ', "-");
+        let mut s = make_shell(&material);
+        let out = dir.join(format!("nav_shell-wide-{name}.png"));
+        shoot(&mut s, &material, 1240, 780, &out, |_| {});
+    }
 
     // 2. NARROW overview: full-screen overview, hamburger to summon the drawer.
     let mut s = make_shell(&theme);
     shoot(
         &mut s,
+        &theme,
         440,
         780,
         &dir.join("nav_shell-narrow-overview.png"),
@@ -233,6 +239,7 @@ pub fn run(_args: &[String]) {
     let mut s = make_shell(&theme);
     shoot(
         &mut s,
+        &theme,
         440,
         780,
         &dir.join("nav_shell-narrow-drawer.png"),
@@ -246,6 +253,7 @@ pub fn run(_args: &[String]) {
     let mut s = make_shell(&theme);
     shoot(
         &mut s,
+        &theme,
         440,
         780,
         &dir.join("nav_shell-narrow-detail.png"),

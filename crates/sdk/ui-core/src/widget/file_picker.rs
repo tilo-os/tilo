@@ -1423,7 +1423,13 @@ impl FilePicker {
             let up_hovered = self.up_rect.contains(self.last_cursor);
             if up_hovered {
                 let s = RoundedRect::from_rect(self.up_rect, f64::from(tokens.radii.detail));
-                scene.fill(Fill::NonZero, transform, theme.bg_hover, None, &s);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    tokens.colors.intent.selection_hover,
+                    None,
+                    &s,
+                );
             }
             if self.has_keyboard_focus && self.focus == Some(PickerFocus::Up) {
                 let s = RoundedRect::from_rect(self.up_rect, f64::from(tokens.radii.detail));
@@ -1685,9 +1691,9 @@ impl FilePicker {
         let hovered = self.filter_rect.contains(self.last_cursor);
         let s = RoundedRect::from_rect(self.filter_rect, f64::from(tokens.radii.detail));
         let fill = if hovered {
-            theme.bg_hover
+            tokens.colors.lift_on(tokens.colors.surfaces.raised, 0.5)
         } else {
-            tokens.colors.surfaces.base
+            tokens.colors.surfaces.raised
         };
         scene.fill(Fill::NonZero, transform, fill, None, &s);
         // Rest edge derived from the face actually painted (HIG §9.5).

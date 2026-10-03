@@ -688,7 +688,7 @@ pub(super) fn paint_cell(
     let colors = &theme.tokens.colors;
     let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control));
     let fill = if focused {
-        theme.bg_active
+        colors.lift_on(colors.surfaces.raised, 1.0)
     } else {
         colors.surfaces.raised
     };
