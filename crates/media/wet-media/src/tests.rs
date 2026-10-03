@@ -28,6 +28,8 @@ fn stroke(points: &[(f32, f32)], size: f32, colour: &str, wet: bool) -> Mark {
         opacity: 1.0,
         wet,
         params: BTreeMap::new(),
+        form: None,
+        clip: Vec::new(),
     })
 }
 
@@ -472,4 +474,129 @@ fn builtin_presets_validate_and_bad_presets_say_why() {
     bad = presets::builtin().remove(0);
     bad.engine = "gouache".into();
     assert!(bad.validate(&engines).unwrap_err().contains("oil"));
+}
+
+/// A stroke cut to an outline paints only inside it, however far its brush
+/// or its dabs reach; its twigs and dabs paint the same on every replay.
+#[test]
+fn a_clipped_stroke_stays_inside_its_outline() {
+    let mut mark = stroke(&[(10.0, 60.0), (150.0, 60.0)], 30.0, "#203040", false);
+    if let Mark::Stroke(stroke) = &mut mark {
+        stroke.clip = vec![vec![
+            (40.0, 30.0),
+            (120.0, 30.0),
+            (120.0, 90.0),
+            (40.0, 90.0),
+        ]];
+        stroke.form = Some(Form::Dabs {
+            count: 120,
+            scatter: 30.0,
+            length: 0.0,
+            angle: None,
+        });
+    }
+    for engine in ["oil", "watercolour"] {
+        let mut first = painter(engine, Texture::Linen);
+        let pixels = first.paint(&[Painted::new("moss", mark.clone())]).to_vec();
+        let mut inside = 0;
+        for y in 0..120 {
+            for x in 0..160 {
+                let a = alpha(&pixels, x, y);
+                if (38..=122).contains(&x) && (28..=92).contains(&y) {
+                    inside += usize::from(a > 0);
+                } else {
+                    assert_eq!(a, 0, "{engine}: paint at {x},{y} outside the clip");
+                }
+            }
+        }
+        assert!(inside > 1000, "{engine}: {inside} cells painted inside");
+        let mut again = painter(engine, Texture::Linen);
+        assert_eq!(
+            again.paint(&[Painted::new("moss", mark.clone())]),
+            pixels.as_slice()
+        );
+    }
+}
+
+/// How much neighbouring cells of a patch differ, on average, in 8-bit
+/// steps of the summed channels: the fine grain a weave prints, not the
+/// broad variation of a stroke's bristles.
+fn grain_over(pixels: &[u8], xs: std::ops::Range<usize>, ys: std::ops::Range<usize>) -> f32 {
+    let value = |x: usize, y: usize| rgb(pixels, x, y).iter().map(|v| f32::from(*v)).sum::<f32>();
+    let mut total = 0.0;
+    let mut count = 0.0;
+    for y in ys {
+        for x in xs.clone() {
+            total += (value(x + 1, y) - value(x, y)).abs() + (value(x, y + 1) - value(x, y)).abs();
+            count += 2.0;
+        }
+    }
+    total / count
+}
+
+/// A loaded brush floods the weave, so a light stroke over a dark passage is
+/// even paint, not the canvas grid printed in two colours; the same brush
+/// run dry catches the tooth and breaks.
+#[test]
+fn a_loaded_oil_brush_floods_the_weave_and_a_dry_one_breaks_on_it() {
+    let paint_over = |load: f32| {
+        let mut painter = painter("oil", Texture::Linen);
+        painter
+            .paint(&[
+                Painted::new("dark", band("#202838", 10.0, 150.0, false)),
+                Painted::new(
+                    "light",
+                    with(
+                        stroke(&[(10.0, 60.0), (150.0, 60.0)], 40.0, "#e8e0d0", false),
+                        &[("load", load), ("streak", 0.0), ("relief", 0.0)],
+                    ),
+                ),
+            ])
+            .to_vec()
+    };
+    let loaded = grain_over(&paint_over(0.6), 40..120, 52..68);
+    let dry = grain_over(&paint_over(0.12), 40..120, 52..68);
+    assert!(loaded < 10.0, "a loaded stroke lies even: {loaded}");
+    assert!(dry > loaded * 3.0, "a dry brush breaks: {dry} vs {loaded}");
+}
+
+/// Fresh oil stays workable however thinly it went on: a blender dragged
+/// across a thin wet stroke spreads it as far as it spreads a loaded one.
+#[test]
+fn thin_fresh_oil_is_as_workable_as_loaded_oil() {
+    let softened = |load: f32| {
+        let mut painter = painter("oil", Texture::Smooth);
+        let pixels = painter
+            .paint(&[
+                Painted::new("ground", band("#e0d8c8", 10.0, 150.0, false)),
+                Painted::new(
+                    "line",
+                    with(
+                        stroke(&[(20.0, 60.0), (140.0, 60.0)], 10.0, "#202838", true),
+                        &[("load", load)],
+                    ),
+                ),
+                Painted::new(
+                    "blend",
+                    with(
+                        stroke(&[(80.0, 30.0), (80.0, 90.0)], 30.0, "#000000", true),
+                        &[("blender", 1.0)],
+                    ),
+                ),
+            ])
+            .to_vec();
+        // How far the dark is dragged off the line, above and below it.
+        (40..54)
+            .chain(67..80)
+            .map(|y| {
+                765.0
+                    - rgb(&pixels, 80, y)
+                        .iter()
+                        .map(|v| f32::from(*v))
+                        .sum::<f32>()
+            })
+            .sum::<f32>()
+    };
+    let (thin, loaded) = (softened(0.08), softened(1.0));
+    assert!(thin > loaded * 0.5, "thin {thin} vs loaded {loaded}");
 }

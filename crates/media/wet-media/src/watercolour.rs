@@ -148,7 +148,16 @@ impl WaterLayer {
         match mark {
             Mark::Stroke(stroke) => {
                 let samples = smooth(&stroke.points, 0.75);
-                brush_footprint(&samples, size, 0.8, (width, height), margin)
+                let mut footprint = brush_footprint(&samples, size, 0.8, (width, height), margin);
+                if !stroke.clip.is_empty() {
+                    let clip = fill(&stroke.clip, width, height, 1.0, false);
+                    let area = footprint.area;
+                    for (local, value) in footprint.values.iter_mut().enumerate() {
+                        let (x, y) = area.position(local);
+                        *value *= clip.get(x, y);
+                    }
+                }
+                footprint
             }
             Mark::Fill(region) => fill(&region.contours, width, height, margin, false),
         }
