@@ -132,6 +132,20 @@ fn the_rail_and_cards_navigate_and_back_returns() {
         click_id(&mut framed, "creator_ch_kurz");
         assert_eq!(framed.route_for_test(), &Route::Channel("ch_kurz".into()));
     }
+    // Case `a_browsed_page_shows_back_and_it_returns`.
+    for route in [
+        Route::Watch("vid_donut".into()),
+        Route::Channel("ch_kurz".into()),
+        Route::Playlist("pl_systems".into()),
+    ] {
+        let mut framed = mount(TubeApp::new().with_route_shot(route.clone()));
+        click_control(&mut framed, "Back");
+        assert_eq!(
+            framed.route_for_test(),
+            &Route::Home,
+            "Back on {route:?} returns to the page it was opened from"
+        );
+    }
     // Case `the_watch_page_gear_opens_settings`.
     {
         let mut framed = mount(TubeApp::new().with_route_shot(Route::Watch("vid_donut".into())));
@@ -146,12 +160,12 @@ fn watch_and_settings_controls_change_state_through_real_clicks() {
     {
         let mut framed = mount(TubeApp::new().with_route_shot(Route::Watch("vid_donut".into())));
         assert!(!framed.model_for_test().is_liked("vid_donut"));
-        click_control(&mut framed, "Like");
+        click_id(&mut framed, "watch_like");
         assert!(
             framed.model_for_test().is_liked("vid_donut"),
             "clicking Like likes the video"
         );
-        click_control(&mut framed, "Liked");
+        click_id(&mut framed, "watch_like");
         assert!(!framed.model_for_test().is_liked("vid_donut"));
     }
     // Case `subscribe_toggles_from_the_creator_row`.
@@ -193,6 +207,28 @@ fn pages_lay_out_without_overlap_at_every_size() {
         assert!(
             creator.y0 >= player.y1,
             "the details sit under the player at {viewport:?} ×{scale}: {player:?} / {creator:?}"
+        );
+    }
+    // Case `a_short_grid_keeps_the_card_size_of_a_full_one`.
+    for viewport in [(1280, 800), (800, 600)] {
+        let width_on = |route: Route| {
+            let framed = mount_at(
+                TubeApp::new().with_route_shot(route),
+                viewport,
+                Theme::dark(),
+            );
+            let mut cards = Vec::new();
+            rects_named(&*framed, "MediaCard", &mut cards);
+            cards
+                .first()
+                .map(Rect::width)
+                .expect("the page shows cards")
+        };
+        let home = width_on(Route::Home);
+        let channel = width_on(Route::Channel("ch_lowlevel".into()));
+        assert!(
+            (home - channel).abs() <= 1.0,
+            "a creator's three videos are as wide as Home's at {viewport:?}: {home} vs {channel}"
         );
     }
     // Case `home_cards_never_overlap`.
@@ -290,7 +326,13 @@ fn measure_demands(w: &dyn Widget, path: &str, out: &mut Vec<String>) {
 fn laid_out_pages_do_not_demand_a_relayout_while_scrolling() {
     // A widget that reports itself dirty forever makes the host re-solve the
     // whole page on every scroll frame, which is the scroll-jank regression.
-    for route in [Route::Home, Route::Subscriptions, Route::History] {
+    for route in [
+        Route::Home,
+        Route::Subscriptions,
+        Route::History,
+        Route::Channel("ch_kurz".into()),
+        Route::Playlist("pl_systems".into()),
+    ] {
         let framed = mount(TubeApp::new().with_route_shot(route.clone()));
         let mut demands = Vec::new();
         measure_demands(&*framed, "", &mut demands);

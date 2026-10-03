@@ -12,15 +12,16 @@ use ui::icons::Icon;
 use ui::search::{SearchRequest, open_search_binding};
 use ui::theme::Theme;
 use ui::time::UNIX_EPOCH;
-use ui::widget::toolbar::Orientation;
 use ui::widget::{
-    Avatar, AvatarSize, Badge, Banner, Button, ButtonRole, ChipStyle, Column, Container,
-    ControlSize, Dropdown, Element, EmptyState, Field, Form, FormSection, ListRow, MediaAspect,
-    MediaCard, MediaGrid, MediaSize, MediaSource, OwnedBadge, Row, Scrollable, Section,
-    SectionHeader, Skeleton, SkeletonShape, Text, TextInput, Toggle, Tone, Toolbar,
+    Avatar, AvatarSize, Badge, Banner, Button, ButtonRole, Chip, ChipLead, ChipStyle, Column,
+    Container, ControlSize, Dropdown, Element, EmptyState, Field, Form, FormSection, ListRow,
+    MediaAspect, MediaCard, MediaGrid, MediaSize, MediaSource, OwnedBadge, Row, Scrollable,
+    Section, SectionHeader, Skeleton, SkeletonShape, Spacer, Text, TextInput, Toggle, Tone,
+    card_column_width, card_columns,
 };
 
 use crate::action::{self, Action, ActionBus, Invocations, SettingFlag};
+use crate::i18n::{arg, t, t_args};
 use crate::images::Imgs;
 use crate::model::{Category, Route, SkipMode, TubeModel, Video};
 use crate::util::{clock, human_count, human_views};
@@ -40,6 +41,10 @@ pub struct Ui<'a> {
     pub bus: &'a ActionBus,
     pub imgs: Imgs<'a>,
     pub invocations: &'a Invocations,
+    /// Width of the shell's content column, which sizes the media grids.
+    pub content_width: f64,
+    /// Whether the browse history has a page to return to.
+    pub can_go_back: bool,
 }
 
 impl Ui<'_> {
@@ -112,7 +117,10 @@ fn channel_avatar(ui: Ui<'_>, channel_id: &str, name: &str, size: AvatarSize) ->
 fn views_and_age(views: u64, published: &str) -> String {
     let published = published.trim();
     match (views > 0, published.is_empty()) {
-        (true, false) => format!("{}, {published}", human_views(views)),
+        (true, false) => t_args(
+            "tube-views-and-age",
+            &[arg("views", human_views(views)), arg("age", published)],
+        ),
         (true, true) => human_views(views),
         (false, false) => published.to_string(),
         (false, true) => String::new(),
@@ -121,7 +129,12 @@ fn views_and_age(views: u64, published: &str) -> String {
 
 /// "12K subscribers", or `None` when the count is unknown.
 fn subscribers(count: u64) -> Option<String> {
-    (count > 0).then(|| format!("{} subscribers", human_count(count)))
+    (count > 0).then(|| {
+        t_args(
+            "tube-subscribers",
+            &[arg("count", count), arg("shown", human_count(count))],
+        )
+    })
 }
 
 /// One video as a media card: thumbnail, title, creator, reach and age.
@@ -135,7 +148,7 @@ fn video_card(ui: Ui<'_>, v: &Video) -> MediaCard {
     .title(v.display_title(dearrow))
     .meta(&v.channel_name);
     let reach = if v.live {
-        format!("{} watching", human_count(v.views))
+        t_args("tube-watching", &[arg("shown", human_count(v.views))])
     } else {
         views_and_age(v.views, &v.published)
     };
@@ -152,33 +165,77 @@ fn video_card(ui: Ui<'_>, v: &Video) -> MediaCard {
     card.on_activate(ui.push(Action::OpenVideo(v.id.clone())))
 }
 
-fn video_grid<'v>(ui: Ui<'_>, videos: impl IntoIterator<Item = &'v Video>) -> MediaGrid {
-    MediaGrid::new(videos.into_iter().map(|v| video_card(ui, v)).collect())
+/// The grid's columns at the page's width: how many cards fit, and how wide
+/// each is. Every grid of the app shares them, so a card is the same size on
+/// every page.
+fn grid_columns(ui: Ui<'_>) -> (usize, f64) {
+    let theme = ui.theme;
+    let gap = f64::from(theme.tokens.spacing.rhythm.section);
+    let width = (ui.content_width
+        - 2.0 * f64::from(theme.tokens.spacing.rhythm.group)
+        - f64::from(theme.tokens.metrics.scrollbar_gutter))
+    .max(1.0);
+    let columns = card_columns(width, MediaSize::Regular.extent(theme), gap);
+    (columns, card_column_width(width, columns, gap))
 }
 
-/// A compact grid for a side column ("Up next").
-fn compact_grid<'v>(ui: Ui<'_>, videos: impl IntoIterator<Item = &'v Video>) -> MediaGrid {
-    video_grid(ui, videos).with_size(MediaSize::Small)
+/// The width `count` cards take in a row of the page's grid.
+fn cards_width(ui: Ui<'_>, count: usize) -> f32 {
+    let (_, column) = grid_columns(ui);
+    let gap = f64::from(ui.theme.tokens.spacing.rhythm.section);
+    let count = count.max(1) as f64;
+    (count * column + (count - 1.0) * gap) as f32
 }
 
-/// The loading state of a video grid: card-shaped placeholders that the
-/// arriving cards replace without moving anything.
-fn skeleton_grid(theme: &Theme, count: usize) -> Row {
-    let width = MediaSize::Regular.extent(theme) as f32;
-    let mut row = Row::new()
-        .align_start()
-        .with_gap(theme.tokens.spacing.rhythm.section);
-    for _ in 0..count {
-        row = row.push(Box::new(
-            Container::new()
-                .with_no_padding()
-                .with_width(width)
-                .with_child(Box::new(Skeleton::new(SkeletonShape::Media(
-                    MediaAspect::Wide,
-                )))),
-        ));
+/// Videos as media cards. A grid shorter than one row keeps the card size of
+/// a full one instead of stretching its few cards across the page.
+fn video_grid<'v>(ui: Ui<'_>, videos: impl IntoIterator<Item = &'v Video>) -> Element {
+    let cards: Vec<MediaCard> = videos.into_iter().map(|v| video_card(ui, v)).collect();
+    let count = cards.len();
+    let grid = MediaGrid::new(cards);
+    let (columns, _) = grid_columns(ui);
+    if count == 0 || count >= columns || ui.content_width <= 0.0 {
+        return Box::new(grid);
     }
-    row
+    Box::new(
+        Container::new()
+            .with_no_padding()
+            .with_width(cards_width(ui, count))
+            .with_child(Box::new(grid)),
+    )
+}
+
+/// The loading state of a video grid: two rows of card-shaped placeholders
+/// in the grid's own columns, each as tall as a card with its two title
+/// lines and meta, so the arriving cards replace them without moving
+/// anything.
+fn skeleton_grid(ui: Ui<'_>) -> Column {
+    let theme = ui.theme;
+    let (columns, column) = grid_columns(ui);
+    let mut grid = stack().with_gap(theme.tokens.spacing.rhythm.group);
+    for _ in 0..2 {
+        let mut row = Row::new()
+            .no_wrap()
+            .align_start()
+            .with_gap(theme.tokens.spacing.rhythm.section);
+        for _ in 0..columns {
+            row = row.push(Box::new(
+                Container::new()
+                    .with_no_padding()
+                    .with_width(column as f32)
+                    .with_child(Box::new(
+                        stack()
+                            .with_gap(theme.tokens.spacing.s0)
+                            .push(Box::new(Skeleton::new(SkeletonShape::Media(
+                                MediaAspect::Wide,
+                            ))))
+                            .push(Box::new(Skeleton::new(SkeletonShape::Text { lines: 2 }))),
+                    )),
+            ));
+        }
+        grid = grid.push(Box::new(row));
+    }
+    grid
 }
 
 fn search_action() -> ui::tilo_actions::ActionBinding<()> {
@@ -192,28 +249,29 @@ fn search_action() -> ui::tilo_actions::ActionBinding<()> {
 /// The content column's title for `route`, for the window's header row.
 /// Pages that title themselves (a video, a creator, a playlist) leave it
 /// empty.
-pub fn title(route: &Route) -> &'static str {
+pub fn title(route: &Route) -> String {
     match route {
-        Route::Home => "Home",
-        Route::Trending => "Trending",
-        Route::Subscriptions => "Channels",
-        Route::Queue => "Queue",
-        Route::History => "History",
-        Route::Settings => "Settings",
-        Route::Watch(_) | Route::Channel(_) | Route::Playlist(_) => "",
+        Route::Home => t("tube-nav-home"),
+        Route::Trending => t("tube-nav-trending"),
+        Route::Subscriptions => t("tube-nav-channels"),
+        Route::Queue => t("tube-nav-queue"),
+        Route::History => t("tube-nav-history"),
+        Route::Settings => t("tube-nav-settings"),
+        Route::Watch(_) | Route::Channel(_) | Route::Playlist(_) => String::new(),
     }
 }
 
-/// The content column's header actions: the data-source status while the
-/// catalogue is not live, the page's own action, and the search launcher.
+/// The content column's header actions: the connection status while the
+/// catalogue is still on its way, the page's own action, and the search
+/// launcher.
 pub fn header_actions(ui: Ui<'_>) -> Vec<Element> {
     let mut actions: Vec<Element> = Vec::new();
-    if let Some(status) = data_source_badge(ui.model) {
+    if let Some(status) = connection_badge(ui.model) {
         actions.push(Box::new(status));
     }
     if matches!(ui.model.route, Route::History) && !ui.model.history.is_empty() {
         actions.push(Box::new(
-            Button::new("clear_history", "Clear history", None)
+            Button::new("clear_history", &t("tube-clear-history"), None)
                 .role(ButtonRole::Destructive)
                 .control_size(ControlSize::Small)
                 .on_click(ui.push(Action::ClearHistory)),
@@ -225,19 +283,28 @@ pub fn header_actions(ui: Ui<'_>) -> Vec<Element> {
     actions
 }
 
-/// Where the catalogue comes from, shown only when it is not live data.
-fn data_source_badge(model: &TubeModel) -> Option<Badge> {
-    if model.data_source.live {
-        return None;
-    }
-    let (label, tone) = if model.data_source.label.contains("connect") {
-        ("Connecting", Tone::Info)
-    } else if model.data_source.label.contains("offline") {
-        ("Offline", Tone::Neutral)
-    } else {
-        return None;
-    };
-    Some(Badge::text(label).style(ChipStyle::Tinted(tone)))
+/// "Connecting" while the catalogue is on its way. Being offline is not
+/// repeated here: a page with nothing to show says so itself, and a request
+/// that fails says so in its toast.
+fn connection_badge(model: &TubeModel) -> Option<Badge> {
+    (!model.data_source.live && model.data_source.label.contains("connect"))
+        .then(|| Badge::text(t("tube-connecting")).style(ChipStyle::Tinted(Tone::Info)))
+}
+
+/// Back to the page this one was opened from, at the top of a page reached
+/// by browsing (a video, a creator, a playlist). Escape, Alt+Left, the mouse
+/// back button and an edge swipe do the same.
+fn back_button(ui: Ui<'_>) -> Option<Element> {
+    ui.can_go_back.then(|| {
+        Box::new(
+            Row::new().no_wrap().push(Box::new(
+                Button::new("tube_back", &t("tube-back"), None)
+                    .with_icon(Icon::ChevronLeft)
+                    .control_size(ControlSize::Small)
+                    .on_click(ui.push(Action::Back)),
+            )),
+        ) as Element
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -247,23 +314,23 @@ fn data_source_badge(model: &TubeModel) -> Option<Badge> {
 pub fn home(ui: Ui<'_>) -> Scrollable {
     let model = ui.model;
     let body: Element = if !model.videos.is_empty() {
-        Box::new(video_grid(ui, &model.videos))
+        video_grid(ui, &model.videos)
     } else if model.feed_loading {
-        Box::new(skeleton_grid(ui.theme, 8))
+        Box::new(skeleton_grid(ui))
     } else if let Some(error) = &model.feed_error {
-        Box::new(EmptyState::error("Home couldn't refresh", error).with_icon(Icon::WifiOff))
+        Box::new(EmptyState::error(t("tube-home-error"), error).with_icon(Icon::WifiOff))
     } else if model.data_source.label.contains("offline") {
         Box::new(
-            EmptyState::new("You're offline")
+            EmptyState::new(t("tube-offline-title"))
                 .with_icon(Icon::WifiOff)
-                .with_message("Reconnect to load videos. Your queue and history are still here."),
+                .with_message(t("tube-offline-message")),
         )
     } else {
         Box::new(
-            EmptyState::new("Nothing to show yet")
+            EmptyState::new(t("tube-home-empty-title"))
                 .with_icon(Icon::Play)
-                .with_message("Search for a video to start watching.")
-                .with_action("Search")
+                .with_message(t("tube-home-empty-message"))
+                .with_action(t("tube-search"))
                 .on_action(search_action()),
         )
     };
@@ -275,12 +342,12 @@ pub fn trending(ui: Ui<'_>) -> Scrollable {
     videos.sort_by_key(|v| std::cmp::Reverse(v.views));
     let body: Element = if videos.is_empty() {
         Box::new(
-            EmptyState::new("Nothing trending yet")
+            EmptyState::new(t("tube-trending-empty-title"))
                 .with_icon(Icon::Flame)
-                .with_message("Popular videos show here once the catalogue loads."),
+                .with_message(t("tube-trending-empty-message")),
         )
     } else {
-        Box::new(video_grid(ui, videos))
+        video_grid(ui, videos)
     };
     page(ui.theme, vec![body])
 }
@@ -327,14 +394,14 @@ pub fn subscriptions(ui: Ui<'_>) -> Scrollable {
     let feed = model.subscription_feed();
     let latest: Element = if feed.is_empty() {
         Box::new(
-            EmptyState::new("No subscriptions yet")
+            EmptyState::new(t("tube-subscriptions-empty-title"))
                 .with_icon(Icon::Bell)
-                .with_message("Subscribe to creators and their new videos show here."),
+                .with_message(t("tube-subscriptions-empty-message")),
         )
     } else {
         Box::new(
-            Section::new(vec![Box::new(video_grid(ui, feed))])
-                .with_header(SectionHeader::heading("Latest videos")),
+            Section::new(vec![video_grid(ui, feed)])
+                .with_header(SectionHeader::heading(t("tube-latest-videos"))),
         )
     };
     let mut children: Vec<Element> = Vec::new();
@@ -350,18 +417,18 @@ pub fn history(ui: Ui<'_>) -> Scrollable {
     let mut children: Vec<Element> = Vec::new();
     if let Some(recovery) = &model.history_recovery_notice {
         children.push(Box::new(
-            Banner::warning("Watch history isn't saving").with_message(recovery.clone()),
+            Banner::warning(t("tube-history-not-saving")).with_message(recovery.clone()),
         ));
     }
     let videos = model.history_videos();
     if videos.is_empty() {
         children.push(Box::new(
-            EmptyState::new("Nothing watched yet")
+            EmptyState::new(t("tube-history-empty-title"))
                 .with_icon(Icon::History)
-                .with_message("Videos you watch show up here."),
+                .with_message(t("tube-history-empty-message")),
         ));
     } else {
-        children.push(Box::new(video_grid(ui, videos)));
+        children.push(video_grid(ui, videos));
     }
     page(ui.theme, children)
 }
@@ -379,18 +446,17 @@ pub fn queue(ui: Ui<'_>) -> Scrollable {
     let mut children: Vec<Element> = Vec::new();
     if videos.is_empty() && waiting == 0 {
         children.push(Box::new(
-            EmptyState::new("Your queue is empty")
+            EmptyState::new(t("tube-queue-empty-title"))
                 .with_icon(Icon::ListVideo)
-                .with_message("Add videos from their watch page."),
+                .with_message(t("tube-queue-empty-message")),
         ));
     } else {
-        children.push(Box::new(video_grid(ui, videos)));
+        children.push(video_grid(ui, videos));
     }
     if waiting > 0 {
-        let noun = if waiting == 1 { "video" } else { "videos" };
         children.push(Box::new(
             text(
-                &format!("{waiting} more queued {noun} will show once their details load."),
+                &t_args("tube-queue-waiting", &[arg("count", waiting)]),
                 TextRole::Caption,
             )
             .dimmed(),
@@ -405,7 +471,7 @@ pub fn playlist(ui: Ui<'_>, id: &str) -> Scrollable {
         return page(
             ui.theme,
             vec![Box::new(
-                EmptyState::new("This playlist isn't available").with_icon(Icon::ListVideo),
+                EmptyState::new(t("tube-playlist-missing")).with_icon(Icon::ListVideo),
             )],
         );
     };
@@ -415,20 +481,31 @@ pub fn playlist(ui: Ui<'_>, id: &str) -> Scrollable {
         .filter_map(|vid| model.video(vid))
         .collect();
 
-    let mut info = stack()
-        .with_gap(ui.theme.tokens.spacing.rhythm.related)
-        .push(Box::new(text(&pl.title, TextRole::Title)))
-        .push(Box::new(text(&pl.channel_name, TextRole::Body).dimmed()))
-        .push(Box::new(
-            text(
-                &format!("{} videos", human_count(pl.video_count)),
-                TextRole::Caption,
-            )
-            .dimmed(),
-        ));
+    let rhythm = &ui.theme.tokens.spacing.rhythm;
+    // The facts read as one block; the action stands a section step below.
+    let mut info = stack().with_gap(rhythm.section).push(Box::new(
+        stack()
+            .with_gap(rhythm.tight)
+            .push(Box::new(text(&pl.title, TextRole::Title)))
+            .push(Box::new(text(&pl.channel_name, TextRole::Body).dimmed()))
+            .push(Box::new(
+                text(
+                    &t_args(
+                        "tube-video-count",
+                        &[
+                            arg("count", pl.video_count),
+                            arg("shown", human_count(pl.video_count)),
+                        ],
+                    ),
+                    TextRole::Caption,
+                )
+                .numeric()
+                .dimmed(),
+            )),
+    ));
     if let Some(first) = videos.first() {
         info = info.push(Box::new(
-            Button::new("playlist_play", "Play all", None)
+            Button::new("playlist_play", &t("tube-play-all"), None)
                 .with_icon(Icon::Play)
                 .role(ButtonRole::Primary)
                 .on_click(ui.push(Action::OpenVideo(first.id.clone()))),
@@ -457,14 +534,17 @@ pub fn playlist(ui: Ui<'_>, id: &str) -> Scrollable {
     let header = header.push(Box::new(grow(info)));
 
     let list: Element = if videos.is_empty() {
-        Box::new(skeleton_grid(ui.theme, 4))
+        Box::new(skeleton_grid(ui))
     } else {
         Box::new(Section::titled(
-            "Videos",
-            vec![Box::new(video_grid(ui, videos))],
+            t("tube-videos"),
+            vec![video_grid(ui, videos)],
         ))
     };
-    page(ui.theme, vec![Box::new(header), list])
+    let mut children: Vec<Element> = back_button(ui).into_iter().collect();
+    children.push(Box::new(header));
+    children.push(list);
+    page(ui.theme, children)
 }
 
 pub fn channel(ui: Ui<'_>, id: &str) -> Scrollable {
@@ -473,11 +553,11 @@ pub fn channel(ui: Ui<'_>, id: &str) -> Scrollable {
         return page(
             ui.theme,
             vec![Box::new(
-                EmptyState::new("This creator isn't available").with_icon(Icon::Users),
+                EmptyState::new(t("tube-creator-missing")).with_icon(Icon::Users),
             )],
         );
     };
-    let mut children: Vec<Element> = Vec::new();
+    let mut children: Vec<Element> = back_button(ui).into_iter().collect();
     if !ch.banner_url.is_empty() && ui.imgs.store_handle().is_some() {
         children.push(Box::new(
             MediaCard::new(
@@ -528,11 +608,11 @@ pub fn channel(ui: Ui<'_>, id: &str) -> Scrollable {
     }
     let videos = model.channel_videos(id);
     if videos.is_empty() {
-        children.push(Box::new(skeleton_grid(ui.theme, 4)));
+        children.push(Box::new(skeleton_grid(ui)));
     } else {
         children.push(Box::new(Section::titled(
-            "Videos",
-            vec![Box::new(video_grid(ui, videos))],
+            t("tube-videos"),
+            vec![video_grid(ui, videos)],
         )));
     }
     page(ui.theme, children)
@@ -541,11 +621,11 @@ pub fn channel(ui: Ui<'_>, id: &str) -> Scrollable {
 fn subscribe_button(ui: Ui<'_>, channel_id: &str) -> Button {
     let action = Action::ToggleSubscribe(channel_id.to_string());
     if ui.model.is_subscribed(channel_id) {
-        Button::new("subscribe_btn", "Subscribed", None)
+        Button::new("subscribe_btn", &t("tube-subscribed"), None)
             .with_icon(Icon::Bell)
             .on_click(ui.push(action))
     } else {
-        Button::new("subscribe_btn", "Subscribe", None)
+        Button::new("subscribe_btn", &t("tube-subscribe"), None)
             .role(ButtonRole::Primary)
             .on_click(ui.push(action))
     }
@@ -565,7 +645,7 @@ pub fn watch(ui: Ui<'_>, id: &str, content_size: (f64, f64), player: SharedPlaye
         return page(
             theme,
             vec![Box::new(
-                EmptyState::new("This video isn't available").with_icon(Icon::Film),
+                EmptyState::new(t("tube-video-missing")).with_icon(Icon::Film),
             )],
         );
     };
@@ -585,7 +665,11 @@ pub fn watch(ui: Ui<'_>, id: &str, content_size: (f64, f64), player: SharedPlaye
             Container::new()
                 .with_no_padding()
                 .with_size(player_w as f32, player_h)
-                .with_child(Box::new(PlayerHost::new(player, player_h))),
+                .with_child(Box::new(PlayerHost::new(player, player_h).with_poster(
+                    ui.imgs.store_handle(),
+                    ui.model.display_thumbnail_url(v),
+                    v.display_title(model.settings.dearrow_titles_on()),
+                ))),
         ));
 
     let details = watch_details(ui, v);
@@ -624,10 +708,18 @@ pub fn watch(ui: Ui<'_>, id: &str, content_size: (f64, f64), player: SharedPlaye
         )
     };
 
-    // The player sits flush under the header row; the details below it
-    // stand in the page gutter.
-    let content = stack()
-        .with_gap(theme.tokens.spacing.s0)
+    // The player sits under the header row (and Back, when there is a page
+    // to return to); the details below it stand in the page gutter.
+    let mut content = stack().with_gap(theme.tokens.spacing.s0);
+    if let Some(back) = back_button(ui) {
+        content = content.push(Box::new(
+            Column::new()
+                .with_intrinsic_height()
+                .with_vertical_padding(theme.tokens.spacing.rhythm.related)
+                .push(back),
+        ));
+    }
+    let content = content
         .push(Box::new(stage))
         .push(Box::new(Column::new().with_intrinsic_height().push(lower)));
     Scrollable::new_vertical().with_child(Box::new(content))
@@ -668,7 +760,7 @@ fn prepare_player(ui: Ui<'_>, v: &Video, player: &SharedPlayer) {
     player.set_setting(PlayerSetting::choice(
         "resolution",
         Icon::Monitor,
-        "Resolution",
+        t("tube-resolution"),
         1,
         qualities,
         selected,
@@ -682,7 +774,10 @@ fn prepare_player(ui: Ui<'_>, v: &Video, player: &SharedPlayer) {
         Some(segment) => player.set_setting(PlayerSetting::button(
             SKIP_SETTING,
             Icon::SkipForward,
-            format!("Skip {}", segment.category.label().to_lowercase()),
+            t_args(
+                "tube-skip-segment",
+                &[arg("segment", segment.category.label().to_lowercase())],
+            ),
             2,
         )),
         None => player.remove_setting(SKIP_SETTING),
@@ -720,14 +815,13 @@ fn watch_details(ui: Ui<'_>, v: &Video) -> Column {
     if !v.published.trim().is_empty() {
         fact(v.published.clone());
     }
-    let likes = model.display_likes(v);
-    if likes > 0 {
-        fact(format!("{} likes", human_count(likes)));
-    }
     if model.settings.return_dislike_enabled
         && let Some(dislikes) = model.dislikes_of(&v.id)
     {
-        fact(format!("{} dislikes", human_count(dislikes)));
+        fact(t_args(
+            "tube-dislikes",
+            &[arg("count", dislikes), arg("shown", human_count(dislikes))],
+        ));
     }
 
     let heading = stack()
@@ -743,40 +837,73 @@ fn watch_details(ui: Ui<'_>, v: &Video) -> Column {
         .push(Box::new(watch_actions(ui, v)))
         .push(Box::new(creator_row(ui, v)));
     if !v.description.trim().is_empty() {
-        details = details.push(Box::new(
-            Container::new()
-                .with_background()
-                .with_child(Box::new(text(&v.description, TextRole::Body))),
-        ));
+        details = details.push(Box::new(text(&v.description, TextRole::Body)));
     }
     details.push(Box::new(comments(ui, v)))
 }
 
-/// Like, queue, share and playback settings, as one command strip.
-fn watch_actions(ui: Ui<'_>, v: &Video) -> Toolbar {
+/// Like (with the like count), queue and copy link, then playback settings
+/// at the trailing edge. Each is a control with a face, so the row's edges
+/// line up with the title above and with Subscribe below.
+fn watch_actions(ui: Ui<'_>, v: &Video) -> Row {
     let model = ui.model;
     let liked = model.is_liked(&v.id);
     let queued = model.is_queued(&v.id);
+    let like_count = model.display_likes(v);
+    let like_label = if like_count > 0 {
+        human_count(like_count)
+    } else {
+        t("tube-like")
+    };
+    let like_name = if like_count > 0 {
+        t_args(
+            "tube-like-count",
+            &[arg(
+                "likes",
+                t_args(
+                    "tube-likes",
+                    &[arg("count", like_count), arg("shown", like_label.as_str())],
+                ),
+            )],
+        )
+    } else {
+        t("tube-like")
+    };
+    let like = Button::new("watch_like", &like_label, None)
+        .with_icon(Icon::ThumbsUp)
+        .with_accessible_name(&like_name)
+        .toggled(liked)
+        .on_click(ui.push(Action::ToggleLike(v.id.clone())));
     let invocations = ui.invocations.clone();
-    let queue = crate::actions::queue_binding(model, &v.id);
-    let mut toolbar = Toolbar::new(Orientation::Horizontal)
-        .push_toggle(
-            if liked { "Liked" } else { "Like" },
-            liked,
-            ui.push(Action::ToggleLike(v.id.clone())),
-        )
-        .push_toggle(
-            if queued { "In queue" } else { "Add to queue" },
-            queued,
-            move || action::invoke(&invocations, queue.clone()),
-        )
-        .push_button("Share", ui.push(Action::Share(v.id.clone())));
-    toolbar = toolbar.push_spacer().push_icon(
+    let queue_binding = crate::actions::queue_binding(model, &v.id);
+    let queue = Button::new(
+        "watch_queue",
+        &t(if queued {
+            "tube-remove-from-queue"
+        } else {
+            "tube-add-to-queue"
+        }),
+        None,
+    )
+    .with_icon(Icon::ListVideo)
+    .on_click(move || action::invoke(&invocations, queue_binding.clone()));
+    let copy_link = Button::new("watch_copy_link", &t("tube-copy-link"), None)
+        .with_icon(Icon::Copy)
+        .on_click(ui.push(Action::Share(v.id.clone())));
+    let settings = Button::icon_only(
+        "watch_settings",
         Icon::Settings,
-        "Playback settings",
-        ui.push(Action::Navigate(Route::Settings)),
-    );
-    toolbar
+        &t("tube-playback-settings"),
+    )
+    .role(ButtonRole::Secondary)
+    .on_click(ui.push(Action::Navigate(Route::Settings)));
+    Row::new()
+        .with_gap(ui.theme.tokens.spacing.rhythm.related)
+        .push(Box::new(like))
+        .push(Box::new(queue))
+        .push(Box::new(copy_link))
+        .push(Box::new(Spacer::new()))
+        .push(Box::new(settings))
 }
 
 /// The creator's avatar and name (opening the creator) and Subscribe.
@@ -792,7 +919,9 @@ fn creator_row(ui: Ui<'_>, v: &Video) -> Row {
     {
         name = name.push(Box::new(text(&subs, TextRole::Caption).dimmed()));
     }
+    // No inset: the avatar stands on the page's leading edge, like the title.
     let creator = Container::new()
+        .with_no_padding()
         .with_flex_grow()
         .interactive(
             "watch_creator",
@@ -818,10 +947,10 @@ fn creator_row(ui: Ui<'_>, v: &Video) -> Row {
 }
 
 fn comments(ui: Ui<'_>, v: &Video) -> Section {
-    let header = SectionHeader::heading("Comments").count(v.comments.len());
+    let header = SectionHeader::heading(t("tube-comments")).count(v.comments.len());
     if !ui.model.settings.show_comments {
         return Section::new(vec![Box::new(
-            text("Comments are turned off in Settings.", TextRole::Body).dimmed(),
+            text(&t("tube-comments-off"), TextRole::Body).dimmed(),
         )])
         .with_header(header);
     }
@@ -840,13 +969,18 @@ fn comment(ui: Ui<'_>, c: &crate::model::Comment) -> Row {
         .push(Box::new(text(&c.author, TextRole::Label).strong()))
         .push(Box::new(text(&c.time_ago, TextRole::Caption).dimmed()));
     if c.pinned {
-        head = head.push(Box::new(Badge::text("Pinned").style(ChipStyle::Neutral)));
+        head = head.push(Box::new(
+            Badge::text(t("tube-pinned")).style(ChipStyle::Neutral),
+        ));
     }
     let mut reactions = Row::new().with_gap(ui.theme.tokens.spacing.s4);
     if c.likes > 0 {
         reactions = reactions.push(Box::new(
             text(
-                &format!("{} likes", human_count(c.likes)),
+                &t_args(
+                    "tube-likes",
+                    &[arg("count", c.likes), arg("shown", human_count(c.likes))],
+                ),
                 TextRole::Caption,
             )
             .numeric()
@@ -854,16 +988,24 @@ fn comment(ui: Ui<'_>, c: &crate::model::Comment) -> Row {
         ));
     }
     if c.replies > 0 {
-        let noun = if c.replies == 1 { "reply" } else { "replies" };
         reactions = reactions.push(Box::new(
-            text(&format!("{} {noun}", c.replies), TextRole::Caption)
-                .numeric()
-                .dimmed(),
+            text(
+                &t_args(
+                    "tube-replies",
+                    &[
+                        arg("count", c.replies),
+                        arg("shown", human_count(u64::from(c.replies))),
+                    ],
+                ),
+                TextRole::Caption,
+            )
+            .numeric()
+            .dimmed(),
         ));
     }
     if c.hearted {
         reactions = reactions.push(Box::new(
-            text("Liked by the creator", TextRole::Caption).dimmed(),
+            text(&t("tube-hearted"), TextRole::Caption).dimmed(),
         ));
     }
     Row::new()
@@ -889,7 +1031,7 @@ fn up_next(ui: Ui<'_>, id: &str) -> Column {
     let rhythm = &ui.theme.tokens.spacing.rhythm;
     let autoplay = Toggle::from_state(&ui::LocalState::new(ui.model.settings.autoplay))
         .with_id("switch_up_next_autoplay")
-        .with_accessible_name("Autoplay")
+        .with_accessible_name(&t("tube-autoplay"))
         .on_change({
             let bus = ui.bus.clone();
             move |_| action::push(&bus, Action::ToggleSetting(SettingFlag::Autoplay))
@@ -901,23 +1043,85 @@ fn up_next(ui: Ui<'_>, id: &str) -> Column {
             Container::new()
                 .with_no_padding()
                 .with_flex_grow()
-                .with_child(Box::new(text("Up next", TextRole::Heading))),
+                .with_child(Box::new(text(&t("tube-up-next"), TextRole::Heading))),
         ))
-        .push(Box::new(text("Autoplay", TextRole::Label).dimmed()))
+        .push(Box::new(
+            text(&t("tube-autoplay"), TextRole::Label).dimmed(),
+        ))
         .push(Box::new(autoplay));
     let related = ui.model.related_display(id);
-    let mut col = stack().with_gap(rhythm.related).push(Box::new(header));
-    if !related.is_empty() {
-        col = col.push(Box::new(compact_grid(ui, related.into_iter().take(6))));
+    let mut rows = stack().with_gap(rhythm.sibling);
+    for v in related.into_iter().take(6) {
+        rows = rows.push(Box::new(up_next_row(ui, v)));
     }
-    col
+    stack()
+        .with_gap(rhythm.section)
+        .push(Box::new(header))
+        .push(Box::new(rows))
 }
+
+/// One compact "Up next" row: the thumbnail with its duration, and beside it
+/// the title, the creator and the reach. The whole row opens the video.
+fn up_next_row(ui: Ui<'_>, v: &Video) -> Container {
+    let rhythm = &ui.theme.tokens.spacing.rhythm;
+    let dearrow = ui.model.settings.dearrow_titles_on();
+    let side = f64::from(ui.theme.tokens.metrics.inspector_width);
+    let thumb_w = (side * UP_NEXT_THUMB_SHARE).round() as f32;
+    let mut thumb = MediaCard::new(
+        format!("up_next_thumb_{}", v.id),
+        art(ui.imgs, ui.model.display_thumbnail_url(v)),
+    )
+    .aspect(MediaAspect::Wide);
+    thumb = if v.live {
+        thumb.badge(OwnedBadge::Live)
+    } else if v.duration > 0 {
+        thumb.badge(OwnedBadge::Duration(clock(f64::from(v.duration))))
+    } else {
+        thumb
+    };
+    let mut about = stack()
+        .with_gap(rhythm.tight)
+        .push(Box::new(text(v.display_title(dearrow), TextRole::Label)))
+        .push(Box::new(text(&v.channel_name, TextRole::Caption).dimmed()));
+    let reach = if v.live {
+        t_args("tube-watching", &[arg("shown", human_count(v.views))])
+    } else {
+        views_and_age(v.views, &v.published)
+    };
+    if !reach.is_empty() {
+        about = about.push(Box::new(text(&reach, TextRole::Caption).dimmed()));
+    }
+    Container::new()
+        .with_no_padding()
+        .interactive(
+            format!("up_next_{}", v.id),
+            ui.push(Action::OpenVideo(v.id.clone())),
+        )
+        .with_child(Box::new(
+            Row::new()
+                .no_wrap()
+                .align_start()
+                .with_gap(rhythm.sibling)
+                .push(Box::new(
+                    Container::new()
+                        .with_no_padding()
+                        .with_width(thumb_w)
+                        .with_child(Box::new(thumb)),
+                ))
+                .push(Box::new(grow(about))),
+        ))
+}
+
+/// The share of the "Up next" column a row's thumbnail takes.
+const UP_NEXT_THUMB_SHARE: f64 = 0.45;
 
 // ---------------------------------------------------------------------------
 // settings
 // ---------------------------------------------------------------------------
 
-/// A settings row whose switch sits at the trailing edge.
+/// A settings row whose switch sits at the trailing edge. A section of
+/// switches holds only switches, so every switch of the page shares that
+/// edge with the choosers of the other sections.
 fn toggle_field(label: &str, toggle: Toggle) -> Field {
     Field::new(label, toggle).with_trailing_control()
 }
@@ -928,6 +1132,26 @@ fn switch(ui: Ui<'_>, id: &str, on: bool, flag: SettingFlag) -> Toggle {
     Toggle::from_state(&ui::LocalState::new(on))
         .with_id(id)
         .on_change(move |_| action::push(&bus, Action::ToggleSetting(flag)))
+}
+
+/// A sentence under a group of settings that the person needs to read the
+/// values right, a related step below the last row.
+fn section_note(ui: Ui<'_>, note: &str) -> Element {
+    Box::new(
+        Column::new()
+            .with_intrinsic_height()
+            .with_horizontal_padding(0.0, 0.0)
+            .with_vertical_padding(ui.theme.tokens.spacing.rhythm.related)
+            .push(Box::new(text(note, TextRole::Caption).dimmed())),
+    )
+}
+
+/// The width a chooser takes in a settings row: the comfortable control
+/// measure a form gives a fluid control (sixteen body ems, as `Field`
+/// reserves it), so the choosers of every section share both edges. The
+/// theme has no token for it yet.
+fn chooser_width(theme: &Theme) -> f32 {
+    theme.tokens.typography.size(TextRole::Body) * 16.0
 }
 
 pub fn settings(ui: Ui<'_>) -> Scrollable {
@@ -952,7 +1176,9 @@ fn settings_impl(
 ) -> Scrollable {
     let form = Form::new()
         .section(playback_settings(ui))
+        .section(quality_settings(ui))
         .section(sponsorblock_settings(ui))
+        .section(segment_settings(ui))
         .section(dearrow_settings(ui))
         .section(device_sync_settings(ui, sync, pairing_input));
     // Forms are bounded to a readable measure: the content minimum plus one
@@ -968,6 +1194,35 @@ fn settings_impl(
 }
 
 fn playback_settings(ui: Ui<'_>) -> FormSection {
+    let s = &ui.model.settings;
+    FormSection::new(t("tube-playback"))
+        .grouped()
+        .field(toggle_field(
+            &t("tube-autoplay-next"),
+            switch(ui, "switch_autoplay", s.autoplay, SettingFlag::Autoplay),
+        ))
+        .field(toggle_field(
+            &t("tube-show-comments"),
+            switch(
+                ui,
+                "switch_comments",
+                s.show_comments,
+                SettingFlag::ShowComments,
+            ),
+        ))
+        .field(toggle_field(
+            &t("tube-show-dislikes"),
+            switch(
+                ui,
+                "switch_dislikes",
+                s.return_dislike_enabled,
+                SettingFlag::ReturnDislike,
+            ),
+        ))
+        .content(section_note(ui, &t("tube-dislikes-note")))
+}
+
+fn quality_settings(ui: Ui<'_>) -> FormSection {
     let s = &ui.model.settings;
     let bus = ui.bus.clone();
     let quality = Dropdown::from_state(
@@ -986,37 +1241,15 @@ fn playback_settings(ui: Ui<'_>) -> FormSection {
             action::push(&bus, Action::SetQuality((*q).to_string()));
         }
     });
-    FormSection::new("Playback")
+    FormSection::new(t("tube-quality"))
         .grouped()
-        .field(toggle_field(
-            "Autoplay next video",
-            switch(ui, "switch_autoplay", s.autoplay, SettingFlag::Autoplay),
-        ))
-        .field(toggle_field(
-            "Show comments",
-            switch(
-                ui,
-                "switch_comments",
-                s.show_comments,
-                SettingFlag::ShowComments,
-            ),
-        ))
-        .field(toggle_field(
-            "Show dislike counts",
-            switch(
-                ui,
-                "switch_dislikes",
-                s.return_dislike_enabled,
-                SettingFlag::ReturnDislike,
-            ),
-        ))
-        .field(Field::new("Preferred quality", quality).with_trailing_control())
+        .field(Field::new(t("tube-preferred-quality"), quality).with_trailing_control())
 }
 
 /// "1080p" → "1080p"; "auto" → "Automatic".
 fn quality_label(q: &str) -> String {
     if q == "auto" {
-        "Automatic".to_string()
+        t("tube-quality-automatic")
     } else {
         q.to_string()
     }
@@ -1024,17 +1257,27 @@ fn quality_label(q: &str) -> String {
 
 fn sponsorblock_settings(ui: Ui<'_>) -> FormSection {
     let s = &ui.model.settings;
-    let mut section = FormSection::new("SponsorBlock")
+    FormSection::new(t("tube-sponsorblock"))
         .grouped()
         .field(toggle_field(
-            "Skip sponsored segments",
+            &t("tube-skip-sponsored"),
             switch(
                 ui,
                 "switch_sponsorblock",
                 s.sponsorblock_enabled,
                 SettingFlag::SponsorBlock,
             ),
-        ));
+        ))
+        .content(section_note(ui, &t("tube-sponsorblock-note")))
+}
+
+/// One row per kind of segment: its timeline colour and name, what it
+/// covers, and what Tube does with it.
+fn segment_settings(ui: Ui<'_>) -> FormSection {
+    let s = &ui.model.settings;
+    let theme = ui.theme;
+    let rhythm = &theme.tokens.spacing.rhythm;
+    let mut section = FormSection::new(t("tube-segments"));
     for category in Category::ALL {
         let stored = s
             .categories
@@ -1044,27 +1287,47 @@ fn sponsorblock_settings(ui: Ui<'_>) -> FormSection {
         let bus = ui.bus.clone();
         let modes = [SkipMode::Skip, SkipMode::Show, SkipMode::Disabled];
         let dropdown = Dropdown::from_state(
-            modes.iter().map(|m| m.label().to_string()).collect(),
-            &ui::LocalState::new(stored.label().to_string()),
+            modes.iter().map(|m| m.label()).collect(),
+            &ui::LocalState::new(stored.label()),
         )
         .with_id(&format!("mode_{}", category.api_key()))
+        .with_accessible_name(category.label())
         .with_enabled(s.sponsorblock_enabled)
         .on_change(move |label| {
             if let Some(mode) = modes.iter().find(|m| m.label() == label) {
                 action::push(&bus, Action::SetCategory(category, *mode));
             }
         });
-        section = section.field(Field::new(category.label(), dropdown).with_trailing_control());
+        let name =
+            Chip::new(category.label()).with_lead(ChipLead::Dot(category_colour(theme, category)));
+        let about = stack()
+            .with_gap(rhythm.tight)
+            .push(Box::new(Row::new().no_wrap().push(Box::new(name))))
+            .push(Box::new(
+                text(&category.blurb(), TextRole::Caption).dimmed(),
+            ));
+        section = section.content(Box::new(
+            Row::new()
+                .no_wrap()
+                .with_gap(rhythm.group)
+                .push(Box::new(grow(about)))
+                .push(Box::new(
+                    Container::new()
+                        .with_no_padding()
+                        .with_width(chooser_width(theme))
+                        .with_child(Box::new(dropdown)),
+                )),
+        ));
     }
     section
 }
 
 fn dearrow_settings(ui: Ui<'_>) -> FormSection {
     let s = &ui.model.settings;
-    FormSection::new("DeArrow")
+    FormSection::new(t("tube-dearrow"))
         .grouped()
         .field(toggle_field(
-            "Use community titles and thumbnails",
+            &t("tube-dearrow-community"),
             switch(
                 ui,
                 "switch_dearrow",
@@ -1073,7 +1336,7 @@ fn dearrow_settings(ui: Ui<'_>) -> FormSection {
             ),
         ))
         .field(toggle_field(
-            "Replace titles",
+            &t("tube-dearrow-titles"),
             switch(
                 ui,
                 "switch_dearrow_titles",
@@ -1083,7 +1346,7 @@ fn dearrow_settings(ui: Ui<'_>) -> FormSection {
             .with_enabled(s.dearrow_enabled),
         ))
         .field(toggle_field(
-            "Replace thumbnails",
+            &t("tube-dearrow-thumbnails"),
             switch(
                 ui,
                 "switch_dearrow_thumbs",
@@ -1104,106 +1367,106 @@ fn device_sync_settings(
     sync: Option<&crate::sync::SyncView>,
     pairing_input: Option<Arc<Mutex<String>>>,
 ) -> FormSection {
-    let mut section = FormSection::new("Device sync");
+    let mut section = FormSection::new(t("tube-device-sync"));
     let capability = crate::sync::capability();
     let Some((state, input)) = sync.zip(pairing_input) else {
         let message = if capability.available {
-            "Device sync isn't available right now."
+            t("tube-sync-unavailable-now")
         } else {
-            "This build of Tube doesn't include Grayjay device sync."
+            t("tube-sync-not-built")
         };
-        return section.content(Box::new(text(message, TextRole::Body).dimmed()));
+        return section.content(Box::new(text(&message, TextRole::Body).dimmed()));
     };
     let Some(status) = sync_status(state.status) else {
         return section.content(Box::new(
-            Banner::warning("Device sync is unavailable").with_message(
-                "Unlock the desktop's secret store, then reopen Tube to pair Grayjay devices.",
-            ),
+            Banner::warning(t("tube-sync-locked-title"))
+                .with_message(t("tube-sync-locked-message")),
         ));
     };
     let rhythm = &ui.theme.tokens.spacing.rhythm;
-    section = section.content(Box::new(
-        Row::new()
-            .with_gap(rhythm.related)
-            .push(Box::new(text(&state.summary, TextRole::Body).dimmed()))
-            .push(Box::new(
-                Badge::text(status.0).style(ChipStyle::Tinted(status.1)),
-            )),
-    ));
-    if let Some(public_key) = &state.device_public_key {
-        let fingerprint: String = public_key.chars().take(18).collect();
-        section = section.content(Box::new(
-            ListRow::new("this_device", "This device")
-                .icon(Icon::Shield)
-                .secondary(format!(
-                    "Key {fingerprint}, held by the desktop secret store"
+    let active: Vec<&crate::sync::PeerRecord> =
+        state.peers.iter().filter(|peer| peer.is_active()).collect();
+
+    // Where sync stands, and Sync now once there is a device to sync with.
+    let mut summary = Row::new()
+        .no_wrap()
+        .with_gap(rhythm.related)
+        .push(Box::new(grow(
+            Row::new()
+                .with_gap(rhythm.related)
+                .push(Box::new(text(&state.summary, TextRole::Body).dimmed()))
+                .push(Box::new(
+                    Badge::text(status.0).style(ChipStyle::Tinted(status.1)),
                 )),
+        )));
+    if !active.is_empty() {
+        summary = summary.push(Box::new(
+            Button::new("grayjay_sync_now", &t("tube-sync-now"), None)
+                .with_icon(Icon::Refresh)
+                .on_click(ui.push(Action::SyncDevices)),
         ));
     }
+    section = section.content(Box::new(summary));
+
     section = section.content(Box::new(
         stack()
             .with_gap(rhythm.related)
-            .push(Box::new(text("Pair a device", TextRole::Subheading)))
-            .push(Box::new(
-                text(
-                    "In Grayjay, open Sync and choose Add device, then paste its invite here.",
-                    TextRole::Body,
-                )
-                .dimmed(),
-            ))
+            .push(Box::new(text(&t("tube-pair-title"), TextRole::Subheading)))
+            .push(Box::new(text(&t("tube-pair-how"), TextRole::Body).dimmed()))
             .push(Box::new(
                 TextInput::local()
                     .with_id("grayjay_pairing_invite")
                     .with_external_buffer(input)
-                    .with_placeholder("Pairing invite from Grayjay")
-                    .with_accessible_name("Grayjay pairing invite")
+                    .with_placeholder(&t("tube-pair-placeholder"))
+                    .with_accessible_name(t("tube-pair-name"))
                     .with_enter_submits(true),
             ))
             .push(Box::new(
-                Button::new("grayjay_pair", "Pair device", None)
+                Button::new("grayjay_pair", &t("tube-pair-device"), None)
                     .on_click(ui.push(Action::PairDevice)),
             )),
     ));
 
-    for peer in state
+    // A device that paired from its side waits until the person compares
+    // its fingerprint with the one Grayjay shows and approves it.
+    let pending: Vec<&crate::sync::PeerRecord> = state
         .peers
         .iter()
         .filter(|peer| peer.pending_approval && peer.revoked_at.is_none())
-    {
+        .collect();
+    if !pending.is_empty() {
+        let mut items: Vec<Element> = Vec::new();
+        for peer in pending {
+            items.push(Box::new(
+                ListRow::new(format!("grayjay_pending_{}", peer.short_id()), &peer.name)
+                    .icon(Icon::Shield)
+                    .secondary(t_args(
+                        "tube-pending-check",
+                        &[arg("fingerprint", peer.id.as_str())],
+                    )),
+            ));
+            items.push(Box::new(
+                Row::new().no_wrap().push(Box::new(
+                    Button::new(
+                        &format!("grayjay_approve_{}", peer.short_id()),
+                        &t("tube-approve-device"),
+                        None,
+                    )
+                    .role(ButtonRole::Primary)
+                    .on_click(ui.push(Action::ApproveDevice(peer.id.clone()))),
+                )),
+            ));
+        }
         section = section.content(Box::new(
-            ListRow::new(
-                format!("grayjay_pending_{}", peer.short_id()),
-                "Confirm this device",
-            )
-            .icon(Icon::Shield)
-            .secondary(format!(
-                "Check that Grayjay shows fingerprint {}",
-                peer.short_id()
-            ))
-            .warning(),
-        ));
-        section = section.content(Box::new(
-            Button::new(
-                &format!("grayjay_approve_{}", peer.short_id()),
-                "Approve device",
-                None,
-            )
-            .role(ButtonRole::Primary)
-            .on_click(ui.push(Action::ApproveDevice(peer.id.clone()))),
+            Section::new(items).with_header(SectionHeader::group(t("tube-pending-title"))),
         ));
     }
 
-    let active: Vec<&crate::sync::PeerRecord> =
-        state.peers.iter().filter(|peer| peer.is_active()).collect();
-    let header = SectionHeader::group("Approved devices");
+    let header = SectionHeader::group(t("tube-approved-devices"));
     if active.is_empty() {
         section = section.content(Box::new(
             Section::new(vec![Box::new(
-                text(
-                    "No approved devices yet. Pairing needs a confirmation on both devices.",
-                    TextRole::Body,
-                )
-                .dimmed(),
+                text(&t("tube-no-approved-devices"), TextRole::Body).dimmed(),
             )])
             .with_header(header),
         ));
@@ -1214,18 +1477,23 @@ fn device_sync_settings(
                 || {
                     (
                         peer.last_sync_at
-                            .map_or_else(|| "Not synced yet".into(), relative_sync_time),
+                            .map_or_else(|| t("tube-not-synced"), relative_sync_time),
                         false,
                     )
                 },
-                |error| (format!("Couldn't sync: {error}"), true),
+                |error| {
+                    (
+                        t_args("tube-sync-failed", &[arg("error", error.as_str())]),
+                        true,
+                    )
+                },
             );
             let bus = ui.bus.clone();
             let id = peer.id.clone();
             let mut row = ListRow::new(format!("grayjay_peer_{}", peer.short_id()), &peer.name)
                 .icon(Icon::Monitor)
                 .secondary(detail)
-                .action(Icon::Trash, "Revoke device", move || {
+                .action(Icon::Trash, t("tube-revoke-device"), move || {
                     action::push(&bus, Action::RevokeDevice(id.clone()));
                 });
             if failed {
@@ -1233,30 +1501,23 @@ fn device_sync_settings(
             }
             rows.push(Box::new(row));
         }
-        section = section.content(Box::new(
-            Section::new(rows).with_header(
-                header.action(
-                    Button::new("grayjay_sync_now", "Sync now", None)
-                        .on_click(ui.push(Action::SyncDevices)),
-                ),
-            ),
-        ));
+        section = section.content(Box::new(Section::new(rows).with_header(header)));
     }
     section
 }
 
 /// The badge for a working device-sync status; `None` while it is unavailable.
-fn sync_status(status: crate::sync::SyncStatus) -> Option<(&'static str, Tone)> {
+fn sync_status(status: crate::sync::SyncStatus) -> Option<(String, Tone)> {
     match status {
         crate::sync::SyncStatus::Unavailable => None,
         #[cfg(feature = "grayjay-sync")]
-        crate::sync::SyncStatus::Ready => Some(("Ready", Tone::Success)),
+        crate::sync::SyncStatus::Ready => Some((t("tube-sync-ready"), Tone::Success)),
         #[cfg(feature = "grayjay-sync")]
-        crate::sync::SyncStatus::Pairing => Some(("Pairing", Tone::Info)),
+        crate::sync::SyncStatus::Pairing => Some((t("tube-sync-pairing"), Tone::Info)),
         #[cfg(feature = "grayjay-sync")]
-        crate::sync::SyncStatus::Syncing => Some(("Syncing", Tone::Info)),
+        crate::sync::SyncStatus::Syncing => Some((t("tube-sync-syncing"), Tone::Info)),
         #[cfg(feature = "grayjay-sync")]
-        crate::sync::SyncStatus::Error => Some(("Needs attention", Tone::Warning)),
+        crate::sync::SyncStatus::Error => Some((t("tube-sync-attention"), Tone::Warning)),
     }
 }
 
@@ -1264,5 +1525,8 @@ fn relative_sync_time(time: i64) -> String {
     let current = ui::time::wall()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs() as i64);
-    format!("Last synced {}", ui::format::relative(current - time))
+    t_args(
+        "tube-last-synced",
+        &[arg("when", ui::format::relative(current - time))],
+    )
 }
