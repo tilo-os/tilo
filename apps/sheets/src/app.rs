@@ -260,7 +260,7 @@ enum MenuItem {
 }
 
 /// Which dropdown (if any) is open.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum OpenMenu {
     None,
     File,
@@ -271,7 +271,7 @@ enum OpenMenu {
 }
 
 /// Whether the per-document settings panel is open.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum SettingsPanel {
     None,
     Document,
@@ -5864,6 +5864,9 @@ fn seed_sales_sheet(doc: &mut AutoCommit) {
 mod r2_annotation_cards;
 
 #[cfg(test)]
+mod interaction_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::grid::GridCmd;
@@ -5895,7 +5898,18 @@ mod tests {
         height: f64,
         text_scale: f32,
     ) -> (SheetsApp, TextRenderer, Theme) {
-        let (mut app, _doc) = seeded_app();
+        let (app, _doc, tr, theme) = measured_app_with_doc(width, height, text_scale);
+        (app, tr, theme)
+    }
+
+    /// [`measured_app`] with the document the app was seeded into, for a test
+    /// that drives events against it.
+    pub(super) fn measured_app_with_doc(
+        width: f64,
+        height: f64,
+        text_scale: f32,
+    ) -> (SheetsApp, AutoCommit, TextRenderer, Theme) {
+        let (mut app, doc) = seeded_app();
         app.rect = Rect::new(0.0, 0.0, width, height);
         app.relayout();
         let theme = Theme::dark().with_text_scale(text_scale);
@@ -5904,7 +5918,7 @@ mod tests {
         app.text_scale = f64::from(theme.text_scale);
         app.grid.set_text_scale(app.text_scale);
         app.refresh_chrome_metrics(&mut tr, &theme);
-        (app, tr, theme)
+        (app, doc, tr, theme)
     }
 
     /// Paint one whole frame, then the top layer, as the host does, so the
@@ -8248,7 +8262,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// A `Modifiers` value with Control held.
-    fn ctrl_mods() -> Modifiers {
+    pub(super) fn ctrl_mods() -> Modifiers {
         let mut s = winit::keyboard::ModifiersState::empty();
         s.set(winit::keyboard::ModifiersState::CONTROL, true);
         Modifiers::from(s)
@@ -8273,7 +8287,7 @@ mod tests {
         }
     }
 
-    fn char_event(s: &str) -> WindowEvent {
+    pub(super) fn char_event(s: &str) -> WindowEvent {
         let mut event = key_event(winit::keyboard::Key::Character(
             winit::keyboard::SmolStr::new(s),
         ));
@@ -8289,7 +8303,12 @@ mod tests {
 
     /// Drive one event through the real `handle_event` path; returns whether the
     /// app consumed it.
-    fn feed(app: &mut SheetsApp, doc: &mut AutoCommit, ev: &WindowEvent, mods: Modifiers) -> bool {
+    pub(super) fn feed(
+        app: &mut SheetsApp,
+        doc: &mut AutoCommit,
+        ev: &WindowEvent,
+        mods: Modifiers,
+    ) -> bool {
         let root = automerge::ROOT;
         let mut handled = false;
         let mut focus: Option<NodeId> = None;
