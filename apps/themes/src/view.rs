@@ -594,7 +594,7 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, raw: &str) -> Element {
         )
         .section(
             FormSection::new("themes-type")
-                .field(Field::new("themes-face", face))
+                .field(Field::new("themes-face", face).with_help("themes-face-help"))
                 .field(Field::new(
                     "themes-size",
                     slider(

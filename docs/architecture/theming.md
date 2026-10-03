@@ -76,7 +76,7 @@ and a theme sets them through one document:
 | `presence` | Lightness and chroma of the twelve presence hues (hues stay 30° apart) | `presence` (`PresencePalette`), and through it `intent.you`, `selection_tint`, `border_focus` | `tokens/colors.rs` |
 | `shape` | `window_radius` | `radii.{tile, panel, control, item, detail}` derived concentrically (`Radii::from_window_radius`) | `tokens/radii.rs` |
 | `density` | `spacing`, a multiple of the 4 px scale | `spacing.s0`–`s16`; `Metrics` (pointer targets, control heights) stay put | `tokens/spacing.rs` |
-| `type` | `face`, `base_size` | `typography.sans_family`, the body size every `TextRole` derives from (`Theme::text(role)`) | `tokens/typography.rs` |
+| `type` | `face` (a built-in face by name, `Default` or `Hyperlegible`, or any family name), `base_size` | `typography.sans_family`, the body size every `TextRole` derives from (`Theme::text(role)`) | `tokens/typography.rs` (`UiFace`, `Typography::set_face`) |
 | `motion` | `character`: 0 calm, 1 stock, 2 lively | the shared UI springs, `motion_character` | `tokens/motion.rs` |
 | `material` | `blur`, `tint_opacity` of floating chrome | `surfaces.material_blur_px`, `surfaces.material_opacity`, `surfaces.material` | `tokens/colors.rs`, `backdrop.rs` |
 
@@ -187,7 +187,7 @@ The theme a person sees is resolved from layers, lowest to highest:
 | 2 | **Distribution defaults** (`appearance.distribution_defaults` / `appearance.distribution`) | whoever ships the OS image | a preset id or a whole document, and pins |
 | 3 | User theme | the person, through Settings and Theme Studio, or an agent through the same actions | the theme for the current mode, and the person's density |
 | 4 | Workspace temperature | the shell, per workspace | the neutral hue of the workspace being shown |
-| 5 | Accessibility | the person or assistive policy | high contrast / forced colours, text scale, UI scale, reduce motion, reduce transparency, thick caret |
+| 5 | Accessibility | the person or assistive policy | high contrast / forced colours, text scale, UI scale, reduce motion, reduce transparency, thick caret, the Hyperlegible face |
 
 **Accessibility always wins.** Nothing below layer 5 can lower contrast,
 shrink text, re-enable motion or make chrome translucent once the person
