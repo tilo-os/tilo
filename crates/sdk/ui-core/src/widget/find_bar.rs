@@ -30,8 +30,8 @@ use crate::theme::Theme;
 use crate::widget::capability::capability_mut;
 use crate::widget::search_field::FilterCount;
 use crate::widget::{
-    AppModel, Button, ButtonFace, Chip, ChipLead, ChipStyle, ControlSize, Element, ModelPath,
-    SearchField, TaffyTreeExt, Widget,
+    AppModel, Button, ButtonFace, ChipFace, ChipLead, ControlSize, Element, ModelPath, SearchField,
+    TaffyTreeExt, Widget,
 };
 
 /// What a find runs over: text, or a byte view's hex digits.
@@ -467,7 +467,7 @@ impl FindBar {
             chips.splice(0..0, [Part::Hex, Part::Text]);
         }
         for part in chips {
-            let w = Chip::natural_width_at(part.label(), chip_h, ChipLead::None, theme, text);
+            let w = ChipFace::intrinsic_width(part.label(), ChipLead::None, false, text, theme);
             // Narrow bars drop the chips before they squeeze the field.
             if right - w < x0 + 3.0 * row_h * 2.0 {
                 break;
@@ -535,21 +535,10 @@ impl FindBar {
             let hovered = self.hover == Some(part);
             match part {
                 Part::MatchCase | Part::WholeWord | Part::Text | Part::Hex => {
-                    let style = if self.part_on(part) {
-                        ChipStyle::tinted(theme.text_primary)
-                    } else {
-                        ChipStyle::quiet()
-                    };
-                    Chip::draw_at(
-                        scene,
-                        transform,
-                        rect,
-                        part.label(),
-                        ChipLead::None,
-                        style,
-                        theme,
-                        text,
-                    );
+                    ChipFace::new(rect, part.label())
+                        .selected(self.part_on(part))
+                        .hovered(hovered)
+                        .paint(scene, transform, text, theme);
                 }
                 Part::Previous | Part::Next | Part::Close => {
                     let icon = match part {
@@ -558,12 +547,9 @@ impl FindBar {
                         _ => Icon::X,
                     };
                     let disabled = matches!(part, Part::Previous | Part::Next) && self.matches == 0;
-                    let face = ButtonFace::new(rect, "")
-                        .icon(icon)
-                        .ghost()
+                    let face = ButtonFace::icon_only(rect, icon, part.label())
                         .hovered(hovered)
-                        .disabled(disabled)
-                        .accessible_name(part.label());
+                        .disabled(disabled);
                     Button::paint(scene, transform, text, theme, &face);
                 }
                 Part::Replace | Part::ReplaceAll => {

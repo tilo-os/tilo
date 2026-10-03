@@ -41,7 +41,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::Widget;
-use crate::widget::button::{Button, ButtonFace, ButtonStyle};
+use crate::widget::button::{Button, ButtonFace, ButtonRole};
 use crate::widget::control_size::ControlSize;
 use crate::widget::{TaffyTreeExt, floating_surface};
 
@@ -500,12 +500,9 @@ pub fn paint_backdrop(
     }
 
     if let Some(c) = layout.close {
-        let face = ButtonFace::new(c, "")
-            .style(ButtonStyle::Ghost)
-            .icon(Icon::X)
+        let face = ButtonFace::icon_only(c, Icon::X, "Close")
             .hovered(spec.close_hovered)
-            .focused(spec.close_focused)
-            .accessible_name("Close");
+            .focused(spec.close_focused);
         Button::paint(scene, transform, text_renderer, theme, &face);
     }
 }
@@ -523,18 +520,19 @@ pub fn paint_actions(
         let Some(rect) = layout.actions.get(i).copied() else {
             continue;
         };
-        let style = match a.emphasis {
-            ModalEmphasis::Primary => ButtonStyle::Primary,
-            ModalEmphasis::Secondary => ButtonStyle::Neutral,
-            ModalEmphasis::Danger => ButtonStyle::Danger,
-        };
-        let face = ButtonFace::new(rect, a.label)
-            .style(style)
-            .control_size(ControlSize::Regular)
-            .hovered(a.hovered && a.enabled)
-            .pressed(a.pressed && a.enabled)
-            .focused(a.focused && a.enabled)
-            .disabled(!a.enabled);
+        let face = ButtonFace::new(rect, a.label);
+        // A modal's danger action is the confirmation step, the one place a
+        // destructive button is filled.
+        let face = match a.emphasis {
+            ModalEmphasis::Primary => face.role(ButtonRole::Primary),
+            ModalEmphasis::Secondary => face.role(ButtonRole::Secondary),
+            ModalEmphasis::Danger => face.role(ButtonRole::Destructive).confirming(),
+        }
+        .control_size(ControlSize::Regular)
+        .hovered(a.hovered && a.enabled)
+        .pressed(a.pressed && a.enabled)
+        .focused(a.focused && a.enabled)
+        .disabled(!a.enabled);
         Button::paint(scene, transform, text_renderer, theme, &face);
     }
 }

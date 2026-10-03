@@ -30,7 +30,7 @@ use tilo_bluez::{MAX_PIN_CODE_BYTES, PairingPrompt, PairingReply, PairingRequest
 use ui::TextRole;
 use ui::theme::Theme;
 use ui::widget::{
-    Button, ButtonStyle, Card, Column, Row, Spacer, Text, TextInput, TextInputKind, Widget,
+    Button, ButtonRole, Card, Column, Row, Spacer, Text, TextInput, TextInputKind, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -301,7 +301,7 @@ impl PairingPromptView {
                         &accept_label(&self.request.prompt),
                         Some(KEY_ACCEPT),
                     )
-                    .with_style(ButtonStyle::Primary),
+                    .role(ButtonRole::Primary),
                 ),
             ]
         } else {

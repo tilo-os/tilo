@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use tilo_ui::headless::FrameHarness;
 use tilo_ui::theme::Theme;
 use tilo_ui::tokens::TextRole;
+use tilo_ui::widget::ButtonRole;
 use tilo_ui::widget::{
     Actions, Button, Checkbox, Column, Container, Density, Element, Field, Form, FormPage,
     FormSection, LabelPlacement, Row, Scrollable, Text, TextInput,
@@ -29,7 +30,7 @@ fn email_input() -> TextInput {
     input
 }
 fn actions() -> Actions {
-    Actions::new(Button::new("save", "Save account changes", None).primary())
+    Actions::new(Button::new("save", "Save account changes", None).role(ButtonRole::Primary))
         .secondary(Button::new("cancel", "Cancel", None))
 }
 // Automatic authoring: content, grouping and order; no layout pixels or breakpoints.

@@ -1,10 +1,17 @@
-//! A measured command strip with a shared `ContextMenu` for overflow.
+//! The toolbar: a measured strip of commands with a shared `ContextMenu`
+//! for overflow, so every command stays reachable however narrow the window.
 //! The extent cache is the sole source for intrinsic sizing, fitting and placement.
+//!
+//! Commands are `Label`-role plain buttons; a toggle that is on is a lift;
+//! groups are split by hairline separators that never stand at the start or
+//! end of what is shown. A painted widget hosts one with
+//! [`Toolbar::lay_out_in`]. The band behind a window's toolbar row is
+//! [`paint_band`] with its controls inset by [`band_padding`].
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -25,7 +32,13 @@ pub enum Orientation {
 
 pub enum ToolbarItem {
     Button {
+        /// The command's name: its visible label, or the accessible name
+        /// and tooltip of an icon-only command.
         label: String,
+        /// Shown instead of the label when present.
+        icon: Option<crate::icons::Icon>,
+        /// `Some` for a toggle; `Some(true)` paints the lift.
+        active: Option<bool>,
         on_click: Box<dyn FnMut()>,
     },
     Separator,
@@ -103,9 +116,83 @@ impl Toolbar {
     pub fn push_button(mut self, label: &str, on_click: impl FnMut() + 'static) -> Self {
         self.items.push(ToolbarItem::Button {
             label: label.to_string(),
+            icon: None,
+            active: None,
             on_click: Box::new(on_click),
         });
         self
+    }
+    /// An icon-only command; `label` is its accessible name, its tooltip and
+    /// its row in the overflow menu.
+    #[must_use]
+    pub fn push_icon(
+        mut self,
+        icon: crate::icons::Icon,
+        label: &str,
+        on_click: impl FnMut() + 'static,
+    ) -> Self {
+        self.items.push(ToolbarItem::Button {
+            label: label.to_string(),
+            icon: Some(icon),
+            active: None,
+            on_click: Box::new(on_click),
+        });
+        self
+    }
+    /// A command that is on or off (bold, a panel's visibility): a lift
+    /// while on, a checked row in the overflow menu.
+    #[must_use]
+    pub fn push_toggle(
+        mut self,
+        label: &str,
+        active: bool,
+        on_click: impl FnMut() + 'static,
+    ) -> Self {
+        self.items.push(ToolbarItem::Button {
+            label: label.to_string(),
+            icon: None,
+            active: Some(active),
+            on_click: Box::new(on_click),
+        });
+        self
+    }
+    /// Turn the toggle at `index` on or off (the host syncing from its model).
+    pub fn set_active(&mut self, index: usize, on: bool) {
+        if let Some(ToolbarItem::Button { active, .. }) = self.items.get_mut(index)
+            && active.is_some()
+        {
+            *active = Some(on);
+            self.menu_indices.clear();
+            self.reconcile_menu();
+        }
+    }
+
+    /// Lay the toolbar out in `rect` without a taffy pass, for a painted
+    /// widget that hosts one in its own chrome. Measures with `text` in
+    /// `theme`, then fits and places the commands; draw and dispatch as
+    /// usual afterwards.
+    pub fn lay_out_in(&mut self, rect: Rect, text: &mut TextRenderer, theme: &Theme) {
+        self.resolve_theme(theme);
+        self.update_measurements(text);
+        self.rect = rect;
+        self.place();
+    }
+
+    /// Whether the separator at `index` is shown: only between two shown
+    /// commands, never first, last, or beside another separator.
+    fn separator_shown(&self, index: usize) -> bool {
+        let shown = self.items.get(..self.visible_count).unwrap_or_default();
+        let before = shown.get(..index).unwrap_or_default();
+        let after = shown.get(index.saturating_add(1)..).unwrap_or_default();
+        let command_before = before
+            .iter()
+            .rev()
+            .find(|item| !matches!(item, ToolbarItem::Spacer))
+            .is_some_and(|item| matches!(item, ToolbarItem::Button { .. }));
+        let command_after = after
+            .iter()
+            .any(|item| matches!(item, ToolbarItem::Button { .. }));
+        command_before && command_after
     }
     #[must_use]
     pub fn push_separator(mut self) -> Self {
@@ -188,15 +275,20 @@ impl Toolbar {
         let button = |label: &str, text: &mut TextRenderer| {
             let (width, height) = text.measure_style(label, None, &style);
             Size {
-                width: (width + self.padding * 2.0).max(self.minimum),
+                width: (width + self.padding * 2.0).ceil().max(self.minimum),
                 height: (height + self.padding * 2.0).max(self.minimum),
             }
         };
-        let chip = button("…", text);
+        let square = Size {
+            width: self.minimum,
+            height: self.minimum,
+        };
+        let chip = square;
         let extents: Vec<_> = self
             .items
             .iter()
             .map(|item| match item {
+                ToolbarItem::Button { icon: Some(_), .. } => square,
                 ToolbarItem::Button { label, .. } => button(label, text),
                 ToolbarItem::Spacer => Size::ZERO,
                 ToolbarItem::Separator => match self.orientation {
@@ -363,8 +455,20 @@ impl Toolbar {
             for index in &indices {
                 self.menu
                     .push(match index.and_then(|index| self.items.get(index)) {
-                        Some(ToolbarItem::Button { label, .. }) => {
-                            MenuItem::action(label.clone(), || {})
+                        Some(ToolbarItem::Button {
+                            label,
+                            icon,
+                            active,
+                            ..
+                        }) => {
+                            let mut row = MenuItem::action(label.clone(), || {});
+                            if let Some(icon) = icon {
+                                row = row.with_icon(*icon);
+                            }
+                            if let Some(active) = active {
+                                row = row.with_checked(*active);
+                            }
+                            row
                         }
                         _ => MenuItem::separator(),
                     });
@@ -580,14 +684,7 @@ impl Widget for Toolbar {
         theme: &Theme,
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.font = theme.text(TextRole::Label);
-        self.padding = theme.tokens.spacing.s3;
-        // A hit target is a metric, not a spacing step: a custom theme's
-        // dense `spacing_px` rescales `s8` but must not shrink the pointer
-        // target beneath the 32 px floor (HIG §7b).
-        self.minimum = theme.tokens.metrics.min_pointer_target;
-        self.separator = separator_extent(theme);
-        self.gap = theme.tokens.spacing.s3;
+        self.resolve_theme(theme);
         // Bootstrap only for legacy callers that skip renderer settlement.
         self.extents = self
             .items
@@ -674,7 +771,6 @@ impl Widget for Toolbar {
             self.menu.reanchor(self.overflow_rect, viewport);
         }
         self.menu.layout_within(text, theme);
-        let style = self.font.clone();
         // Explicit tiny allocations remain authoritative, including for glyph paint.
         scene.push_layer(
             vello::peniko::Fill::NonZero,
@@ -693,12 +789,19 @@ impl Widget for Toolbar {
                 continue;
             };
             match item {
-                ToolbarItem::Button { label, .. } => self.draw_button(
+                ToolbarItem::Button {
+                    label,
+                    icon,
+                    active,
+                    ..
+                } => self.draw_button(
                     &mut PaintCtx::new(scene, transform, text, theme),
-                    &style,
                     Target::Item(index),
                     label,
+                    *icon,
+                    active.unwrap_or(false),
                 ),
+                ToolbarItem::Separator if !self.separator_shown(index) => {}
                 ToolbarItem::Separator => {
                     let margin = f64::from(theme.tokens.spacing.s2);
                     let line = match self.orientation {
@@ -729,9 +832,10 @@ impl Widget for Toolbar {
         if self.has_overflow() {
             self.draw_button(
                 &mut PaintCtx::new(scene, transform, text, theme),
-                &style,
                 Target::Overflow,
-                "…",
+                "More commands",
+                Some(crate::icons::Icon::MoreHorizontal),
+                false,
             );
         }
         scene.pop_layer();
@@ -854,22 +958,29 @@ impl Widget for Toolbar {
             .targets()
             .iter()
             .map(|target| {
-                let (name, route, expanded) = match target {
-                    Target::Item(index) => (
-                        match self.items.get(*index) {
-                            Some(ToolbarItem::Button { label, .. }) => label.clone(),
-                            _ => String::new(),
-                        },
-                        format!("toolbar.item.{index}"),
-                        None,
-                    ),
+                let (name, route, expanded, checked) = match target {
+                    Target::Item(index) => {
+                        let (name, checked) = match self.items.get(*index) {
+                            Some(ToolbarItem::Button { label, active, .. }) => {
+                                (label.clone(), *active)
+                            }
+                            _ => (String::new(), None),
+                        };
+                        (name, format!("toolbar.item.{index}"), None, checked)
+                    }
                     Target::Overflow => (
                         "More commands".to_owned(),
                         "toolbar.overflow".to_owned(),
                         Some(self.menu.is_open()),
+                        None,
                     ),
                 };
-                AccessNode::new(Role::Button)
+                let role = if checked.is_some() {
+                    Role::ToggleButton
+                } else {
+                    Role::Button
+                };
+                AccessNode::new(role)
                     .with_name(name)
                     .with_action_target(route)
                     .with_bounds(self.target_rect(*target).unwrap_or(Rect::ZERO))
@@ -879,6 +990,7 @@ impl Widget for Toolbar {
                             && !self.menu.is_open()
                             && self.focus == Some(*target),
                         expanded,
+                        checked,
                         ..Default::default()
                     })
             })
@@ -988,45 +1100,83 @@ impl Widget for Toolbar {
 }
 
 impl Toolbar {
-    fn draw_button(&self, ctx: &mut PaintCtx<'_>, style: &TextStyle, target: Target, label: &str) {
+    /// The theme's metrics for a toolbar: `Label` text, `s3` insets and
+    /// gaps, and the pointer target as every command's floor.
+    fn resolve_theme(&mut self, theme: &Theme) {
+        self.font = theme.text(TextRole::Label);
+        self.padding = theme.tokens.spacing.s3;
+        // A hit target is a metric, not a spacing step: a custom theme's
+        // dense `spacing_px` rescales `s8` but must not shrink the pointer
+        // target beneath the 32 px floor (HIG §7b).
+        self.minimum = theme.tokens.metrics.min_pointer_target;
+        self.separator = separator_extent(theme);
+        self.gap = theme.tokens.spacing.s3;
+    }
+
+    /// One command, painted as a plain button: bare at rest, a lift of the
+    /// ground under the pointer, and a full lift while a toggle is on.
+    fn draw_button(
+        &self,
+        ctx: &mut PaintCtx<'_>,
+        target: Target,
+        label: &str,
+        icon: Option<crate::icons::Icon>,
+        active: bool,
+    ) {
         let Some(rect) = self.target_rect(target).filter(|rect| !rect.is_zero_area()) else {
             return;
         };
         let theme = ctx.theme;
-        let radius = f64::from(theme.tokens.radii.detail);
-        let shape = RoundedRect::from_rect(rect, radius);
-        let color = if self.hovered == Some(target) {
-            theme
-                .tokens
-                .colors
-                .lift_on(theme.tokens.colors.surfaces.raised, 0.5)
-        } else {
-            theme.tokens.colors.surfaces.raised
-        };
-        // Neutral button face with its derived rest edge (HIG §9.5): on a
-        // raised card the bare fill is invisible and the buttons read as
-        // loose labels.
-        crate::surface::card(ctx.scene, ctx.transform, rect, radius, color);
-        if self.focused && self.focus == Some(target) && !self.menu.is_open() {
-            ctx.scene.stroke(
-                &Stroke::new(2.0),
+        if active {
+            let radius = f64::from(theme.tokens.radii.control);
+            ctx.scene.fill(
+                vello::peniko::Fill::NonZero,
                 ctx.transform,
-                theme.tokens.colors.border_focus,
+                theme.tokens.colors.intent.selection,
                 None,
-                &shape,
+                &RoundedRect::from_rect(rect, radius),
             );
         }
-        let (width, height) = ctx.text.measure_style(label, None, style);
-        ctx.text(
-            label,
-            style,
-            theme.tokens.colors.text_primary,
-            Point::new(
-                rect.center().x - f64::from(width) / 2.0,
-                rect.center().y - f64::from(height) / 2.0,
-            ),
+        let face = match icon {
+            Some(icon) => crate::widget::ButtonFace::icon_only(rect, icon, label),
+            None => crate::widget::ButtonFace::new(rect, label),
+        }
+        .role(crate::widget::ButtonRole::Plain)
+        .hovered(self.hovered == Some(target) && !active)
+        .pressed(self.pressed == Some(target))
+        .focused(self.focused && self.focus == Some(target) && !self.menu.is_open());
+        crate::widget::Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
+    }
+}
+
+/// The band behind a window's toolbar row: no fill of its own (the toolbar
+/// stands on its region's ground) and one derived hairline along its bottom
+/// edge, at `metrics.chrome_rule_px`.
+pub fn paint_band(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
+    let rule = f64::from(theme.tokens.metrics.chrome_rule_px);
+    if rule > 0.0 {
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            crate::chrome::chrome_hairline(theme),
             None,
+            &Rect::new(rect.x0, rect.y1 - rule, rect.x1, rect.y1),
         );
+    }
+}
+
+/// The inset of a toolbar band's controls from its edges: siblings' step
+/// across, the tightest step above and below so the band stays one control
+/// tall (HIG §7b).
+pub fn band_padding(theme: &Theme) -> taffy::Rect<taffy::LengthPercentage> {
+    let spacing = &theme.tokens.spacing;
+    let across = taffy::LengthPercentage::length(spacing.s3);
+    let along = taffy::LengthPercentage::length(spacing.s1);
+    taffy::Rect {
+        left: across,
+        right: across,
+        top: along,
+        bottom: along,
     }
 }
 // =====================================================================
@@ -1038,6 +1188,60 @@ mod tests {
     use super::*;
     use crate::presence::PresenceCtx;
     use vello_encoding::DrawTag;
+
+    /// A separator never stands first, last or beside another separator of
+    /// what is shown: a row that starts after a group boundary, or ends at
+    /// one, shows no stray rule.
+    #[test]
+    fn separators_only_stand_between_shown_commands() {
+        let tb = Toolbar::new(Orientation::Horizontal)
+            .push_separator()
+            .push_button("Cut", || {})
+            .push_separator()
+            .push_separator()
+            .push_button("Paste", || {})
+            .push_spacer()
+            .push_separator();
+        let mut tb = tb;
+        tb.visible_count = tb.items.len();
+        let shown: Vec<bool> = (0..tb.items.len())
+            .filter(|index| matches!(tb.items.get(*index), Some(ToolbarItem::Separator)))
+            .map(|index| tb.separator_shown(index))
+            .collect();
+        assert_eq!(shown, [false, true, false, false]);
+    }
+
+    /// Icon commands are pointer-target squares, toggles report their state
+    /// and a painted host lays a toolbar out without taffy.
+    #[test]
+    fn icon_commands_and_toggles_lay_out_in_a_painted_host() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let mut tb = Toolbar::new(Orientation::Horizontal)
+            .push_icon(crate::icons::Icon::Search, "Find", || {})
+            .push_toggle("Bold", true, || {})
+            .push_button("Insert table", || {});
+        tb.lay_out_in(Rect::new(0.0, 0.0, 600.0, 40.0), &mut text, &theme);
+        let icon = tb.item_rects[0];
+        assert_eq!(
+            icon.width(),
+            f64::from(theme.tokens.metrics.min_pointer_target)
+        );
+        assert!(!tb.has_overflow());
+        let node = Widget::accessibility(&tb).expect("toolbar semantics");
+        assert_eq!(node.children[0].name.as_deref(), Some("Find"));
+        assert_eq!(node.children[1].role, Role::ToggleButton);
+        assert_eq!(node.children[1].state.checked, Some(true));
+        tb.set_active(1, false);
+        let node = Widget::accessibility(&tb).expect("toolbar semantics");
+        assert_eq!(node.children[1].state.checked, Some(false));
+
+        // Squeezed, every command stays reachable through the overflow menu.
+        tb.lay_out_in(Rect::new(0.0, 0.0, 90.0, 40.0), &mut text, &theme);
+        assert!(tb.has_overflow());
+        let reachable = tb.visible_count + tb.menu_indices.iter().flatten().count();
+        assert_eq!(reachable, 3);
+    }
 
     /// Build a toolbar with `n` no-op buttons. Convenience for the
     /// overflow + paint tests that don't care which closure is invoked.

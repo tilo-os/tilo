@@ -694,16 +694,14 @@ pub struct Actions {
 impl Actions {
     pub fn new(primary: Button) -> Self {
         Self {
-            parts: Parts::new(vec![Box::new(primary.with_action_sizing())]),
+            parts: Parts::new(vec![Box::new(primary)]),
         }
     }
 
     #[must_use]
     pub fn secondary(mut self, button: Button) -> Self {
         let index = self.parts.children.len().saturating_sub(1);
-        self.parts
-            .children
-            .insert(index, Box::new(button.with_action_sizing()));
+        self.parts.children.insert(index, Box::new(button));
         self
     }
 }

@@ -478,7 +478,7 @@ impl SearchField {
         let height = ControlSize::Small.height(theme) - 6.0;
         let lead = crate::widget::ChipLead::Glyph(Icon::X);
         let natural =
-            crate::widget::Chip::natural_width_at(&token, height, lead, theme, text_renderer);
+            crate::widget::ChipFace::intrinsic_width(&token, lead, false, text_renderer, theme);
         let max = (self.rect.width() * 0.5).max(height);
         let width = natural.min(max);
         let cy = self.rect.center().y;
@@ -488,15 +488,11 @@ impl SearchField {
             self.rect.x0 + ICON_GUTTER - 4.0 + width,
             cy + height / 2.0,
         );
-        crate::widget::Chip::draw_at(
+        crate::widget::ChipFace::new(chip, &token).lead(lead).paint(
             scene,
             transform,
-            chip,
-            &token,
-            lead,
-            crate::widget::ChipStyle::quiet(),
-            theme,
             text_renderer,
+            theme,
         );
         self.scope_token_rect = chip;
         width + 4.0

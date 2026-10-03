@@ -34,7 +34,7 @@
           "action": "back"
         },
         "enabled": true,
-        "style": "ghost"
+        "role": "plain"
       }
     ],
     "gap": 8.0,

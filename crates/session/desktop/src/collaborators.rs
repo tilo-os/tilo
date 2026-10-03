@@ -17,6 +17,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use tilo_desktop_model::{Collaborator, DesktopTree};
 use ui::TextRole;
+use ui::widget::ButtonRole;
 
 const FOOTER_H: f64 = 40.0;
 const WARNING_H: f64 = 24.0;
@@ -1028,7 +1029,6 @@ impl CollaboratorsOverlay {
                 text_renderer,
                 theme,
                 &ButtonFace::new(rect, glyph)
-                    .radius(f64::from(theme.tokens.radii.detail))
                     .hovered(cursor.is_some_and(|point| rect.contains(point))),
             );
         }
@@ -1506,7 +1506,6 @@ impl CollaboratorsOverlay {
                 "people-panel-follow"
             });
             let face = ButtonFace::new(action, &label)
-                .radius(ui::chrome::ChromeRole::Control.radius(theme, action.height()))
                 .control_size(ui::widget::ControlSize::Large)
                 .hovered(frame.cursor.is_some_and(|point| action.contains(point)));
             Button::paint(scene, transform, text_renderer, theme, &face);
@@ -1524,8 +1523,6 @@ impl CollaboratorsOverlay {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         if self.invite.area() > 0.0 {
-            // Control role (HIG §9.1): pressable bodies take `radii.control`.
-            let radius = ui::chrome::ChromeRole::Control.radius(theme, self.invite.height());
             let invite_label = crate::i18n::t("people-panel-invite");
             let join_label = crate::i18n::t("people-panel-join");
             Button::paint(
@@ -1534,8 +1531,7 @@ impl CollaboratorsOverlay {
                 text_renderer,
                 theme,
                 &ButtonFace::new(self.invite, &invite_label)
-                    .primary()
-                    .radius(radius)
+                    .role(ButtonRole::Primary)
                     .hovered(cursor.is_some_and(|point| self.invite.contains(point))),
             );
             Button::paint(
@@ -1544,7 +1540,6 @@ impl CollaboratorsOverlay {
                 text_renderer,
                 theme,
                 &ButtonFace::new(self.join, &join_label)
-                    .radius(radius)
                     .hovered(cursor.is_some_and(|point| self.join.contains(point))),
             );
         }

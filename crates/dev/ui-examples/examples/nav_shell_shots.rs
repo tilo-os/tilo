@@ -121,13 +121,7 @@ fn message() -> Element {
 }
 
 fn icon_button(id: &str, icon: Icon, name: &str) -> Element {
-    Box::new(
-        Button::new(id, "", None)
-            .with_icon(icon)
-            .with_accessible_name(name)
-            .ghost()
-            .with_size(32.0, 32.0),
-    )
+    Box::new(Button::icon_only(id, icon, name))
 }
 
 fn mail() -> NavShell {

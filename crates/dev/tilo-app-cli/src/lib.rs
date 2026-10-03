@@ -1550,7 +1550,7 @@ fn screen_artifact_writes(
                 click_value: None,
                 navigate: Some(tilo_ui_graph::UiNavigation::Back),
                 enabled: true,
-                style: tilo_ui_graph::UiButtonStyle::Ghost,
+                role: tilo_ui_graph::UiButtonRole::Plain,
             },
         )?;
         messages.push(back);
@@ -1889,7 +1889,7 @@ fn primary_action_button(
         click_value: Some("yes".into()),
         navigate: None,
         enabled: true,
-        style: tilo_ui_graph::UiButtonStyle::Primary,
+        role: tilo_ui_graph::UiButtonRole::Primary,
     }
 }
 
@@ -2067,7 +2067,7 @@ fn navigation_link_write(
                 route: to.to_owned(),
             }),
             enabled: true,
-            style: tilo_ui_graph::UiButtonStyle::Neutral,
+            role: tilo_ui_graph::UiButtonRole::Secondary,
         },
     )?;
     let mut source = document.to_json_pretty()?;
@@ -3307,7 +3307,7 @@ mod tests {{
     use super::*;
     use ui::a11y::{{Action, Role}};
     use ui::headless::SemanticExpectation;
-    use ui::widget::Button;
+    use ui::widget::{{Button, ControlSize}};
     use ui::widget::data_table::{{ColumnWidth, TableRowState}};
 
     struct Row {{
@@ -3360,7 +3360,7 @@ mod tests {{
                             Some("open-requested"),
                         )
                         .with_click_value(index.to_string())
-                        .fit_content(if index == 0 {{ 56.0 }} else {{ 28.0 }}),
+                        .control_size(if index == 0 {{ ControlSize::Large }} else {{ ControlSize::Small }}),
                     )
                 }}),
         ];

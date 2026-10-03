@@ -11,7 +11,7 @@ let page = FormPage::new("Account", Form::new()
         .field(Field::new("Email", TextInput::local().with_id("email"))
             .with_help("Used for account recovery")
             .with_error("Enter a valid email address")))
-    .with_actions(Actions::new(Button::new("save", "Save", None).primary())));
+    .with_actions(Actions::new(Button::new("save", "Save", None).role(ButtonRole::Primary))));
 ```
 
 Labels align within each section. The framework measures the actual localized labels and control minima; when the pair cannot fit, labels move above controls. Expandable controls that report no intrinsic width receive a comfortable minimum based on the theme's active type size. Help and validation wrap with the control. Sections and actions retain their declared order. `FormSection::content(Element)` accepts ordinary labelled checkboxes or a manually composed region.

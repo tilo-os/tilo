@@ -339,7 +339,7 @@ impl Slider {
         let track_radius = track_rect.height() / 2.0;
         // HIG §9.5: the unfilled half is a lift off the ground (not a ramp
         // slot) with an edge derived from itself; the filled half is accent.
-        let unfilled = theme.tokens.colors.lift(1.0);
+        let unfilled = theme.tokens.colors.intent.selection;
         let filled = theme.tokens.colors.intent.inverted;
         let track_shape = RoundedRect::from_rect(track_rect, track_radius);
         scene.fill(
@@ -377,20 +377,26 @@ impl Slider {
         let knob_radius = face.knob_radius();
         let knob_center = Point::new(active.x1, face.rect.center().y);
         let knob_shape = Circle::new(knob_center, knob_radius);
-        // One thumb colour that clears both halves of the track (HIG §9.5),
-        // held across rest / hover / drag: the `*_white_*` veneers were a
-        // grey blob on dark and vanished into the unfilled track on light.
-        // Hover and drag read from the radius (above), a firmer edge, and
-        // the halo — not from a second thumb colour.
-        let fill_color = crate::widget::toggle::ink_across(
-            &[filled, unfilled],
-            theme.tokens.colors.text_primary,
-            crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
-        );
-        let border_color = if face.dragging || face.hovered {
-            crate::surface::edge_on_with(fill_color, crate::chrome::PANEL_BORDER_ALPHA)
+        // One thumb colour held across rest / hover / drag; hover and drag
+        // read from the radius (above), a firmer edge, and the halo. On a
+        // light material the thumb is a raised white object ringed in a tone
+        // that clears both halves of the track, never a dark disc; on a dark
+        // one it is the primary ink, which already clears both.
+        let colors = &theme.tokens.colors;
+        let floor = crate::tokens::colors::NON_TEXT_MIN_CONTRAST;
+        let (fill_color, border_color) = if crate::widget::toggle::light_material(colors) {
+            let ring =
+                crate::widget::toggle::ink_across(&[filled, unfilled], colors.text_tertiary, floor);
+            (colors.surfaces.raised, ring)
         } else {
-            crate::surface::edge_on(fill_color)
+            let fill =
+                crate::widget::toggle::ink_across(&[filled, unfilled], colors.text_primary, floor);
+            let edge = if face.dragging || face.hovered {
+                crate::surface::edge_on_with(fill, crate::chrome::PANEL_BORDER_ALPHA)
+            } else {
+                crate::surface::edge_on(fill)
+            };
+            (fill, edge)
         };
         let border_width = 1.5;
         // Pressed halo: nested hairlines outside the knob, derived against
@@ -433,12 +439,13 @@ impl Slider {
             &knob_shape,
         );
 
-        // Tight focus ring around the knob, not the whole widget rect.
+        // Tight focus ring, in your colour, around the knob, not the whole
+        // widget rect.
         if face.focused {
             scene.stroke(
                 &vello::kurbo::Stroke::new(1.5),
                 transform,
-                theme.border_focus,
+                theme.tokens.colors.intent.you,
                 None,
                 &Circle::new(knob_center, knob_radius + 2.0),
             );
@@ -475,14 +482,26 @@ impl Widget for Slider {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // A slider fills its row but never collapses to a knob: the track
+        // keeps six knob widths of travel.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a knob radius in logical pixels, far inside f32's range"
+        )]
+        let min_width = (KNOB_RADIUS * 12.0) as f32 * theme.ui_scale;
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::percent(1.0),
                 height: Dimension::length(self.interaction.minimum_target()),
             },
+            min_size: Size {
+                width: Dimension::length(min_width),
+                height: Dimension::auto(),
+            },
+            flex_shrink: 0.0,
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
@@ -778,6 +797,60 @@ impl crate::widget::controls::ActionControls for Slider {
 mod tests {
     use super::*;
     use automerge::{AutoCommit, ReadDoc};
+
+    /// In a crowded row a slider keeps a usable track instead of shrinking
+    /// to its knob.
+    #[test]
+    fn a_slider_in_a_crowded_row_keeps_a_track() {
+        let harness = crate::headless::FrameHarness::new(
+            crate::State::new(),
+            Box::new(
+                crate::widget::Row::new()
+                    .no_wrap()
+                    .push(Box::new(crate::widget::Text::new(
+                        "A label long enough to take the whole row by itself",
+                    )))
+                    .push(Box::new(Slider::new("volume", "volume"))),
+            ),
+            (200, 80),
+        );
+        let snapshot = harness.inspection();
+        let slider = snapshot
+            .root
+            .children
+            .iter()
+            .find(|child| child.widget == "Slider")
+            .expect("slider in the row");
+        assert!(slider.rect[2] >= 120.0, "{:?}", slider.rect);
+    }
+
+    /// On a light material the thumb is a raised white object with a ring
+    /// that clears both halves of the track, never a dark disc.
+    #[test]
+    fn the_light_thumb_is_raised_and_ringed() {
+        let theme = Theme::light();
+        let mut scene = Scene::new();
+        Slider::paint(
+            &mut scene,
+            Affine::IDENTITY,
+            &theme,
+            &SliderFace::new(Rect::new(0.0, 0.0, 200.0, 32.0), 0.5),
+        );
+        let colors = &theme.tokens.colors;
+        let raised = colors.surfaces.raised;
+        let ring = crate::widget::toggle::ink_across(
+            &[colors.intent.inverted, colors.intent.selection],
+            colors.text_tertiary,
+            crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+        );
+        for ground in [colors.intent.inverted, colors.intent.selection] {
+            assert!(
+                crate::a11y::contrast_ratio(ring, ground)
+                    >= crate::tokens::colors::NON_TEXT_MIN_CONTRAST
+            );
+        }
+        assert!(crate::a11y::relative_luminance(raised) > 0.9);
+    }
 
     /// Build a slider with a known rect so we don't need a full taffy pass.
     /// Rect spans [0..200, 0..30] — track-padding 5 px, so the track itself

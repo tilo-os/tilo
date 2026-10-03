@@ -1,10 +1,19 @@
-//! `Chip` — a compact interactive pill for tags, filters, and tokens. Distinct
-//! from [`super::Badge`] (a tiny non-interactive count/dot): a chip carries a
-//! label and can be **selectable** (a filter that toggles on/off, tinting to
-//! the accent when active) and/or **removable** (a trailing "×" that removes a
-//! token, e.g. a recipient or an applied filter).
+//! Chips and badges: one family of pill-shaped marks.
 //!
-//! Both interactions surface through the toolkit's drain channel —
+//! A [`Chip`] is a compact interactive pill for tags, filters and tokens: it
+//! carries a label and can be **selectable** (a filter that toggles, lifted
+//! when chosen) and/or **removable** (a trailing × that removes a token, a
+//! recipient or an applied filter). A [`super::Badge`] is the
+//! non-interactive member of the family: a count, a dot or a short status.
+//!
+//! Both are pills (`radii.full`): pill-shaped by meaning. Both take a
+//! [`ChipStyle`], never a colour: [`ChipStyle::Neutral`] is the quiet raised
+//! pill, [`ChipStyle::Tinted`] carries a [`Tone`] (a status or a person) as a
+//! faint wash and edge with neutral ink, [`ChipStyle::Live`] is the one filled
+//! pill, for something happening right now. Canvas hosts paint the same
+//! pills with [`ChipFace`] and [`super::BadgeFace`].
+//!
+//! Interactions surface through the toolkit's drain channel —
 //! [`Chip::take_toggled`] and [`Chip::take_removed`] — rather than callbacks,
 //! so a CRDT-native host reads them each frame and mutates its own model.
 
@@ -23,8 +32,11 @@ use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::tokens::colors::TintedChip;
+use crate::tokens::colors::{
+    NON_TEXT_MIN_CONTRAST, ON_FILL_MIN_CONTRAST, SMALL_TEXT_MIN_CONTRAST, mix8,
+};
 use crate::widget::TaffyTreeExt;
+use crate::widget::Tone;
 use crate::widget::Widget;
 
 /// `kurbo::Affine` composition is plain f64 matrix math with no panic
@@ -38,19 +50,502 @@ fn translated(transform: Affine, x: f64, y: f64) -> Affine {
     transform * Affine::translate((x, y))
 }
 
-/// Default pill height: the dense control step (HIG §9.6, 28 px). The label
-/// is always a `Label`, whatever height a host lays the chip out at.
-const HEIGHT: f64 = 28.0;
-/// Horizontal inset, `spacing.s3` at 1× — the same inset a button uses, so a
-/// chip and a button in one row start their content on the same line.
-const PAD_X: f64 = 12.0;
-/// Lead-to-label and label-to-dismiss gap; 6 px like the button's icon gap,
-/// between `s1` (crowds the glyph) and `s2` (splits the pill into two marks).
-const GAP: f64 = 6.0;
-/// Status dot diameter, `spacing.s2` at 1×.
-const DOT_D: f64 = 8.0;
-/// Dismiss glyph edge: the label's cap height plus a hit margin.
-const X_D: f64 = 14.0;
+/// How strongly a tone washes the pill's body over its ground.
+const TINT_FILL: f32 = 0.15;
+/// How strongly the same tone draws the pill's edge: enough to close the
+/// shape on a dark and a light ground, quieter than the label.
+const TINT_EDGE: f32 = 0.38;
+
+/// What a chip or badge is. The style is the whole appearance; there is no
+/// colour, size or radius to set.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum ChipStyle {
+    /// The quiet pill: the raised tier with its derived edge and primary
+    /// ink. A selected chip is a lift of its ground.
+    #[default]
+    Neutral,
+    /// A tone washed into the body and drawn as the edge, with neutral ink
+    /// measured on the washed body.
+    Tinted(Tone),
+    /// Something happening right now (live, recording): the one filled
+    /// pill, in the danger status colour with ink measured on it.
+    Live,
+}
+
+/// The resolved colours of one pill.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChipColors {
+    pub fill: Color,
+    pub edge: Option<Color>,
+    pub ink: Color,
+    /// The lead (dot or glyph) where it is not a content colour of its own.
+    pub lead: Color,
+}
+
+impl ChipStyle {
+    /// The colours of a pill in this style on `ground`. `selected` lifts a
+    /// neutral chip; `hovered` lifts it halfway.
+    pub fn colors(self, theme: &Theme, ground: Color, selected: bool, hovered: bool) -> ChipColors {
+        let colors = &theme.tokens.colors;
+        match self {
+            Self::Neutral => {
+                let state = crate::chrome::SelectionState::new(selected, hovered, false);
+                let tier = crate::chrome::selection_tier_on(theme, state, ground);
+                let raised = colors.surfaces.raised;
+                let (fill, edge) = if selected {
+                    (tier.fill, None)
+                } else if hovered {
+                    (
+                        colors.lift_on(raised, 0.5),
+                        Some(crate::surface::edge_on(raised)),
+                    )
+                } else {
+                    (raised, Some(crate::surface::edge_on(raised)))
+                };
+                let ink = colors.ink_on_any(&[fill], colors.text_primary, SMALL_TEXT_MIN_CONTRAST);
+                ChipColors {
+                    fill,
+                    edge,
+                    ink,
+                    lead: colors.ink_on_any(&[fill], colors.text_dim, NON_TEXT_MIN_CONTRAST),
+                }
+            }
+            Self::Tinted(tone) => {
+                let tint = tone.colour(theme);
+                let fill = mix8(ground, tint, TINT_FILL);
+                let edge = mix8(ground, tint, TINT_EDGE);
+                ChipColors {
+                    fill,
+                    edge: Some(edge),
+                    ink: colors.on_surface_at(fill, SMALL_TEXT_MIN_CONTRAST).ink,
+                    lead: colors.ink_on(fill, tint, NON_TEXT_MIN_CONTRAST),
+                }
+            }
+            Self::Live => {
+                let fill = colors.semantic.danger;
+                let ink = colors.on_surface_at(fill, ON_FILL_MIN_CONTRAST).ink;
+                ChipColors {
+                    fill,
+                    edge: None,
+                    ink,
+                    lead: ink,
+                }
+            }
+        }
+    }
+}
+
+/// What sits in a chip's leading slot.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum ChipLead {
+    /// Label only.
+    #[default]
+    None,
+    /// A colour-coded dot: a calendar's or a category's own colour (content),
+    /// or a person's presence colour.
+    Dot(Color),
+    /// A glyph, for chips that name an action rather than a value.
+    Glyph(Icon),
+}
+
+/// A pill's geometry in one theme: everything the text scale moves.
+#[derive(Clone, Debug, PartialEq)]
+struct PillMetrics {
+    /// The selector height, grown with the label's line.
+    height: f64,
+    /// Inset of the content: half the height, so the label clears the
+    /// round ends at every text scale.
+    pad_x: f64,
+    gap: f64,
+    dot: f64,
+    glyph: f64,
+    label: TextStyle,
+}
+
+impl PillMetrics {
+    fn of(theme: &Theme, role: TextRole) -> Self {
+        let label = theme.text(role);
+        let line = f64::from(label.line_height_px());
+        let height = f64::from(theme.tokens.metrics.selector_height)
+            .max((line + 2.0 * f64::from(theme.tokens.spacing.s1)).ceil());
+        Self {
+            height,
+            pad_x: (height / 2.0).round(),
+            gap: f64::from(theme.tokens.metrics.icon_label_gap),
+            dot: f64::from(theme.tokens.spacing.s2),
+            glyph: f64::from(theme.tokens.metrics.icon_sm),
+            label,
+        }
+    }
+
+    fn lead_width(&self, lead: ChipLead) -> f64 {
+        match lead {
+            ChipLead::None => 0.0,
+            ChipLead::Dot(_) => self.dot,
+            ChipLead::Glyph(_) => self.glyph,
+        }
+    }
+
+    /// The narrowest pill showing everything without eliding.
+    fn intrinsic_width(
+        &self,
+        label: &str,
+        lead: ChipLead,
+        trailing: bool,
+        text: &mut TextRenderer,
+    ) -> f64 {
+        let lead_w = self.lead_width(lead);
+        if label.is_empty() {
+            // An icon-only or dot-only pill is a circle.
+            return self.height;
+        }
+        let mut width =
+            2.0 * self.pad_x + f64::from(text.measure_style(label, None, &self.label).0);
+        if lead_w > 0.0 {
+            width += lead_w + self.gap;
+        }
+        if trailing {
+            width += self.gap + self.glyph;
+        }
+        width.ceil().max(self.height)
+    }
+}
+
+/// An immediate-mode chip for a canvas that lays out its own rows (a rail,
+/// a curve, a toolbar): the [`Chip`] widget's look with no layout node.
+///
+/// Size the rect from the face: [`ChipFace::height`] and
+/// [`ChipFace::intrinsic_width`]. A rect narrower than that elides the label.
+pub struct ChipFace<'a> {
+    rect: Rect,
+    label: &'a str,
+    lead: ChipLead,
+    style: ChipStyle,
+    selected: bool,
+    hovered: bool,
+    removable: bool,
+    remove_hovered: bool,
+    bare: bool,
+    opacity: f32,
+}
+
+impl<'a> ChipFace<'a> {
+    pub fn new(rect: Rect, label: &'a str) -> Self {
+        Self {
+            rect,
+            label,
+            lead: ChipLead::None,
+            style: ChipStyle::Neutral,
+            selected: false,
+            hovered: false,
+            removable: false,
+            remove_hovered: false,
+            bare: false,
+            opacity: 1.0,
+        }
+    }
+    #[must_use]
+    pub fn lead(mut self, lead: ChipLead) -> Self {
+        self.lead = lead;
+        self
+    }
+    #[must_use]
+    pub fn style(mut self, style: ChipStyle) -> Self {
+        self.style = style;
+        self
+    }
+    /// The chosen one of a set of filter chips: a lift.
+    #[must_use]
+    pub fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+    #[must_use]
+    pub fn hovered(mut self, hovered: bool) -> Self {
+        self.hovered = hovered;
+        self
+    }
+    /// A trailing × that removes the token; `hovered` raises its ink.
+    #[must_use]
+    pub fn removable(mut self, hovered: bool) -> Self {
+        self.removable = true;
+        self.remove_hovered = hovered;
+        self
+    }
+    /// Only the lead and the label, for a chip that already sits inside
+    /// something doing the containing (a lit sector, a row that is itself
+    /// the selection), where a pill would read as a box inside a box.
+    #[must_use]
+    pub fn bare(mut self) -> Self {
+        self.bare = true;
+        self
+    }
+    /// Fade the whole chip for an entrance or exit transition.
+    #[must_use]
+    pub fn opacity(mut self, opacity: f32) -> Self {
+        self.opacity = opacity.clamp(0.0, 1.0);
+        self
+    }
+
+    /// The pill height in `theme`: the selector height, grown with the label.
+    pub fn height(theme: &Theme) -> f64 {
+        PillMetrics::of(theme, TextRole::Label).height
+    }
+
+    /// The narrowest pill that shows `label` and `lead` without eliding.
+    pub fn intrinsic_width(
+        label: &str,
+        lead: ChipLead,
+        removable: bool,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) -> f64 {
+        PillMetrics::of(theme, TextRole::Label).intrinsic_width(label, lead, removable, text)
+    }
+
+    /// Where the × is painted, for the host's remove hit-test.
+    pub fn remove_rect(&self, theme: &Theme) -> Rect {
+        if !self.removable {
+            return Rect::ZERO;
+        }
+        let metrics = PillMetrics::of(theme, TextRole::Label);
+        let x1 = self.rect.x1 - metrics.pad_x;
+        Rect::from_center_size(
+            Point::new(x1 - metrics.glyph / 2.0, self.rect.center().y),
+            (metrics.glyph, metrics.glyph),
+        )
+    }
+
+    pub fn paint(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        paint_pill(
+            &PillPaint {
+                rect: self.rect,
+                label: self.label,
+                lead: self.lead,
+                style: self.style,
+                selected: self.selected,
+                hovered: self.hovered,
+                remove: self.removable.then_some(self.remove_hovered),
+                bare: self.bare,
+                opacity: self.opacity,
+                role: TextRole::Label,
+                centred: false,
+            },
+            scene,
+            transform,
+            text_renderer,
+            theme,
+        );
+    }
+}
+
+/// Everything one pill paint needs; shared by [`ChipFace`], the [`Chip`]
+/// widget and the badges.
+pub(crate) struct PillPaint<'a> {
+    pub rect: Rect,
+    pub label: &'a str,
+    pub lead: ChipLead,
+    pub style: ChipStyle,
+    pub selected: bool,
+    pub hovered: bool,
+    /// `Some(hovered)` paints a trailing ×.
+    pub remove: Option<bool>,
+    pub bare: bool,
+    pub opacity: f32,
+    pub role: TextRole,
+    /// Centre the content (a badge) instead of starting it at the inset.
+    pub centred: bool,
+}
+
+/// Only the body of a pill (fill and edge) in `rect`, for a toolkit host
+/// that lays its own content inside the shape (window chrome chips).
+pub(crate) fn paint_pill_body(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    style: ChipStyle,
+    selected: bool,
+    theme: &Theme,
+) {
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    let colors = style.colors(theme, theme.tokens.colors.surfaces.content, selected, false);
+    let radius = f64::from(theme.tokens.radii.full).min(rect.height() / 2.0);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        colors.fill,
+        None,
+        &RoundedRect::from_rect(rect, radius),
+    );
+    if let Some(edge) = colors.edge {
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            edge,
+            None,
+            &crate::surface::edge_outline(rect, radius),
+        );
+    }
+}
+
+/// The one pill painter.
+pub(crate) fn paint_pill(
+    pill: &PillPaint<'_>,
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
+    let rect = pill.rect;
+    if rect.width() <= 1.0 || rect.height() <= 1.0 || pill.opacity <= 0.0 {
+        return;
+    }
+    let fade = |c: Color| c.with_alpha_factor(pill.opacity);
+    let metrics = PillMetrics::of(theme, pill.role);
+    let ground = theme.tokens.colors.surfaces.content;
+    let colors = pill
+        .style
+        .colors(theme, ground, pill.selected, pill.hovered);
+    let radius = f64::from(theme.tokens.radii.full).min(rect.height() / 2.0);
+    if !pill.bare {
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            fade(colors.fill),
+            None,
+            &RoundedRect::from_rect(rect, radius),
+        );
+        if let Some(edge) = colors.edge {
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                fade(edge),
+                None,
+                &crate::surface::edge_outline(rect, radius),
+            );
+        }
+    }
+
+    let cy = rect.center().y;
+    // A chip insets its content by half its height; a badge is tighter
+    // (a third of its height, at least `s2`), as measured by its sizer.
+    let inset = if pill.centred {
+        (rect.height() / 3.0)
+            .round()
+            .max(f64::from(theme.tokens.spacing.s2))
+            .min(rect.width() / 4.0)
+    } else {
+        metrics.pad_x.min(rect.width() / 4.0)
+    };
+    let lead_w = metrics.lead_width(pill.lead);
+    let trailing = if pill.remove.is_some() {
+        metrics.gap + metrics.glyph
+    } else {
+        0.0
+    };
+    let label = if pill.label.is_empty() {
+        String::new()
+    } else {
+        let room = rect.width()
+            - 2.0 * inset
+            - if lead_w > 0.0 {
+                lead_w + metrics.gap
+            } else {
+                0.0
+            }
+            - trailing;
+        if room <= 1.0 {
+            String::new()
+        } else {
+            text_renderer.elide_to_width_style(
+                pill.label,
+                // Half a pixel of slack over shaping round-off.
+                crate::num::f32_of_f64(room + 0.5),
+                &metrics.label,
+            )
+        }
+    };
+    let (label_w, label_h) = if label.is_empty() {
+        (0.0, 0.0)
+    } else {
+        let (w, h) = text_renderer.measure_style(&label, None, &metrics.label);
+        (f64::from(w), f64::from(h))
+    };
+    let content_w = lead_w
+        + if lead_w > 0.0 && label_w > 0.0 {
+            metrics.gap
+        } else {
+            0.0
+        }
+        + label_w;
+    // A pill with nothing but a lead, and a badge, centre their content.
+    let mut x = if pill.centred || (label_w <= 0.0 && pill.remove.is_none()) {
+        rect.center().x - content_w / 2.0
+    } else {
+        rect.x0 + inset
+    };
+    match pill.lead {
+        ChipLead::None => {}
+        ChipLead::Dot(dot) => {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                fade(dot),
+                None,
+                &Circle::new(Point::new(x + metrics.dot / 2.0, cy), metrics.dot / 2.0),
+            );
+            x += metrics.dot + metrics.gap;
+        }
+        ChipLead::Glyph(icon) => {
+            let glyph = Rect::from_center_size(
+                Point::new(x + metrics.glyph / 2.0, cy),
+                (metrics.glyph, metrics.glyph),
+            );
+            let ink = if pill.bare { colors.ink } else { colors.lead };
+            icon.draw_with_stroke(
+                scene,
+                transform,
+                glyph,
+                fade(ink),
+                crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
+            x += metrics.glyph + metrics.gap;
+        }
+    }
+    if label_w > 0.0 {
+        text_renderer.draw_style(
+            scene,
+            &label,
+            fade(colors.ink),
+            translated(transform, x, cy - label_h / 2.0),
+            None,
+            &metrics.label,
+        );
+    }
+    if let Some(hovered) = pill.remove {
+        let x1 = rect.x1 - inset;
+        let glyph = Rect::from_center_size(
+            Point::new(x1 - metrics.glyph / 2.0, cy),
+            (metrics.glyph, metrics.glyph),
+        );
+        let ink = if hovered { colors.ink } else { colors.lead };
+        Icon::X.draw_with_stroke(
+            scene,
+            transform,
+            glyph,
+            fade(ink),
+            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+    }
+}
 
 #[allow(
     clippy::struct_excessive_bools,
@@ -64,20 +559,17 @@ pub struct Chip {
     selectable: bool,
     selected: bool,
     removable: bool,
-    dot: Option<Color>,
+    lead: ChipLead,
+    style: ChipStyle,
     toggled: bool,
     removed: bool,
     rect: Rect,
     x_rect: Rect,
     last_cursor: Point,
-    label_w: f64,
-    /// The `Label` role resolved at `build_layout`, for
-    /// `measure` and `adjust_layout_with_measure`, which have no theme of
-    /// their own (the old `measure` reached for `Theme::dark()` instead).
-    label_style: TextStyle,
-    /// Vertical inset between the measured label line and the pill edge
-    /// when the line outgrows [`HEIGHT`] (`spacing.s1` a side).
-    pad_y: f64,
+    hovered: bool,
+    /// The geometry resolved at `build_layout`, for `measure` and
+    /// `adjust_layout_with_measure`, which have no theme of their own.
+    metrics: PillMetrics,
     /// `metrics.min_pointer_target`: the hit rect grows to this even though
     /// the painted pill stays at the 28 px selector height.
     min_target: f64,
@@ -86,26 +578,28 @@ pub struct Chip {
     interaction: crate::interaction::InteractionEnvironment,
     /// Settled pill size — real measured width, height following the label
     /// line — seeding the next `build_layout` so a stable label costs no
-    /// extra pass. Cleared when the theme's label size changes.
+    /// extra pass. Cleared when the theme's geometry changes.
     footprint: Option<taffy::Size<f32>>,
 }
 
 impl Chip {
     pub fn new(label: impl Into<String>) -> Self {
+        static STOCK: std::sync::LazyLock<PillMetrics> =
+            std::sync::LazyLock::new(|| PillMetrics::of(&Theme::dark(), TextRole::Label));
         Self {
             label: label.into(),
             selectable: false,
             selected: false,
             removable: false,
-            dot: None,
+            lead: ChipLead::None,
+            style: ChipStyle::Neutral,
             toggled: false,
             removed: false,
             rect: Rect::ZERO,
             x_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
-            label_w: 0.0,
-            label_style: crate::tokens::typography::stock().style(TextRole::Label),
-            pad_y: f64::from(crate::tokens::Spacing::BASE.s1),
+            hovered: false,
+            metrics: STOCK.clone(),
             min_target: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
             interaction: crate::interaction::InteractionEnvironment::default(),
             footprint: None,
@@ -164,10 +658,18 @@ impl Chip {
         self
     }
 
-    /// Add a small leading colour dot (e.g. a calendar/category colour).
+    /// What sits before the label: a content-colour dot or a glyph.
     #[must_use]
-    pub fn with_dot(mut self, color: Color) -> Self {
-        self.dot = Some(color);
+    pub fn with_lead(mut self, lead: ChipLead) -> Self {
+        self.lead = lead;
+        self.footprint = None;
+        self
+    }
+
+    /// What the chip is: neutral, tinted with a tone, or live.
+    #[must_use]
+    pub fn style(mut self, style: ChipStyle) -> Self {
+        self.style = style;
         self
     }
 
@@ -196,304 +698,18 @@ impl Chip {
         self.x_rect
     }
 
-    /// Measured pill size: padding + lead + label + dismiss across, and the
-    /// selector height unless the label's measured line (plus `pad_y` a
-    /// side) needs more — at 1× a 12 px label shapes a 15 px line and the
-    /// pill stays 28; at 2× text the 30 px line lifts it to 42 instead of
-    /// spilling over the pill's top and bottom.
-    fn intrinsic_size(&self, text_renderer: &mut TextRenderer) -> (f64, f64) {
-        let (w, lh) = text_renderer.measure_style(&self.label, None, &self.label_style);
-        let mut total = PAD_X * 2.0 + f64::from(w);
-        if self.dot.is_some() {
-            total += DOT_D + GAP;
-        }
-        if self.removable {
-            total += GAP + X_D;
-        }
-        let height = HEIGHT.max(f64::from(lh) + self.pad_y * 2.0);
-        (total, height)
-    }
-
     #[allow(
         clippy::cast_possible_truncation,
         reason = "pill dimensions are small pixel counts well within f32's exact-integer range; taffy's Size requires f32"
     )]
     fn measured_footprint(&self, text_renderer: &mut TextRenderer) -> taffy::Size<f32> {
-        let (width, height) = self.intrinsic_size(text_renderer);
+        let width =
+            self.metrics
+                .intrinsic_width(&self.label, self.lead, self.removable, text_renderer);
         taffy::Size {
             width: width.ceil() as f32,
-            height: height.ceil() as f32,
+            height: self.metrics.height.ceil() as f32,
         }
-    }
-}
-
-/// What sits in a chip's leading slot when it is painted immediately by
-/// [`Chip::draw_at`].
-#[derive(Clone, Copy, Debug, Default)]
-pub enum ChipLead {
-    /// Label only.
-    #[default]
-    None,
-    /// A colour-coded dot — the same affordance [`Chip::with_dot`] paints.
-    Dot(Color),
-    /// A stroked glyph, for chips that name an action rather than a value.
-    Glyph(Icon),
-}
-
-/// Paint-time variant of an immediate-mode chip. Mirrors the states the
-/// [`Chip`] widget itself has — quiet by default, tinted when it is the
-/// selected one of a set — plus a `ghost` slot-shape for "there could be
-/// another one here" affordances.
-#[derive(Clone, Copy, Debug)]
-pub struct ChipStyle {
-    /// Accent for this chip. `Some` paints the selected treatment (tinted
-    /// fill, tinted border, tinted label); `None` the quiet one.
-    pub tint: Option<Color>,
-    /// Dashed border and dimmed label — an empty slot, not a value.
-    pub ghost: bool,
-    /// Drop the pill entirely and paint only the lead and the label — for
-    /// chips that already sit inside something doing the containing (a lit
-    /// disc sector, a row that is itself the selection), where a pill reads
-    /// as a box inside a box.
-    pub bare: bool,
-    /// Multiplies every painted alpha. Lets a caller fade a whole chip
-    /// without recolouring it stop by stop.
-    pub alpha: f32,
-    /// Overrides the derivation from [`Self::tint`] — `accent × 0.18` is a
-    /// different colour on a white panel than on a dark menu, and only the
-    /// composite can be measured, so a caller that knows its ground resolves
-    /// the three through
-    /// [`Colors::accent_chip_on`](crate::tokens::colors::Colors::accent_chip_on).
-    pub resolved: Option<TintedChip>,
-}
-
-impl Default for ChipStyle {
-    fn default() -> Self {
-        Self {
-            tint: None,
-            ghost: false,
-            bare: false,
-            alpha: 1.0,
-            resolved: None,
-        }
-    }
-}
-
-impl ChipStyle {
-    /// Quiet chip — theme surface, standard border, primary label.
-    pub fn quiet() -> Self {
-        Self::default()
-    }
-
-    /// Selected chip — `tint` carries the fill, border and label colour.
-    pub fn tinted(tint: Color) -> Self {
-        Self {
-            tint: Some(tint),
-            ..Self::default()
-        }
-    }
-
-    /// Empty-slot chip — dashed border, dimmed contents.
-    pub fn ghost() -> Self {
-        Self {
-            ghost: true,
-            ..Self::default()
-        }
-    }
-
-    /// `tint` still colours the lead and the label, so a bare chip has
-    /// the same quiet/selected pair the pill form does. See
-    /// [`ChipStyle::bare`] for when this is the right shape.
-    pub fn bare(tint: Option<Color>) -> Self {
-        Self {
-            tint,
-            bare: true,
-            ..Self::default()
-        }
-    }
-
-    /// Chip painted from colours the caller has already measured against the
-    /// ground it lands on. See [`ChipStyle::resolved`].
-    pub fn measured(chip: TintedChip) -> Self {
-        Self {
-            resolved: Some(chip),
-            ..Self::default()
-        }
-    }
-
-    /// Fade the whole chip by `alpha` (clamped to `0.0..=1.0`).
-    #[must_use]
-    pub fn with_alpha(mut self, alpha: f32) -> Self {
-        self.alpha = alpha.clamp(0.0, 1.0);
-        self
-    }
-}
-
-impl Chip {
-    /// Intrinsic width of an immediate-mode chip — what [`Chip::draw_at`]
-    /// needs to paint `label` and `lead` at `height` without truncating.
-    pub fn natural_width_at(
-        label: &str,
-        height: f64,
-        lead: ChipLead,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
-    ) -> f64 {
-        let (w, _) = text_renderer.measure_style(label, None, &theme.text(TextRole::Label));
-        let lead_w = match lead {
-            ChipLead::None => 0.0,
-            ChipLead::Dot(_) => DOT_D + GAP,
-            ChipLead::Glyph(_) => height * 0.44 + GAP,
-        };
-        PAD_X * 2.0 + lead_w + f64::from(w)
-    }
-
-    /// No layout node, caching, or widget instance — for a list that lays
-    /// out its own rows (the sibling of
-    /// [`AvatarFace::paint`](super::AvatarFace::paint)): on a curve, in a rail,
-    /// or at any position taffy won't hand back.
-    ///
-    /// The label is **truncated with an ellipsis** to whatever width `rect`
-    /// allows — use [`Chip::natural_width_at`] to size `rect` when the space is free.
-    // Standard immediate-mode paint-helper signature for this vello
-    // renderer (scene + transform + text_renderer + theme, plus this
-    // draw's own content); every parameter is independently load-bearing.
-    pub fn draw_at(
-        scene: &mut Scene,
-        transform: Affine,
-        rect: Rect,
-        label: &str,
-        lead: ChipLead,
-        style: ChipStyle,
-        theme: &Theme,
-        text_renderer: &mut TextRenderer,
-    ) {
-        if rect.width() <= 1.0 || rect.height() <= 1.0 {
-            return;
-        }
-        let a = style.alpha.clamp(0.0, 1.0);
-        if a <= 0.0 {
-            return;
-        }
-        let fade = |c: Color, f: f32| c.with_alpha_factor(f * a);
-
-        let colors = &theme.tokens.colors;
-        let pill = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.full));
-
-        // Surface + border. A tinted chip carries its accent at the same
-        // 0.18 fill / full-strength border the selected widget state uses,
-        // so a rail of these reads identically to a row of real Chips.
-        if !style.bare {
-            // Quiet chip: the raised tier with an edge derived from it (HIG
-            // §9.5) — a white veneer over a light card was invisible.
-            let quiet = (
-                colors.surfaces.raised,
-                crate::surface::edge_on(colors.surfaces.raised),
-            );
-            let (bg, border) = if style.ghost {
-                quiet
-            } else if let Some(c) = style.resolved {
-                (c.fill, c.border)
-            } else if let Some(t) = style.tint {
-                (t.with_alpha_factor(0.18), t)
-            } else {
-                quiet
-            };
-            scene.fill(Fill::NonZero, transform, fade(bg, 1.0), None, &pill);
-            let stroke = if style.ghost {
-                Stroke::new(1.0).with_dashes(0.0, [4.0, 4.0])
-            } else {
-                Stroke::new(1.0)
-            };
-            scene.stroke(&stroke, transform, fade(border, 1.0), None, &pill);
-        }
-
-        let cy = rect.center().y;
-        // An icon-only chip centres its lead: with no label to sit beside,
-        // a glyph pinned to the left padding reads as a pill someone
-        // forgot to finish rather than as a compact action.
-        let lead_w = match lead {
-            ChipLead::None => 0.0,
-            ChipLead::Dot(_) => DOT_D,
-            ChipLead::Glyph(_) => rect.height() * 0.44,
-        };
-        let mut x = if label.is_empty() && lead_w > 0.0 {
-            rect.center().x - lead_w / 2.0
-        } else {
-            rect.x0 + PAD_X
-        };
-        // A bare chip has no fill to sit the lead against, so a `text_dim`
-        // glyph beside a `text_primary` label reads as two unrelated marks
-        // rather than as one token. Pull the lead up to the label there.
-        let lead_col = match (style.resolved, style.tint) {
-            (Some(c), _) if !style.bare => c.ink,
-            (_, Some(t)) => t,
-            (_, None) if style.bare => colors.text_primary,
-            (_, None) => colors.text_dim,
-        };
-        match lead {
-            ChipLead::None => {}
-            ChipLead::Dot(c) => {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    fade(c, 1.0),
-                    None,
-                    &Circle::new(Point::new(x + DOT_D / 2.0, cy), DOT_D / 2.0),
-                );
-                x += DOT_D + GAP;
-            }
-            ChipLead::Glyph(icon) => {
-                let d = rect.height() * 0.44;
-                let gr = Rect::from_center_size(Point::new(x + d / 2.0, cy), (d, d));
-                icon.draw_with_stroke(scene, transform, gr, fade(lead_col, 1.0), 1.6);
-                x += d + GAP;
-            }
-        }
-
-        // Label, truncated to the space actually left inside the pill.
-        let label_style = theme.text(TextRole::Label);
-        let avail = rect.x1 - PAD_X - x;
-        if avail <= 1.0 {
-            return;
-        }
-        let shown = truncate_to_width(label, &label_style, avail, text_renderer);
-        if shown.is_empty() {
-            return;
-        }
-        let (_, lh) = text_renderer.measure_style(&shown, None, &label_style);
-        let label_col = match (style.resolved, style.tint, style.ghost) {
-            (Some(c), _, false) if !style.bare => c.ink,
-            (_, _, true) => colors.text_dim,
-            (_, Some(t), _) => t,
-            (_, None, _) => colors.text_primary,
-        };
-        text_renderer.draw_style(
-            scene,
-            &shown,
-            fade(label_col, 1.0),
-            translated(transform, x, cy - f64::from(lh) / 2.0),
-            None,
-            &label_style,
-        );
-    }
-}
-
-/// Longest prefix of `label` that fits `avail` px in `style`, with an
-/// ellipsis appended when anything was dropped. Returns an empty string
-/// when not even one character plus the ellipsis fits — callers treat that
-/// as "no room for a label here" rather than painting a lone `…`.
-fn truncate_to_width(
-    label: &str,
-    style: &TextStyle,
-    avail: f64,
-    text_renderer: &mut TextRenderer,
-) -> String {
-    let out = text_renderer.elide_to_width_style(label, crate::num::f32_of_f64(avail), style);
-    if out != label && out.starts_with(crate::text_render::ELLIPSIS) {
-        String::new()
-    } else {
-        out
     }
 }
 
@@ -507,7 +723,7 @@ impl Widget for Chip {
 
     #[allow(
         clippy::cast_possible_truncation,
-        reason = "approx/HEIGHT are small pixel dimensions well within f32's \
+        reason = "pill dimensions are small pixel counts well within f32's \
                   exact-integer range; taffy's Style requires f32"
     )]
     fn build_layout(
@@ -516,41 +732,30 @@ impl Widget for Chip {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let label_style = theme.text(TextRole::Label);
-        let pad_y = f64::from(theme.tokens.spacing.s1);
-        if label_style != self.label_style || pad_y.to_bits() != self.pad_y.to_bits() {
+        let metrics = PillMetrics::of(theme, TextRole::Label);
+        if metrics != self.metrics {
             // A new type step re-shapes the label and a new spacing scale
             // moves the pill's inset; the settled pill no longer describes
             // either (a relayout-only host such as `FrameHarness::set_theme`
             // never rebuilds the widget, so this is the only invalidation).
             self.footprint = None;
+            self.metrics = metrics;
         }
-        let label_size = label_style.size;
-        let label_line = f64::from(label_style.line_height_px());
-        self.label_style = label_style;
-        self.pad_y = pad_y;
         self.min_target = f64::from(theme.tokens.metrics.min_pointer_target);
         // Both axes are pinned as `length`, so taffy never asks `measure`
         // for this leaf; the settled footprint seeds the pass and
         // `adjust_layout_with_measure` corrects it from the real label.
-        // Before the first settlement, estimate from a fixed advance.
-        let size = self.footprint.unwrap_or_else(|| {
-            let char_count = u32::try_from(self.label.chars().count()).unwrap_or(u32::MAX);
-            let approx = PAD_X * 2.0
-                + f64::from(char_count) * (f64::from(label_size) * 0.6)
-                + if self.dot.is_some() { DOT_D + GAP } else { 0.0 }
-                + if self.removable { GAP + X_D } else { 0.0 };
-            let estimated_line_height = label_line;
-            taffy::Size {
-                width: approx as f32,
-                height: HEIGHT.max(estimated_line_height + pad_y * 2.0) as f32,
-            }
-        });
+        // Until the label is measured the width is `auto`, so a host that
+        // solves with a measure function asks `measure` for it; the shared
+        // solver pins the measured pill in `adjust_layout_with_measure`.
+        let width = self
+            .footprint
+            .map_or_else(taffy::Dimension::auto, |size| length(size.width));
         let node = taffy.leaf_node(Style {
             flex_shrink: 0.0,
             size: taffy::Size {
-                width: length(size.width),
-                height: length(size.height),
+                width,
+                height: length(self.metrics.height as f32),
             },
             ..Default::default()
         });
@@ -558,9 +763,7 @@ impl Widget for Chip {
         node
     }
 
-    /// Replace the advance estimate with the measured pill (see
-    /// `Chip::intrinsic_size`) — the estimate was all the retained chip
-    /// ever laid out with, since a `length × length` leaf skips `measure`.
+    /// Replace the seed with the measured pill.
     fn adjust_layout_with_measure(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -590,8 +793,7 @@ impl Widget for Chip {
     }
 
     /// Not reached while both axes are pinned (see `build_layout`); kept so a
-    /// host that lays the chip out `auto` gets the same settled pill from the
-    /// same cache rather than the trait's zero default.
+    /// host that lays the chip out `auto` gets the same settled pill.
     fn measure(
         &mut self,
         _k: taffy::Size<Option<f32>>,
@@ -628,83 +830,35 @@ impl Widget for Chip {
         if self.rect.width() <= 0.0 {
             return;
         }
-        let accent = theme.tokens.colors.intent.inverted;
-        let selected = self.selectable && self.selected;
-
-        let pill = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.full));
-        // Quiet chip: the raised tier with an edge derived from it (HIG
-        // §9.5); selected keeps its accent tint and accent edge.
-        let radius = f64::from(theme.tokens.radii.full);
-        if selected {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                accent.with_alpha_factor(0.18),
-                None,
-                &pill,
-            );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                accent,
-                None,
-                &crate::surface::edge_outline(self.rect, radius),
-            );
+        let face = ChipFace::new(self.rect, &self.label);
+        self.x_rect = if self.removable {
+            face.removable(false).remove_rect(theme)
         } else {
-            crate::surface::card(
-                scene,
-                transform,
-                self.rect,
-                radius,
-                theme.tokens.colors.surfaces.raised,
-            );
-        }
-
-        let mut x = self.rect.x0 + PAD_X;
-        let cy = self.rect.center().y;
-
-        if let Some(dot) = self.dot {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                dot,
-                None,
-                &Circle::new(Point::new(x + DOT_D / 2.0, cy), DOT_D / 2.0),
-            );
-            x += DOT_D + GAP;
-        }
-
-        let style = theme.text(TextRole::Label);
-        let (lw, lh) = text_renderer.measure_style(&self.label, None, &style);
-        self.label_w = f64::from(lw);
-        let label_col = if selected { accent } else { theme.text_primary };
-        text_renderer.draw_style(
+            Rect::ZERO
+        };
+        // Highlight over the same grown rect the press handler and
+        // `cursor_shape` test, so feedback and behaviour agree in the bands
+        // above and below the glyph.
+        let remove_hovered = self.remove_hit_rect().contains(self.last_cursor);
+        paint_pill(
+            &PillPaint {
+                rect: self.rect,
+                label: &self.label,
+                lead: self.lead,
+                style: self.style,
+                selected: self.selectable && self.selected,
+                hovered: self.selectable && self.hovered && !remove_hovered,
+                remove: self.removable.then_some(remove_hovered),
+                bare: false,
+                opacity: 1.0,
+                role: TextRole::Label,
+                centred: false,
+            },
             scene,
-            &self.label,
-            label_col,
-            translated(transform, x, cy - f64::from(lh) / 2.0),
-            None,
-            &style,
+            transform,
+            text_renderer,
+            theme,
         );
-        x += f64::from(lw);
-
-        if self.removable {
-            x += GAP;
-            let xr = Rect::from_center_size(Point::new(x + X_D / 2.0, cy), (X_D, X_D));
-            self.x_rect = xr;
-            // Highlight over the same grown rect the press handler and
-            // `cursor_shape` test, so feedback and behaviour agree in the
-            // bands above and below the glyph.
-            let hovered = self.remove_hit_rect().contains(self.last_cursor);
-            let col = if hovered {
-                theme.text_primary
-            } else {
-                theme.text_dim
-            };
-            Icon::X.draw_with_stroke(scene, transform, xr, col, 1.6);
-        } else {
-            self.x_rect = Rect::ZERO;
-        }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -712,7 +866,9 @@ impl Widget for Chip {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor =
                     Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.hovered = self.hit_rect().contains(self.last_cursor);
             }
+            WindowEvent::CursorLeft { .. } => self.hovered = false,
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -825,7 +981,8 @@ mod tests {
             let theme = Theme::dark();
             let mut text = TextRenderer::new();
             let (label_w, _) = text.measure_style("Rust", None, &theme.text(TextRole::Label));
-            let expected = (PAD_X * 2.0 + f64::from(label_w)).ceil();
+            let metrics = PillMetrics::of(&theme, TextRole::Label);
+            let expected = (metrics.pad_x * 2.0 + f64::from(label_w)).ceil();
             let rect = settled_chip_rect(Chip::new("Rust"), 1.0);
             assert!(
                 (rect.width() - expected).abs() < 1e-6,
@@ -834,7 +991,7 @@ mod tests {
             );
             assert_eq!(
                 rect.height(),
-                HEIGHT,
+                f64::from(theme.tokens.metrics.selector_height),
                 "1× pill keeps the 28 px selector height"
             );
         }
@@ -855,7 +1012,7 @@ mod tests {
             );
             let expected = (f64::from(line_h) + f64::from(theme.tokens.spacing.s1) * 2.0).ceil();
             assert!(
-                expected > HEIGHT,
+                expected > f64::from(theme.tokens.metrics.selector_height),
                 "fixture: the 2× line must outgrow the 28 px pill"
             );
             let rect = settled_chip_rect(Chip::new("Filter"), 2.0);
@@ -873,7 +1030,10 @@ mod tests {
             let mut c = Chip::new("Rust").selectable();
             lay_out(&mut c);
             draw(&mut c);
-            assert_eq!(c.get_rect().height(), HEIGHT);
+            assert_eq!(
+                c.get_rect().height(),
+                f64::from(crate::tokens::Metrics::BASE.selector_height)
+            );
             let hit = c.hit_rect();
             assert_eq!(
                 hit.height(),
@@ -896,16 +1056,11 @@ mod tests {
             let mut tr = TextRenderer::new();
             tr.set_text_scale(2.0);
             let mut scene = Scene::new();
-            Chip::draw_at(
-                &mut scene,
-                Affine::IDENTITY,
-                Rect::new(0.0, 0.0, 240.0, HEIGHT * 2.0),
+            ChipFace::new(
+                Rect::new(0.0, 0.0, 240.0, ChipFace::height(&theme)),
                 "Group: All",
-                ChipLead::None,
-                ChipStyle::quiet(),
-                &theme,
-                &mut tr,
-            );
+            )
+            .paint(&mut scene, Affine::IDENTITY, &mut tr, &theme);
             let run = scene
                 .encoding()
                 .resources
@@ -924,6 +1079,46 @@ mod tests {
         pill_is_28_at_one_x_and_follows_its_measured_label_at_two_x();
         hit_rect_meets_the_minimum_pointer_target_while_the_pill_stays_28();
         immediate_chip_large_text_scales_once_inside_scaled_geometry();
+    }
+
+    /// A pill's height and inset grow with the text scale, so a label at
+    /// 200 % still clears the round ends; a tone colours only the wash and
+    /// the edge, and the label stays readable neutral ink.
+    #[test]
+    fn pills_grow_with_text_scale_and_tones_keep_neutral_readable_ink() {
+        let one = PillMetrics::of(&Theme::dark(), TextRole::Label);
+        let two = PillMetrics::of(&Theme::dark().with_text_scale(2.0), TextRole::Label);
+        assert!(two.height > one.height && two.pad_x > one.pad_x);
+        assert_eq!(one.pad_x, (one.height / 2.0).round());
+
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let ground = theme.tokens.colors.surfaces.content;
+            for tone in [
+                Tone::Neutral,
+                Tone::Info,
+                Tone::Success,
+                Tone::Warning,
+                Tone::Danger,
+                Tone::Presence(crate::tokens::PresenceHue::from_slot(3)),
+            ] {
+                let colors = ChipStyle::Tinted(tone).colors(&theme, ground, false, false);
+                let ratio = crate::a11y::contrast_ratio(colors.ink, colors.fill);
+                assert!(
+                    ratio >= SMALL_TEXT_MIN_CONTRAST,
+                    "{} {tone:?}: label {ratio:.2}:1",
+                    theme.name
+                );
+                assert!(colors.edge.is_some(), "a tinted pill is closed by its edge");
+            }
+            let live = ChipStyle::Live.colors(&theme, ground, false, false);
+            assert_eq!(live.fill, theme.tokens.colors.semantic.danger);
+            assert!(crate::a11y::contrast_ratio(live.ink, live.fill) >= ON_FILL_MIN_CONTRAST);
+            let neutral = ChipStyle::Neutral.colors(&theme, ground, false, false);
+            assert_eq!(neutral.fill, theme.tokens.colors.surfaces.raised);
+            let chosen = ChipStyle::Neutral.colors(&theme, ground, true, false);
+            assert_ne!(chosen.fill, neutral.fill, "a selected chip is lifted");
+            assert_eq!(chosen.edge, None);
+        }
     }
 
     fn draw(w: &mut dyn Widget) {

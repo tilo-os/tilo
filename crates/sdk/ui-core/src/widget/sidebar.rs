@@ -457,11 +457,7 @@ impl SidebarDrawer {
             (SidebarSide::Right, true) => (crate::icons::Icon::PanelRight, "Hide inspector"),
             (SidebarSide::Right, false) => (crate::icons::Icon::PanelRight, "Show inspector"),
         };
-        let face = crate::widget::ButtonFace::new(rect, "")
-            .ghost()
-            .icon(icon)
-            .hovered(hovered)
-            .accessible_name(name);
+        let face = crate::widget::ButtonFace::icon_only(rect, icon, name).hovered(hovered);
         crate::widget::Button::paint(scene, transform, text_renderer, theme, &face);
     }
 }

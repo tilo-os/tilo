@@ -801,7 +801,7 @@ impl StandaloneHistoryHost {
                         width: Dimension::percent(1.0),
                         height: Dimension::auto(),
                     },
-                    padding: crate::chrome::bar_padding(theme),
+                    padding: crate::widget::toolbar::band_padding(theme),
                     gap: Size {
                         width: taffy::LengthPercentage::length(theme.gap_standard),
                         height: taffy::LengthPercentage::length(0.0),
@@ -1077,7 +1077,7 @@ pub fn history_button() -> Button {
     let binding = ActionBinding::unit_for(&open_resource(), "open").expect("unit history action");
     Button::new(HISTORY_BUTTON_ID, "standalone-history-title", None)
         .with_icon(crate::icons::Icon::History)
-        .ghost()
+        .role(crate::widget::ButtonRole::Plain)
         .on_action(binding)
 }
 

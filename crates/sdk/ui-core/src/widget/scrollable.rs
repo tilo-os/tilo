@@ -175,8 +175,8 @@ pub struct Scrollable {
     /// mutation writes back through `clamp`. See
     /// [`Scrollable::with_persisted_offset`].
     persisted_offset: Option<Rc<Cell<(f32, f32)>>>,
-    /// Reserved right-edge lane (logical px) for the vertical overlay bar;
-    /// `0` keeps the classic floating overlay.
+    /// The trailing lane reserved for the vertical bar
+    /// (`metrics.scrollbar_gutter`), resolved in `build_layout`.
     content_gutter: f32,
     /// Reserved bottom lane that is excluded from both painting and scroll
     /// metrics. Sticky-footer dialogs use this to end overflowing prose on a
@@ -357,14 +357,6 @@ impl Scrollable {
     #[must_use]
     pub fn with_cursor(mut self, cursor: Point) -> Self {
         self.last_cursor = cursor;
-        self
-    }
-
-    /// Pass the bar's footprint (thickness + margins, ~12-14px) for a clean
-    /// gutter.
-    #[must_use]
-    pub fn with_content_gutter(mut self, px: f32) -> Self {
-        self.content_gutter = px.max(0.0);
         self
     }
 
@@ -1228,7 +1220,13 @@ impl Widget for Scrollable {
             None if self.max_height.is_some() => Dimension::auto(),
             None => Dimension::percent(1.0),
         };
-        // Reserved as padding so nothing lays out under the overlay bar.
+        // A vertical scroll view keeps `metrics.scrollbar_gutter` free on its
+        // trailing edge, so its bar never covers content.
+        self.content_gutter = if self.axis_has_vertical() && self.show_scrollbar {
+            theme.tokens.metrics.scrollbar_gutter
+        } else {
+            0.0
+        };
         let pad_right = taffy::LengthPercentage::length(self.content_gutter);
         let style = Style {
             size: Size {
@@ -2190,9 +2188,8 @@ mod tests {
             assert_eq!(scroll.offset_y(), 0.0, "fitting content has no max scroll");
         }
 
-        // Case `content_gutter_insets_the_child_so_the_bar_never_overlaps_it`.
+        // Case `the_scrollbar_gutter_insets_the_child_so_the_bar_never_overlaps_it`.
         {
-            const GUTTER: f32 = 14.0;
             use std::collections::HashMap;
             let theme = Theme::dark();
             let mut taffy = TaffyTree::<()>::new();
@@ -2200,8 +2197,7 @@ mod tests {
             let mut tr = TextRenderer::new();
             let mut scroll = Scrollable::new_vertical()
                 .with_child(tall_child())
-                .with_height(300.0)
-                .with_content_gutter(GUTTER);
+                .with_height(300.0);
             let node = scroll.build_layout(&mut taffy, &theme, &mut node_map);
             let parent = taffy.parent_node(
                 Style {
@@ -2240,7 +2236,9 @@ mod tests {
                 track.x0,
             );
             assert!(
-                (scroll.rect.x1 - child_right - f64::from(GUTTER)).abs() < 1.0,
+                (scroll.rect.x1 - child_right - f64::from(theme.tokens.metrics.scrollbar_gutter))
+                    .abs()
+                    < 1.0,
                 "child is inset by exactly the gutter: viewport right {}, child right {child_right}",
                 scroll.rect.x1,
             );

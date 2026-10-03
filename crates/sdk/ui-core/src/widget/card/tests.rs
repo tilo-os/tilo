@@ -1,5 +1,6 @@
 use super::*;
 use crate::headless::{FrameHarness, InspectionNode};
+use crate::widget::ButtonRole;
 use crate::widget::{Column, Container, Scrollable};
 use std::cell::Cell;
 use std::rc::Rc;
@@ -66,7 +67,7 @@ fn fixture() -> Element {
             Card::new(Box::new(Text::new("Short description")))
                 .with_title("Terminal")
                 .with_footer(Actions::new(
-                    Button::new("open", "Open", Some("opened")).primary(),
+                    Button::new("open", "Open", Some("opened")).role(ButtonRole::Primary),
                 )),
         ),
         Box::new(
@@ -75,7 +76,7 @@ fn fixture() -> Element {
             )))
             .with_title("Workspace")
             .with_footer(Actions::new(
-                Button::new("install", "Install", None).primary(),
+                Button::new("install", "Install", None).role(ButtonRole::Primary),
             )),
         ),
     ]))
@@ -99,7 +100,7 @@ fn long_fixture() -> Element {
                                 None,
                             )
                             .with_icon(crate::icons::Icon::Search)
-                            .primary(),
+                            .role(ButtonRole::Primary),
                         )
                         .secondary(Button::new(
                             &format!("secondary-{index}"),
@@ -305,8 +306,11 @@ fn actions_trail_and_keep_manual_order() {
     let action = &snapshot.root.children[0].children[0];
     assert!((rect(action).x1 - 600.0).abs() < 1.0);
 
-    let actions = Actions::new(Button::new("primary", "Primary", None).with_size(97.0, 35.0))
-        .secondary(Button::new("secondary", "Secondary", None).fit_content(33.0));
+    let actions = Actions::new(Button::new("primary", "Primary", None)).secondary(Button::new(
+        "secondary",
+        "Secondary",
+        None,
+    ));
     let harness = FrameHarness::new_with_theme(
         crate::State::new(),
         Box::new(actions),

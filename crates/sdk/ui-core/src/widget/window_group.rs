@@ -1721,8 +1721,14 @@ impl WindowGroup {
             title_pill.height() / 2.0,
             &theme.tokens.elevation.floating,
         );
-        let (chip_fill, chip_border) = crate::surface::chip_colors(theme, false);
-        crate::surface::pill(scene, transform, title_pill, chip_fill, chip_border, None);
+        crate::widget::chip::paint_pill_body(
+            scene,
+            transform,
+            title_pill,
+            crate::widget::ChipStyle::Neutral,
+            false,
+            theme,
+        );
         // Affine composition is floating-point matrix multiply — it
         // cannot overflow or panic the way integer arithmetic can.
         #[allow(
@@ -1779,14 +1785,13 @@ impl WindowGroup {
             self.restore_rect.height() / 2.0,
             &theme.tokens.elevation.floating,
         );
-        let (restore_fill, restore_border) = crate::surface::chip_colors(theme, self.restore_hover);
-        crate::surface::pill(
+        crate::widget::chip::paint_pill_body(
             scene,
             transform,
             self.restore_rect,
-            restore_fill,
-            restore_border,
-            None,
+            crate::widget::ChipStyle::Neutral,
+            self.restore_hover,
+            theme,
         );
         // Text label kept (for screen readers/i18n), after a square icon
         // slot for the lucide `Minimize2` glyph: `spacing.s2` in from the
@@ -1840,23 +1845,20 @@ impl WindowGroup {
             self.close_rect.height() / 2.0,
             &theme.tokens.elevation.floating,
         );
-        let close_fill = if self.close_hover {
-            theme.tokens.colors.semantic.danger.with_alpha_factor(0.8)
+        // At rest the quiet chip; under the pointer the live (danger) pill,
+        // since the press closes the window.
+        let style = if self.close_hover {
+            crate::widget::ChipStyle::Live
         } else {
-            crate::surface::chip_colors(theme, false).0
+            crate::widget::ChipStyle::Neutral
         };
-        let close_border = if self.close_hover {
-            None
-        } else {
-            crate::surface::chip_colors(theme, false).1
-        };
-        crate::surface::pill(
+        crate::widget::chip::paint_pill_body(
             scene,
             transform,
             self.close_rect,
-            close_fill,
-            close_border,
-            None,
+            style,
+            false,
+            theme,
         );
         // On hover the glyph takes the ink that reads on the danger face —
         // derived, so it stays legible on a light theme's danger red too.
@@ -4689,9 +4691,8 @@ mod tests {
         }
 
         // Case `maximized_close_chip_uses_danger_token_on_hover`.
-        // Concept parity: `hover:bg-red-500/80` — `semantic.danger` at 80 %
-        // alpha — sampled from the **production paint path** on both presets.
-        // At rest the × chip is the quiet chip face (`chip_colors`: the raised
+        // Sampled from the **production paint path** on both presets.
+        // At rest the × chip is the quiet chip face (the raised
         // surface under a rest edge that registers against it), not a literal
         // white tint; on hover it turns to the danger token and the × glyph
         // stays legible on that face, where the old opaque white only happened
@@ -4727,7 +4728,13 @@ mod tests {
                 // inside the capsule and above the × glyph's box.
                 let (cx, top) = (chip.center().x, chip.y0);
                 let face = pixel(&idle, w, cx, top + 3.0);
-                let (quiet_fill, quiet_edge) = crate::surface::chip_colors(&theme, false);
+                let quiet = crate::widget::ChipStyle::Neutral.colors(
+                    &theme,
+                    theme.tokens.colors.surfaces.content,
+                    false,
+                    false,
+                );
+                let (quiet_fill, quiet_edge) = (quiet.fill, quiet.edge);
                 assert!(
                     contrast_ratio(face, quiet_fill) < 1.02,
                     "{}: idle × chip {chip:?} (group {:?}) paints the quiet chip face {quiet_fill:?}, got {face:?}",
@@ -4759,8 +4766,8 @@ mod tests {
                     "{}: hover must visibly recolour the × chip ({face:?} -> {hot:?})",
                     theme.name
                 );
-                // The face is the danger token at 80 % over the card: red-led on
-                // every preset, and nearer the token than the rest face was.
+                // The face is the live (danger) pill: red-led on every preset,
+                // and nearer the token than the rest face was.
                 assert!(
                     hot.r() > hot.g() && hot.r() > hot.b(),
                     "{}: hovered × chip {hot:?} is not the danger red",

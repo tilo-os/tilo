@@ -1,6 +1,7 @@
 use super::*;
 use crate::headless::{FrameHarness, InspectionNode};
 use crate::theme::Theme;
+use crate::widget::ButtonRole;
 use crate::widget::TextInput;
 
 fn fixture() -> Element {
@@ -133,7 +134,9 @@ fn form_labels_adapt_by_measurement_width_and_type_size() {
     fn fixed_control_needs_do_not_inherit_an_expandable_entry_minimum() {
         let mut field = Field::new(
             "Count",
-            super::super::NumberInput::new(3.0).with_size(96.0, 47.0),
+            super::super::NumberInput::new(3.0)
+                .with_range(0.0, 99.0)
+                .compact(),
         );
         solve(&mut field, 220.0, &Theme::dark());
         assert_eq!(
@@ -141,8 +144,11 @@ fn form_labels_adapt_by_measurement_width_and_type_size() {
             LabelPlacement::Beside
         );
         let control = field.children()[1].children()[0].get_rect();
-        assert_eq!(control.width(), 96.0);
-        assert_eq!(control.height(), 47.0);
+        assert!(control.width() < 140.0, "{control:?}");
+        assert_eq!(
+            control.height(),
+            super::super::ControlSize::Regular.height(&Theme::dark())
+        );
     }
 
     wide_fields_align_controls_beside_measured_labels();
@@ -172,7 +178,7 @@ fn long_form() -> Form {
                 .with_error("Enter a valid email address, including the domain after the at sign.")))
             .section(FormSection::new("Preferences").content(Box::new(super::super::Checkbox::new("updates", "updates")
                 .with_label("Send me occasional product updates and tips for working with my team."))))
-            .with_actions(Actions::new(super::super::Button::new("save", "Save account changes", None).primary())
+            .with_actions(Actions::new(super::super::Button::new("save", "Save account changes", None).role(ButtonRole::Primary))
                 .secondary(super::super::Button::new("cancel", "Cancel", None)))
 }
 #[test]
@@ -191,7 +197,13 @@ fn form_page_edges_and_resize_match_fresh_layout() {
             let mut sections = Vec::new();
             collect(&snapshot.root, "FormSection", &mut sections);
             assert!(forms[0].rect[2] <= 720.0);
-            assert!((forms[0].rect[0] * 2.0 + forms[0].rect[2] - f64::from(width)).abs() < 1.0);
+            // Centred in the page's viewport, which keeps the scroll bar's
+            // gutter on its trailing edge.
+            let gutter = f64::from(Theme::dark().tokens.metrics.scrollbar_gutter);
+            assert!(
+                (forms[0].rect[0] * 2.0 + forms[0].rect[2] - (f64::from(width) - gutter)).abs()
+                    < 1.0
+            );
             for section in sections {
                 assert_eq!(section.rect[0], forms[0].rect[0]);
             }

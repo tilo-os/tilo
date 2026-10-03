@@ -489,10 +489,8 @@ impl ImageAttachment {
             editing: false,
             node: None,
             edit: Button::new(&format!("notes.image-edit:{id}"), "notes-image-edit", None)
-                .with_size(112.0, 32.0)
                 .on_view(move || edit_command.set(Some(true))),
             done: Button::new(&format!("notes.image-done:{id}"), "notes-image-done", None)
-                .with_size(88.0, 32.0)
                 .on_view(move || done_command.set(Some(false))),
             command,
         }

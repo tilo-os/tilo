@@ -9580,7 +9580,6 @@ mod tests {
             let fired = Rc::new(Cell::new(0));
             let fired_by_button = Rc::clone(&fired);
             let button = Button::new("save", "Save", None)
-                .fit_content(32.0)
                 .on_click(move || fired_by_button.set(fired_by_button.get() + 1));
             let mut driver = Driver::new(State::new(), Box::new(button), (400, 200));
 

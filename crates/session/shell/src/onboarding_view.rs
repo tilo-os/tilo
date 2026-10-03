@@ -48,6 +48,7 @@ use crate::onboarding::{
 };
 use crate::shell::i18n::{t, t_args};
 use os_actions::codec_pack::{CodecAction, CodecPackStatus, PackState};
+use ui::widget::ButtonRole;
 
 /// How often setup looks for news from its background work (codec install,
 /// nearby pairing) while that work runs.
@@ -1494,7 +1495,7 @@ impl OnboardingView {
             // pages retain the viewport stop for Page/Home/End navigation.
             scroll = scroll.without_sequential_focus();
         }
-        let mut scroll = scroll.with_content_gutter(spacing.s3);
+        let mut scroll = scroll;
         if !backup_in_scroll {
             // This is first-run guidance, not an incidental list. Keep the
             // thumb visible whenever content overflows so compact and large
@@ -1569,13 +1570,12 @@ impl OnboardingView {
             },
             Some(KEY_BACKUP_BROWSE),
         )
-        .fit_content(40.0)
-        .with_style(if self.backup_was_verified {
+        .role(if self.backup_was_verified {
             // Continue remains the clear completion action after a verified
             // backup; making another copy is an optional follow-up task.
-            ui::widget::ButtonStyle::Neutral
+            ButtonRole::Secondary
         } else {
-            ui::widget::ButtonStyle::Primary
+            ButtonRole::Primary
         });
         Box::new(
             Column::new()
@@ -1654,7 +1654,6 @@ impl OnboardingView {
                         &t("onboarding-use-existing"),
                         Some(KEY_CONNECT),
                     )
-                    .fit_content(40.0)
                     .with_icon(ui::icons::Icon::ExternalLink),
                 ),
                 Box::new(
@@ -1663,9 +1662,8 @@ impl OnboardingView {
                         &t("onboarding-create-identity"),
                         Some(KEY_BEGIN),
                     )
-                    .fit_content(40.0)
                     .with_icon(ui::icons::Icon::ArrowRight)
-                    .with_style(ui::widget::ButtonStyle::Primary),
+                    .role(ButtonRole::Primary),
                 ),
             ]),
             Screen::Connect => {
@@ -1679,9 +1677,8 @@ impl OnboardingView {
                         &t("onboarding-restore-backup"),
                         Some(KEY_IMPORT),
                     )
-                    .fit_content(40.0)
                     .with_icon(ui::icons::Icon::ArrowRight)
-                    .with_style(ui::widget::ButtonStyle::Primary)
+                    .role(ButtonRole::Primary)
                     .with_enabled(self.connect_source_selected),
                 ));
                 footer_actions(actions)
@@ -1694,31 +1691,26 @@ impl OnboardingView {
                         &t("onboarding-create-local-identity"),
                         Some(KEY_CREATE),
                     )
-                    .fit_content(40.0)
                     .with_icon(ui::icons::Icon::Shield)
-                    .with_style(ui::widget::ButtonStyle::Primary)
+                    .role(ButtonRole::Primary)
                     .with_enabled(self.flow.can_create()),
                 ),
             ]),
             Screen::Done if self.identity_ready_page && self.codec_page => self.codec_actions(),
             Screen::Done if self.identity_ready_page => Self::finish_action(),
             Screen::Done if self.portable_backup_only => footer_actions(vec![
-                Box::new(
-                    Button::new(
-                        "onboarding.backup.cancel.button",
-                        &t("onboarding-cancel"),
-                        Some(KEY_FINISH),
-                    )
-                    .fit_content(40.0),
-                ),
+                Box::new(Button::new(
+                    "onboarding.backup.cancel.button",
+                    &t("onboarding-cancel"),
+                    Some(KEY_FINISH),
+                )),
                 Box::new(
                     Button::new(
                         "onboarding.backup.done.button",
                         &t("onboarding-done"),
                         Some(KEY_BACKUP_CONTINUE),
                     )
-                    .fit_content(40.0)
-                    .with_style(ui::widget::ButtonStyle::Primary)
+                    .role(ButtonRole::Primary)
                     .with_enabled(self.backup_was_verified),
                 ),
             ]),
@@ -1729,27 +1721,22 @@ impl OnboardingView {
                         &t("onboarding-continue"),
                         Some(KEY_BACKUP_CONTINUE),
                     )
-                    .fit_content(40.0)
-                    .with_style(ui::widget::ButtonStyle::Primary),
+                    .role(ButtonRole::Primary),
                 )])
             }
             Screen::Done if self.backup_was_verified => footer_actions(vec![
-                Box::new(
-                    Button::new(
-                        "onboarding.backup.another.button",
-                        &t("onboarding-backup-save-another"),
-                        Some(KEY_BACKUP_ANOTHER),
-                    )
-                    .fit_content(40.0),
-                ),
+                Box::new(Button::new(
+                    "onboarding.backup.another.button",
+                    &t("onboarding-backup-save-another"),
+                    Some(KEY_BACKUP_ANOTHER),
+                )),
                 Box::new(
                     Button::new(
                         "onboarding.backup.continue.button",
                         &t("onboarding-continue"),
                         Some(KEY_BACKUP_CONTINUE),
                     )
-                    .fit_content(40.0)
-                    .with_style(ui::widget::ButtonStyle::Primary),
+                    .role(ButtonRole::Primary),
                 ),
             ]),
             Screen::Done => footer_actions(vec![Box::new(
@@ -1758,8 +1745,7 @@ impl OnboardingView {
                     &t("onboarding-backup-continue-without"),
                     Some(KEY_BACKUP_CONTINUE),
                 )
-                .fit_content(40.0)
-                .with_style(ui::widget::ButtonStyle::Neutral)
+                .role(ButtonRole::Secondary)
                 .with_enabled(self.backup_skip_acknowledged),
             )]),
         }
@@ -1840,7 +1826,6 @@ impl OnboardingView {
                 .push(Box::new(
                     Scrollable::new_vertical()
                         .with_max_height(scroll_height)
-                        .with_content_gutter(theme.tokens.spacing.s3)
                         // Tour pages intentionally teach several concepts;
                         // expose overflow persistently instead of making a
                         // first-time user wait for a transient wheel hint.
@@ -1931,30 +1916,23 @@ impl OnboardingView {
             (t("onboarding-continue"), KEY_TOUR_NEXT)
         };
         footer_actions(vec![
-            Box::new(
-                Button::new(
-                    "onboarding.tour.skip.button",
-                    &t("onboarding-tour-skip"),
-                    Some(KEY_TOUR_SKIP),
-                )
-                .fit_content(40.0),
-            ),
-            Box::new(
-                Button::new(
-                    "onboarding.tour.back.button",
-                    &t("onboarding-back"),
-                    Some(KEY_TOUR_BACK),
-                )
-                .fit_content(40.0),
-            ),
+            Box::new(Button::new(
+                "onboarding.tour.skip.button",
+                &t("onboarding-tour-skip"),
+                Some(KEY_TOUR_SKIP),
+            )),
+            Box::new(Button::new(
+                "onboarding.tour.back.button",
+                &t("onboarding-back"),
+                Some(KEY_TOUR_BACK),
+            )),
             Box::new(
                 Button::new(
                     "onboarding.tour.next.button",
                     &primary_label,
                     Some(primary_key),
                 )
-                .fit_content(40.0)
-                .with_style(ui::widget::ButtonStyle::Primary),
+                .role(ButtonRole::Primary),
             ),
         ])
     }
@@ -2037,7 +2015,6 @@ impl OnboardingView {
                 &t("onboarding-connect-nearby"),
                 Some(KEY_CONNECT_NEARBY),
             )
-            .fit_content(40.0)
         };
         let mut nearby = Column::new()
             .with_no_padding()
@@ -2061,14 +2038,11 @@ impl OnboardingView {
         }
         nearby = nearby.push(Box::new(nearby_action));
         if self.recovery_only {
-            nearby = nearby.push(Box::new(
-                Button::new(
-                    "onboarding.connect.retry.button",
-                    &t("onboarding-connect-retry-keyring"),
-                    Some(KEY_CONNECT_RETRY),
-                )
-                .fit_content(40.0),
-            ));
+            nearby = nearby.push(Box::new(Button::new(
+                "onboarding.connect.retry.button",
+                &t("onboarding-connect-retry-keyring"),
+                Some(KEY_CONNECT_RETRY),
+            )));
         }
         let file_row = Row::new().push(Box::new(path)).push(Box::new(
             Button::new(
@@ -2314,11 +2288,11 @@ impl OnboardingView {
             self.codec_page_buttons()
                 .into_iter()
                 .map(|(id, label, key, primary)| {
-                    let button = Button::new(id, &label, Some(key)).fit_content(40.0);
+                    let button = Button::new(id, &label, Some(key));
                     let button = if primary {
                         button
                             .with_icon(ui::icons::Icon::ArrowRight)
-                            .with_style(ui::widget::ButtonStyle::Primary)
+                            .role(ButtonRole::Primary)
                     } else {
                         button
                     };
@@ -2338,16 +2312,14 @@ impl OnboardingView {
             "onboarding.tour.start.button",
             &t("onboarding-tour-take"),
             Some(KEY_TOUR_START),
-        )
-        .fit_content(40.0);
+        );
         let enter = Button::new(
             "onboarding.finish.button",
             &t("onboarding-finish"),
             Some(KEY_FINISH),
         )
-        .fit_content(40.0)
         .with_icon(ui::icons::Icon::ArrowRight)
-        .with_style(ui::widget::ButtonStyle::Primary);
+        .role(ButtonRole::Primary);
         footer_actions(vec![Box::new(tour), Box::new(enter)])
     }
 }
@@ -2400,7 +2372,6 @@ fn back_button() -> Box<dyn Widget> {
             &t("onboarding-back"),
             Some(KEY_BACK),
         )
-        .fit_content(40.0)
         .with_icon(ui::icons::Icon::ArrowLeft),
     )
 }

@@ -30,7 +30,7 @@ use tilo_ui::headless::{FrameHarness, InspectionNode};
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::{
-    Avatar, AvatarSize, Breadcrumb, Chip, ChipLead, ChipStyle, Column, Element, ShortcutRecorder,
+    Avatar, AvatarSize, Breadcrumb, ChipFace, Column, Element, ShortcutRecorder,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
@@ -202,17 +202,13 @@ fn text_scale_is_applied_once_by_retained_immediate_and_renderer_paths() {
             (
                 // Theme-sized label in a pill the host lays out at the control
                 // step: the label follows the text scale once.
-                "Chip::draw_at",
+                "ChipFace::paint",
                 Box::new(|scene, tr, theme| {
-                    Chip::draw_at(
+                    ChipFace::new(Rect::new(0.0, 0.0, 160.0, 28.0), "Design review").paint(
                         scene,
                         Affine::IDENTITY,
-                        Rect::new(0.0, 0.0, 160.0, 28.0),
-                        "Design review",
-                        ChipLead::None,
-                        ChipStyle::default(),
-                        theme,
                         tr,
+                        theme,
                     );
                 }),
                 2.0,

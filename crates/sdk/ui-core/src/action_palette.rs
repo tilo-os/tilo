@@ -2184,12 +2184,12 @@ impl ActionPalette {
             x += label_w + gap;
             for value in &facet.values {
                 let label = value.label.clone();
-                let w = crate::widget::Chip::natural_width_at(
+                let w = crate::widget::ChipFace::intrinsic_width(
                     &label,
-                    FACET_H,
                     crate::widget::ChipLead::None,
-                    theme,
+                    false,
                     text,
+                    theme,
                 );
                 if x + w > x0 + width {
                     return;
@@ -2225,21 +2225,9 @@ impl ActionPalette {
         for (rect, filter, label) in &self.facet_chips {
             let on = applied.contains(filter);
             // Selected is the lift: one step of ink, never a hue.
-            let style = if on {
-                crate::widget::ChipStyle::tinted(theme.text_primary)
-            } else {
-                crate::widget::ChipStyle::quiet()
-            };
-            crate::widget::Chip::draw_at(
-                scene,
-                transform,
-                *rect,
-                label,
-                crate::widget::ChipLead::None,
-                style,
-                theme,
-                text,
-            );
+            crate::widget::ChipFace::new(*rect, label)
+                .selected(on)
+                .paint(scene, transform, text, theme);
         }
     }
 

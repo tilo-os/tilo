@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use taffy::Size;
 use tilo_ui::headless::FrameHarness;
 use tilo_ui::tokens::TextRole;
+use tilo_ui::widget::ButtonRole;
 use tilo_ui::widget::{
     Actions, Button, Checkbox, Container, Element, Field, Form, FormPage, FormSection, Manual,
     ManualContext, MeasureConstraint as M, Scrollable, Text, TextInput, WidgetLayoutError,
@@ -182,13 +183,9 @@ fn manual_account(scale: f32) -> Element {
         .child(Box::new(
             Checkbox::new("updates", "updates").with_label(UPDATES),
         ))
+        .child(Box::new(Button::new("cancel", "Cancel", None)))
         .child(Box::new(
-            Button::new("cancel", "Cancel", None).content_sized(),
-        ))
-        .child(Box::new(
-            Button::new("save", "Save account changes", Some("saved"))
-                .primary()
-                .content_sized(),
+            Button::new("save", "Save account changes", Some("saved")).role(ButtonRole::Primary),
         ));
     surface(Box::new(region))
 }
@@ -215,8 +212,11 @@ fn account() -> Form {
             Checkbox::new("updates", "updates").with_label(UPDATES),
         )))
         .with_actions(
-            Actions::new(Button::new("save", "Save account changes", Some("saved")).primary())
-                .secondary(Button::new("cancel", "Cancel", None)),
+            Actions::new(
+                Button::new("save", "Save account changes", Some("saved"))
+                    .role(ButtonRole::Primary),
+            )
+            .secondary(Button::new("cancel", "Cancel", None)),
         )
 }
 fn automatic_in_manual() -> Element {

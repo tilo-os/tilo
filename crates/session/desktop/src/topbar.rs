@@ -29,6 +29,7 @@ use ui::presence::{PresenceCtx, user_color};
 use ui::text_render::TextStyle;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::ButtonRole;
 use ui::widget::Widget;
 use ui::widget::drag::{DragController, ListMetrics};
 
@@ -4244,7 +4245,7 @@ impl TopBarChrome {
         center_y: f64,
         label: Option<&str>,
     ) {
-        use ui::widget::chip::{Chip, ChipLead, ChipStyle};
+        use ui::widget::{ChipFace, ChipLead};
 
         self.continuity_rect = Rect::ZERO;
         self.continuity_dismiss_rect = Rect::ZERO;
@@ -4257,7 +4258,7 @@ impl TopBarChrome {
         let left_limit = self.center_rect.x1 + f64::from(theme.tokens.spacing.s4);
         let dismiss_w = height;
         let lead = ChipLead::Glyph(ui::icons::Icon::Monitor);
-        let natural = Chip::natural_width_at(label, height, lead, theme, text_renderer);
+        let natural = ChipFace::intrinsic_width(label, lead, false, text_renderer, theme);
         let room = right - dismiss_w - gap - left_limit;
         // Below this the label elides to a word or two and stops saying
         // what it offers.
@@ -4269,26 +4270,15 @@ impl TopBarChrome {
         self.continuity_dismiss_rect = Rect::new(right - dismiss_w, top, right, top + height);
         let chip_right = self.continuity_dismiss_rect.x0 - gap;
         self.continuity_rect = Rect::new(chip_right - width, top, chip_right, top + height);
-        Chip::draw_at(
+        ChipFace::new(self.continuity_rect, label).lead(lead).paint(
             scene,
             transform,
-            self.continuity_rect,
-            label,
-            lead,
-            ChipStyle::default(),
-            theme,
             text_renderer,
-        );
-        Chip::draw_at(
-            scene,
-            transform,
-            self.continuity_dismiss_rect,
-            "",
-            ChipLead::Glyph(ui::icons::Icon::X),
-            ChipStyle::default(),
             theme,
-            text_renderer,
         );
+        ChipFace::new(self.continuity_dismiss_rect, "")
+            .lead(ChipLead::Glyph(ui::icons::Icon::X))
+            .paint(scene, transform, text_renderer, theme);
     }
 
     fn handle_keyboard(&mut self, event: &WindowEvent, handled: &mut bool) {
@@ -4430,7 +4420,7 @@ impl TopBarChrome {
             text_renderer,
             theme,
             &ui::widget::ButtonFace::new(self.clock_pause_rect, &pause_label)
-                .primary()
+                .role(ButtonRole::Primary)
                 .icon(if activity.paused {
                     ui::icons::Icon::Play
                 } else {
@@ -4452,7 +4442,7 @@ impl TopBarChrome {
             text_renderer,
             theme,
             &ui::widget::ButtonFace::new(self.clock_close_rect, "")
-                .ghost()
+                .role(ButtonRole::Plain)
                 .icon(ui::icons::Icon::X)
                 .accessible_name(&close_label)
                 .focused(self.clock_control_focus == Some(2)),

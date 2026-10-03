@@ -135,20 +135,20 @@ impl MenuItem {
         self
     }
 
-    /// A persistent choice/toggle row. Checked and unchecked peers share the
-    /// same leading gutter, so labels never jump as state changes.
-    pub fn checked_action<F>(label: impl Into<String>, checked: bool, action: F) -> Self
-    where
-        F: Fn() + Send + Sync + 'static,
-    {
-        MenuItem::Action {
-            label: label.into(),
-            action: Arc::new(action),
-            icon: None,
-            checked: Some(checked),
-            destructive: false,
-            enabled: true,
+    /// Make this a state row ("Copy on select", a sort order): a check mark
+    /// when `checked`, and a semantic checked state either way. Checked and
+    /// unchecked peers share the same leading gutter, so labels never jump
+    /// as state changes.
+    #[must_use]
+    pub fn with_checked(mut self, checked: bool) -> Self {
+        if let MenuItem::Action {
+            checked: item_checked,
+            ..
+        } = &mut self
+        {
+            *item_checked = Some(checked);
         }
+        self
     }
 
     pub fn separator() -> Self {
@@ -210,6 +210,8 @@ pub struct ContextMenu {
     active_touch: Option<u64>,
     text_scale: f64,
     viewport: Option<Rect>,
+    /// The row the menu acts on, ringed while the menu is open.
+    anchor_row: Option<Rect>,
 }
 
 impl Default for ContextMenu {
@@ -235,7 +237,15 @@ impl ContextMenu {
             active_touch: None,
             text_scale: 1.0,
             viewport: None,
+            anchor_row: None,
         }
+    }
+
+    /// Mark the row (a message, a feed item, a file) this menu acts on, so
+    /// it stays visible as the target while the menu is open. Cleared on
+    /// close.
+    pub fn anchor_row(&mut self, row: Rect) {
+        self.anchor_row = Some(row);
     }
 
     pub fn push(&mut self, item: MenuItem) {
@@ -380,10 +390,11 @@ impl ContextMenu {
                 height = height.max(f64::from(h));
             }
         }
-        // The label's inset on both sides, and `s3` of air around the line.
+        // The content's inset on both sides; the row is the menu row height,
+        // grown with `s2` of air round the line at large text.
         self.measured_width = width + 2.0 * label_inset(theme);
-        self.row_height =
-            (height + f64::from(theme.tokens.spacing.s3)).max(ROW_HEIGHT * self.text_scale);
+        self.row_height = (height + f64::from(theme.tokens.spacing.s2))
+            .max(f64::from(theme.tokens.metrics.menu_row_height));
         self.layout_at_position();
         self.ensure_hover_visible();
     }
@@ -393,10 +404,11 @@ impl ContextMenu {
     /// both the anchored and the point-placed mode — a point-placed menu at
     /// a large text setting otherwise paints two-line-tall glyphs into
     /// 28 px rows.
-    fn item_height(&self, item: &MenuItem) -> f64 {
-        match item {
-            MenuItem::Action { .. } => self.row_height,
-            MenuItem::Separator => SEPARATOR_HEIGHT,
+    fn item_height(&self, index: usize) -> f64 {
+        match self.items.get(index) {
+            Some(MenuItem::Action { .. }) => self.row_height,
+            Some(MenuItem::Separator) if item_shown(&self.items, index) => SEPARATOR_HEIGHT,
+            Some(MenuItem::Separator) | None => 0.0,
         }
     }
 
@@ -408,7 +420,9 @@ impl ContextMenu {
     }
 
     fn content_height(&self) -> f64 {
-        self.items.iter().map(|item| self.item_height(item)).sum()
+        (0..self.items.len())
+            .map(|index| self.item_height(index))
+            .sum()
     }
 
     fn body_rect(&self) -> Rect {
@@ -435,20 +449,9 @@ impl ContextMenu {
             return None;
         }
         let body = self.body_rect();
-        let top = body.y0 - self.scroll_offset
-            + self
-                .items
-                .iter()
-                .take(index)
-                .map(|item| self.item_height(item))
-                .sum::<f64>();
-        let rect = Rect::new(
-            body.x0,
-            top,
-            body.x1,
-            top + self.item_height(self.items.get(index)?),
-        )
-        .intersect(body);
+        let top =
+            body.y0 - self.scroll_offset + (0..index).map(|i| self.item_height(i)).sum::<f64>();
+        let rect = Rect::new(body.x0, top, body.x1, top + self.item_height(index)).intersect(body);
         (!rect.is_zero_area()).then_some(rect)
     }
 
@@ -471,16 +474,8 @@ impl ContextMenu {
             return;
         }
         if let Some(index) = self.hovered {
-            let top = self
-                .items
-                .iter()
-                .take(index)
-                .map(|item| self.item_height(item))
-                .sum::<f64>();
-            let height = self
-                .items
-                .get(index)
-                .map_or(0.0, |item| self.item_height(item));
+            let top = (0..index).map(|i| self.item_height(i)).sum::<f64>();
+            let height = self.item_height(index);
             let body_height = self.body_rect().height();
             if top < self.scroll_offset {
                 self.scroll_offset = top;
@@ -525,6 +520,7 @@ impl ContextMenu {
     pub fn close(&mut self) {
         self.open = false;
         self.active_touch = None;
+        self.anchor_row = None;
     }
 
     pub fn is_open(&self) -> bool {
@@ -645,7 +641,10 @@ impl ContextMenu {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.border_standard,
+            crate::tokens::colors::Colors::hairline_on(
+                theme.tokens.colors.surfaces.overlay,
+                crate::chrome::GLOW_ALPHA.saturating_mul(2),
+            ),
             None,
             &thumb,
         );
@@ -688,23 +687,40 @@ fn wrapping_step(i: usize, n: usize, down: bool) -> usize {
     }
 }
 
-/// Menus are shared by pointer and touch surfaces; never shrink an action
-/// below the platform's 44 logical-pixel minimum target.
-const ROW_HEIGHT: f64 = 44.0;
-const _: () = assert!(ROW_HEIGHT >= 44.0);
+/// The reference row height at 1× (`metrics.menu_row_height`), used until a
+/// paint has measured the labels against the theme.
+const ROW_HEIGHT: f64 = crate::tokens::Metrics::BASE.menu_row_height as f64;
 const SEPARATOR_HEIGHT: f64 = 9.0;
 const MENU_WIDTH: f64 = 220.0;
 const PADDING: f64 = 6.0;
-/// Air between the armed row's fill edge and the first glyph. The fill is
-/// inset `spacing.s1` from the card ([`label_inset`] adds this to it), so the
-/// label keeps this gap inside its highlight at every `ui_scale` instead of
-/// drifting into the fill's edge as the token inset grows.
-const LABEL_GAP: f64 = 6.0;
 
-/// Distance from the card's edge to a label's first glyph: the highlight
-/// inset (`spacing.s1`) plus [`LABEL_GAP`] — 10 px at 1×.
+/// Distance from the panel's edge to a row's content, on both sides.
 fn label_inset(theme: &Theme) -> f64 {
-    f64::from(theme.tokens.spacing.s1) + LABEL_GAP
+    f64::from(theme.tokens.spacing.s3)
+}
+
+/// Whether item `index` is painted: every action is, and a separator only
+/// between two actions and never next to another separator, so a menu built
+/// from optional sections has no leading, trailing or doubled rule.
+fn item_shown(items: &[MenuItem], index: usize) -> bool {
+    match items.get(index) {
+        Some(MenuItem::Action { .. }) => true,
+        Some(MenuItem::Separator) => {
+            let before = items.get(..index).unwrap_or_default();
+            let after = items.get(index.saturating_add(1)..).unwrap_or_default();
+            let action_before = before
+                .iter()
+                .rev()
+                .take_while(|item| matches!(item, MenuItem::Action { .. }))
+                .count()
+                > 0;
+            let action_after = after
+                .iter()
+                .any(|item| matches!(item, MenuItem::Action { .. }));
+            action_before && action_after
+        }
+        None => false,
+    }
 }
 
 impl Widget for ContextMenu {
@@ -779,28 +795,28 @@ impl Widget for ContextMenu {
         // point-placed one keeps its origin and reference width but grows
         // its rows (and, past the reference width, its width) to the text.
         self.layout_within(text_renderer, theme);
-        let radius = f64::from(theme.tokens.radii.control);
-        let shape = RoundedRect::from_rect(self.rect, radius);
-        // The near-black overlay tier, so the menu reads as an opaque
-        // raised sheet, never bleeding the content beneath.
-        scene.fill(
-            vello::peniko::Fill::NonZero,
+        // The row the menu acts on stays marked while it is open.
+        if let Some(row) = self.anchor_row {
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                theme.tokens.colors.intent.you,
+                None,
+                &crate::surface::edge_outline(row, f64::from(theme.tokens.radii.item)),
+            );
+        }
+        // Panel role (HIG §9.1): the floating radius, the one floating
+        // shadow, and the floating material with its derived edge.
+        let radius = f64::from(theme.tokens.radii.panel);
+        crate::surface::shadow(
+            scene,
             transform,
-            theme.tokens.colors.surfaces.overlay,
-            None,
-            &shape,
+            self.rect,
+            radius,
+            &theme.tokens.elevation.floating,
         );
-        // Panel role (HIG §9.1): the edge is derived against the ground,
-        // painted as a crisp 1 px inset stroke. The declared
-        // `border_standard` sat three shades off the overlay tier on the
-        // dark preset and read as no edge at all.
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            crate::chrome::panel_border(theme),
-            None,
-            &crate::surface::edge_outline(self.rect, radius),
-        );
+        crate::surface::panel(scene, transform, self.rect, radius, theme);
+        let ground = crate::chrome::panel_ground(theme);
 
         // One style for measuring (`layout_within`) and painting, in both
         // modes: the point-placed path used to paint the theme's already
@@ -822,7 +838,7 @@ impl Widget for ContextMenu {
         let mut y = self.body_rect().y0 - self.scroll_offset;
         let has_leading_gutter = self.has_leading_gutter();
         for (idx, item) in self.items.iter().enumerate() {
-            let row_height = self.item_height(item);
+            let row_height = self.item_height(idx);
             match item {
                 MenuItem::Action {
                     label,
@@ -843,15 +859,23 @@ impl Widget for ContextMenu {
                     // `tests/menu_highlight_render.rs`.
                     let armed = *enabled && self.hovered == Some(idx);
                     if armed {
-                        let inset = f64::from(theme.tokens.spacing.s1);
+                        // Concentric with the panel it is inset in.
+                        let inset = theme.tokens.spacing.s1;
                         let hl = Rect::new(
-                            self.rect.x0 + inset,
-                            y + 1.0,
-                            self.rect.x1 - inset,
-                            y + row_height - 1.0,
+                            self.rect.x0 + f64::from(inset),
+                            y,
+                            self.rect.x1 - f64::from(inset),
+                            y + row_height,
                         );
-                        let hl_shape =
-                            RoundedRect::from_rect(hl, f64::from(theme.tokens.radii.detail));
+                        let hl_shape = RoundedRect::from_rect(
+                            hl,
+                            f64::from(
+                                theme
+                                    .tokens
+                                    .radii
+                                    .concentric(theme.tokens.radii.panel, inset),
+                            ),
+                        );
                         scene.fill(
                             vello::peniko::Fill::NonZero,
                             transform,
@@ -860,21 +884,21 @@ impl Widget for ContextMenu {
                             &hl_shape,
                         );
                     }
+                    let colors = &theme.tokens.colors;
                     let ink = if !*enabled {
-                        theme
-                            .tokens
-                            .colors
-                            .on_surface_at(
-                                theme.tokens.colors.surfaces.overlay,
-                                crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
-                            )
+                        colors
+                            .on_surface_at(ground, crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST)
                             .ink_dim
                     } else if armed {
-                        theme.tokens.colors.intent.on_inverted
+                        colors.intent.on_inverted
                     } else if *destructive {
-                        theme.tokens.colors.semantic.danger
+                        colors.ink_on_any(
+                            &[ground],
+                            colors.semantic.danger,
+                            crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
+                        )
                     } else {
-                        theme.tokens.colors.text_primary
+                        colors.text_primary
                     };
                     let label_x = if has_leading_gutter {
                         let icon_size = f64::from(theme.tokens.typography.size(TextRole::Caption));
@@ -897,10 +921,10 @@ impl Widget for ContextMenu {
                     } else {
                         label_x
                     };
-                    let label = text_renderer.elide_to_width(
+                    let label = text_renderer.elide_to_width_style(
                         label,
-                        style.size,
                         (self.rect.x1 - label_x - label_inset(theme)).max(1.0) as f32,
+                        &style,
                     );
                     let (_, label_height) = text_renderer.measure_style(&label, None, &style);
                     let label_y = y + (row_height - f64::from(label_height)) / 2.0;
@@ -914,6 +938,7 @@ impl Widget for ContextMenu {
                     );
                     y += row_height;
                 }
+                MenuItem::Separator if row_height <= 0.0 => {}
                 MenuItem::Separator => {
                     let sep_y = y + SEPARATOR_HEIGHT / 2.0;
                     crate::surface::separator(
@@ -923,7 +948,7 @@ impl Widget for ContextMenu {
                         self.rect.x1,
                         sep_y,
                         separator_inset,
-                        theme.tokens.colors.surfaces.overlay,
+                        ground,
                     );
                     y += SEPARATOR_HEIGHT;
                 }
@@ -1208,8 +1233,8 @@ mod a11y_tests {
 
         fn accessibility_exposes_checked_state_without_polluting_the_label() {
             let mut menu = ContextMenu::new();
-            menu.push(MenuItem::checked_action("List", true, || {}));
-            menu.push(MenuItem::checked_action("Grid", false, || {}));
+            menu.push(MenuItem::action("List", || {}).with_checked(true));
+            menu.push(MenuItem::action("Grid", || {}).with_checked(false));
             menu.open_at([10.0, 20.0]);
 
             let node = Widget::accessibility(&menu).unwrap();
@@ -1230,6 +1255,55 @@ mod a11y_tests {
 mod tests {
     use super::*;
     use automerge::AutoCommit;
+
+    /// A menu assembled from optional sections paints no leading, trailing
+    /// or doubled separator, and its rows are the menu row height.
+    #[test]
+    fn separators_only_stand_between_actions() {
+        let mut menu = ContextMenu::new();
+        for item in [
+            MenuItem::separator(),
+            MenuItem::action("Copy", || {}),
+            MenuItem::separator(),
+            MenuItem::separator(),
+            MenuItem::action("Paste", || {}),
+            MenuItem::separator(),
+        ] {
+            menu.push(item);
+        }
+        let shown: Vec<bool> = (0..menu.items.len())
+            .map(|index| item_shown(&menu.items, index))
+            .collect();
+        assert_eq!(shown, [false, true, true, false, true, false]);
+        assert_eq!(
+            menu.content_height(),
+            2.0 * ROW_HEIGHT + SEPARATOR_HEIGHT,
+            "hidden separators take no room"
+        );
+        let theme = Theme::dark();
+        menu.open_anchored(
+            Rect::new(10.0, 10.0, 10.0, 10.0),
+            Rect::new(0.0, 0.0, 800.0, 600.0),
+        );
+        menu.layout_within(&mut TextRenderer::new(), &theme);
+        assert_eq!(
+            menu.row_height,
+            f64::from(theme.tokens.metrics.menu_row_height)
+        );
+    }
+
+    #[test]
+    fn a_state_row_carries_its_checked_state_and_an_anchor_row_clears_on_close() {
+        let item = MenuItem::action("Copy on select", || {}).with_checked(true);
+        assert_eq!(item.checked(), Some(true));
+        let mut menu = ContextMenu::new();
+        menu.push(item);
+        menu.anchor_row(Rect::new(0.0, 40.0, 300.0, 80.0));
+        menu.open_at([20.0, 60.0]);
+        assert!(menu.anchor_row.is_some());
+        menu.close();
+        assert!(menu.anchor_row.is_none());
+    }
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
