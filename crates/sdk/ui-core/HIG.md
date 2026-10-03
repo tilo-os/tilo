@@ -288,7 +288,7 @@ Choose a shared composition by what the region contains:
 | Account or settings form | `FormPage`, `Form`, `Section`, `Field` | One page gutter, readable width, related-field spacing, measured label placement, wrapping and scrolling |
 | Card with a title, content and actions | `Card::composed` with a header and footer | Content height, consistent card gutter, footer containment and alignment |
 | Small primary/secondary action group | `Actions` | Measured unspecified button sizes, wrapping and trailing alignment |
-| Long command strip | `Toolbar` | Measured command sizes, bounded overflow menu, keyboard navigation and accessible command bounds |
+| Long command strip | `Toolbar` | Measured plain commands, toggles as lifts, separators only between shown commands, a More menu that keeps every command reachable, keyboard navigation and accessible command bounds |
 | Main writing surface | `Scrollable::with_content_min_viewport_height()` | Short auto-height content fills the viewport; long content retains its intrinsic scroll extent |
 | Empty list or first-use pane | `EmptyState` | Wrapped title/message, measured action height, centering and decorative shedding |
 | Authored canvas or custom arrangement | `Manual` or existing layout primitives | Shared child measurement and ordinary control behavior; the author chooses geometry |
@@ -448,7 +448,10 @@ This generalises §3 (text editing) to **all** interactive primitives. Concretel
 - Editable field → `TextInput` (or `SearchField` / `NumberInput` /
   `EditableLabel`). Never keep a per-app cursor index and splice characters into
   a `String` on `Key::Character` / `Backspace`.
-- Clickable → `Button`. Never `draw_*_button` + a `contains()` hit-test.
+- Clickable → `Button` (a canvas host paints `ButtonFace` and hit-tests
+  `ButtonFace::contains`). Never `draw_*_button` + a `contains()` hit-test.
+  A glyph that does something is `Button::icon_only(id, icon, name)`, never a
+  text glyph.
 - Confirm / prompt / sheet → `ModalDialog` (scrim, focus capture, Esc, a11y are
   built in). Never paint your own overlay + scrim rect.
 - Select / choice → `Dropdown`; on/off → `Toggle` / `Checkbox`; range →
@@ -531,7 +534,7 @@ surfaces of the same role are automatically consistent. The values come from
 | **Bar** | docked chrome fixed to a screen edge (top bar) | — (edge to edge) | `chrome::shell::panel_ground` (opaque) | bottom hairline only | none |
 | **Panel** | a floating surface that opens over content (quick settings, palette, menus, popovers, sheets) | `radii.panel` (18) | the floating material, `Material::Floating` (§9.2) | full hairline, plus `elevation.floating_edge` inside it on a dark material | `elevation.floating` |
 | **Control** | something inside a Bar or Panel that you press (action tile, list row, slider, field) | `radii.control` (8) | selection tiers (§9.3) | per tier | none |
-| **Selector** | one of a set you choose between (tab pill, tray pill, workspace chip, strip segment, scope chip) | half its height | selection tiers (§9.3) | per tier | none |
+| **Selector** | one of a set you choose between (a tab, a segment, a tray or scope chip, a workspace chip, a strip segment) | `radii.control` for tabs and segments (not pills); `radii.full` for chips, pill-shaped by meaning | selection tiers (§9.3) | per tier | none |
 | **Object** | a window tile | `radii.tile` (14) | `surfaces.content` | `Colors::window_edge()` | none; `elevation.floating` only while dragged |
 
 Inside an Object, the window's regions (§9.2) are the only grounds, and the
@@ -695,8 +698,11 @@ defect.
 
 **The armed row of a menu is inverted, not lifted.** The row Enter or a click
 will activate in a menu, popover, dropdown, slash menu or palette result list
-is an inverted control (`intent.inverted` fill, `intent.on_inverted` label):
-a lift was measured too weak to find (ΔL* 11.6 read as "no highlighting").
+is an inverted control (`intent.inverted` fill, `intent.on_inverted` label),
+concentric inside the panel: a lift was measured too weak to find (ΔL* 11.6
+read as "no highlighting"). A state row ("Copy on select", a sort order) is
+`MenuItem::with_checked(bool)`; the row a context menu acts on is ringed in
+your colour while it is open (`ContextMenu::anchor_row`).
 
 **A control with its own floor** (a filled rest face rather than a
 transparent one) takes all of its states from one ordered ramp against the
@@ -793,27 +799,34 @@ against the ground the surface actually lands on.
 At rest (idle, enabled) every control, card and popup has a **visible derived
 edge or a clear contrast step** against the surface it sits on, at 1× in dark
 and light alike. "Edge" is `ui::surface::edge_on(fill)` painted as a crisp
-inset 1 px stroke (`ui::surface::card`, `pill`, or the same geometry inline);
-chosen states use `selection_tier` (Controls) or `glass_selector` (Selectors);
-focus is `border_focus` (your colour); disabled is the rest face under
-`widget::DISABLED_ALPHA`, so rest and disabled never look the same.
+inset 1 px stroke (`ui::surface::card`, the chip family's `ChipFace` /
+`BadgeFace`, or the same geometry inline); chosen states use `selection_tier`
+(Controls) or `glass_selector` (shell Selectors); focus is `intent.you` (your
+colour); disabled is the rest face under `widget::DISABLED_ALPHA`, with its
+edge kept at full strength, so rest and disabled never look the same.
 
 | Control | Rest fill | Rest edge |
 |---|---|---|
-| Button Neutral / Disabled, Dropdown field | `surfaces.raised` | `edge_on(raised)` |
+| Button `Secondary` / `Destructive` / disabled, Dropdown field, NumberInput steppers | `surfaces.raised` (hover `lift_on(raised, 0.5)`, press `1.0`) | `edge_on(raised)`; `Destructive` letters it in danger ink |
+| Button `Primary` | `intent.inverted` (hover `inverted_hover`) | none; label `intent.on_inverted` |
+| Button `Plain`, toolbar commands, icon buttons | transparent (hover `intent.selection_hover`, press `selection`) | none; a toolbar toggle that is on is `intent.selection` |
+| Destructive confirmation (`ModalDialog` / `ModalFrame` danger action only) | `semantic.danger` | none |
 | Card / Container / ContentCard (objects only) | as today | `edge_on(fill)`; a section inside a card gets space, not a second edge |
 | TextInput / NumberInput / SearchField | field fill | `edge_on(fill)`; focus `border_focus` |
-| Dropdown list, ContextMenu, Popover, SlashMenu, Autocomplete, LinkPopover, CommandPalette, FilePicker, PermissionPrompt, Toast, ModalDialog, ModalFrame | `panel_ground` (or `surfaces.overlay` where already used) | `panel_border`, `floating_edge` on dark; separators `separator(.., s3, ..)`, never full-bleed |
+| Dropdown list, ContextMenu, Popover, SlashMenu, Autocomplete, LinkPopover, CommandPalette, FilePicker, PermissionPrompt, Toast, ModalDialog, ModalFrame | `panel_ground` (or `surfaces.overlay` where already used) | `panel_border`, `floating_edge` on dark; separators `separator(.., s3, ..)`, never full-bleed. The dropdown list and context menu take `radii.panel`, rows `metrics.menu_row_height`, content inset `spacing.s3`, and a separator only between two rows |
 | Tooltip | as today | `edge_on(fill)` |
-| Segmented / ToggleGroup track | `surfaces.raised` | `edge_on(track)`; active segment a lift of the track |
-| Chip quiet | `surfaces.raised` | `edge_on(raised)`; selected is a lift, no edge |
-| Toggle | off `lift(1.0)`, on `intent.inverted` | `edge_on(track)`; the knob is the glyph of its track: `on_inverted` on, `text_dim` off |
-| Slider | unfilled `lift(1.0)`, filled `intent.inverted` | `edge_on(unfilled)`; thumb contrasts against both halves |
-| Checkbox | unchecked `surfaces.raised`, checked `intent.inverted` | `edge_on(raised)` |
+| Segmented / ToggleGroup track (`SegmentedStyle::Segmented`) | `surfaces.raised`, `radii.control` | `edge_on(track)`; the chosen segment is a thumb `selection_tier_on(raised)` inset concentrically (`radii.item`); separators only between two unchosen segments. `Tabs`: no track, a 2 px primary-ink underline. `Quiet`: no track, a lift of the ground |
+| Chip / Badge `Neutral` | `surfaces.raised`, `radii.full` | `edge_on(raised)`; selected is a lift, no edge |
+| Chip / Badge `Tinted(tone)` | the tone washed 15 % into the ground | the tone at 38 %; label neutral ink measured on the wash |
+| Chip / Badge `Live` | `semantic.danger` | none; label measured on it |
+| Toggle | off `intent.selection`, on `intent.inverted` | `edge_on(track)`; on, the knob is `on_inverted`; off, a raised white knob with a ring that clears 3:1 on a light material and `text_dim` on a dark one |
+| Slider | unfilled `intent.selection`, filled `intent.inverted` | `edge_on(unfilled)`; the thumb is a raised white object with a ring on a light material and primary ink on a dark one, clearing both halves; never collapses below six knob widths |
+| Checkbox | unchecked `surfaces.raised`, checked `intent.inverted`; always the largest square in its rect, `radii.item` | `edge_on(raised)` |
+| Scroll thumb | `text_tertiary` at rest, `text_dim` active, each stepped to 3:1 on the ground | none; a vertical `Scrollable` keeps `metrics.scrollbar_gutter` free on its trailing edge |
 | Table / DataTable rules | — | `edge_on(table_fill)`, never into a rounded corner |
 | TreeView / NavList / VirtualList rows | transparent | none; selection is a lift inside the `s2` inset at `radii.item` (`paint_row_selection`) |
 | Divider | — | `border_standard` only between two equal surfaces; `Divider::on(surface)` elsewhere |
-| App chrome Toolbar / StatusBar | as today | `chrome_hairline` |
+| App chrome Toolbar band (`toolbar::paint_band`) / StatusBar | none: the region's ground | `chrome_hairline` along the bottom |
 | Selectors (tab pills, tray pill, scope chip) | idle none | none (`glass_selector`) |
 
 A declared border or ramp token (`border_standard`, `border_strong`,
@@ -851,8 +864,14 @@ Density, so two panels built by two people come out the same size. Each value
 is a field of `theme.tokens.metrics` (`ui::tokens::Metrics`), scaled by
 `ui_scale` like spacing; read it from there rather than restating the number:
 
-- Bar height 40 (`bar_height`; also the shared `Button`/`Dropdown` default);
-  Bar control height 28 (`bar_control_height`).
+- Bar height 40 (`bar_height`); Bar control height 28 (`bar_control_height`).
+- Controls take a `ControlSize`, never a height: `Small` 28, `Regular` 32
+  (the default for `Button`, `Dropdown`, `NumberInput`, `ToggleGroup`),
+  `Large` 40, each grown with the label's line at large text. A `Small`
+  control keeps its 28 px face and reaches the 32 px target through its hit
+  rect. A button is as wide as its label (at least twice its height; an
+  icon-only button is a square) and never elides while its parent has room.
+- Menu row 32 (`menu_row_height`); scroll bar gutter 12 (`scrollbar_gutter`).
 - Panel padding `spacing.s4` (16); gap between Panel sections `spacing.s4`.
 - Panel row / Control height 44 (`panel_row_height`); Selector height 28
   (`selector_height`).
