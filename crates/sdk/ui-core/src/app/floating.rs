@@ -349,6 +349,13 @@ impl App {
                     self.floating.coordinate_offsets.remove(id);
                     self.floating.suspended_ids.insert(id.clone());
                 }
+                FloatingSurfaceHostMessage::Appearance { .. } => {
+                    if let Some(appearance) = message.window_appearance() {
+                        self.set_window_appearance(appearance);
+                    }
+                    // The window's own concern, not a floating surface's.
+                    continue;
+                }
                 FloatingSurfaceHostMessage::DesktopBounds { bounds } => {
                     match crate::floating_surface::protocol_rect(*bounds) {
                         Ok(bounds) => self.root_widget.set_floating_surface_bounds(bounds),
