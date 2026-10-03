@@ -18,6 +18,7 @@ use crate::a11y::{AccessNode, AccessState, Role};
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::chart_navigation::{
     ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action, moved_item,
 };
@@ -336,14 +337,13 @@ impl Widget for FunnelChart {
             self.pointer = bounds.center();
         }
         if !self.title.is_empty() {
-            tr.draw_text_weighted(
+            tr.draw_style(
                 scene,
                 &self.title,
-                theme.tokens.typography.scale.lg,
                 theme.tokens.colors.text_primary,
                 transform * Affine::translate((self.rect.x0 + 12.0, self.rect.y0 + 8.0)),
                 None,
-                TextWeight::Semibold,
+                &theme.text(TextRole::Heading),
             );
         }
         for geometry in self.geometry() {
@@ -372,19 +372,19 @@ impl Widget for FunnelChart {
             } else {
                 stage.label.clone()
             };
-            let (width, height) = tr.measure_weighted(
+            let (width, height) = tr.measure_style(
                 &value,
-                theme.tokens.typography.scale.sm,
                 None,
-                TextWeight::Semibold,
+                &theme
+                    .text(TextRole::Label)
+                    .with_weight(TextWeight::Semibold),
             );
             if f64::from(width) + 24.0 <= geometry.bounds.width()
                 && f64::from(height) + 8.0 <= geometry.bounds.height()
             {
-                tr.draw_text_weighted(
+                tr.draw_style(
                     scene,
                     &value,
-                    theme.tokens.typography.scale.sm,
                     ink,
                     transform
                         * Affine::translate((
@@ -392,19 +392,21 @@ impl Widget for FunnelChart {
                             geometry.bounds.center().y - f64::from(height) / 2.0,
                         )),
                     None,
-                    TextWeight::Semibold,
+                    &theme
+                        .text(TextRole::Label)
+                        .with_weight(TextWeight::Semibold),
                 );
             }
             if self.style.show_conversion && geometry.conversion < 0.999 {
                 let label = format!("{:.0}%", geometry.conversion * 100.0);
-                tr.draw_text(
+                tr.draw_style(
                     scene,
                     &label,
-                    theme.tokens.typography.scale.xs,
                     theme.tokens.colors.text_dim,
                     transform
                         * Affine::translate((geometry.bounds.x1 + 10.0, geometry.bounds.y0 + 4.0)),
                     None,
+                    &theme.text(TextRole::Caption),
                 );
             }
         }
@@ -416,8 +418,8 @@ impl Widget for FunnelChart {
             } else {
                 stage.detail.clone()
             };
-            let (tw, _) = tr.measure(&stage.label, theme.tokens.typography.scale.sm, None);
-            let (dw, _) = tr.measure(&detail, theme.tokens.typography.scale.xs, None);
+            let (tw, _) = tr.measure_style(&stage.label, None, &theme.text(TextRole::Caption));
+            let (dw, _) = tr.measure_style(&detail, None, &theme.text(TextRole::Caption));
             let width = f64::from(tw.max(dw)).max(140.0) + 28.0;
             let mut x = self.pointer.x + 16.0;
             let mut y = self.pointer.y + 16.0;
@@ -435,22 +437,23 @@ impl Widget for FunnelChart {
                 None,
                 &RoundedRect::from_rect(tooltip, f64::from(theme.tokens.radii.control)),
             );
-            tr.draw_text_weighted(
+            tr.draw_style(
                 scene,
                 &stage.label,
-                theme.tokens.typography.scale.sm,
                 theme.tokens.colors.text_primary,
                 transform * Affine::translate((x + 14.0, y + 11.0)),
                 None,
-                TextWeight::Semibold,
+                &theme
+                    .text(TextRole::Label)
+                    .with_weight(TextWeight::Semibold),
             );
-            tr.draw_text(
+            tr.draw_style(
                 scene,
                 &detail,
-                theme.tokens.typography.scale.xs,
                 theme.tokens.colors.text_dim,
                 transform * Affine::translate((x + 14.0, y + 37.0)),
                 None,
+                &theme.text(TextRole::Caption),
             );
         }
     }

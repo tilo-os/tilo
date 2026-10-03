@@ -9,6 +9,7 @@ use crate::shell::chrome_state::ChromeState;
 use crate::shell::overview::room_cards;
 use crate::shell::state::{CapOverride, Collaborator, Scope, Subject, Verb, WorkspaceTree};
 use tilo_desktop::overview::{room_access_label, room_shares_label};
+use ui::TextRole;
 use ui::widget::Container;
 
 /// A host laid out over a desktop-sized viewport with the overview
@@ -237,11 +238,10 @@ fn overview_help_and_hidden_controls_expose_no_stray_targets_and_scale_once() {
         let mut scene = Scene::new();
         host.draw_shortcut_help_button(&mut scene, Affine::IDENTITY, &mut renderer, &theme);
         let rect = host.shortcut_help_button_rect();
-        let (width, height) = renderer.measure_weighted(
-            "Help  F1 · Super+?",
-            theme.tokens.typography.scale.sm / 2.0,
+        let (width, height) = renderer.measure_style(
+            &crate::shell::i18n::t("help-pill"),
             None,
-            TextWeight::Semibold,
+            &theme.text(TextRole::Label).strong(),
         );
         assert!(
             rect.width() >= f64::from(width) + 24.0 && rect.height() >= f64::from(height) + 12.0
@@ -255,7 +255,7 @@ fn overview_help_and_hidden_controls_expose_no_stray_targets_and_scale_once() {
                 .resources
                 .glyph_runs
                 .iter()
-                .all(|run| run.font_size == theme.tokens.typography.scale.sm)
+                .all(|run| run.font_size == theme.tokens.typography.size(TextRole::Label))
         );
     }
 
@@ -553,29 +553,30 @@ fn overview_room_rows_pin_the_current_room_and_grow_on_the_spacing_scale() {
         let m1 = OverviewMetrics::for_theme(&base);
         let m2 = OverviewMetrics::for_theme(&large);
         for (name, theme, m) in [("100%", &base, m1), ("200%", &large, m2)] {
-            let scale = &theme.tokens.typography.scale;
+            let scale = &theme.tokens.typography;
             assert!(
-                m.here_h >= lh(scale.x3l) + lh(scale.base),
+                m.here_h >= lh(scale.size(TextRole::Display)) + lh(scale.size(TextRole::Body)),
                 "{name}: the here block ({}) must hold its name and access lines",
                 m.here_h
             );
             assert!(
-                m.caption_h >= lh(scale.sm),
+                m.caption_h >= lh(scale.size(TextRole::Caption)),
                 "{name}: the caption band ({}) must hold its text",
                 m.caption_h
             );
             assert!(
-                m.share_row_h >= lh(scale.base),
+                m.share_row_h >= lh(scale.size(TextRole::Body)),
                 "{name}: a share row ({}) must hold its body line",
                 m.share_row_h
             );
             assert!(
-                m.room_row_h >= lh(scale.lg) + lh(scale.sm),
+                m.room_row_h
+                    >= lh(scale.size(TextRole::Heading)) + lh(scale.size(TextRole::Caption)),
                 "{name}: a room row ({}) must hold its name and sub-line",
                 m.room_row_h
             );
             assert!(
-                m.chip_h >= lh(scale.sm),
+                m.chip_h >= lh(scale.size(TextRole::Caption)),
                 "{name}: the chip ({}) must hold its label",
                 m.chip_h
             );

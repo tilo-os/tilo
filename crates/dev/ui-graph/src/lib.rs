@@ -235,14 +235,16 @@ pub enum UiButtonStyle {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum UiTextRole {
-    Caption,
-    Label,
-    #[default]
-    Body,
-    Reading,
+    Display,
+    LargeTitle,
     Title,
     Heading,
-    Display,
+    Subheading,
+    #[default]
+    Body,
+    Label,
+    Caption,
+    Reading,
     Code,
 }
 
@@ -307,8 +309,6 @@ pub enum UiNode {
         text: UiTextSource,
         #[serde(default)]
         role: UiTextRole,
-        #[serde(default)]
-        size: Option<f32>,
     },
     Button {
         id: String,
@@ -541,8 +541,7 @@ impl UiNode {
                 validate_positive(*width, id, "width")?;
                 validate_positive(*height, id, "height")?;
             }
-            Self::Text { text, size, .. } => {
-                validate_positive(*size, id, "size")?;
+            Self::Text { text, .. } => {
                 if let UiTextSource::Document { path } = text {
                     validate_binding(path, id)?;
                 }
@@ -773,7 +772,6 @@ mod tests {
                         value: "Projects".into(),
                     },
                     role: UiTextRole::Title,
-                    size: None,
                 },
                 UiNode::Row {
                     id: "actions".into(),

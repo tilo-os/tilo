@@ -25,22 +25,25 @@ use tilo_ui::widget::{
     ToggleGroup, Toolbar, Trend, Widget,
 };
 use tilo_ui::{
-    FontChoice, HangingPunctuation, NumericStyle, OpenTypeTag, OpticalSizing, ParagraphAlign,
-    State, TextStyle, TextWeight,
+    FontChoice, HangingPunctuation, NumericStyle, OpenTypeTag, OpticalSizing, ParagraphAlign, State,
 };
 
 const CARD_W: f32 = 560.0;
 
 fn title(t: &str) -> Box<dyn Widget> {
-    Box::new(Text::new(t).with_size(20.0))
+    Box::new(Text::new(t).with_role(TextRole::Title))
 }
 
 fn label(t: &str) -> Box<dyn Widget> {
-    Box::new(Text::new(t).with_size(14.0))
+    Box::new(Text::new(t))
 }
 
 fn dim(t: &str, theme: &Theme) -> Box<dyn Widget> {
-    Box::new(Text::new(t).with_size(13.0).with_color(theme.text_dim))
+    Box::new(
+        Text::new(t)
+            .with_role(TextRole::Caption)
+            .with_color(theme.text_dim),
+    )
 }
 
 /// A titled card: heading + divider + body, on a raised background.
@@ -49,7 +52,7 @@ fn card(width: Option<f32>, heading: &str, body: Box<dyn Widget>) -> Box<dyn Wid
         .with_no_padding()
         .with_intrinsic_height()
         .with_gap(12.0)
-        .push(Box::new(Text::new(heading).with_size(15.0)))
+        .push(Box::new(Text::new(heading).with_role(TextRole::Heading)))
         .push(Box::new(Divider::horizontal()))
         .push(body);
     let mut c = Container::new()
@@ -97,194 +100,144 @@ fn specimen_pair(
 ///
 /// Kept as its own builder so the offscreen regression test renders exactly
 /// the same widget developers inspect in the full component gallery.
-/// Heading, lede and serif specimens. Split out of
+/// The role ladder and the serif reading specimens. Split out of
 /// `build_typography_showcase` to keep that under the line cap.
 fn typography_intro_and_serif(column: Column, _theme: &Theme) -> Column {
-    column.push(Box::new(
-        Text::new("A clear hierarchy makes dense interfaces feel calm.")
-            .with_role(TextRole::Heading),
-    ))
-    .push(Box::new(
-        Text::new("A quiet page gives every letter room to speak.").with_style(
-            TextStyle::new(28.0)
-                .with_line_height(1.25)
-                .with_weight(TextWeight::Semibold)
-                .with_family(FontChoice::Serif),
-        ),
-    ))
-    .push(Box::new(
-        Text::new(
-            "Serif specimen — AVATAR · WAVE · To · Ta · Yo · office · affinity · ffi · naïve café.",
-        )
-        .with_style(
-            TextStyle::new(18.0)
-                .with_line_height(1.5)
-                .with_family(FontChoice::Serif),
-        ),
-    ))
-    .push(Box::new(
-        Text::new("Italic serif — Typography should feel composed, never merely typeset.")
-            .with_style(
-                TextStyle::new(17.0)
-                    .with_line_height(1.5)
-                    .with_italic(true)
-                    .with_family(FontChoice::Serif),
-            ),
-    ))
+    column
+        .push(Box::new(
+            Text::new("A clear hierarchy makes dense interfaces feel calm.")
+                .with_role(TextRole::LargeTitle),
+        ))
+        .push(Box::new(
+            Text::new("Every role derives from one body size").with_role(TextRole::Title),
+        ))
+        .push(Box::new(
+            Text::new("Section heading").with_role(TextRole::Heading),
+        ))
+        .push(Box::new(
+            Text::new("Group label inside a section").with_role(TextRole::Subheading),
+        ))
+        .push(Box::new(
+            Text::new("Body text is the default: what most of the interface says.")
+                .with_role(TextRole::Body),
+        ))
+        .push(Box::new(
+            Text::new("Control label, or a row title in a dense list").with_role(TextRole::Label),
+        ))
+        .push(Box::new(
+            Text::new("Caption: a secondary line, a timestamp, metadata.")
+                .with_role(TextRole::Caption),
+        ))
+        .push(Box::new(
+            Text::new(
+                "Serif reading — AVATAR · WAVE · To · Ta · Yo · office · affinity · ffi · naïve café.",
+            )
+            .with_role(TextRole::Reading),
+        ))
+        .push(Box::new(
+            Text::new("Italic serif — Typography should feel composed, never merely typeset.")
+                .with_role(TextRole::Reading)
+                .with_italic(true),
+        ))
 }
 
-/// The first five BEFORE/AFTER typography-feature specimen pairs (kerning
-/// through variable-font optical sizing). Split out of
+/// BEFORE/AFTER typography-feature specimen pairs (kerning through
+/// variable-font optical sizing), all on the reading role. Split out of
 /// `build_typography_showcase` to keep that under the line cap.
 fn typography_feature_pairs(column: Column, theme: &Theme) -> Column {
+    let reading = || TextRole::Reading;
     column
         .push(specimen_pair(
             theme,
-            "BEFORE · kerning disabled",
-            Text::new("AVATAR  WAVE  To Ta Yo").with_style(
-                TextStyle::new(25.0)
-                    .with_family(FontChoice::Serif)
-                    .with_kerning(false),
-            ),
-            "AFTER · kerning enabled",
-            Text::new("AVATAR  WAVE  To Ta Yo").with_style(
-                TextStyle::new(25.0)
-                    .with_family(FontChoice::Serif)
-                    .with_kerning(true),
-            ),
+            "Before: kerning disabled",
+            Text::new("AVATAR  WAVE  To Ta Yo")
+                .with_role(reading())
+                .with_kerning(false),
+            "After: kerning enabled",
+            Text::new("AVATAR  WAVE  To Ta Yo")
+                .with_role(reading())
+                .with_kerning(true),
         ))
         .push(specimen_pair(
             theme,
-            "BEFORE · standard forms",
+            "Before: standard forms",
+            Text::new("office · affinity · historic 1847").with_role(reading()),
+            "After: discretionary ligatures",
             Text::new("office · affinity · historic 1847")
-                .with_style(TextStyle::new(20.0).with_family(FontChoice::Serif)),
-            "AFTER · discretionary ligatures + small caps",
-            Text::new("office · affinity · historic 1847").with_style(
-                TextStyle::new(20.0)
-                    .with_family(FontChoice::Serif)
-                    .with_discretionary_ligatures(true)
-                    .with_small_caps(true),
-            ),
+                .with_role(reading())
+                .with_discretionary_ligatures(true),
         ))
         .push(specimen_pair(
             theme,
-            "BEFORE · proportional lining figures",
-            Text::new("1847  2026  €12,408.50").with_style(
-                TextStyle::new(20.0)
-                    .with_family(FontChoice::Serif)
-                    .with_numeric_style(NumericStyle::ProportionalLining),
-            ),
-            "AFTER · tabular old-style figures",
-            Text::new("1847  2026  €12,408.50").with_style(
-                TextStyle::new(20.0)
-                    .with_family(FontChoice::Serif)
-                    .with_numeric_style(NumericStyle::TabularOldstyle),
-            ),
+            "Before: proportional lining figures",
+            Text::new("1847  2026  €12,408.50")
+                .with_role(reading())
+                .with_numeric_style(NumericStyle::ProportionalLining),
+            "After: tabular old-style figures",
+            Text::new("1847  2026  €12,408.50")
+                .with_role(reading())
+                .with_numeric_style(NumericStyle::TabularOldstyle),
         ))
         .push(specimen_pair(
             theme,
-            "BEFORE · default spacing",
-            Text::new("A WELL-SPACED HEADING").with_style(
-                TextStyle::new(18.0)
-                    .with_weight(TextWeight::Semibold)
-                    .with_family(FontChoice::Serif),
-            ),
-            "AFTER · +0.075em tracking",
-            Text::new("A WELL-SPACED HEADING").with_style(
-                TextStyle::new(18.0)
-                    .with_weight(TextWeight::Semibold)
-                    .with_family(FontChoice::Serif)
-                    .with_tracking(0.075),
-            ),
-        ))
-        .push(specimen_pair(
-            theme,
-            "BEFORE · Adwaita Sans wght 300 · opsz 14",
-            Text::new("Variable fonts adapt continuously").with_style(
-                TextStyle::new(23.0)
-                    .with_family(FontChoice::Named("Adwaita Sans".into()))
-                    .with_font_variation(OpenTypeTag::WEIGHT, 300.0)
-                    .with_optical_sizing(OpticalSizing::Value(14.0)),
-            ),
-            "AFTER · Adwaita Sans wght 720 · optical sizing auto",
-            Text::new("Variable fonts adapt continuously").with_style(
-                TextStyle::new(23.0)
-                    .with_family(FontChoice::Named("Adwaita Sans".into()))
-                    .with_font_variation(OpenTypeTag::WEIGHT, 720.0)
-                    .with_optical_sizing(OpticalSizing::Auto),
-            ),
+            "Before: Adwaita Sans wght 300 · opsz 14",
+            Text::new("Variable fonts adapt continuously")
+                .with_role(TextRole::Title)
+                .with_font_family(FontChoice::Named("Adwaita Sans".into()))
+                .with_font_variation(OpenTypeTag::WEIGHT, 300.0)
+                .with_optical_sizing(OpticalSizing::Value(14.0)),
+            "After: Adwaita Sans wght 720 · optical sizing auto",
+            Text::new("Variable fonts adapt continuously")
+                .with_role(TextRole::Title)
+                .with_font_family(FontChoice::Named("Adwaita Sans".into()))
+                .with_font_variation(OpenTypeTag::WEIGHT, 720.0)
+                .with_optical_sizing(OpticalSizing::Auto),
         ))
 }
 
-/// The remaining three BEFORE/AFTER specimen pairs (wrapping through
-/// hanging punctuation), plus the pagination note. Split out of
+/// The remaining BEFORE/AFTER specimen pairs (wrapping through hanging
+/// punctuation), plus the pagination note. Split out of
 /// `build_typography_showcase` to keep that under the line cap.
 fn typography_wrapping_and_punctuation(column: Column, theme: &Theme) -> Column {
     column
-                .push(specimen_pair(
-                    theme,
-                    "BEFORE · ordinary wrapping",
-                    Text::new(
-                        "A balanced heading wraps its thought into lines of comparable visual weight.",
-                    )
-                    .with_style(
-                        TextStyle::new(21.0)
-                            .with_line_height(1.25)
-                            .with_family(FontChoice::Serif),
-                    ),
-                    "AFTER · balanced wrapping",
-                    Text::new(
-                        "A balanced heading wraps its thought into lines of comparable visual weight.",
-                    )
-                    .with_style(
-                        TextStyle::new(21.0)
-                            .with_line_height(1.25)
-                            .with_family(FontChoice::Serif),
-                    )
-                    .with_balanced_wrap(),
-                ))
-                .push(specimen_pair(
-                    theme,
-                    "BEFORE · ragged start",
-                    Text::new(
-                        "Good typography makes a paragraph feel even before it is read. Spacing should support the argument without calling attention to itself.",
-                    )
-                    .with_style(
-                        TextStyle::new(16.0)
-                            .with_line_height(1.5)
-                            .with_family(FontChoice::Serif),
-                    ),
-                    "AFTER · full justification",
-                    Text::new(
-                        "Good typography makes a paragraph feel even before it is read. Spacing should support the argument without calling attention to itself.",
-                    )
-                    .with_style(
-                        TextStyle::new(16.0)
-                            .with_line_height(1.5)
-                            .with_family(FontChoice::Serif)
-                            .with_align(ParagraphAlign::Justified),
-                    ),
-                ))
-                .push(specimen_pair(
-                    theme,
-                    "BEFORE · punctuation inside the measure",
-                    Text::new("“A composed edge,” she wrote, “lets the words lead.”").with_style(
-                        TextStyle::new(20.0)
-                            .with_line_height(1.4)
-                            .with_family(FontChoice::Serif),
-                    ),
-                    "AFTER · opening and closing punctuation hangs",
-                    Text::new("“A composed edge,” she wrote, “lets the words lead.”").with_style(
-                        TextStyle::new(20.0)
-                            .with_line_height(1.4)
-                            .with_family(FontChoice::Serif)
-                            .with_hanging_punctuation(HangingPunctuation::BOTH),
-                    ),
-                ))
-                .push(dim(
-                    "PAGINATION · RichTextLayout enforces configurable 2-line widow/orphan minima at page and column breaks.",
-                    theme,
-                ))
+        .push(specimen_pair(
+            theme,
+            "Before: ordinary wrapping",
+            Text::new("A balanced heading wraps its thought into lines of comparable visual weight.")
+                .with_role(TextRole::Title),
+            "After: balanced wrapping",
+            Text::new("A balanced heading wraps its thought into lines of comparable visual weight.")
+                .with_role(TextRole::Title)
+                .with_balanced_wrap(),
+        ))
+        .push(specimen_pair(
+            theme,
+            "Before: ragged start",
+            Text::new(
+                "Good typography makes a paragraph feel even before it is read. Spacing should support the argument without calling attention to itself.",
+            )
+            .with_role(TextRole::Reading),
+            "After: full justification",
+            Text::new(
+                "Good typography makes a paragraph feel even before it is read. Spacing should support the argument without calling attention to itself.",
+            )
+            .with_role(TextRole::Reading)
+            .with_align(ParagraphAlign::Justified),
+        ))
+        .push(specimen_pair(
+            theme,
+            "Before: punctuation inside the measure",
+            Text::new("“A composed edge,” she wrote, “lets the words lead.”")
+                .with_role(TextRole::Reading),
+            "After: opening and closing punctuation hangs",
+            Text::new("“A composed edge,” she wrote, “lets the words lead.”")
+                .with_role(TextRole::Reading)
+                .with_hanging_punctuation(HangingPunctuation::BOTH),
+        ))
+        .push(dim(
+            "Pagination: RichTextLayout enforces configurable two-line widow and orphan minima at page and column breaks.",
+            theme,
+        ))
 }
 
 /// Code sample, multilingual scripts, hyphenation demo, `BiDi` text and

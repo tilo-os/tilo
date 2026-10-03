@@ -12,6 +12,7 @@
 
 /// Returns true when `pos` lies inside `bounds = [x, y, w, h]`, half-open
 /// on the right and bottom edges, matching taffy-derived `Rect`s elsewhere.
+use ui::TextRole;
 pub fn cursor_in_bounds(pos: [f32; 2], bounds: [f32; 4]) -> bool {
     let [x, y, w, h] = bounds;
     let [px, py] = pos;
@@ -165,7 +166,7 @@ impl ui::widget::Widget for RemoteCursorOverlay {
         // immediate-mode chrome passes do, and restored below.
         let renderer_scale = text_renderer.text_scale();
         text_renderer.set_text_scale(1.0);
-        let label_size = theme.tokens.typography.scale.sm;
+        let label_style = theme.text(TextRole::Caption);
         let chip_bg = theme.tokens.colors.surfaces.raised;
         // The chip's edge derives from its own fill (HIG §9.5): the declared
         // border was three shades off `raised` on dark and vanished.
@@ -188,7 +189,7 @@ impl ui::widget::Widget for RemoteCursorOverlay {
             // The chip wraps the label's measured line, not its font size:
             // a 12 px face lays out taller than 12 px, and sizing the chip
             // from the size alone let the glyphs ride onto the underline.
-            let (text_w, text_h) = text_renderer.measure(&cursor.label, label_size, None);
+            let (text_w, text_h) = text_renderer.measure_style(&cursor.label, None, &label_style);
             let chip_size = vello::kurbo::Size::new(
                 f64::from(text_w) + CHIP_PADDING_X * 2.0,
                 f64::from(text_h) + CHIP_PADDING_Y * 2.0,
@@ -230,16 +231,16 @@ impl ui::widget::Widget for RemoteCursorOverlay {
             );
 
             let text_y = chip_bounds.y0 + CHIP_PADDING_Y;
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &cursor.label,
-                label_size,
                 label_color,
                 transform.pre_translate(vello::kurbo::Vec2::new(
                     chip_bounds.x0 + CHIP_PADDING_X,
                     text_y,
                 )),
                 None,
+                &label_style,
             );
         }
 

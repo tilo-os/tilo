@@ -28,6 +28,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::i18n::t;
+use ui::TextRole;
 
 pub const EMPTY_WORKSPACE_OPEN_APP: &str = "shell.empty-workspace.open-app";
 
@@ -183,7 +184,8 @@ impl CollaborationLaunchpad {
             selected: 0,
             app_button_size: (160.0, 36.0),
             hint_line_h: f64::from(
-                ui::text_render::TextStyle::new(ui::tokens::TypeScale::default().xs)
+                ui::Theme::dark()
+                    .text(ui::TextRole::Caption)
                     .line_height_px(),
             ),
             dirty: true,
@@ -498,10 +500,10 @@ impl Widget for CollaborationLaunchpad {
         // Theme tokens already include accessibility scaling; TextRenderer
         // also applies its configured scale to authored font sizes.
         let scale = text.text_scale();
-        let base = theme.tokens.typography.scale.base / scale;
-        let small = theme.tokens.typography.scale.sm / scale;
-        let caption = theme.tokens.typography.scale.xs / scale;
-        let heading = theme.tokens.typography.scale.x3l / scale;
+        let base = theme.tokens.typography.size(TextRole::Body) / scale;
+        let small = theme.tokens.typography.size(TextRole::Caption) / scale;
+        let caption = theme.tokens.typography.size(TextRole::Caption) / scale;
+        let heading = theme.tokens.typography.size(TextRole::Display) / scale;
         let (button_w, button_h) = text.measure(&t("launchpad-open-app"), base, None);
         self.app_button_size = (
             (f64::from(button_w) + 32.0).max(160.0),
@@ -636,7 +638,7 @@ impl Widget for CollaborationLaunchpad {
             theme,
             &ButtonFace::new(button, &t("launchpad-open-app"))
                 .radius(ui::chrome::ChromeRole::Control.radius(theme, button.height()))
-                .text_size(base)
+                .control_size(ui::widget::ControlSize::Large)
                 .focused(self.focused && self.selected == 6)
                 .hovered(button.contains(self.last_cursor)),
         );
@@ -855,7 +857,7 @@ mod tests {
                     let button = pad.app_button_rect();
                     let (label_w, label_h) = text.measure(
                         "Open an app",
-                        theme.tokens.typography.scale.base / scale,
+                        theme.tokens.typography.size(TextRole::Body) / scale,
                         None,
                     );
                     assert!(

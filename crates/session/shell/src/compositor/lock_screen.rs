@@ -746,7 +746,7 @@ fn draw_lock_widget(
     // do, and restored at the end.
     let renderer_scale = text.text_scale();
     text.set_text_scale(1.0);
-    let type_scale = ui::tokens::TypeScale::default();
+    let type_scale = ui::tokens::Typography::default();
     if !view.clock.is_empty() {
         let size = fitted_clock_size(
             text,
@@ -777,7 +777,7 @@ fn draw_lock_widget(
             scene,
             text,
             view.date,
-            scaled_text_size(type_scale.lg, layout.scale, theme),
+            scaled_text_size(type_scale.size(ui::TextRole::Heading), layout.scale, theme),
             theme.text_primary,
             layout.date,
             layout.clock.x1 < layout.panel.x0,
@@ -813,7 +813,7 @@ fn draw_lock_widget(
         scene,
         text,
         &ui::i18n::I18nManager::lookup_plain("lock-welcome-back"),
-        scaled_text_size(type_scale.xl, layout.scale, theme),
+        scaled_text_size(type_scale.size(ui::TextRole::Title), layout.scale, theme),
         theme.text_primary,
         layout.title,
     );
@@ -830,7 +830,7 @@ fn draw_lock_widget(
             scene,
             text,
             &label,
-            scaled_text_size(type_scale.sm, layout.scale, theme),
+            scaled_text_size(type_scale.size(ui::TextRole::Caption), layout.scale, theme),
             theme.text_dim,
             layout.notifications,
         );
@@ -882,9 +882,10 @@ fn draw_lock_media(
         player,
         image.as_ref(),
     );
-    let type_scale = ui::tokens::TypeScale::default();
-    let title_size = scaled_text_size(type_scale.sm, layout.scale, theme);
-    let caption_size = scaled_text_size(type_scale.xs, layout.scale, theme);
+    let type_scale = ui::tokens::Typography::default();
+    let title_size = scaled_text_size(type_scale.size(ui::TextRole::Caption), layout.scale, theme);
+    let caption_size =
+        scaled_text_size(type_scale.size(ui::TextRole::Caption), layout.scale, theme);
     #[allow(
         clippy::cast_possible_truncation,
         reason = "lock output geometry is bounded to compositor dimensions; f32 width is sufficient for text shaping"
@@ -941,7 +942,7 @@ fn draw_secondary_lock_widget(
     // Same renderer reset as the primary widget (HIG §7a).
     let renderer_scale = text.text_scale();
     text.set_text_scale(1.0);
-    let type_scale = ui::tokens::TypeScale::default();
+    let type_scale = ui::tokens::Typography::default();
     let text_left = layout.output.x0 + 24.0 * layout.scale;
     let text_right = layout.output.x1 - 24.0 * layout.scale;
     if !view.clock.is_empty() {
@@ -959,7 +960,7 @@ fn draw_secondary_lock_widget(
             scene,
             text,
             view.date,
-            scaled_text_size(type_scale.lg, layout.scale, theme),
+            scaled_text_size(type_scale.size(ui::TextRole::Heading), layout.scale, theme),
             theme.text_primary,
             Rect::new(text_left, layout.date.y0, text_right, layout.date.y1),
         );
@@ -974,7 +975,7 @@ fn draw_secondary_lock_widget(
         scene,
         text,
         &t("lock-screen-locked"),
-        scaled_text_size(type_scale.lg, layout.scale, theme),
+        scaled_text_size(type_scale.size(ui::TextRole::Heading), layout.scale, theme),
         theme.text_primary,
         Rect::new(
             message.x0,
@@ -987,7 +988,7 @@ fn draw_secondary_lock_widget(
         scene,
         text,
         &t("lock-screen-prompt-elsewhere"),
-        scaled_text_size(type_scale.sm, layout.scale, theme),
+        scaled_text_size(type_scale.size(ui::TextRole::Caption), layout.scale, theme),
         theme.text_primary,
         Rect::new(
             message.x0,
@@ -1174,7 +1175,11 @@ fn draw_password_field(
             scene,
             text,
             &t("lock-screen-enter-password"),
-            scaled_text_size(ui::tokens::TypeScale::default().base, layout.scale, theme),
+            scaled_text_size(
+                ui::tokens::Typography::default().size(ui::TextRole::Body),
+                layout.scale,
+                theme,
+            ),
             theme.text_dim,
             layout.password,
         );
@@ -1216,7 +1221,7 @@ fn draw_status(
     // One status role for every state (Control sub-line, HIG §9.6): the
     // 14 / 13 / 12 the three states used to pick between were not sizes on
     // the scale and made the row jump as the state changed.
-    let type_scale = ui::tokens::TypeScale::default();
+    let type_scale = ui::tokens::Typography::default();
     let (value, color) = if view.verifying {
         (t("lock-screen-verifying"), theme.text_dim)
     } else if let Some(err) = view.error {
@@ -1228,7 +1233,7 @@ fn draw_status(
             scene,
             text,
             &retry,
-            scaled_text_size(type_scale.sm, layout.scale, theme),
+            scaled_text_size(type_scale.size(ui::TextRole::Caption), layout.scale, theme),
             theme.tokens.colors.semantic.danger,
             layout.status,
         );
@@ -1240,7 +1245,7 @@ fn draw_status(
         scene,
         text,
         &value,
-        scaled_text_size(type_scale.sm, layout.scale, theme),
+        scaled_text_size(type_scale.size(ui::TextRole::Caption), layout.scale, theme),
         color,
         layout.status,
     );

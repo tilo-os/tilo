@@ -2220,26 +2220,29 @@ fn ui_graph_edits_are_typed_atomic_and_roll_back_together() {
             &graph,
             UiGraphEdit::SetProperty {
                 id: "title".into(),
-                property: "size".into(),
-                value: serde_json::json!(24.0),
+                property: "role".into(),
+                value: serde_json::json!("large-title"),
             },
         )
-        .expect("set typed size");
+        .expect("set typed role");
         let source = std::fs::read_to_string(&graph).unwrap();
         assert!(source.contains("Recent projects"));
-        assert!(source.contains("\"size\": 24.0"));
+        assert!(source.contains("\"role\": \"large-title\""));
 
         edit_ui_graph(
             &graph,
             UiGraphEdit::UnsetProperty {
                 id: "title".into(),
-                property: "size".into(),
+                property: "role".into(),
             },
         )
         .expect("restore schema default");
         assert!(matches!(
             load_ui_graph(&graph).unwrap().node("title"),
-            Some(tilo_ui_graph::UiNode::Text { size: None, .. })
+            Some(tilo_ui_graph::UiNode::Text {
+                role: tilo_ui_graph::UiTextRole::Body,
+                ..
+            })
         ));
 
         let before_invalid = std::fs::read(&graph).unwrap();
@@ -2247,8 +2250,8 @@ fn ui_graph_edits_are_typed_atomic_and_roll_back_together() {
             &graph,
             UiGraphEdit::SetProperty {
                 id: "title".into(),
-                property: "size".into(),
-                value: serde_json::json!("large"),
+                property: "role".into(),
+                value: serde_json::json!("overline"),
             },
         )
         .unwrap_err();
@@ -2279,8 +2282,8 @@ fn ui_graph_edits_are_typed_atomic_and_roll_back_together() {
                   {"op":"insert","parent":"root","index":2,"node":{"type":"button","id":"create","label":"Create","style":"primary"}},
                   {"op":"move","id":"create","parent":"root","index":1},
                   {"op":"set-property","id":"create","property":"enabled","value":false},
-                  {"op":"set-property","id":"title","property":"size","value":24},
-                  {"op":"unset-property","id":"title","property":"size"}
+                  {"op":"set-property","id":"title","property":"role","value":"heading"},
+                  {"op":"unset-property","id":"title","property":"role"}
                 ]"#,
             )
             .expect("parse mixed edit batch");
@@ -2291,7 +2294,7 @@ fn ui_graph_edits_are_typed_atomic_and_roll_back_together() {
                 .contains("\"op\":\"set-property\"")
         );
         let null_edit = parse_ui_graph_edits(
-            r#"[{"op":"set-property","id":"title","property":"size","value":null}]"#,
+            r#"[{"op":"set-property","id":"title","property":"role","value":null}]"#,
         )
         .unwrap();
         assert!(matches!(
@@ -2318,7 +2321,7 @@ fn ui_graph_edits_are_typed_atomic_and_roll_back_together() {
         ));
         assert!(matches!(
             document.node("title"),
-            Some(tilo_ui_graph::UiNode::Text { size: None, .. })
+            Some(tilo_ui_graph::UiNode::Text { .. })
         ));
         assert!(
             std::fs::read_to_string(&graph)
@@ -2330,7 +2333,7 @@ fn ui_graph_edits_are_typed_atomic_and_roll_back_together() {
         let invalid = parse_ui_graph_edits(
             r#"[
                   {"op":"set-property","id":"title","property":"text.value","value":"Do not publish"},
-                  {"op":"set-property","id":"title","property":"size","value":"large"}
+                  {"op":"set-property","id":"title","property":"role","value":"overline"}
                 ]"#,
         )
         .unwrap();

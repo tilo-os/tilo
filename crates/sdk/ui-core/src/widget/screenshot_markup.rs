@@ -31,7 +31,7 @@ use winit::{
     keyboard::{Key, NamedKey},
 };
 
-use crate::text_metrics::renderer_type_size;
+use crate::tokens::TextRole;
 use crate::{
     ColorCompat,
     icons::{self, Icon},
@@ -693,54 +693,54 @@ impl Widget for ScreenshotMarkup {
         // centre line. The caption follows the measured title rather than a
         // fixed offset, so a larger type scale cannot run the two together.
         let title = "Markup";
-        let title_size = renderer_type_size(tr, theme.tokens.typography.scale.base);
-        let caption_size = renderer_type_size(tr, theme.tokens.typography.scale.xs);
-        let (title_w, title_h) = tr.measure_weighted(title, title_size, None, TextWeight::Semibold);
-        let (_, caption_h) = tr.measure_weighted("Ag", caption_size, None, TextWeight::Regular);
+        let title_style = theme.text(TextRole::Body);
+        let caption_style = theme.text(TextRole::Caption);
+        let (title_w, title_h) = tr.measure_style(
+            title,
+            None,
+            &title_style.clone().with_weight(TextWeight::Semibold),
+        );
+        let (_, caption_h) = tr.measure_style("Ag", None, &caption_style);
         let header_cy = self.rect.y0 + HEADER_BAND_H / 2.0;
         let title_x = self.rect.x0 + CANVAS_INSET;
-        tr.draw_text_weighted(
+        tr.draw_style(
             scene,
             title,
-            title_size,
             c.text_primary.with_alpha_factor(enter as f32),
             transform.pre_translate((title_x, header_cy - f64::from(title_h) / 2.0).into()),
             None,
-            TextWeight::Semibold,
+            &title_style.clone().with_weight(TextWeight::Semibold),
         );
         let caption_y = header_cy - f64::from(caption_h) / 2.0;
         let hint = format!(
             "{:.0}% · wheel zoom · middle-drag",
             self.display_scale() * 100.0
         );
-        let (hint_w, _) = tr.measure_weighted(&hint, caption_size, None, TextWeight::Regular);
+        let (hint_w, _) = tr.measure_style(&hint, None, &caption_style);
         let hint_x = self.rect.x1 - CANVAS_INSET - f64::from(hint_w);
         let caption_x = title_x + f64::from(title_w) + HEADER_GAP;
         // Elided to the room left before the hint, never wrapped: a wrap
         // width would fold the caption into a column under the header.
-        let caption = tr.elide_to_width_weighted(
+        let caption = tr.elide_to_width_style(
             &format!("{} × {} · original pixels", self.width, self.height),
-            caption_size,
             (hint_x - HEADER_GAP - caption_x).max(0.0) as f32,
-            TextWeight::Regular,
+            &caption_style,
         );
-        tr.draw_text_weighted(
+        tr.draw_style(
             scene,
             &caption,
-            caption_size,
             c.text_dim.with_alpha_factor(enter as f32),
             transform.pre_translate((caption_x, caption_y).into()),
             None,
-            TextWeight::Regular,
+            &caption_style,
         );
-        tr.draw_text_weighted(
+        tr.draw_style(
             scene,
             &hint,
-            caption_size,
             c.text_dim.with_alpha_factor(enter as f32),
             transform.pre_translate((hint_x, caption_y).into()),
             None,
-            TextWeight::Regular,
+            &caption_style,
         );
         surface::shadow(
             scene,
@@ -864,23 +864,24 @@ impl Widget for ScreenshotMarkup {
                 c.text_dim,
                 1.4,
             );
-            let (_, opaque_h) = tr.measure_weighted(
+            let (_, opaque_h) = tr.measure_style(
                 "Opaque",
-                renderer_type_size(tr, theme.tokens.typography.scale.xs),
                 None,
-                TextWeight::Medium,
+                &theme
+                    .text(TextRole::Caption)
+                    .with_weight(TextWeight::Medium),
             );
             // Elided to the badge, which may have shrunk to the room left.
-            let opaque = tr.elide_to_width_weighted(
+            let opaque = tr.elide_to_width_style(
                 "Opaque",
-                renderer_type_size(tr, theme.tokens.typography.scale.xs),
                 (badge.width() - 29.0 - 8.0).max(0.0) as f32,
-                TextWeight::Medium,
+                &theme
+                    .text(TextRole::Caption)
+                    .with_weight(TextWeight::Medium),
             );
-            tr.draw_text_weighted(
+            tr.draw_style(
                 scene,
                 &opaque,
-                renderer_type_size(tr, theme.tokens.typography.scale.xs),
                 c.text_dim,
                 transform.pre_translate(
                     (
@@ -890,7 +891,9 @@ impl Widget for ScreenshotMarkup {
                         .into(),
                 ),
                 None,
-                TextWeight::Medium,
+                &theme
+                    .text(TextRole::Caption)
+                    .with_weight(TextWeight::Medium),
             );
         }
         for (id, r) in self.controls() {
@@ -999,22 +1002,24 @@ impl Widget for ScreenshotMarkup {
                 1.5,
             );
             if id == "save" {
-                let (_, save_h) = tr.measure_weighted(
+                let (_, save_h) = tr.measure_style(
                     "Save",
-                    renderer_type_size(tr, theme.tokens.typography.scale.xs),
                     None,
-                    TextWeight::Semibold,
+                    &theme
+                        .text(TextRole::Caption)
+                        .with_weight(TextWeight::Semibold),
                 );
-                tr.draw_text_weighted(
+                tr.draw_style(
                     scene,
                     "Save",
-                    renderer_type_size(tr, theme.tokens.typography.scale.xs),
                     c.intent.on_inverted,
                     transform.pre_translate(
                         (r.x0 + 30.0, r.center().y - f64::from(save_h) / 2.0).into(),
                     ),
                     None,
-                    TextWeight::Semibold,
+                    &theme
+                        .text(TextRole::Caption)
+                        .with_weight(TextWeight::Semibold),
                 );
             }
         }
@@ -1052,8 +1057,12 @@ impl Widget for ScreenshotMarkup {
         {
             // Measured, not estimated from a character count: the estimate
             // both clipped wide labels and over-padded narrow ones.
-            let tip_size = renderer_type_size(tr, theme.tokens.typography.scale.xs);
-            let (label_w, label_h) = tr.measure_weighted(label, tip_size, None, TextWeight::Medium);
+            let tip_style = theme.text(TextRole::Caption);
+            let (label_w, label_h) = tr.measure_style(
+                label,
+                None,
+                &tip_style.clone().with_weight(TextWeight::Medium),
+            );
             let width = (f64::from(label_w) + 18.0).max(48.0);
             let tooltip_y = if anchor.y0 < self.toolbar.y0 {
                 anchor.y0 - 17.0
@@ -1076,10 +1085,9 @@ impl Widget for ScreenshotMarkup {
                 None,
                 &RoundedRect::from_rect(tooltip.inflate(-0.5, -0.5), 12.5),
             );
-            tr.draw_text_weighted(
+            tr.draw_style(
                 scene,
                 label,
-                tip_size,
                 c.text_primary,
                 transform.pre_translate(
                     (
@@ -1089,7 +1097,7 @@ impl Widget for ScreenshotMarkup {
                         .into(),
                 ),
                 None,
-                TextWeight::Medium,
+                &tip_style.clone().with_weight(TextWeight::Medium),
             );
         }
         scene.pop_layer();

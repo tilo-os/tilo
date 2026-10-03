@@ -44,10 +44,10 @@ use winit::keyboard::{Key, NamedKey};
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
-use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::text_selection::Selection;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::block_editor::BlockKind;
@@ -478,21 +478,21 @@ impl SlashMenu {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        font_size: f32,
+        font_style: &TextStyle,
     ) {
         let rect = self.rect();
         let tokens = &theme.tokens;
         // Empty-state hint when the filter matches nothing.
         if self.visible.is_empty() {
-            let (_, hint_h) = text_renderer.measure("No matches", font_size, None);
+            let (_, hint_h) = text_renderer.measure_style("No matches", None, font_style);
             let y = self.rows_top() + (ROW_HEIGHT - f64::from(hint_h)) / 2.0;
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 "No matches",
-                font_size,
                 tokens.colors.text_dim,
                 translated(transform, rect.x0 + PADDING_X, y),
                 None,
+                font_style,
             );
         }
     }
@@ -581,11 +581,11 @@ impl SlashMenu {
                 filter_rect.x1 - 6.0,
                 filter_rect.y1,
             ),
-            &TextStyle::new(tokens.typography.scale.sm),
+            &theme.text(TextRole::Caption),
             QueryInk::of(&tokens.colors),
         );
 
-        let font_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+        let font_style = tokens.typography.style(TextRole::Caption);
         // The armed row's ink is resolved against the accent it sits on, the
         // same way `Popover` and `Dropdown` do; `text_primary` is only legible
         // there on a dark theme.
@@ -609,12 +609,11 @@ impl SlashMenu {
             }
             // Centre on the measured line, not the font size — the two differ
             // by the face's ascent/descent and the label drifted low.
-            let (_, label_h) = text_renderer.measure(row.label, font_size, None);
+            let (_, label_h) = text_renderer.measure_style(row.label, None, &font_style);
             let text_y = row_rect.y0 + (row_rect.height() - f64::from(label_h)) / 2.0;
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 row.label,
-                font_size,
                 if armed {
                     armed_ink
                 } else {
@@ -622,9 +621,10 @@ impl SlashMenu {
                 },
                 translated(transform, row_rect.x0 + PADDING_X, text_y),
                 None,
+                &font_style,
             );
         }
-        self.draw_empty_hint(scene, transform, text_renderer, theme, font_size);
+        self.draw_empty_hint(scene, transform, text_renderer, theme, &font_style);
     }
 }
 

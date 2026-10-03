@@ -23,11 +23,11 @@ use crate::color_compat::ColorCompat;
 use crate::icons::Icon;
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
-use crate::text_render::{TextRenderer, TextStyle};
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use crate::widget::data_table::renderer_type_size;
 
 const PAD_X: f64 = 14.0;
 const PAD_Y: f64 = 12.0;
@@ -121,10 +121,8 @@ fn paint_banner(
     icon.draw_with_stroke(ctx.scene, transform, icon_rect, accent, 1.6);
 
     let text_x = icon_rect.x1 + GAP;
-    let title_size = renderer_type_size(ctx.text, theme.tokens.typography.scale.base);
-    let msg_size = renderer_type_size(ctx.text, theme.tokens.typography.scale.sm);
-    let title_style = TextStyle::new(title_size);
-    let message_style = TextStyle::new(msg_size);
+    let title_style = theme.text(TextRole::Body).strong();
+    let message_style = theme.text(TextRole::Caption);
     let text_width = banner_text_width(rect, dismissible);
     let (_, title_h) = ctx
         .text
@@ -327,12 +325,10 @@ impl Banner {
     fn content_height(&self, theme: &Theme, text_renderer: &mut TextRenderer, width: f32) -> f64 {
         let rect = Rect::new(0.0, 0.0, f64::from(width.max(1.0)), 1.0);
         let text_width = banner_text_width(rect, self.dismissible);
-        let title_style =
-            text_renderer.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.base));
+        let title_style = theme.text(TextRole::Body).strong();
         let (_, title_h) = text_renderer.measure_style(&self.title, Some(text_width), &title_style);
         let message_h = self.message.as_ref().map_or(0.0, |message| {
-            let style = text_renderer
-                .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm));
+            let style = theme.text(TextRole::Caption);
             text_renderer
                 .measure_style(message, Some(text_width), &style)
                 .1
@@ -565,10 +561,10 @@ mod tests {
             let text_width =
                 banner_text_width(Rect::new(0.0, 0.0, f64::from(width), height), false);
             let (_, message_height) =
-                text.measure(message, theme.tokens.typography.scale.sm, Some(text_width));
+                text.measure_style(message, Some(text_width), &theme.text(TextRole::Caption));
 
             assert!(
-                message_height > theme.tokens.typography.scale.sm * 1.25,
+                message_height > theme.tokens.typography.size(TextRole::Caption) * 1.25,
                 "the recovery copy must wrap instead of escaping the banner"
             );
             assert!(

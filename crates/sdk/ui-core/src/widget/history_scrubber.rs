@@ -23,9 +23,9 @@ use vello::peniko::Color;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::presence::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::history::{HistoryEntry, HistoryEntryId, format_relative_time};
@@ -54,7 +54,7 @@ const BUTTON_H: f64 = 28.0;
 /// a 1000 px button row would be a metre of empty box for three words.
 const NAME_FIELD_W: f64 = 300.0;
 const BUTTON_Y_OFFSET: f64 = 24.0;
-const POPOVER_H: f64 = 36.0;
+const POPOVER_H: f64 = 38.0;
 /// Breathing room the popover's text stack keeps from its top and bottom
 /// edge — a hairline, half the smallest spacing step; a stack that cannot
 /// keep it drops its second line.
@@ -795,7 +795,7 @@ impl HistoryScrubber {
         let track = self.track_rect();
         // `scale.xs` is the floor of the type scale; the band caption was
         // three points under `sm`, which landed below it.
-        let size = renderer_type_size(tr, theme.tokens.typography.scale.xs);
+        let style = theme.text(TextRole::Caption);
 
         // Segments abut at the tick each one ends on so every visible edge is
         // a boundary; spanning only first-tick..last-tick would leave a
@@ -844,13 +844,12 @@ impl HistoryScrubber {
                 None => (g.derived.as_str(), colors.text_dim),
             };
             let budget = seg.width() - 8.0;
-            let shown = fit(tr, label, size, budget);
-            let (lw, lh) = tr.measure(&shown, size, None);
+            let shown = fit(tr, label, &style, budget);
+            let (lw, lh) = tr.measure_style(&shown, None, &style);
             if !shown.is_empty() && f64::from(lw) <= budget && shown.chars().count() > 2 {
-                tr.draw_text(
+                tr.draw_style(
                     scene,
                     &shown,
-                    size,
                     ink,
                     translated(
                         transform,
@@ -860,6 +859,7 @@ impl HistoryScrubber {
                         ),
                     ),
                     None,
+                    &style,
                 );
             }
 
@@ -943,13 +943,12 @@ impl HistoryScrubber {
                 &crate::surface::edge_outline(rect, radius),
             );
         }
-        let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
-        let shown = fit(text_renderer, label, size, rect.width() - 10.0);
-        let (w, h) = text_renderer.measure(&shown, size, None);
-        text_renderer.draw_text(
+        let style = theme.text(TextRole::Caption);
+        let shown = fit(text_renderer, label, &style, rect.width() - 10.0);
+        let (w, h) = text_renderer.measure_style(&shown, None, &style);
+        text_renderer.draw_style(
             scene,
             &shown,
-            size,
             text_color,
             translated(
                 transform,
@@ -959,6 +958,7 @@ impl HistoryScrubber {
                 ),
             ),
             None,
+            &style,
         );
     }
 
@@ -971,12 +971,11 @@ impl HistoryScrubber {
         theme: &Theme,
     ) {
         let label = "No history yet";
-        let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
-        let (w, h) = text_renderer.measure(label, size, None);
-        text_renderer.draw_text(
+        let style = theme.text(TextRole::Caption);
+        let (w, h) = text_renderer.measure_style(label, None, &style);
+        text_renderer.draw_style(
             scene,
             label,
-            size,
             theme.tokens.colors.text_dim,
             translated(
                 transform,
@@ -986,6 +985,7 @@ impl HistoryScrubber {
                 ),
             ),
             None,
+            &style,
         );
     }
 
@@ -1120,53 +1120,51 @@ impl HistoryScrubber {
             Some(s)
         });
         let budget = pop.width() - 12.0;
-        let head_size = renderer_type_size(
-            text_renderer,
-            (theme.tokens.typography.scale.sm - 1.0).max(10.0),
-        );
-        // The floor of the type scale, not three points under `sm`.
-        let sub_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
+        let head_style = theme.text(TextRole::Caption).strong();
+        let sub_style = theme.text(TextRole::Caption);
         let colors = &theme.tokens.colors;
         // Each line is fitted to the width and measured at the size it is
         // painted with; the stack is then centred as one block on the
         // popover, each line on its own measured box rather than at two
         // hand-picked offsets.
-        let mut lines: Vec<(String, f32, Color, f32, f32)> = Vec::new();
-        let mut push = |text_renderer: &mut TextRenderer, text: &str, size: f32, ink: Color| {
-            let drawn = fit(text_renderer, text, size, budget);
-            let (w, h) = text_renderer.measure(&drawn, size, None);
-            lines.push((drawn, size, ink, w, h));
+        let mut lines: Vec<(String, &TextStyle, Color, f32, f32)> = Vec::new();
+        let push = |text_renderer: &mut TextRenderer, text: &str, style: &TextStyle, ink: Color| {
+            let drawn = fit(text_renderer, text, style, budget);
+            let (w, h) = text_renderer.measure_style(&drawn, None, style);
+            (drawn, w, h, ink)
         };
-        match group_line {
-            Some(head) => {
-                push(text_renderer, &head, head_size, colors.text_primary);
-                push(text_renderer, &detail, sub_size, colors.text_dim);
-            }
-            None => push(text_renderer, &detail, head_size, colors.text_primary),
+        if let Some(head) = group_line {
+            let (d, w, h, ink) = push(text_renderer, &head, &head_style, colors.text_primary);
+            lines.push((d, &head_style, ink, w, h));
+            let (d, w, h, ink) = push(text_renderer, &detail, &sub_style, colors.text_dim);
+            lines.push((d, &sub_style, ink, w, h));
+        } else {
+            let (d, w, h, ink) = push(text_renderer, &detail, &head_style, colors.text_primary);
+            lines.push((d, &head_style, ink, w, h));
         }
         // The popover cannot grow — below it sit the band and the handle's
         // reach — so when the two-line stack no longer fits its box (2×
         // type), the change line yields and the version name stays; the
         // screen reader still gets both. Painting both would have pushed the
         // detail line down over the band.
-        let stack_h = |lines: &[(String, f32, Color, f32, f32)]| -> f64 {
+        let stack_h = |lines: &[(String, &TextStyle, Color, f32, f32)]| -> f64 {
             lines.iter().map(|l| f64::from(l.4)).sum()
         };
         if lines.len() > 1 && stack_h(&lines) > pop.height() - POPOVER_PAD_Y * 2.0 {
             lines.truncate(1);
         }
         let mut top = pop.center().y - stack_h(&lines) / 2.0;
-        for (drawn, size, ink, w, h) in &lines {
-            text_renderer.draw_text(
+        for (drawn, style, ink, w, h) in &lines {
+            text_renderer.draw_style(
                 scene,
                 drawn,
-                *size,
                 *ink,
                 translated(
                     transform,
                     (pop.x0 + (pop.width() - f64::from(*w)) / 2.0, top),
                 ),
                 None,
+                style,
             );
             top += f64::from(*h);
         }
@@ -1187,19 +1185,18 @@ impl HistoryScrubber {
         if let Some((_, field)) = self.naming.as_ref() {
             let last = layout.iter().map(|(_, r, _)| r.x1).fold(0.0_f64, f64::max);
             let box_rect = self.name_field_rect();
-            let size = theme.tokens.typography.scale.sm;
-            field.draw(scene, transform, text_renderer, theme, box_rect, size);
+            let style = theme.text(TextRole::Caption);
+            field.draw(scene, transform, text_renderer, theme, box_rect, &style);
             // The field replaced the buttons, so nothing on screen says how to
             // finish. Enter and Escape are the only two things it does; say so
             // where the buttons were, when there is room left over.
             let hint = "Enter to save \u{00b7} Esc to cancel";
-            let hint_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
-            let (hw, hh) = text_renderer.measure(hint, hint_size, None);
+            let hint_style = theme.text(TextRole::Caption);
+            let (hw, hh) = text_renderer.measure_style(hint, None, &hint_style);
             if box_rect.x1 + 10.0 + f64::from(hw) <= last {
-                text_renderer.draw_text(
+                text_renderer.draw_style(
                     scene,
                     hint,
-                    hint_size,
                     theme.tokens.colors.text_dim,
                     translated(
                         transform,
@@ -1209,6 +1206,7 @@ impl HistoryScrubber {
                         ),
                     ),
                     None,
+                    &hint_style,
                 );
             }
         } else {

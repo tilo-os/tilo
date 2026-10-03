@@ -26,6 +26,7 @@ use crate::presence::{PathSegment, PresenceCtx, PresenceKey};
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::text_selection::{clipboard_copy, clipboard_paste};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::code_editor::{SyntaxHighlighter, TokenKind};
 use crate::widget::link_popover::{LinkPopover, PageEntry};
@@ -176,27 +177,29 @@ pub enum BlockKind {
 }
 
 impl BlockKind {
-    /// Unscaled type size of a block's line — steps of the shared
-    /// [`TypeScale`](crate::tokens::TypeScale), so a page's body, headings
-    /// and code use the same ladder as every other surface: body `lg`
-    /// (16), H1 `x3l` (32, twice the body), H2 `x2l` (24), H3+ `xl` (20),
-    /// code `base` (14). The accessibility text scale is applied where
-    /// this is consumed (`RichTextLine`, the prefix painters). Before the
-    /// 2026-09-17 review the headings were 28 / 22 / 18 — off every step.
-    pub fn font_size(&self) -> f32 {
-        let scale = crate::tokens::TypeScale::default();
+    /// The role a block's line is set in, so a page's body, headings and
+    /// code use the same ladder as every other surface: body `Body`, H1
+    /// `LargeTitle`, H2 `Title`, H3+ `Heading`, code and tables `Code`.
+    pub fn text_role(&self) -> TextRole {
         match self {
             BlockKind::Paragraph
             | BlockKind::Quote
             | BlockKind::Bullet { .. }
             | BlockKind::Numbered { .. }
             | BlockKind::Checklist { .. }
-            | BlockKind::Divider => scale.lg,
-            BlockKind::Heading(1) => scale.x3l,
-            BlockKind::Heading(2) => scale.x2l,
-            BlockKind::Heading(_) => scale.xl,
-            BlockKind::CodeBlock { .. } | BlockKind::Table { .. } => scale.base,
+            | BlockKind::Divider => TextRole::Body,
+            BlockKind::Heading(1) => TextRole::LargeTitle,
+            BlockKind::Heading(2) => TextRole::Title,
+            BlockKind::Heading(_) => TextRole::Heading,
+            BlockKind::CodeBlock { .. } | BlockKind::Table { .. } => TextRole::Code,
         }
+    }
+
+    /// Unscaled type size of a block's line: its role's 1× size. The
+    /// accessibility text scale and the document zoom are applied where this
+    /// is consumed (`RichTextLine`, the prefix painters).
+    pub(crate) fn font_size(&self) -> f32 {
+        crate::tokens::typography::stock().size(self.text_role())
     }
 
     pub fn supports_indent(&self) -> bool {

@@ -21,9 +21,9 @@
 //! comes from theme tokens.
 
 use crate::color_compat::ColorCompat;
-use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::{AppModel, ModelPath};
@@ -868,17 +868,16 @@ impl ColorPicker {
         let Some(title) = &self.confirm_title else {
             return;
         };
-        let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.base);
-        let (_, line) = text_renderer.measure(title, size, None);
+        let style = theme.text(TextRole::Body);
+        let (_, line) = text_renderer.measure_style(title, None, &style);
         let y = self.title_rect.y0 + (self.title_rect.height() - f64::from(line)) / 2.0;
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             title,
-            size,
             theme.tokens.colors.text_primary,
             transform.pre_translate(Vec2::new(self.title_rect.x0, y)),
             Some(Self::px(self.title_rect.width())),
-            TextWeight::Semibold,
+            &style.clone().with_weight(TextWeight::Semibold),
         );
     }
 
@@ -907,14 +906,12 @@ impl ColorPicker {
         if self.confirm_title.is_none() {
             return;
         }
-        let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         Button::paint(
             scene,
             transform,
             text_renderer,
             theme,
             &ButtonFace::new(self.cancel_rect, "Cancel")
-                .text_size(size)
                 .hovered(self.cancel_rect.contains(self.last_cursor)),
         );
         Button::paint(
@@ -924,8 +921,6 @@ impl ColorPicker {
             theme,
             &ButtonFace::new(self.done_rect, "Done")
                 .primary()
-                .text_size(size)
-                .weight(TextWeight::Semibold)
                 .hovered(self.done_rect.contains(self.last_cursor)),
         );
     }
@@ -1107,18 +1102,18 @@ impl Widget for ColorPicker {
         self.hex_input
             .draw(scene, transform, text_renderer, theme, presence);
 
-        let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
+        let text_style = theme.text(TextRole::Caption);
         let rgb_label = self.rgb_string();
         let label_x = self.preview_rect.x0;
         let row_gap = f64::from(theme.tokens.spacing.s2);
         let rgb_y = self.hex_input_rect.y1 + row_gap;
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &rgb_label,
-            text_size,
             colors.text_dim,
             transform.pre_translate(Vec2::new(label_x, rgb_y)),
             None,
+            &text_style,
         );
     }
 

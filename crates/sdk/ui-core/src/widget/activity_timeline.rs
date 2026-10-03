@@ -28,8 +28,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
@@ -42,6 +41,7 @@ use crate::widget::history_group::{
 };
 use crate::widget::name_field::{NameField, NameFieldOutcome, fit as fit_text};
 
+use crate::tokens::TextRole;
 use collab_types::OpClass;
 
 /// 40px: a 600px pane fits ~15 rows without scrolling.
@@ -121,8 +121,8 @@ fn translated(transform: Affine, offset: (f64, f64)) -> Affine {
 /// scale, so centring on the *measured* height (never on `size / 2`) is what
 /// keeps a row's text on the same centre line as its avatar dot at every
 /// type scale.
-fn text_top(tr: &mut TextRenderer, size: f32, center_y: f64) -> f64 {
-    center_y - f64::from(tr.measure("Ag", size, None).1) / 2.0
+fn text_top(tr: &mut TextRenderer, style: &TextStyle, center_y: f64) -> f64 {
+    center_y - f64::from(tr.measure_style("Ag", None, style).1) / 2.0
 }
 
 /// Ordered left-to-right so a flat `[i]` lookup matches the visual.
@@ -1733,9 +1733,9 @@ fn draw_chip(
     } else {
         crate::surface::card(scene, transform, rect, radius, colors.surfaces.raised);
     }
-    let size = renderer_type_size(tr, (theme.tokens.typography.scale.sm - 1.0).max(10.0));
-    let shown = fit_text(tr, label, size, rect.width() - 8.0);
-    let (lw, lh) = tr.measure(&shown, size, None);
+    let size = theme.text(TextRole::Caption);
+    let shown = fit_text(tr, label, &size, rect.width() - 8.0);
+    let (lw, lh) = tr.measure_style(&shown, None, &size);
     // Ink chosen against the face it sits on: `text_primary` is near-black
     // on the light preset and vanished on its blue accent.
     let ink = if accent {
@@ -1743,10 +1743,9 @@ fn draw_chip(
     } else {
         colors.text_primary
     };
-    tr.draw_text(
+    tr.draw_style(
         scene,
         &shown,
-        size,
         ink,
         translated(
             transform,
@@ -1756,6 +1755,7 @@ fn draw_chip(
             ),
         ),
         None,
+        &size,
     );
 }
 
@@ -1792,7 +1792,7 @@ struct EntryRowLayout {
     row: Rect,
     /// The row's centre line.
     cy: f64,
-    text_size: f32,
+    text_style: TextStyle,
     author_slot_w: f64,
     /// The pointer is over a revertible entry and a host handles reverts.
     offers_revert: bool,
@@ -1806,14 +1806,14 @@ struct BandHeader<'a> {
     /// The inset header row.
     row: Rect,
     title_x: f64,
-    title_size: f32,
+    title_style: TextStyle,
 }
 
 /// The filter strip's frame-wide paint inputs, shared by its chip row and
 /// its author pill: chip text size and the selected / idle chip colours.
 struct FilterStripPaint {
     strip: Rect,
-    text_size: f32,
+    text_style: TextStyle,
     active_fill: Color,
     idle_fill: Color,
     active_text: Color,
@@ -1960,7 +1960,7 @@ impl ActivityTimeline {
         let layout = EntryRowLayout {
             row,
             cy,
-            text_size: renderer_type_size(ctx.text, ctx.theme.tokens.typography.scale.sm),
+            text_style: ctx.theme.text(TextRole::Caption),
             // The indent comes out of the author cluster, not the summary —
             // the summary is what the reader is here for.
             author_slot_w: (self.author_slot_w() - px(slot.depth) * INDENT).max(72.0),
@@ -2111,7 +2111,7 @@ impl ActivityTimeline {
         let &EntryRowLayout {
             row,
             cy,
-            text_size,
+            ref text_style,
             author_slot_w,
             ..
         } = layout;
@@ -2120,17 +2120,17 @@ impl ActivityTimeline {
         let name = fit_text(
             text_renderer,
             entry.author.name.as_str(),
-            text_size,
+            text_style,
             (slot_end - x).max(24.0),
         );
-        let name_top = text_top(text_renderer, text_size, cy);
-        text_renderer.draw_text(
+        let name_top = text_top(text_renderer, text_style, cy);
+        text_renderer.draw_style(
             scene,
             &name,
-            text_size,
             theme.tokens.colors.text_primary,
             translated(transform, (x, name_top)),
             None,
+            text_style,
         );
     }
 
@@ -2152,21 +2152,21 @@ impl ActivityTimeline {
         let &EntryRowLayout {
             row,
             cy,
-            text_size,
+            ref text_style,
             author_slot_w,
             chip_reserve,
             ..
         } = layout;
         let glyph_x = row.x0 + author_slot_w;
         let glyph = op_class_glyph(entry.op_class);
-        let line_top = text_top(text_renderer, text_size, cy);
-        text_renderer.draw_text(
+        let line_top = text_top(text_renderer, text_style, cy);
+        text_renderer.draw_style(
             scene,
             glyph,
-            text_size,
             theme.tokens.colors.text_dim,
             translated(transform, (glyph_x, line_top)),
             None,
+            text_style,
         );
 
         let summary_x = glyph_x + 24.0;
@@ -2193,7 +2193,7 @@ impl ActivityTimeline {
         let drawn_summary = fit_text(
             text_renderer,
             summary,
-            text_size,
+            text_style,
             (summary_x_end - summary_x).max(0.0),
         );
         let summary_color = if is_redacted_row {
@@ -2201,18 +2201,18 @@ impl ActivityTimeline {
         } else {
             theme.tokens.colors.text_primary
         };
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &drawn_summary,
-            text_size,
             summary_color,
             translated(transform, (summary_x, line_top)),
             None,
+            text_style,
         );
         // Drawn after the text so a regression that forgets to gate on
         // `is_redacted_row` paints a visible mark.
         if is_redacted_row {
-            let (dw, _) = text_renderer.measure(&drawn_summary, text_size, None);
+            let (dw, _) = text_renderer.measure_style(&drawn_summary, None, text_style);
             let strike = Line::new(
                 Point::new(summary_x, cy),
                 Point::new(summary_x + f64::from(dw), cy),
@@ -2244,7 +2244,7 @@ impl ActivityTimeline {
         let &EntryRowLayout {
             row,
             cy,
-            text_size,
+            ref text_style,
             offers_revert,
             chip_reserve,
             ..
@@ -2252,18 +2252,18 @@ impl ActivityTimeline {
         let rel = fit_text(
             text_renderer,
             &row_time(entry, now),
-            text_size,
+            text_style,
             self.time_slot_w(),
         );
-        let (tw, th) = text_renderer.measure(&rel, text_size, None);
+        let (tw, th) = text_renderer.measure_style(&rel, None, text_style);
         let time_x = row.x1 - chip_reserve - TRAILING_INSET - f64::from(tw);
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &rel,
-            text_size,
             theme.tokens.colors.text_dim,
             translated(transform, (time_x, cy - f64::from(th) / 2.0)),
             None,
+            text_style,
         );
 
         // Two veto conditions on the chip: op-class non-revertibility, and a
@@ -2317,7 +2317,7 @@ impl ActivityTimeline {
             rg,
             row,
             title_x: row.x0 + 26.0,
-            title_size: renderer_type_size(ctx.text, ctx.theme.tokens.typography.scale.sm),
+            title_style: ctx.theme.text(TextRole::Label),
         };
         let chips = self.group_chip_rects_local(row, rg);
         self.draw_group_row_title(ctx, &band, is_hovered, naming);
@@ -2331,7 +2331,7 @@ impl ActivityTimeline {
         // two lines apart. The group row itself is still a fixed
         // `GROUP_ROW_HEIGHT`, so at 2× line two overhangs the row's bottom —
         // the row height has to follow the text scale for that (F5).
-        let (_, title_h) = ctx.text.measure("Ag", band.title_size, None);
+        let (_, title_h) = ctx.text.measure_style("Ag", None, &band.title_style);
         let meta_y = row.y0 + 6.0 + f64::from(title_h) + 6.0;
         Self::draw_group_row_meta(ctx, &band, now, meta_y);
 
@@ -2494,7 +2494,7 @@ impl ActivityTimeline {
             rg,
             row,
             title_x,
-            title_size,
+            ref title_style,
         } = band;
         let chip_x0 = if self.preview_selection {
             row.x1 + 8.0
@@ -2519,21 +2519,21 @@ impl ActivityTimeline {
                 (row.x1 - actions_w).max(title_x + 40.0),
                 row.y0 + 24.0,
             );
-            field.draw(scene, transform, tr, theme, box_rect, title_size);
+            field.draw(scene, transform, tr, theme, box_rect, title_style);
         } else {
-            let title = fit_text(tr, &rg.title, title_size, title_budget);
-            tr.draw_text(
+            let title = fit_text(tr, &rg.title, title_style, title_budget);
+            tr.draw_style(
                 scene,
                 &title,
-                title_size,
                 colors.text_primary,
                 translated(transform, (title_x, title_y)),
                 None,
+                title_style,
             );
             if rg.open {
                 // "Still open" has to read as live, not as a label — and sit
                 // on the title's measured centre line, not the font size's.
-                let (w, h) = tr.measure(&title, title_size, None);
+                let (w, h) = tr.measure_style(&title, None, title_style);
                 let dot_x = title_x + f64::from(w) + 8.0;
                 if dot_x + 5.0 < row.x1 - actions_w {
                     scene.fill(
@@ -2563,15 +2563,12 @@ impl ActivityTimeline {
             theme,
         } = ctx.reborrow();
         let &BandHeader {
-            rg,
-            row,
-            title_x,
-            title_size,
+            rg, row, title_x, ..
         } = band;
         let colors = &theme.tokens.colors;
-        let meta_size = (title_size - 2.0).max(10.0);
+        let meta_style = theme.text(TextRole::Caption);
         let rel = format_relative_time(rg.last_time, now);
-        let (rel_w, rel_h) = tr.measure(&rel, meta_size, None);
+        let (rel_w, rel_h) = tr.measure_style(&rel, None, &meta_style);
         // Author dots sit between the subtitle and the timestamp; reserve them.
         let dots = rg.authors.len().min(3);
         let dots_w = if dots > 0 { px(dots) * 10.0 + 6.0 } else { 0.0 };
@@ -2585,27 +2582,27 @@ impl ActivityTimeline {
                 |scope| format!("{scope} · {}", rg.subtitle),
             )
         };
-        let sub = fit_text(tr, &subtitle, meta_size, sub_budget);
-        tr.draw_text(
+        let sub = fit_text(tr, &subtitle, &meta_style, sub_budget);
+        tr.draw_style(
             scene,
             &sub,
-            meta_size,
             colors.text_dim,
             translated(transform, (title_x, meta_y)),
             None,
+            &meta_style,
         );
         // Right-aligned to the same gutter as the rows' time column, so the
         // band header's "2 h ago" and the rows' "1 h ago" share one edge.
-        tr.draw_text(
+        tr.draw_style(
             scene,
             &rel,
-            meta_size,
             colors.text_dim,
             translated(
                 transform,
                 (row.x1 - TRAILING_INSET - f64::from(rel_w), meta_y),
             ),
             None,
+            &meta_style,
         );
 
         // Author dots, packed tight, on the meta line's measured centre.
@@ -2688,17 +2685,14 @@ impl ActivityTimeline {
         theme: &Theme,
     ) {
         let strip = self.filter_strip_rect();
-        let chip_text_size = renderer_type_size(
-            text_renderer,
-            (theme.tokens.typography.scale.sm - 1.0).max(10.0),
-        );
+        let chip_text_style = theme.text(TextRole::Caption);
 
         // Chip quiet (HIG §9.5): raised rest fill under a derived edge (added
         // where the chip is painted); selected: solid accent with ink chosen
         // against it, no edge.
         let paint = FilterStripPaint {
             strip,
-            text_size: chip_text_size,
+            text_style: chip_text_style.clone(),
             active_fill: crate::surface::chip_colors(theme, true).0,
             idle_fill: crate::surface::chip_colors(theme, false).0,
             active_text: theme.tokens.colors.intent.on_inverted,
@@ -2717,7 +2711,11 @@ impl ActivityTimeline {
             format!("author:{}", self.author_query)
         };
         let author_full_w = if self.show_author_pill {
-            (f64::from(text_renderer.measure(&author_label, chip_text_size, None).0) + 16.0)
+            (f64::from(
+                text_renderer
+                    .measure_style(&author_label, None, &chip_text_style)
+                    .0,
+            ) + 16.0)
                 .min(strip.width() * 0.45)
         } else {
             0.0
@@ -2736,7 +2734,8 @@ impl ActivityTimeline {
                 } else {
                     chip.label()
                 };
-                total += f64::from(tr.measure(&l, chip_text_size, None).0) + 16.0 + CHIP_GAP;
+                total +=
+                    f64::from(tr.measure_style(&l, None, &chip_text_style).0) + 16.0 + CHIP_GAP;
             }
             total
         };
@@ -2768,7 +2767,7 @@ impl ActivityTimeline {
         } = ctx.reborrow();
         let &FilterStripPaint {
             strip,
-            text_size: chip_text_size,
+            text_style: ref chip_text_style,
             active_fill,
             idle_fill,
             active_text,
@@ -2781,7 +2780,7 @@ impl ActivityTimeline {
             } else {
                 chip.label()
             };
-            let (w, _) = text_renderer.measure(&label, chip_text_size, None);
+            let (w, _) = text_renderer.measure_style(&label, None, chip_text_style);
             let chip_w = f64::from(w) + 16.0;
             let chip_h = (strip.height() - 8.0).max(20.0);
             let cy = f64::midpoint(strip.y0, strip.y1);
@@ -2798,11 +2797,10 @@ impl ActivityTimeline {
             let text_color = if active { active_text } else { idle_text };
             let edge = (!active).then(|| crate::surface::edge_on(body));
             crate::surface::pill(scene, transform, chip_rect, body, edge, None);
-            let (lw, lh) = text_renderer.measure(&label, chip_text_size, None);
-            text_renderer.draw_text(
+            let (lw, lh) = text_renderer.measure_style(&label, None, chip_text_style);
+            text_renderer.draw_style(
                 scene,
                 &label,
-                chip_text_size,
                 text_color,
                 translated(
                     transform,
@@ -2812,6 +2810,7 @@ impl ActivityTimeline {
                     ),
                 ),
                 None,
+                chip_text_style,
             );
             x += chip_w + CHIP_GAP;
         }
@@ -2833,7 +2832,7 @@ impl ActivityTimeline {
         } = ctx.reborrow();
         let &FilterStripPaint {
             strip,
-            text_size: chip_text_size,
+            text_style: ref chip_text_style,
             active_fill,
             idle_fill,
             active_text,
@@ -2848,7 +2847,7 @@ impl ActivityTimeline {
         let drawn_author = fit_text(
             text_renderer,
             author_label,
-            chip_text_size,
+            chip_text_style,
             chip_rect.width() - 12.0,
         );
         let body = if self.author_query.is_empty() {
@@ -2866,11 +2865,10 @@ impl ActivityTimeline {
             .is_empty()
             .then(|| crate::surface::edge_on(body));
         crate::surface::pill(scene, transform, chip_rect, body, edge, None);
-        let (lw, lh) = text_renderer.measure(&drawn_author, chip_text_size, None);
-        text_renderer.draw_text(
+        let (lw, lh) = text_renderer.measure_style(&drawn_author, None, chip_text_style);
+        text_renderer.draw_style(
             scene,
             &drawn_author,
-            chip_text_size,
             text_color,
             translated(
                 transform,
@@ -2880,6 +2878,7 @@ impl ActivityTimeline {
                 ),
             ),
             None,
+            chip_text_style,
         );
     }
 
@@ -2911,7 +2910,7 @@ impl ActivityTimeline {
             colors.surfaces.overlay,
         );
 
-        let size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
+        let style = theme.text(TextRole::Caption);
         // `selection` is normalised so `b >= a` (see `set_selection`).
         let n = b.saturating_sub(a).saturating_add(1);
         let naming = matches!(
@@ -2922,7 +2921,7 @@ impl ActivityTimeline {
         let clear_label = crate::i18n!("history-selection-clear");
         let name_label = crate::i18n!("history-selection-name");
         let chip_w = |tr: &mut TextRenderer, label: &str, min: f64| {
-            (f64::from(tr.measure(label, size, None).0) + 20.0).max(min)
+            (f64::from(tr.measure_style(label, None, &style).0) + 20.0).max(min)
         };
         let clear_w = chip_w(tr, &clear_label, 54.0);
         let action_w = if naming || self.preview_selection || self.on_name_group.is_none() {
@@ -2941,19 +2940,20 @@ impl ActivityTimeline {
 
         let label = crate::i18n!("history-selection-count", "count" => n);
         let label_budget = (bar.width() - clear_w - action_w - 40.0).max(0.0);
-        let shown = fit_text(tr, &label, size, label_budget);
-        let label_top = text_top(tr, size, bar.center().y);
-        tr.draw_text(
+        let shown = fit_text(tr, &label, &style, label_budget);
+        let label_top = text_top(tr, &style, bar.center().y);
+        tr.draw_style(
             scene,
             &shown,
-            size,
             colors.text_primary,
             translated(transform, (bar.x0 + 10.0, label_top)),
             None,
+            &style,
         );
 
         if naming {
-            let field_x0 = bar.x0 + 10.0 + f64::from(tr.measure(&shown, size, None).0) + 12.0;
+            let field_x0 =
+                bar.x0 + 10.0 + f64::from(tr.measure_style(&shown, None, &style).0) + 12.0;
             let field = Rect::new(
                 field_x0,
                 bar.center().y - 12.0,
@@ -2963,7 +2963,7 @@ impl ActivityTimeline {
             if field.width() > 40.0
                 && let Some(state) = self.naming.as_ref()
             {
-                state.field.draw(scene, transform, tr, theme, field, size);
+                state.field.draw(scene, transform, tr, theme, field, &style);
             }
         } else if self.on_name_group.is_some() {
             let action = Rect::new(
@@ -3347,47 +3347,47 @@ impl ActivityTimeline {
         theme: &Theme,
     ) {
         let (title, detail) = self.empty_state_lines();
-        let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
-        let small = (size - 1.0).max(10.0);
+        let style = theme.text(TextRole::Body);
+        let small = theme.text(TextRole::Caption);
         let rows_top = self.rows_top();
         let cx = f64::midpoint(self.rect.x0, self.rect.x1);
         let cy = (rows_top + self.rect.y1 - PADDING) / 2.0;
         let budget = (self.rect.width() - 2.0 * PADDING - 16.0).max(0.0);
 
-        let title = fit_text(text_renderer, &title, size, budget);
-        let (w, h) = text_renderer.measure(&title, size, None);
+        let title = fit_text(text_renderer, &title, &style, budget);
+        let (w, h) = text_renderer.measure_style(&title, None, &style);
         let title_y = if detail.is_some() {
             cy - f64::from(h) - 14.0
         } else {
             cy - f64::from(h) / 2.0
         };
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &title,
-            size,
             theme.tokens.colors.text_dim,
             translated(transform, (cx - f64::from(w) / 2.0, title_y)),
             None,
+            &style,
         );
 
         self.clear_chip_rect = Rect::ZERO;
         if let Some(detail) = detail {
-            let detail = fit_text(text_renderer, &detail, small, budget);
-            let (dw, dh) = text_renderer.measure(&detail, small, None);
+            let detail = fit_text(text_renderer, &detail, &small, budget);
+            let (dw, dh) = text_renderer.measure_style(&detail, None, &small);
             let detail_y = title_y + f64::from(h) + 8.0;
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &detail,
-                small,
                 theme.tokens.colors.text_dim,
                 translated(transform, (cx - f64::from(dw) / 2.0, detail_y)),
                 None,
+                &small,
             );
 
             // `[Clear filters]` — the way back out. Without it the user has
             // to remember which chip they pressed to get here.
             let label = "Clear filters";
-            let (lw, lh) = text_renderer.measure(label, small, None);
+            let (lw, lh) = text_renderer.measure_style(label, None, &small);
             let chip_w = (f64::from(lw) + 20.0).min(budget.max(24.0));
             let chip_h = f64::from(lh) + 10.0;
             let chip_y0 = detail_y + f64::from(dh) + 12.0;
@@ -5384,7 +5384,7 @@ mod group_tests {
             let mut tr = TextRenderer::new();
             let theme = Theme::dark();
             let budget = name.x0 - (row.x0 + 26.0) - 8.0;
-            let shown = fit_text(&mut tr, &long, theme.tokens.typography.scale.sm, budget);
+            let shown = fit_text(&mut tr, &long, &theme.text(TextRole::Label), budget);
             assert!(
                 shown.chars().count() < long.chars().count(),
                 "the header's own budget must actually truncate this name"
@@ -5503,21 +5503,22 @@ mod group_tests {
 
         fn row_text_centring_tracks_the_measured_line_box_at_every_text_scale() {
             let theme = Theme::dark();
-            let size = theme.tokens.typography.scale.sm;
+            let style = theme.text(TextRole::Caption);
             for scale in [1.0_f32, 2.0] {
                 let mut tr = TextRenderer::new();
                 tr.set_text_scale(scale);
                 let cy = 40.0;
-                let top = text_top(&mut tr, size, cy);
-                let (_, h) = tr.measure("Alice", size, None);
+                let top = text_top(&mut tr, &style, cy);
+                let (_, h) = tr.measure_style("Alice", None, &style);
                 assert!(
                     (top + f64::from(h) / 2.0 - cy).abs() < 1e-6,
                     "at {scale}x: top {top} + half of {h} misses the row centre {cy}"
                 );
                 assert!(
-                    f64::from(h) > f64::from(size) * f64::from(scale),
-                    "the line box {h} is taller than the bare size {size} × {scale}; centring on \
-                 size/2 would sit the text low"
+                    f64::from(h) > f64::from(style.size),
+                    "the line box {h} is taller than the bare size {}; centring on \
+                 size/2 would sit the text low",
+                    style.size
                 );
             }
         }
