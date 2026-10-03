@@ -1,0 +1,76 @@
+# Repositories the media-codecs extension is resolved against, by
+# tools/extensions/resolve.py inside the published OS image in CI (dnf5
+# --setopt=reposdir=..., never the image's own dnf configuration). The device
+# never reads this file: it downloads only the artifacts a signed manifest pins.
+#
+# Fedora's repositories are listed so the extension's dependencies that live
+# there can be fetched; anything the base already has installed is excluded per
+# repository by the resolver, so nothing here can replace a base package. RPM
+# Fusion nonfree is limited to Intel's media driver.
+#
+# Each baseurl is the publisher's canonical location, never a mirror: a
+# published artifact URL is the baseurl plus the package's location in that
+# repository's metadata, which is what the device later downloads. Every
+# package is verified again in an isolated keyring against the fingerprints
+# pinned in recipe.toml. @KEYS@ is replaced with this directory's keys/ by the
+# resolver.
+
+[fedora]
+name=Fedora $releasever - $basearch
+baseurl=https://download.fedoraproject.org/pub/fedora/linux/releases/$releasever/Everything/$basearch/os/
+enabled=1
+gpgcheck=1
+repo_gpgcheck=0
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-$releasever-primary
+
+[updates]
+name=Fedora $releasever - $basearch - Updates
+baseurl=https://download.fedoraproject.org/pub/fedora/linux/updates/$releasever/Everything/$basearch/
+enabled=1
+gpgcheck=1
+repo_gpgcheck=0
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-$releasever-primary
+
+# OpenH264 built and served by Cisco; the metadata is Fedora's and the
+# packages carry Fedora's signature.
+[fedora-cisco-openh264]
+name=Fedora $releasever openh264 (From Cisco) - $basearch
+baseurl=https://codecs.fedoraproject.org/openh264/$releasever/$basearch/
+enabled=1
+gpgcheck=1
+repo_gpgcheck=0
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-$releasever-primary
+
+[rpmfusion-free]
+name=RPM Fusion for Fedora $releasever - Free
+baseurl=https://download1.rpmfusion.org/free/fedora/releases/$releasever/Everything/$basearch/os/
+enabled=1
+gpgcheck=1
+repo_gpgcheck=0
+gpgkey=file://@KEYS@/RPM-GPG-KEY-rpmfusion-free-fedora-2020
+
+[rpmfusion-free-updates]
+name=RPM Fusion for Fedora $releasever - Free - Updates
+baseurl=https://download1.rpmfusion.org/free/fedora/updates/$releasever/$basearch/
+enabled=1
+gpgcheck=1
+repo_gpgcheck=0
+gpgkey=file://@KEYS@/RPM-GPG-KEY-rpmfusion-free-fedora-2020
+
+[rpmfusion-nonfree]
+name=RPM Fusion for Fedora $releasever - Nonfree
+baseurl=https://download1.rpmfusion.org/nonfree/fedora/releases/$releasever/Everything/$basearch/os/
+enabled=1
+gpgcheck=1
+repo_gpgcheck=0
+includepkgs=intel-media-driver
+gpgkey=file://@KEYS@/RPM-GPG-KEY-rpmfusion-nonfree-fedora-2020
+
+[rpmfusion-nonfree-updates]
+name=RPM Fusion for Fedora $releasever - Nonfree - Updates
+baseurl=https://download1.rpmfusion.org/nonfree/fedora/updates/$releasever/$basearch/
+enabled=1
+gpgcheck=1
+repo_gpgcheck=0
+includepkgs=intel-media-driver
+gpgkey=file://@KEYS@/RPM-GPG-KEY-rpmfusion-nonfree-fedora-2020
