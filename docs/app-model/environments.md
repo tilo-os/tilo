@@ -86,7 +86,10 @@ pub struct ToolRef {
 The record is architecture-neutral: an environment created on an x86_64 laptop
 opens on an aarch64 relay. A node uses the images for its own architecture; when
 a tool has no image for it yet, the node builds it (same packages, same runtime
-release) and records the id, so the next session there is a cache hit.
+release) and records the id, so the next session there is a cache hit. An image
+another of the user's devices built for the same architecture is fetched from
+the shelf in their synced files and trusted while that device is certified by
+their identity, rather than built again (see `ush.md`).
 
 Actions on it (`#[action]`): `add-tool`, `remove-tool`, `grant-dir`,
 `revoke-grant`, `set-runtime`, `rename`. History and undo come from the record
@@ -127,7 +130,8 @@ Host target.
 3. On a miss it builds: a build sandbox whose `/usr` is the runtime image with
    a writable upper, running `dnf install` as uid 0 in its own user namespace
    (scriptlets work, because the runtime is a complete system). The upper is
-   sealed into a `tool` tapp, signed by the device key, and stored.
+   sealed into a `tool` tapp, signed by the device key, stored, and shelved
+   in the user's synced files for their other devices.
 4. The record's `add-tool` action appends the `ToolRef`. Running sessions pick
    it up on `restart`; new sessions have it immediately.
 
