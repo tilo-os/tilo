@@ -103,3 +103,7 @@ path = "examples/manual_composition_shots.rs"
 [[example]]
 name = "block-editor-typing"
 path = "examples/block_editor_typing.rs"
+
+[[example]]
+name = "type-specimen-shots"
+path = "examples/type_specimen_shots.rs"

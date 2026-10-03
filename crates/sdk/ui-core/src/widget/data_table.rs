@@ -24,7 +24,7 @@ use vello::peniko::Color;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 
 use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextKind, TextRenderer};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::tokens::colors::Colors;
@@ -126,8 +126,9 @@ pub struct ColumnDef<Row> {
     /// The cell text the table paints itself (set by [`ColumnDef::with_text`]
     /// and [`ColumnDef::with_optional_text`]).
     pub text: Option<CellText<Row>>,
-    /// Numbers: right-aligned in tabular figures, header included.
-    pub numeric: bool,
+    /// What the column's text is ([`TextKind`]): a numeric column's cells
+    /// and header align to the trailing edge in tabular figures.
+    pub kind: TextKind,
     /// What an absent value reads as, dimmed.
     pub absent: String,
     pub(crate) resize_handle_px: f32,
@@ -145,17 +146,19 @@ impl<Row> ColumnDef<Row> {
             widget: None,
             accessible_value: None,
             text: None,
-            numeric: false,
+            kind: TextKind::Prose,
             absent: String::from("—"),
             resize_handle_px: 6.0,
         }
     }
 
-    /// The column holds numbers (sizes, counts, durations, prices): cells
-    /// and header align to the trailing edge and digits are tabular.
+    /// Say what the column's values are: [`TextKind::Numeric`] for counts,
+    /// sizes, prices and times (cells and header then align to the trailing
+    /// edge), [`TextKind::Identifier`] for names people must not confuse,
+    /// [`TextKind::Secret`] for keys and hashes.
     #[must_use]
-    pub fn numeric(mut self) -> Self {
-        self.numeric = true;
+    pub fn with_kind(mut self, kind: TextKind) -> Self {
+        self.kind = kind;
         self
     }
 
@@ -1377,7 +1380,8 @@ impl<Row> DataTable<Row> {
             let header = text_renderer.elide_to_width_style(&header, px(room), &text_style);
             let (header_w, header_h) = text_renderer.measure_style(&header, None, &text_style);
             let label_y = centered_text_top(header_rect.y0, self.header_h, header_h);
-            let label_x = if col.numeric {
+            let numeric = col.kind == TextKind::Numeric;
+            let label_x = if numeric {
                 cr.x1 - pad_x - f64::from(header_w)
             } else {
                 cr.x0 + pad_x
@@ -1393,7 +1397,7 @@ impl<Row> DataTable<Row> {
             if let Some(ascending) = sorted {
                 // The sort direction is an icon beside the label: before a
                 // trailing-aligned numeric header, after a leading one.
-                let x0 = if col.numeric {
+                let x0 = if numeric {
                     label_x - icon_gap - icon
                 } else {
                     label_x + f64::from(header_w) + icon_gap
@@ -1851,10 +1855,9 @@ fn header_style(theme: &Theme) -> crate::text_render::TextStyle {
     theme.text(TextRole::Caption).strong()
 }
 
-/// A cell's text style: `Caption`, tabular in a numeric column.
-fn cell_style(theme: &Theme, numeric: bool) -> crate::text_render::TextStyle {
-    let style = theme.text(TextRole::Caption);
-    if numeric { style.numeric() } else { style }
+/// A cell's text style: `Caption`, set for the column's [`TextKind`].
+fn cell_style(theme: &Theme, kind: TextKind) -> crate::text_render::TextStyle {
+    theme.text(TextRole::Caption).with_kind(kind)
 }
 
 /// Paint one text cell: leading or (numeric) trailing, elided to the cell,
@@ -1868,7 +1871,8 @@ fn paint_cell_text<Row>(
     column: &ColumnDef<Row>,
     value: Option<&str>,
 ) {
-    let style = cell_style(theme, column.numeric);
+    let style = cell_style(theme, column.kind);
+    let numeric = column.kind == TextKind::Numeric;
     let pad = f64::from(theme.tokens.spacing.s2);
     let (label, ink) = match value {
         Some(value) => (value, theme.text_primary),
@@ -1876,7 +1880,7 @@ fn paint_cell_text<Row>(
     };
     let label = text.elide_to_width_style(label, px((cell.width() - 2.0 * pad).max(0.0)), &style);
     let (w, h) = text.measure_style(&label, None, &style);
-    let x = if column.numeric {
+    let x = if numeric {
         cell.x1 - pad - f64::from(w)
     } else {
         cell.x0 + pad
@@ -2073,7 +2077,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
             let mut width = f64::from(text.measure_style(&label, None, &header).0)
                 + if col.sortable { sort_room } else { 0.0 };
             if let Some(value) = &col.text {
-                let style = cell_style(&theme, col.numeric);
+                let style = cell_style(&theme, col.kind);
                 for ri in start..end {
                     if let Some(TableRowState::Ready(row)) = self.row_state_at(ri) {
                         let cell = value(row).unwrap_or_else(|| col.absent.clone());
@@ -2774,6 +2778,21 @@ mod tests {
     #[derive(Clone)]
     struct R {
         name: String,
+    }
+
+    #[test]
+    fn a_column_kind_styles_its_text_whenever_it_is_declared() {
+        for column in [
+            ColumnDef::<R>::new("size", "Size", ColumnWidth::Fixed(80.0))
+                .with_kind(TextKind::Numeric)
+                .with_text(|r: &R| r.name.clone()),
+            ColumnDef::<R>::new("size", "Size", ColumnWidth::Fixed(80.0))
+                .with_text(|r: &R| r.name.clone())
+                .with_kind(TextKind::Numeric),
+        ] {
+            assert_eq!(column.kind, TextKind::Numeric);
+            assert!(column.text.is_some());
+        }
     }
 
     fn sample_cols() -> Vec<ColumnDef<R>> {
@@ -4522,7 +4541,7 @@ mod tests {
             ColumnDef::new("name", "Name", ColumnWidth::Auto)
                 .with_text(|f: &File| f.name.to_owned()),
             ColumnDef::new("size", "Size", ColumnWidth::Flex(1.0))
-                .numeric()
+                .with_kind(TextKind::Numeric)
                 .with_optional_text(|f: &File| f.size.map(|s| s.to_string()), "NULL"),
         ];
         let mut table = DataTable::new(columns);
@@ -4565,7 +4584,7 @@ mod tests {
             text.measure_style(
                 "quarterly-report-final.pdf",
                 None,
-                &cell_style(&theme, false),
+                &cell_style(&theme, TextKind::Prose),
             )
             .0,
         );
@@ -4577,7 +4596,7 @@ mod tests {
 
         // Numeric cells end at the trailing padding; an absent value says so.
         let column = ColumnDef::<File>::new("size", "Size", ColumnWidth::Flex(1.0))
-            .numeric()
+            .with_kind(TextKind::Numeric)
             .with_optional_text(|f: &File| f.size.map(|s| s.to_string()), "NULL");
         assert_eq!(column.absent, "NULL");
         let spoken = column.accessible_value.as_ref().unwrap();
@@ -4600,7 +4619,7 @@ mod tests {
             Some("1284000"),
         );
         assert!(!scene.encoding().resources.glyph_runs.is_empty());
-        let style = cell_style(&theme, true);
+        let style = cell_style(&theme, TextKind::Numeric);
         let (w, _) = text.measure_style("1284000", None, &style);
         let pad = f64::from(theme.tokens.spacing.s2);
         // The right-aligned origin lands so the run ends at the padding.

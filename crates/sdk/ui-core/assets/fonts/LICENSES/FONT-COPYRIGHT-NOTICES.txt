@@ -82,3 +82,19 @@ google/fonts@2fc9491da70cf3e1bafd3c3da49244c5a496e9d5:ofl/instrumentsans/Instrum
 face=0 nameID=0 platform=3 encoding=1 language=0x0409: Copyright 2022 The Instrument Sans Project Authors (https://github.com/Instrument/instrument-sans)
 face=0 nameID=13 platform=3 encoding=1 language=0x0409: This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: https://scripts.sil.org/OFL
 face=0 nameID=14 platform=3 encoding=1 language=0x0409: https://scripts.sil.org/OFL
+google/fonts@9710da1eacb3be272583c3224dcb70f9da6eadbb:ofl/onest/Onest[wght].ttf, Cyrillic subset Onest-Cyrillic[wght].ttf
+face=0 nameID=0 platform=3 encoding=1 language=0x0409: Copyright 2021 The Onest Project Authors (https://github.com/simpals/onest)
+face=0 nameID=13 platform=3 encoding=1 language=0x0409: This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: https://openfontlicense.org
+face=0 nameID=14 platform=3 encoding=1 language=0x0409: https://openfontlicense.org
+google/fonts@9710da1eacb3be272583c3224dcb70f9da6eadbb:ofl/geologica/Geologica[CRSV,SHRP,slnt,wght].ttf, Greek subset Geologica-Greek[wght].ttf
+face=0 nameID=0 platform=3 encoding=1 language=0x0409: Copyright 2020 The Geologica Project Authors (https://github.com/googlefonts/geologica)
+face=0 nameID=13 platform=3 encoding=1 language=0x0409: This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: https://scripts.sil.org/OFL
+face=0 nameID=14 platform=3 encoding=1 language=0x0409: https://scripts.sil.org/OFL
+google/fonts@9710da1eacb3be272583c3224dcb70f9da6eadbb:ofl/atkinsonhyperlegiblenext/AtkinsonHyperlegibleNext[wght].ttf
+face=0 nameID=0 platform=3 encoding=1 language=0x0409: Copyright 2020-2024 The Atkinson Hyperlegible Next Project Authors (https://github.com/googlefonts/atkinson-hyperlegible-next)
+face=0 nameID=13 platform=3 encoding=1 language=0x0409: This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: https://openfontlicense.org
+face=0 nameID=14 platform=3 encoding=1 language=0x0409: https://openfontlicense.org
+google/fonts@9710da1eacb3be272583c3224dcb70f9da6eadbb:ofl/atkinsonhyperlegiblenext/AtkinsonHyperlegibleNext-Italic[wght].ttf
+face=0 nameID=0 platform=3 encoding=1 language=0x0409: Copyright 2020-2024 The Atkinson Hyperlegible Next Project Authors (https://github.com/googlefonts/atkinson-hyperlegible-next)
+face=0 nameID=13 platform=3 encoding=1 language=0x0409: This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: https://openfontlicense.org
+face=0 nameID=14 platform=3 encoding=1 language=0x0409: https://openfontlicense.org

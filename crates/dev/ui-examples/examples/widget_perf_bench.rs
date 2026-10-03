@@ -37,8 +37,8 @@ use tilo_ui::widget::toggle_group::Segment;
 use tilo_ui::widget::toolbar::Orientation as ToolbarOrientation;
 use tilo_ui::widget::tree_view::TreeNode;
 use tilo_ui::widget::{
-    Avatar, AvatarSize, Badge, Breadcrumb, ColorPicker, Column, DatePicker, ProgressBar, Row,
-    ScrollAxis, Scrollable, Spinner, Text, TimePicker, ToggleGroup, Toolbar, TreeView, Widget,
+    Avatar, Badge, Breadcrumb, ColorPicker, Column, DatePicker, ProgressBar, Row, ScrollAxis,
+    Scrollable, Spinner, Text, TimePicker, ToggleGroup, Toolbar, TreeView, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
@@ -59,6 +59,21 @@ fn placeholder_image() -> PenikoImage {
 
 fn caption(key: &'static str) -> Box<dyn Widget> {
     Box::new(Text::new(key))
+}
+
+/// Three avatars (two initials, one picture) and three badges.
+fn avatar_badge_row() -> Box<dyn Widget> {
+    Box::new(
+        Row::new()
+            .push(Box::new(Avatar::person("Quinn Daley", "quinn.daley")))
+            .push(Box::new(Avatar::person("Ada Lovelace", "ada.lovelace")))
+            .push(Box::new(
+                Avatar::person("Sam Okafor", "sam.okafor").with_image(placeholder_image()),
+            ))
+            .push(Box::new(Badge::dot()))
+            .push(Box::new(Badge::count(7)))
+            .push(Box::new(Badge::count(120))),
+    )
 }
 
 fn build_tree() -> Box<dyn Widget> {
@@ -111,23 +126,7 @@ fn build_tree() -> Box<dyn Widget> {
                         .push(Box::new(Spinner::with_size(32.0))),
                 ))
                 .push(caption("row_avatar_badge"))
-                .push(Box::new(
-                    Row::new()
-                        .push(Box::new(
-                            Avatar::person("Quinn Daley", "quinn.daley").size(AvatarSize::Large),
-                        ))
-                        .push(Box::new(
-                            Avatar::person("Ada Lovelace", "ada.lovelace").size(AvatarSize::Large),
-                        ))
-                        .push(Box::new(
-                            Avatar::person("Sam Okafor", "sam.okafor")
-                                .with_image(placeholder_image())
-                                .size(AvatarSize::Large),
-                        ))
-                        .push(Box::new(Badge::dot()))
-                        .push(Box::new(Badge::count(7)))
-                        .push(Box::new(Badge::count(120))),
-                ))
+                .push(avatar_badge_row())
                 .push(caption("row_nav"))
                 .push(Box::new(Breadcrumb::new(vec![
                     "home".into(),
