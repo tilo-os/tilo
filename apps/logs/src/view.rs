@@ -24,6 +24,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::{TextKind, TextRenderer};
 use ui::theme::Theme;
 use ui::tilo_actions::ActionBinding;
+use ui::tokens::Spacing;
 use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use ui::widget::{
     AppModel, BadgeFace, ChipStyle, Dropdown, Element, EmptyState, FilterCount, ModelPath,
@@ -601,7 +602,9 @@ impl Widget for JournalPane {
                     width: percent(1.0_f32),
                     height: Dimension::auto(),
                 },
-                // The rows' selection lift lines up with the filter field.
+                // The table insets its selection lift by `s2`; standing `s1`
+                // in from the pane puts the lift, the header text and the
+                // first column on the filter field's edges.
                 padding: taffy::Rect {
                     left: length(theme.tokens.spacing.s1),
                     right: length(theme.tokens.spacing.s1),
@@ -873,7 +876,7 @@ impl Widget for JournalPane {
 
 /// The inspector: the selected entry's severity, time, message and every
 /// field, or one empty state when nothing is selected.
-pub(crate) fn entry_detail(entry: Option<&LogEntry>) -> Element {
+pub(crate) fn entry_detail(entry: Option<&LogEntry>, spacing: &Spacing) -> Element {
     use ui::widget::{Badge, Column, Property, PropertyList, Row, Scrollable, Text};
     let Some(entry) = entry else {
         return Box::new(EmptyState::new("No entry selected"));
@@ -907,12 +910,22 @@ pub(crate) fn entry_detail(entry: Option<&LogEntry>) -> Element {
                 .numeric()
                 .dimmed(),
         ));
-    let body = Column::new()
+    // The property list sets its labels in from its own edge; the severity,
+    // time and message start on that same line, at the region's gutter.
+    let inset = spacing.s2;
+    let gutter = spacing.s6 - inset;
+    let summary = Column::new()
+        .with_no_padding()
+        .with_horizontal_padding(inset, inset)
         .with_intrinsic_height()
         .push(Box::new(heading))
         .push(Box::new(
             Text::new(&entry.message).with_role(TextRole::Body),
-        ))
+        ));
+    let body = Column::new()
+        .with_horizontal_padding(gutter, gutter)
+        .with_intrinsic_height()
+        .push(Box::new(summary))
         .push(Box::new(PropertyList::new(properties)));
     Box::new(
         Scrollable::new_vertical()
