@@ -44,7 +44,7 @@ SHELL_TREE_NODE_LIMIT = 1024
 # AT-SPI connection without reading another process's /proc entry.
 SHELL_BUS_NAME = "org.freedesktop.impl.portal.desktop.tilo"
 OPEN_APP_ACTION = "Open an app"
-LAUNCH_TIMEOUT_SECONDS = 60
+LAUNCH_TIMEOUT_SECONDS = 120
 
 
 class GateError(RuntimeError):
@@ -248,19 +248,22 @@ def wait_for_shell_node(shell: AtspiClient, name: str, *, editable: bool = False
                 return tree, path
         time.sleep(POLL_SECONDS * 4)
     kind = "editable" if editable else "actionable"
-    raise GateError(f"the session exposed no {kind} {name!r} over AT-SPI")
+    names = sorted({value.strip() for value in shell_tree(shell).values() if value.strip()})
+    raise GateError(
+        f"the session exposed no {kind} {name!r} over AT-SPI; it exposed: {', '.join(names)}"
+    )
 
 
-def is_app_connection(client: AtspiClient, app_name: str) -> bool:
-    """Whether a new AT-SPI connection is APP_NAME: its application node or
-    one of its windows carries the app's display name."""
+def is_app_connection(client: AtspiClient) -> bool:
+    """Whether a connection that appeared after the launch is an application:
+    it exports an application node. Clients such as gdbus or busctl do not.
+    The application node is named after the executable, not the display
+    name, so the launch itself is what identifies the app."""
     try:
-        names = [client.property(ROOT_PATH, "Name")]
-        children = client.call(ROOT_PATH, "org.a11y.atspi.Accessible.GetChildren")
-        names += [client.property(path, "Name") for path in PATH_RE.findall(children)[:8]]
+        name = client.property(ROOT_PATH, "Name")
     except GateError:
         return False
-    return any(app_name in name for name in names)
+    return re.search(r"'[^']+'", name) is not None
 
 
 def open_in_session(address: str, app_name: str) -> tuple[str, int]:
@@ -285,9 +288,7 @@ def open_in_session(address: str, app_name: str) -> tuple[str, int]:
         if time.monotonic() >= deadline:
             raise GateError("the app palette exposed no editable query over AT-SPI")
         time.sleep(POLL_SECONDS * 4)
-    # The palette names an app's launch row "Open <app>". More than one
-    # palette tree can be exported (one per output); activate rows in turn
-    # until the app appears.
+    # The palette names an app's launch row "Open <app>".
     row_name = f"Open {app_name}"
     tree, _ = wait_for_shell_node(shell, row_name)
     rows = [
@@ -298,14 +299,17 @@ def open_in_session(address: str, app_name: str) -> tuple[str, int]:
         result = shell.call(row, "org.a11y.atspi.Action.DoAction", "0", check=False)
         if "true" not in result:
             continue
-        deadline = time.monotonic() + LAUNCH_TIMEOUT_SECONDS / len(rows)
+        # One accepted activation launches the app; wait for it rather than
+        # launching a second copy from another row.
+        deadline = time.monotonic() + LAUNCH_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
             for bus, pid in bus_pids(address).items():
                 if bus in before:
                     continue
-                if is_app_connection(AtspiClient(address, bus), app_name):
+                if is_app_connection(AtspiClient(address, bus)):
                     return bus, pid
             time.sleep(POLL_SECONDS * 4)
+        break
     seen = []
     for bus in sorted(set(bus_pids(address)) - before):
         try:
