@@ -542,7 +542,7 @@ impl FrameBuilder {
     }
 
     /// Optional presentation overrides for offscreen `shots` capture:
-    /// `TILO_SHOTS_THEME=light|high-contrast|dark` and
+    /// `TILO_SHOTS_THEME=<preset>` (any name `Theme::named` finds) and
     /// `TILO_SHOTS_TEXT_SCALE=<factor>`. Unset keeps the dark default — lets
     /// a theme-driven chrome change be proven in high contrast and at large
     /// text, not just its comfortable default density.
@@ -558,15 +558,10 @@ impl FrameBuilder {
         if requested_theme.is_none() && requested_scale.is_none() {
             return None;
         }
-        let theme = match requested_theme
+        let theme = requested_theme
             .as_deref()
-            .map(|value| value.trim().to_ascii_lowercase())
-            .as_deref()
-        {
-            Some("light") => Theme::light(),
-            Some("high-contrast" | "high_contrast" | "hc") => Theme::high_contrast(),
-            _ => Theme::dark(),
-        };
+            .and_then(|name| Theme::named(name.trim()))
+            .unwrap_or_else(Theme::dark);
         Some(if let Some(scale) = requested_scale {
             theme.with_text_scale(scale)
         } else {
@@ -2032,8 +2027,12 @@ impl FrameBuilder {
         let settings = settings_store::load();
         let scheduled_night_light =
             settings_store::bool_at(&settings, "display", "night_light_schedule").unwrap_or(false);
-        let automatic_theme = settings_store::str_at(&settings, "appearance", "theme")
-            .is_some_and(settings_store::day_schedule::is_automatic);
+        let automatic_theme = settings_store::str_at(
+            &settings,
+            "appearance",
+            settings_store::day_schedule::MODE_KEY,
+        )
+        .is_some_and(settings_store::day_schedule::is_automatic);
         self.day_phase = (scheduled_night_light || automatic_theme).then(|| {
             let schedule = settings_store::day_schedule::Scheduled::from_settings(&settings);
             (schedule, schedule.is_night(ui::theme::local_moment()))
@@ -2113,13 +2112,12 @@ impl FrameBuilder {
         self.relayout();
     }
 
-    /// The configured theme as this person, in this room: their presence
-    /// colour is their focus ring, caret and selection (the colour their
-    /// cursor has for collaborators), and the active workspace's temperature
-    /// tints the neutrals.
+    /// The configured theme as this person, in this room: their colour
+    /// (their stored choice, or the one their identity derives) is their
+    /// focus ring, caret and selection, and the active workspace's
+    /// temperature tints the neutrals.
     fn with_workspace_temperature(&self, theme: Theme) -> Theme {
-        let (red, green, blue) = ui::presence::user_color(&crate::shell::state::local_user_id());
-        let theme = theme.with_your_colour([red, green, blue]);
+        let theme = theme.with_your_colour(crate::shell::state::local_presence_hue());
         match &self.workspace_temperature {
             Some((_, hue)) => theme.with_neutral_hue(*hue),
             None => theme,
@@ -2127,11 +2125,13 @@ impl FrameBuilder {
     }
 
     /// Entering a workspace enters its temperature: the neutral material
-    /// takes the active workspace's wallpaper hue
-    /// ([`super::desktop_backdrop::native_workspace_hue`]). Checked when the
-    /// active workspace changes and every few seconds otherwise, so a new
-    /// wallpaper retints the room it was set on. Live sessions only:
-    /// offscreen capture stays on the theme it was asked for.
+    /// takes the hue the person set for the active workspace
+    /// (`appearance.workspace_temperatures`), or else its wallpaper's
+    /// ([`super::desktop_backdrop::native_workspace_hue`]). Only the hue
+    /// moves, so a neutral palette shows none. Checked when the active
+    /// workspace changes and every few seconds otherwise, so a new wallpaper
+    /// retints the room it was set on. Live sessions only: offscreen capture
+    /// stays on the theme it was asked for.
     fn refresh_workspace_temperature(&mut self) {
         const RECHECK: Duration = Duration::from_secs(3);
         if !self.watch_configured_theme {
@@ -2155,7 +2155,9 @@ impl FrameBuilder {
             return;
         }
         self.last_temperature_check = Instant::now();
-        let hue = super::desktop_backdrop::native_workspace_hue(&active);
+        let settings = serde_json::Value::Object(settings_store::load());
+        let hue = ui::theme::workspace_temperature_override(&settings, &active)
+            .unwrap_or_else(|| super::desktop_backdrop::native_workspace_hue(&active));
         let unchanged = self
             .workspace_temperature
             .as_ref()
@@ -5946,7 +5948,7 @@ mod tests {
 
         let write = |theme: &str| {
             let mut values = serde_json::Map::new();
-            values.insert("theme".into(), serde_json::Value::String(theme.into()));
+            values.insert("mode".into(), serde_json::Value::String(theme.into()));
             values.insert("high_contrast".into(), serde_json::Value::Bool(false));
             settings_store::update_section("appearance", values).expect("write appearance");
         };

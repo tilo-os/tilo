@@ -31,7 +31,7 @@ fn low_vision_setters_thread_onto_the_theme_and_survive_toggles() {
             hc_ratio > plain_ratio,
             "high contrast must raise fg/bg contrast ({hc_ratio:.1} vs {plain_ratio:.1})",
         );
-        assert_eq!(a.theme.name, "High Contrast");
+        assert_eq!(a.theme.name, "High contrast");
 
         let now_off = a.toggle_high_contrast();
         assert!(!now_off);
@@ -69,7 +69,7 @@ fn low_vision_setters_thread_onto_the_theme_and_survive_toggles() {
             "scale preference is preserved across the swap"
         );
         assert!((a.theme.tokens.typography.size(TextRole::Body) - hc_base * 1.5).abs() < 1e-3);
-        assert_eq!(a.theme.name, "High Contrast");
+        assert_eq!(a.theme.name, "High contrast");
     }
 
     // Case `reduce_motion_setter_threads_onto_the_theme`.
@@ -96,8 +96,9 @@ fn low_vision_setters_thread_onto_the_theme_and_survive_toggles() {
         a.set_theme(Theme::light());
         assert!(a.theme.reduce_motion);
         assert_eq!(a.text_scale(), 1.25);
-        // High contrast still wins over the freshly-set light base.
-        assert_eq!(a.theme.name, "High Contrast");
+        // High contrast still wins over the freshly-set light base, in the
+        // base's polarity.
+        assert_eq!(a.theme.name, "High contrast light");
     }
 
     // Case `ui_scale_setter_grows_spacing_radii_and_type_together`.
@@ -152,7 +153,7 @@ fn low_vision_setters_thread_onto_the_theme_and_survive_toggles() {
             "UI-scale preference is preserved across the swap"
         );
         assert!((a.theme.tokens.spacing.s3 - hc_gap * 1.5).abs() < 1e-2);
-        assert_eq!(a.theme.name, "High Contrast");
+        assert_eq!(a.theme.name, "High contrast");
     }
 }
 
@@ -241,8 +242,8 @@ fn appearance_reconcile_is_a_noop_when_off_and_applies_live_otherwise() {
         assert_eq!(a.text_scale(), 1.2);
         assert!(a.high_contrast());
         assert_eq!(
-            a.theme.name, "High Contrast",
-            "high_contrast overrides the Light base"
+            a.theme.name, "High contrast light",
+            "high_contrast overrides the Light base with its own polarity"
         );
         // Spacing grew by the UI factor; type by UI × text.
         assert!((a.theme.tokens.spacing.s3 - base_gap * 1.5).abs() < 1e-1);
@@ -286,11 +287,10 @@ fn host_appearance_rethemes_through_the_appearance_intent() {
     );
     assert_eq!(
         a.theme.tokens.colors.intent.you,
-        Theme::light()
-            .tokens
-            .colors
-            .presence
-            .of(vello::peniko::Color::from_rgb8(0xE0, 0x40, 0x80)),
+        Theme::light().tokens.colors.presence.hue(
+            crate::tokens::PresenceHue::nearest(vello::peniko::Color::from_rgb8(0xE0, 0x40, 0x80))
+                .expect("a pink has a hue")
+        ),
         "the host accent is the person's own colour"
     );
 
@@ -301,5 +301,5 @@ fn host_appearance_rethemes_through_the_appearance_intent() {
     }));
     assert!(a.high_contrast());
     assert!(a.reduce_motion());
-    assert_eq!(a.theme.name, "High Contrast");
+    assert_eq!(a.theme.name, "High contrast light");
 }
