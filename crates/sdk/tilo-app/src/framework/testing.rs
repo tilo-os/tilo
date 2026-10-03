@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use tilo_resource::{Effect, Invoke, Resource};
 use ui_core::application::{
-    ApplicationHost, Capture, ComponentRunnerInputs, PreparedComponentInputs,
+    ApplicationHost, Capture, ComponentRunnerInputs, OpenFile, PreparedComponentInputs,
 };
 use ui_core::bound_dispatch::BoundActionAddress;
 use ui_core::headless::FrameHarness;
@@ -20,11 +20,13 @@ use ui_core::launch::LaunchError;
 use ui_core::permissions::{Actor, PermissionContext, Role, UserId};
 
 const AUTHOR: &str = "test-author";
-use ui_core::record::{RecordCheckout, RecordStore};
+use ui_core::record::{RecordCheckout, RecordId, RecordStore};
 
 use super::app::{
-    DATA_DIR_INSTANCE, ResourceApp, data_dir_host, default_record, definition, role_permissions,
+    DATA_DIR_INSTANCE, ResourceApp, data_dir_host, definition, hand_launch, prepare_on,
+    role_permissions, settle_launch,
 };
+use super::launch::LaunchInput;
 
 const INSTANCE: u64 = 7;
 
@@ -104,7 +106,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// Returns any launch, storage or construction failure.
     pub fn with_role(role: Role) -> Result<Self, LaunchError> {
         let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
-        Self::open(Profile::Temporary(profile), role, None)
+        Self::open(Profile::Temporary(profile), role, &[], None, None)
     }
 
     /// The frame `--shots --scenario` writes for `scenario` (`None` for a
@@ -128,10 +130,47 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let mut app = Self::open(
             Profile::Temporary(profile),
             Role::Owner,
+            &[],
+            None,
             Some((Capture::new(scenario.map(str::to_owned)), viewport)),
         )?;
         super::stage::stage::<A>(app.harness(), scenario)?;
         Ok(app)
+    }
+
+    /// The app launched by its owner with `arguments`, as `app ARGUMENTS`
+    /// on the command line: on the record [`ResourceApp::launch_record`]
+    /// names, after its [`ResourceApp::launch`] actions.
+    ///
+    /// # Errors
+    /// Returns any launch, storage or construction failure.
+    pub fn launched(arguments: &[&str]) -> Result<Self, LaunchError> {
+        let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
+        let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
+        Self::open(
+            Profile::Temporary(profile),
+            Role::Owner,
+            &arguments,
+            None,
+            None,
+        )
+    }
+
+    /// The app handed `file` to open by a host that already chose its
+    /// record (the default one here), as the shell's "open with" does.
+    ///
+    /// # Errors
+    /// Returns any launch, storage or construction failure, and the refusal
+    /// of a file of a type the app does not [open](ResourceApp::OPENS).
+    pub fn handed(file: OpenFile) -> Result<Self, LaunchError> {
+        let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
+        Self::open(
+            Profile::Temporary(profile),
+            Role::Owner,
+            &[],
+            Some(file),
+            None,
+        )
     }
 
     /// The app on the profile `--data-dir directory` opens, as its owner.
@@ -141,12 +180,20 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// # Errors
     /// Returns any launch, storage or construction failure.
     pub fn open_data_dir(directory: &std::path::Path) -> Result<Self, LaunchError> {
-        Self::open(Profile::DataDir(directory.to_path_buf()), Role::Owner, None)
+        Self::open(
+            Profile::DataDir(directory.to_path_buf()),
+            Role::Owner,
+            &[],
+            None,
+            None,
+        )
     }
 
     fn open(
         profile: Profile,
         role: Role,
+        arguments: &[String],
+        file: Option<OpenFile>,
         capture: Option<(Capture, (u32, u32))>,
     ) -> Result<Self, LaunchError> {
         let author = UserId(AUTHOR.into());
@@ -171,14 +218,19 @@ impl<A: ResourceApp> HeadlessApp<A> {
         };
         let definition = definition::<A>();
         let records = host.records_for(definition)?;
-        let checkout = default_record::<A>();
-        let mut prepared = host.prepare_default(
+        let named = A::launch_record(&LaunchInput::new(arguments, None));
+        let mut prepared = prepare_on(
+            &mut host,
             definition,
             instance,
-            checkout.clone(),
-            None,
+            named,
             ComponentRunnerInputs::from_native_process(),
         )?;
+        let checkout = prepared.context.record().clone();
+        hand_launch(definition, arguments, &mut prepared)?;
+        if let Some(file) = file {
+            prepared.context.provide_open_file(file);
+        }
         let viewport = match capture {
             Some((capture, viewport)) => {
                 prepared.context.provide_capture(capture);
@@ -189,7 +241,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let prepared = with_settings_file(prepared, profile.settings());
         let component =
             definition.instantiate(prepared.context, prepared.target, prepared.restore)?;
-        let harness = FrameHarness::from_component(component, viewport, prepared.runner_inputs)?;
+        let mut harness =
+            FrameHarness::from_component(component, viewport, prepared.runner_inputs)?;
+        settle_launch(&mut harness);
         Ok(Self {
             harness: Some(harness),
             records,
@@ -225,7 +279,16 @@ impl<A: ResourceApp> HeadlessApp<A> {
     ///
     /// # Errors
     /// Returns the flush or relaunch failure.
-    pub fn reopen(mut self) -> Result<Self, LaunchError> {
+    pub fn reopen(self) -> Result<Self, LaunchError> {
+        self.relaunch(&[])
+    }
+
+    /// Close the app and launch it again on the same profile with
+    /// `arguments`, as `app ARGUMENTS` run again would.
+    ///
+    /// # Errors
+    /// Returns the flush or relaunch failure.
+    pub fn relaunch(mut self, arguments: &[&str]) -> Result<Self, LaunchError> {
         self.close()?;
         let profile = match &self.profile {
             Profile::Temporary(directory) => Profile::Temporary(Rc::clone(directory)),
@@ -234,7 +297,13 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let role = self.role;
         // Release this instance's record writer before the next one opens it.
         drop(self);
-        Self::open(profile, role, None)
+        let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
+        Self::open(profile, role, &arguments, None, None)
+    }
+
+    /// The record the app shows.
+    pub fn record(&self) -> &RecordId {
+        &self.checkout.id
     }
 
     /// Make every edit so far durable, as closing the app does.
@@ -663,10 +732,10 @@ pub fn inspect_live_window<A: ResourceApp, T>(
         tilo_actions::ActionContext::default(),
     )?;
     let definition = definition::<A>();
-    let prepared = host.prepare_default(
+    let prepared = prepare_on(
+        &mut host,
         definition,
         INSTANCE,
-        default_record::<A>(),
         None,
         ComponentRunnerInputs::from_native_process(),
     )?;
