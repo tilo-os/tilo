@@ -2,7 +2,7 @@
 //! actions a person or an agent uses. Never shown in the app a user opens.
 
 use crate::CanvasAction;
-use crate::actions::{AddLayer, Draw, NewMark, NewStroke, Paint};
+use crate::actions::{AddLayer, Draw, NewMark, NewStroke, Paint, RemoveLayer};
 use crate::model::{Gradient, Shape};
 
 fn mark(id: &str, shape: Shape, fill: &str) -> NewMark {
@@ -33,17 +33,21 @@ fn stroke(points: &[[f64; 3]], size: f64, colour: &str, wet: bool) -> NewStroke 
 )]
 pub fn landscape() -> Vec<CanvasAction> {
     let mut art = Vec::new();
-    let layer = |id: &str, medium: &str| {
+    let layer = |id: &str, name: &str, medium: &str| {
         CanvasAction::AddLayer(AddLayer {
             id: Some(id.into()),
-            name: id.into(),
+            name: name.into(),
             medium: Some(medium.into()),
             ..AddLayer::default()
         })
     };
-    art.push(layer("sky", "watercolour-wet"));
-    art.push(layer("land", "oil"));
-    art.push(layer("ink", ""));
+    // A new sheet starts with one empty layer; the landscape brings its own.
+    art.push(CanvasAction::RemoveLayer(RemoveLayer {
+        id: "layer-1".into(),
+    }));
+    art.push(layer("sky", "Sky", "watercolour-wet"));
+    art.push(layer("land", "Land", "oil"));
+    art.push(layer("ink", "Linework", ""));
     art.push(CanvasAction::Draw(Draw {
         layer: Some("sky".into()),
         marks: vec![

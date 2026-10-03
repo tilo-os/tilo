@@ -53,6 +53,9 @@ pub struct Column {
     cache_rect: vello::kurbo::Rect,
     cache_present: bool,
     descendant_caches_released: bool,
+    /// The cache holds floating surfaces over the blurred material. A reused
+    /// cache would show them opaque, so it is redrawn while it does.
+    cache_carries_material: bool,
 }
 
 impl Default for Column {
@@ -84,6 +87,7 @@ impl Column {
             cache_rect: vello::kurbo::Rect::ZERO,
             cache_present: false,
             descendant_caches_released: false,
+            cache_carries_material: false,
         }
     }
 
@@ -536,7 +540,8 @@ impl Widget for Column {
         let size_changed = self.rect.width() != self.cache_rect.width()
             || self.rect.height() != self.cache_rect.height();
         let any_child_dirty = self.children.iter().any(|c| c.needs_redraw());
-        let needs_rebuild = !self.cache_present || size_changed || any_child_dirty;
+        let needs_rebuild =
+            !self.cache_present || size_changed || any_child_dirty || self.cache_carries_material;
 
         if needs_rebuild {
             // Children rebuild at `Affine::IDENTITY`: `Scene::append` composes
@@ -554,6 +559,7 @@ impl Widget for Column {
             let prev_vp = presence.viewport.replace(None);
             let mut local = std::mem::take(&mut self.subtree_cache);
             local.reset();
+            crate::backdrop::nest_scene(&local);
             for child in &mut self.children {
                 child.draw_with_presence(
                     &mut local,
@@ -564,7 +570,8 @@ impl Widget for Column {
                     permissions,
                 );
             }
-            scene.append(&local, Some(transform));
+            self.cache_carries_material =
+                crate::backdrop::append_nested(scene, &local, transform) > 0;
             self.subtree_cache = local;
             self.cache_rect = self.rect;
             self.cache_present = true;

@@ -287,6 +287,23 @@ const TOAST_WIDTH: f64 = 320.0;
 const TOAST_HEIGHT: f64 = 48.0;
 const TOAST_GAP: f64 = 8.0;
 
+/// The severity icon, the same one a banner of that kind shows.
+fn kind_icon(kind: ToastKind) -> crate::icons::Icon {
+    match kind {
+        ToastKind::Info => crate::widget::BannerKind::Info,
+        ToastKind::Success => crate::widget::BannerKind::Success,
+        ToastKind::Warning => crate::widget::BannerKind::Warning,
+        ToastKind::Error => crate::widget::BannerKind::Error,
+    }
+    .default_icon()
+}
+
+/// Width of a card's leading column after its padding: the severity icon
+/// and the gap to the text.
+fn leading_column(theme: &Theme) -> f64 {
+    f64::from(theme.tokens.metrics.icon_md) + f64::from(theme.tokens.metrics.icon_label_gap)
+}
+
 fn kind_color(kind: ToastKind, theme: &Theme) -> vello::peniko::Color {
     match kind {
         ToastKind::Info => theme.tokens.colors.semantic.info,
@@ -305,7 +322,6 @@ fn kind_color(kind: ToastKind, theme: &Theme) -> vello::peniko::Color {
 // stack (`tilo_desktop::notifications::NotificationStack`) — HIG §8: extend
 // the widget, don't fork it.
 
-const CARD_ACCENT_BAR_W: f64 = 4.0;
 const CARD_PAD_X: f64 = 14.0;
 const CARD_PAD_Y: f64 = 8.0;
 
@@ -325,7 +341,7 @@ pub struct ToastCard<'a> {
     /// Optional attribution caption above the title (e.g. the sending app's
     /// name), a dim `Caption` in sentence case. Empty = no caption.
     pub caption: &'a str,
-    /// Severity — drives the left accent stripe colour.
+    /// Severity — drives the leading icon and its colour.
     pub kind: ToastKind,
     /// Enter/exit animation opacity in `[0, 1]`; `1.0` for a settled card.
     pub alpha: f32,
@@ -441,8 +457,8 @@ pub struct ToastCardHit {
 /// out relative to `rect`), so a 48px single-line in-app toast and a 64px
 /// three-line OS notification share this one renderer.
 ///
-/// Layout: soft drop shadow → raised surface + border → left severity accent
-/// stripe → (optional) attribution caption / title / body text column →
+/// Layout: soft drop shadow → the floating material + edge → leading
+/// severity icon → (optional) attribution caption / title / body text column →
 /// (optional) ghost dismiss button → (optional) actionable chevron. Every
 /// colour is modulated by `card.alpha` so the caller drives the enter/exit
 /// fade without a second painter.
@@ -464,24 +480,21 @@ pub fn paint_card(
     // blurred material, one soft shadow, all fading with the card.
     crate::widget::floating_surface::paint_faded(scene, transform, rect, a, theme);
 
-    // Left severity accent stripe — the at-a-glance state form (HIG §7).
-    // Inset a token step from the 1 px edge so the two never touch, and
-    // `s2` from the top and bottom like the card's own vertical padding.
-    let bar_x0 = rect.x0 + 1.0 + f64::from(theme.tokens.spacing.s1);
-    let bar_inset_y = f64::from(theme.tokens.spacing.s2);
-    let bar = Rect::new(
-        bar_x0,
-        rect.y0 + bar_inset_y,
-        bar_x0 + CARD_ACCENT_BAR_W,
-        rect.y1 - bar_inset_y,
-    );
-    scene.fill(
-        Fill::NonZero,
+    // The severity is its icon's colour, as on a banner (HIG §9.5): the
+    // at-a-glance state form, never a stripe crowding the panel's corner.
+    let icon = f64::from(theme.tokens.metrics.icon_md);
+    crate::icons::draw_icon(
+        scene,
         transform,
+        Rect::from_center_size(
+            vello::kurbo::Point::new(rect.x0 + CARD_PAD_X + icon / 2.0, rect.center().y),
+            (icon, icon),
+        ),
+        kind_icon(card.kind),
         kind_color(card.kind, theme).with_alpha(a),
-        None,
-        &RoundedRect::from_rect(bar, f64::from(theme.tokens.radii.detail)),
+        crate::icons::LUCIDE_DEFAULT_STROKE_PX,
     );
+    let text_x0 = rect.x0 + leading_column(theme);
 
     // Dismiss (X) button — a ghost `Button` face, top-right.
     let mut text_right = rect.x1 - CARD_PAD_X;
@@ -506,7 +519,7 @@ pub fn paint_card(
     );
     paint_card_text(
         &mut PaintCtx::new(scene, transform, text_renderer, theme),
-        Rect::new(rect.x0, rect.y0, text_right, action_top.unwrap_or(rect.y1)),
+        Rect::new(text_x0, rect.y0, text_right, action_top.unwrap_or(rect.y1)),
         card,
         a,
     );
@@ -619,7 +632,7 @@ pub fn paint_transient(
     } else {
         0.0
     };
-    let natural_width = title_width + 2.0 * CARD_PAD_X + CARD_ACCENT_BAR_W + 2.0 + close_column;
+    let natural_width = title_width + 2.0 * CARD_PAD_X + leading_column(theme) + close_column;
     let width = natural_width
         .max(MIN_WIDTH.min(available_width))
         .min(available_width);
@@ -1083,7 +1096,7 @@ mod tests {
                 .count();
             assert!(
                 color_fills >= 2,
-                "surface + accent stripe fills; got {color_fills}"
+                "surface fill and the severity icon; got {color_fills}"
             );
             assert!(
                 !enc.resources.glyph_runs.is_empty(),

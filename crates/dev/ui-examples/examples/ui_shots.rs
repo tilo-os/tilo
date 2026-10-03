@@ -30,6 +30,7 @@ registry::scenario_modules! {
     undo_controls_shots, "undo_controls_shots.rs", "undo and redo availability states";
     widget_showcase_snapshot, "widget_showcase_snapshot.rs", "showcase visual snapshot";
     widget_snapshot, "widget_snapshot.rs", "individual widget snapshots";
+    widget_states, "widget_states_shots.rs", "every widget in its states, dark and light, with overlays over content";
     window_chrome, "window_chrome_shots.rs", "modal, popover, status and over-media chrome, dark and light";
 }
 
