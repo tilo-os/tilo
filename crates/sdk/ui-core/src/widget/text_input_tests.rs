@@ -1403,6 +1403,7 @@ fn spellcheck_eligibility_follows_field_kind_vocabulary_and_language() {
             TextInputKind::Code,
             TextInputKind::Number,
             TextInputKind::Password,
+            TextInputKind::Secret,
         ] {
             let mut structured = TextInput::local()
                 .with_kind(kind)
@@ -3770,5 +3771,24 @@ fn insertion_collapses_an_empty_drag_selection() {
         ti.insert_str("x", &mut doc, None);
         assert_eq!(ti.value(), expected);
         assert_eq!(ti.selection_range_public(), None);
+    }
+}
+
+#[test]
+fn field_kinds_set_their_text_kind_while_typing() {
+    for (kind, text) in [
+        (TextInputKind::Prose, TextKind::Prose),
+        (TextInputKind::Search, TextKind::Prose),
+        (TextInputKind::Username, TextKind::Identifier),
+        (TextInputKind::Email, TextKind::Identifier),
+        (TextInputKind::Url, TextKind::Identifier),
+        (TextInputKind::Number, TextKind::Numeric),
+        (TextInputKind::Code, TextKind::Code),
+        (TextInputKind::Password, TextKind::Secret),
+        (TextInputKind::Secret, TextKind::Secret),
+    ] {
+        assert_eq!(kind.text_kind(), text, "{kind:?}");
+        let input = TextInput::local().with_kind(kind);
+        assert_eq!(input.multiline_style(1.0).kind, text, "{kind:?}");
     }
 }
