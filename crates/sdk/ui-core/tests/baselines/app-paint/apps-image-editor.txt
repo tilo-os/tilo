@@ -1,0 +1,8 @@
+# The app-paint ratchet for apps-image-editor: counts may only fall (HIG §9.13).
+# Format: <path relative to the repository root> <pattern> <count>
+# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
+apps/image-editor/src/app.rs desktop_ground 2
+apps/image-editor/src/app.rs literal_alpha 3
+apps/image-editor/src/app.rs literal_radius 12
+apps/image-editor/src/app.rs ramp_slot 8
+apps/image-editor/src/main.rs transparent_shot 1

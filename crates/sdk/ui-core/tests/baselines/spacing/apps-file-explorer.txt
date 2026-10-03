@@ -1,0 +1,11 @@
+# The spacing ratchet for apps-file-explorer: counts may only fall (HIG §9.13).
+# Format: <path relative to the repository root> <pattern> <count>
+# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
+apps/file-explorer/src/breadcrumb_bar.rs pixel_const 6
+apps/file-explorer/src/files_app.rs pixel_const 2
+apps/file-explorer/src/path_bar.rs pixel_const 1
+apps/file-explorer/src/places_sidebar.rs pixel_const 4
+apps/file-explorer/src/sidebar.rs pixel_const 1
+apps/file-explorer/src/toolbar.rs pixel_const 3
+apps/file-explorer/src/views/file_view.rs pixel_const 15
+apps/file-explorer/src/views/grid_view.rs pixel_const 2

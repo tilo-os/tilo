@@ -1,0 +1,10 @@
+# The spacing ratchet for apps-calculator: counts may only fall (HIG §9.13).
+# Format: <path relative to the repository root> <pattern> <count>
+# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
+apps/calculator/src/app.rs pixel_const 5
+apps/calculator/src/engine.rs pixel_const 1
+apps/calculator/src/graph2d.rs pixel_const 11
+apps/calculator/src/graph3d.rs pixel_const 12
+apps/calculator/src/keypad.rs pixel_const 9
+apps/calculator/src/mathfield/mod.rs pixel_const 3
+apps/calculator/src/zoom.rs pixel_const 1
