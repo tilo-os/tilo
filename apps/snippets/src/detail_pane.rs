@@ -1,379 +1,426 @@
 //! The content column: the open snippet's language, folder and tags, what it
-//! is for, its actions, and its body in the code editor.
+//! is for, its main action, and its body in the code editor; and the two
+//! actions the column's header holds (favorite, more).
+//!
+//! Every control is the toolkit's retained widget, so focus, keyboard
+//! activation, pressed states and tooltips are the toolkit's. The column is
+//! rebuilt (through `NavShell::set_content`) when what it shows changes;
+//! the header actions follow the open snippet in place.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
-use taffy::{NodeId, TaffyTree};
-use ui::a11y::{AccessNode, AccessState};
+use taffy::style_helpers::{length, percent};
+use taffy::{NodeId, Style, TaffyTree};
+
 use ui::icons::Icon;
-use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tokens::TextRole;
+use ui::tokens::{Rhythm, TextRole};
 use ui::widget::{
-    Button, ButtonFace, ButtonRole, ChipFace, ChipLead, ControlSize, EmptyState, EmptyStateContent,
-    Widget,
+    AppModel, Button, ButtonRole, Chip, ChipLead, Column, ControlSize, Element, EmptyState,
+    ModelPath, Row, Text, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::WindowEvent;
 
-use crate::app::{Action, Core, Shared};
-use crate::model::Selection;
+use crate::app::{Action, Core, Requests, Shared};
+use crate::model::{Language, SnippetId};
+use crate::tr;
 
-/// What the content column painted last frame, for hit-testing.
-#[derive(Default)]
-pub(crate) struct DetailState {
-    pub(crate) rect: Rect,
-    pub(crate) hits: Vec<(Rect, Action)>,
+/// What the content column shows. A change rebuilds the column.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DetailKey {
+    /// The open snippet's id, language, folder, tags, description and
+    /// whether its body has variables.
+    snippet: Option<(SnippetId, Language, String, Vec<String>, String, bool)>,
+    library_empty: bool,
 }
 
-/// One control of the content column, before it is placed.
-enum Control {
-    Chip {
-        label: String,
-        lead: ChipLead,
-        action: Action,
-    },
-    Button {
-        label: String,
-        icon: Option<Icon>,
-        role: ButtonRole,
-        action: Action,
-    },
-    IconButton {
-        icon: Icon,
-        label: &'static str,
-        action: Action,
-    },
-}
-
-impl Control {
-    fn width(&self, text: &mut TextRenderer, theme: &Theme) -> f64 {
-        match self {
-            Self::Chip { label, lead, .. } => {
-                ChipFace::intrinsic_width(label, *lead, false, text, theme)
-            }
-            Self::Button {
-                label, icon, role, ..
-            } => Self::button_face(Rect::ZERO, label, *icon, *role).intrinsic_width(text, theme),
-            Self::IconButton { icon, label, .. } => {
-                ButtonFace::icon_only(Rect::ZERO, *icon, label).intrinsic_width(text, theme)
-            }
-        }
-    }
-
-    fn height(&self, theme: &Theme) -> f64 {
-        match self {
-            Self::Chip { .. } => ChipFace::height(theme),
-            Self::Button { .. } | Self::IconButton { .. } => {
-                ButtonFace::height(ControlSize::Regular, theme)
-            }
-        }
-    }
-
-    fn button_face(
-        rect: Rect,
-        label: &str,
-        icon: Option<Icon>,
-        role: ButtonRole,
-    ) -> ButtonFace<'_> {
-        let face = ButtonFace::new(rect, label).role(role);
-        match icon {
-            Some(icon) => face.icon(icon),
-            None => face,
-        }
-    }
-
-    fn action(&self) -> &Action {
-        match self {
-            Self::Chip { action, .. }
-            | Self::Button { action, .. }
-            | Self::IconButton { action, .. } => action,
-        }
-    }
-
-    fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect, hovered: bool) {
-        match self {
-            Self::Chip { label, lead, .. } => ChipFace::new(rect, label)
-                .lead(*lead)
-                .hovered(hovered)
-                .paint(ctx.scene, ctx.transform, ctx.text, ctx.theme),
-            Self::Button {
-                label, icon, role, ..
-            } => Button::paint(
-                ctx.scene,
-                ctx.transform,
-                ctx.text,
-                ctx.theme,
-                &Self::button_face(rect, label, *icon, *role).hovered(hovered),
-            ),
-            Self::IconButton { icon, label, .. } => Button::paint(
-                ctx.scene,
-                ctx.transform,
-                ctx.text,
-                ctx.theme,
-                &ButtonFace::icon_only(rect, *icon, label).hovered(hovered),
-            ),
-        }
-    }
-}
-
-impl Core {
-    /// Lay `controls` out in rows from `top`, wrapping at the column's
-    /// edge, paint them and record their hit rects. Returns the bottom of
-    /// the last row.
-    fn paint_control_rows(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        span: (f64, f64),
-        top: f64,
-        controls: &[Control],
-    ) -> f64 {
-        let theme = ctx.theme;
-        let gap = f64::from(theme.tokens.spacing.rhythm.related);
-        let (x0, x1) = span;
-        let mut x = x0;
-        let mut y = top;
-        let mut row_h: f64 = 0.0;
-        for control in controls {
-            let width = control.width(ctx.text, theme).min(x1 - x0);
-            let height = control.height(theme);
-            if x > x0 && x + width > x1 {
-                x = x0;
-                y += row_h + gap;
-                row_h = 0.0;
-            }
-            row_h = row_h.max(height);
-            let rect = Rect::new(x, y, x + width, y + height);
-            let hovered = rect.contains(self.pointer);
-            control.paint(ctx, rect, hovered);
-            self.detail.hits.push((rect, control.action().clone()));
-            x += width + gap;
-        }
-        y + row_h
-    }
-
-    /// The snippet's language, folder and tags as chips, then what it is
-    /// for. Returns the bottom of what it painted.
-    fn paint_detail_facts(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        span: (f64, f64),
-        top: f64,
-        snippet: &crate::model::Snippet,
-    ) -> f64 {
-        let id = snippet.id;
-        let mut facts = vec![Control::Chip {
-            label: snippet.language.label().to_string(),
-            lead: ChipLead::Glyph(Icon::Code),
-            action: Action::PickLanguage(id),
-        }];
-        if !snippet.folder.is_empty() {
-            facts.push(Control::Chip {
-                label: snippet.folder.clone(),
-                lead: ChipLead::Glyph(Icon::Folder),
-                action: Action::Select(Selection::Folder(snippet.folder.clone())),
-            });
-        }
-        for tag in &snippet.tags {
-            facts.push(Control::Chip {
-                label: tag.clone(),
-                lead: ChipLead::None,
-                action: Action::Select(Selection::Tag(tag.clone())),
-            });
-        }
-        let mut y = self.paint_control_rows(ctx, span, top, &facts);
-        if !snippet.description.trim().is_empty() {
-            y += f64::from(ctx.theme.tokens.spacing.rhythm.sibling);
-            let width = (span.1 - span.0) as f32;
-            let size = ctx.measure_role(&snippet.description, TextRole::Body, Some(width));
-            ctx.text_role(
-                &snippet.description,
-                TextRole::Body,
-                ctx.theme.text_dim,
-                Point::new(span.0, y),
-                Some(width),
-            );
-            y += size.height;
-        }
-        y
-    }
-
-    pub(crate) fn paint_detail(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-    ) {
-        self.detail.hits.clear();
-        self.detail.rect = area;
-        if area.width() <= 0.0 || area.height() <= 0.0 {
-            return;
-        }
-        let Some(snippet) = self.open.and_then(|id| self.library.get(id)).cloned() else {
-            if !self.library.snippets.is_empty() {
-                EmptyState::paint(
-                    &mut PaintCtx::new(scene, t, text, theme),
-                    area,
-                    &EmptyStateContent::new("No snippet selected"),
-                    self.pointer,
-                );
-            }
-            return;
-        };
-        let spacing = &theme.tokens.spacing;
-        let gutter = f64::from(spacing.rhythm.group);
-        let span = (area.x0 + gutter, (area.x1 - gutter).max(area.x0 + gutter));
-        let id = snippet.id;
-        let mut ctx = PaintCtx::new(scene, t, text, theme);
-        let y = self.paint_detail_facts(
-            &mut ctx,
-            span,
-            area.y0 + f64::from(spacing.rhythm.section),
-            &snippet,
-        );
-
-        // What it does.
-        let actions = vec![
-            Control::Button {
-                label: self.copy_label(id).to_string(),
-                icon: None,
-                role: ButtonRole::Primary,
-                action: Action::Copy(id),
-            },
-            Control::Button {
-                label: self.favorite_label(id).to_string(),
-                icon: Some(Icon::Star),
-                role: ButtonRole::Secondary,
-                action: Action::ToggleFavorite(id),
-            },
-            Control::IconButton {
-                icon: Icon::MoreHorizontal,
-                label: "More actions",
-                action: Action::More(id),
-            },
-        ];
-        let y = self.paint_control_rows(
-            &mut ctx,
-            span,
-            y + f64::from(spacing.rhythm.group),
-            &actions,
-        );
-
-        // The body: an editable code well.
-        let top = y + f64::from(spacing.rhythm.group);
-        let bottom = (area.y1 - gutter).max(top);
-        let well = Rect::new(span.0, top, span.1, bottom);
-        if well.height() <= 0.0 {
-            return;
-        }
-        let ground = theme.tokens.colors.surfaces.raised;
-        ui::surface::card(
-            ctx.scene,
-            ctx.transform,
-            well,
-            f64::from(theme.tokens.radii.control),
-            ground,
-        );
-        self.body_editor.set_rect(well);
-        self.body_editor.draw_embedded(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            &theme.on_ground(ground),
-        );
-    }
-
-    /// Route a press to the column's controls. Returns whether it used it.
-    pub(crate) fn detail_event(
-        &mut self,
-        event: &WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) -> bool {
-        if !matches!(
-            event,
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            }
-        ) || !self.detail.rect.contains(self.pointer)
-        {
-            return false;
-        }
-        let hit = self
-            .detail
-            .hits
-            .iter()
-            .rev()
-            .find(|(rect, _)| rect.contains(self.pointer))
-            .map(|(_, action)| action.clone());
-        if let Some(action) = hit {
-            self.body_editor.set_focused(false);
-            self.apply(action, ctx.state);
-            return true;
-        }
-        false
-    }
-
-    fn detail_accessibility(&self) -> AccessNode {
-        let children = self
-            .detail
-            .hits
-            .iter()
-            .map(|(rect, action)| {
-                AccessNode::new(action.role())
-                    .with_name(action.accessible_label(self))
-                    .with_action_target(action.semantic_id())
-                    .with_bounds(*rect)
-                    .with_state(AccessState {
-                        focusable: true,
-                        checked: match action {
-                            Action::ToggleFavorite(id) => {
-                                self.library.get(*id).map(|snippet| snippet.favorite)
-                            }
-                            _ => None,
-                        },
-                        ..Default::default()
-                    })
-            })
-            .collect();
-        AccessNode::new(ui::a11y::Role::Group)
-            .with_name(self.open_title())
-            .with_bounds(self.detail.rect)
-            .with_children(children)
-    }
-}
-
-/// The content column widget: paints the open snippet from the shared core.
-pub(crate) struct DetailPane {
-    core: Shared,
-    rect: Rect,
-}
-
-impl DetailPane {
-    pub(crate) fn new(core: &Shared) -> Self {
+impl DetailKey {
+    pub(crate) fn of(core: &Core) -> Self {
         Self {
-            core: std::rc::Rc::clone(core),
-            rect: Rect::ZERO,
+            snippet: core.open.and_then(|id| core.library.get(id)).map(|s| {
+                (
+                    s.id,
+                    s.language,
+                    s.folder.clone(),
+                    s.tags.clone(),
+                    s.description.clone(),
+                    s.has_placeholders(),
+                )
+            }),
+            library_empty: core.library.snippets.is_empty(),
         }
     }
 }
 
-impl Widget for DetailPane {
-    ui::provides!(dyn ui::widget::controls::ActionControls);
+/// Build the content column for what `core` has open.
+pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
+    let key = DetailKey::of(&core.borrow());
+    if key.library_empty {
+        // A fresh library: the one thing to do is create a snippet.
+        return Box::new(EmptyAction {
+            state: EmptyState::new(tr("snippets-empty-library"))
+                .with_icon(Icon::Code)
+                .with_action(tr("snippets-new-snippet"))
+                .with_action_id("snippets.library.new-snippet"),
+            requests: Rc::clone(requests),
+        });
+    }
+    let Some((id, language, folder, tags, description, templated)) = key.snippet else {
+        return Box::new(EmptyState::new(tr("snippets-none-selected")).with_icon(Icon::Code));
+    };
+
+    // The facts: the language (a button that opens its picker), then the
+    // folder and tags.
+    let picker = {
+        let requests = Rc::clone(requests);
+        Button::new(
+            &format!("snippets.snippet:{id}.language"),
+            &language.name(),
+            None,
+        )
+        .with_icon(Icon::Code)
+        .control_size(ControlSize::Small)
+        .tooltip(tr("snippets-language"))
+        .on_effect(move || requests.borrow_mut().push(Action::PickLanguage(id)))
+    };
+    let mut facts = Row::new().push(Box::new(Anchored {
+        button: picker,
+        core: Rc::clone(core),
+        part: Part::Language,
+        shown: None,
+    }));
+    if !folder.is_empty() {
+        facts = facts.push(Box::new(
+            Chip::new(folder).with_lead(ChipLead::Glyph(Icon::Folder)),
+        ));
+    }
+    for tag in tags {
+        facts = facts.push(Box::new(Chip::new(tag)));
+    }
+    let mut about = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .push(Box::new(facts));
+    if !description.trim().is_empty() {
+        about = about.push(Box::new(
+            Text::new(&description).with_role(TextRole::Body).dimmed(),
+        ));
+    }
+    let about = Gapped {
+        column: about,
+        gap: |rhythm| rhythm.sibling,
+    };
+
+    // The main action: copy, through the fill-in dialog when the body has
+    // variables.
+    let copy = {
+        let requests = Rc::clone(requests);
+        Button::new(
+            &format!("snippets.snippet:{id}.copy"),
+            &tr(if templated {
+                "snippets-fill-and-copy"
+            } else {
+                "snippets-copy"
+            }),
+            None,
+        )
+        .role(ButtonRole::Primary)
+        .on_effect(move || requests.borrow_mut().push(Action::Copy(id)))
+    };
+
+    Box::new(Gapped {
+        column: Column::new()
+            .with_id("snippets.detail")
+            .push(Box::new(about))
+            .push(Box::new(copy))
+            .push(Box::new(BodyWell {
+                core: Rc::clone(core),
+                rect: Rect::ZERO,
+            })),
+        gap: |rhythm| rhythm.group,
+    })
+}
+
+/// A column whose gap is a step of the theme's rhythm.
+struct Gapped {
+    column: Column,
+    gap: fn(&Rhythm) -> f32,
+}
+
+impl ui::widget::Decorator for Gapped {
+    type Inner = Column;
+
+    fn inner(&self) -> &Column {
+        &self.column
+    }
+
+    fn inner_mut(&mut self) -> &mut Column {
+        &mut self.column
+    }
 
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        crate::draw::fill_leaf(taffy, node_map, self)
+        self.column
+            .set_gap((self.gap)(&theme.tokens.spacing.rhythm));
+        Widget::build_layout(&mut self.column, taffy, theme, node_map)
+    }
+
+    fn name(&self) -> &'static str {
+        "SnippetColumn"
+    }
+}
+
+/// A button that acts on the open snippet, from the header row.
+fn open_snippet_button(
+    core: &Shared,
+    requests: &Requests,
+    button: Button,
+    action: fn(SnippetId) -> Action,
+) -> Button {
+    let core = Rc::clone(core);
+    let requests = Rc::clone(requests);
+    button.on_effect(move || {
+        if let Some(id) = core.try_borrow().ok().and_then(|core| core.open) {
+            requests.borrow_mut().push(action(id));
+        }
+    })
+}
+
+/// The header's favorite toggle for the open snippet: a star that reads as
+/// on while the snippet is a favorite.
+pub(crate) fn favorite_button(core: &Shared, requests: &Requests) -> Element {
+    let button = Button::icon_only("snippets.favorite", Icon::Star, &tr("snippets-favorite"));
+    Box::new(Anchored {
+        button: open_snippet_button(core, requests, button, Action::ToggleFavorite),
+        core: Rc::clone(core),
+        part: Part::Favorite,
+        shown: None,
+    })
+}
+
+/// The header's overflow button: the open snippet's less frequent actions.
+pub(crate) fn more_button(core: &Shared, requests: &Requests) -> Element {
+    let button = Button::icon_only(
+        "snippets.more",
+        Icon::MoreHorizontal,
+        &tr("snippets-more-actions"),
+    );
+    Box::new(Anchored {
+        button: open_snippet_button(core, requests, button, Action::More),
+        core: Rc::clone(core),
+        part: Part::More,
+        shown: None,
+    })
+}
+
+/// Which of the app's buttons an [`Anchored`] is.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Part {
+    Language,
+    Favorite,
+    More,
+}
+
+/// One of the app's buttons that the core follows: the header's buttons
+/// are disabled while no snippet is open and the favorite toggle reads the
+/// snippet's state; the buttons that open a menu tell the core where they
+/// are, so the menu opens under them.
+struct Anchored {
+    button: Button,
+    core: Shared,
+    part: Part,
+    /// The (enabled, on) state last applied.
+    shown: Option<(bool, bool)>,
+}
+
+impl Anchored {
+    fn refresh(&mut self) {
+        if self.part == Part::Language {
+            return;
+        }
+        let Ok(core) = self.core.try_borrow() else {
+            return;
+        };
+        let open = core.open.and_then(|id| core.library.get(id));
+        let state = (open.is_some(), open.is_some_and(|s| s.favorite));
+        drop(core);
+        if self.shown == Some(state) {
+            return;
+        }
+        self.shown = Some(state);
+        let (enabled, on) = state;
+        self.button.set_enabled(enabled);
+        if self.part == Part::Favorite {
+            self.button.set_toggled(on);
+            self.button.set_tooltip(Some(tr(if on {
+                "snippets-remove-favorite"
+            } else {
+                "snippets-add-favorite"
+            })));
+        }
+    }
+}
+
+impl ui::widget::Decorator for Anchored {
+    type Inner = Button;
+
+    fn inner(&self) -> &Button {
+        &self.button
+    }
+
+    fn inner_mut(&mut self) -> &mut Button {
+        &mut self.button
+    }
+
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        self.refresh();
+        Widget::sync(&mut self.button, state, path);
+    }
+
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+        self.refresh();
+        Widget::update(&mut self.button, state, path)
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = Widget::build_layout(&mut self.button, taffy, theme, node_map);
+        ui::widget::decorator::register_node(node_map, node, self);
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        Widget::apply_layout(&mut self.button, taffy, node, origin);
+        let rect = Widget::get_rect(&self.button);
+        if let Ok(mut core) = self.core.try_borrow_mut() {
+            match self.part {
+                Part::Language => core.language_anchor = rect,
+                Part::More => core.more_anchor = rect,
+                Part::Favorite => {}
+            }
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        match self.part {
+            Part::Language => "SnippetLanguage",
+            Part::Favorite => "SnippetFavorite",
+            Part::More => "SnippetMore",
+        }
+    }
+}
+
+/// The empty library's call to action, routed to the app's "New snippet".
+struct EmptyAction {
+    state: EmptyState,
+    requests: Requests,
+}
+
+impl EmptyAction {
+    fn drain(&mut self) {
+        if self.state.take_action() {
+            self.requests.borrow_mut().push(Action::NewSnippet);
+        }
+    }
+}
+
+impl ui::widget::Decorator for EmptyAction {
+    type Inner = EmptyState;
+
+    fn inner(&self) -> &EmptyState {
+        &self.state
+    }
+
+    fn inner_mut(&mut self) -> &mut EmptyState {
+        &mut self.state
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = Widget::build_layout(&mut self.state, taffy, theme, node_map);
+        ui::widget::decorator::register_node(node_map, node, self);
+        node
+    }
+
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+        self.drain();
+        Widget::update(&mut self.state, state, path)
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        Widget::handle_event(&mut self.state, event, ctx);
+        self.drain();
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &ui::a11y::Action,
+        state: &mut AppModel,
+        root: &ModelPath,
+    ) -> bool {
+        let done = Widget::perform_action(&mut self.state, action, state, root);
+        self.drain();
+        done
+    }
+
+    fn name(&self) -> &'static str {
+        "SnippetsEmpty"
+    }
+}
+
+/// The body: the code editor in a raised well that takes the rest of the
+/// column. The editor lives in the core, which routes its input.
+struct BodyWell {
+    core: Shared,
+    rect: Rect,
+}
+
+impl Widget for BodyWell {
+    #[allow(
+        clippy::expect_used,
+        reason = "TaffyTree::new_leaf only fails on allocation, which aborts anyway"
+    )]
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let lines = 4.0 * theme.text(TextRole::Code).line_height_px();
+        let node = taffy
+            .new_leaf(Style {
+                flex_grow: 1.0,
+                flex_basis: length(0.0_f32),
+                size: taffy::Size {
+                    width: percent(1.0_f32),
+                    height: taffy::Dimension::auto(),
+                },
+                min_size: taffy::Size {
+                    width: length(0.0_f32),
+                    height: length(lines),
+                },
+                ..Default::default()
+            })
+            .expect("a leaf node");
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -388,39 +435,37 @@ impl Widget for DetailPane {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        self.core
-            .borrow_mut()
-            .paint_detail(scene, transform, text, theme, self.rect);
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if self.core.borrow_mut().detail_event(event, ctx) {
-            *ctx.handled = true;
+        if self.rect.height() <= 0.0 || self.rect.width() <= 0.0 {
+            return;
         }
+        let ground = theme.tokens.colors.surfaces.raised;
+        ui::surface::card(
+            scene,
+            transform,
+            self.rect,
+            f64::from(theme.tokens.radii.control),
+            ground,
+        );
+        let mut core = self.core.borrow_mut();
+        core.body_editor.set_rect(self.rect);
+        core.body_editor
+            .draw_embedded(scene, transform, text, &theme.on_ground(ground));
     }
 
-    fn accessibility(&self) -> Option<AccessNode> {
-        Some(self.core.borrow().detail_accessibility())
+    fn needs_redraw(&self) -> bool {
+        // The editor's caret, selection and text change without a layout.
+        true
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        false
     }
 
     fn name(&self) -> &'static str {
-        "SnippetDetail"
+        "SnippetBody"
     }
 
     fn get_rect(&self) -> Rect {
         self.rect
-    }
-}
-
-impl ui::widget::controls::ActionControls for DetailPane {
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        let core = self.core.borrow();
-        let mut seen = std::collections::HashSet::new();
-        core.detail
-            .hits
-            .iter()
-            .filter(|(_, action)| seen.insert(action.semantic_id()))
-            .map(|(_, action)| action.binding())
-            .collect()
     }
 }

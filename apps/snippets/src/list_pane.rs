@@ -1,5 +1,10 @@
 //! The overview column: the snippets of the chosen place, one
 //! [`ListRowFace`] each, or the empty state when there are none.
+//!
+//! The list is one focus stop: Tab reaches it, the arrow keys, Home and End
+//! move the open snippet, and Enter or Space brings it to the front of a
+//! narrow window. A row opens on a completed click (press and release on
+//! the same row), and shows its pressed state in between.
 
 use std::collections::HashMap;
 
@@ -18,6 +23,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 use crate::app::{Action, Core, Shared};
 use crate::model::{Selection, SmartFolder, Snippet, SnippetId};
@@ -35,6 +41,10 @@ pub(crate) struct ListState {
     pub(crate) hits: Vec<(Rect, Action)>,
     /// Each row's leading column and the snippet it shows, for tooltips.
     rows: Vec<(Rect, Rect, SnippetId)>,
+    /// The row a press landed on, until it is released.
+    pressed: Option<SnippetId>,
+    /// The list has keyboard focus.
+    pub(crate) focused: bool,
 }
 
 impl Default for ListState {
@@ -48,6 +58,8 @@ impl Default for ListState {
             bar: Scrollbar::vertical(),
             hits: Vec::new(),
             rows: Vec::new(),
+            pressed: None,
+            focused: false,
         }
     }
 }
@@ -55,6 +67,32 @@ impl Default for ListState {
 impl ListState {
     fn metrics(&self) -> ScrollMetrics {
         ScrollMetrics::new(self.content, self.rect.height(), self.scroll)
+    }
+
+    /// Scroll row `index` of rows `heights` tall into view. Scrolling down
+    /// stops at the first row that keeps it in view, so the list starts on
+    /// a whole row.
+    fn reveal_row(&mut self, heights: &[f64], index: usize, inset: f64) {
+        let tops: Vec<f64> = heights
+            .iter()
+            .scan(inset, |y, h| {
+                let top = *y;
+                *y += h;
+                Some(top)
+            })
+            .collect();
+        let top = tops.get(index).copied().unwrap_or(inset);
+        let bottom = top + heights.get(index).copied().unwrap_or_default();
+        if top - inset < self.scroll {
+            self.scroll = top - inset;
+        } else if bottom + inset > self.scroll + self.rect.height() {
+            let least = bottom + inset - self.rect.height();
+            self.scroll = tops
+                .iter()
+                .map(|row_top| row_top - inset)
+                .find(|scroll| *scroll >= least)
+                .unwrap_or(least);
+        }
     }
 
     fn track(&self, theme_gutter: f64) -> Rect {
@@ -67,8 +105,8 @@ impl ListState {
     }
 }
 
-/// The one-line secondary text of a row: what the snippet is for, or its
-/// first line of code when it has no description.
+/// The secondary text of a row: what the snippet is for, or its first line
+/// of code when it has no description.
 fn secondary(snippet: &Snippet) -> &str {
     if snippet.description.trim().is_empty() {
         snippet.body.lines().next().unwrap_or("").trim()
@@ -80,19 +118,11 @@ fn secondary(snippet: &Snippet) -> &str {
 /// "2 variables" for a templated snippet.
 fn variables(snippet: &Snippet) -> Option<String> {
     let count = snippet.placeholders().len();
-    (count > 0).then(|| {
-        ui::i18n::I18nManager::format(
-            "snippets-variables",
-            &[("count", ui::i18n::ArgValue::Number(count as f64))],
-        )
-    })
+    (count > 0).then(|| crate::tr_count("snippets-variables", count))
 }
 
 fn uses(snippet: &Snippet) -> String {
-    ui::i18n::I18nManager::format(
-        "snippets-uses",
-        &[("count", ui::i18n::ArgValue::Number(f64::from(snippet.uses)))],
-    )
+    crate::tr_count("snippets-uses", snippet.uses as usize)
 }
 
 impl Core {
@@ -101,17 +131,15 @@ impl Core {
         snippet: &'a Snippet,
         meta: Option<&'a str>,
         column: f64,
-        hovered: bool,
+        interaction: Interaction,
     ) -> ListRowFace<'a> {
         let face = ListRowFace::new(&snippet.title)
             .leading(RowLeading::Badge(snippet.language.badge()))
             .leading_column(column)
             .secondary(secondary(snippet))
+            .two_line_secondary()
             .selected(self.open == Some(snippet.id))
-            .interaction(Interaction {
-                hovered,
-                ..Interaction::default()
-            });
+            .interaction(interaction);
         match meta {
             Some(meta) => face.meta(meta),
             None => face,
@@ -164,7 +192,7 @@ impl Core {
             .iter()
             .zip(&metas)
             .map(|(s, meta)| {
-                self.row_face(s, meta.as_deref(), column, false)
+                self.row_face(s, meta.as_deref(), column, Interaction::default())
                     .height(text, theme)
             })
             .collect();
@@ -173,13 +201,7 @@ impl Core {
         if (std::mem::take(&mut self.list.reveal) || resized)
             && let Some(index) = snippets.iter().position(|s| Some(s.id) == self.open)
         {
-            let top = inset + heights.iter().take(index).sum::<f64>();
-            let bottom = top + heights.get(index).copied().unwrap_or_default();
-            if top - inset < self.list.scroll {
-                self.list.scroll = top - inset;
-            } else if bottom + inset > self.list.scroll + area.height() {
-                self.list.scroll = bottom + inset - area.height();
-            }
+            self.list.reveal_row(&heights, index, inset);
         }
         let overflows = self.list.metrics().overflows();
         let max = (self.list.content - area.height()).max(0.0);
@@ -196,7 +218,13 @@ impl Core {
                 continue;
             }
             let hovered = rect.contains(self.pointer) && area.contains(self.pointer);
-            let face = self.row_face(snippet, meta.as_deref(), column, hovered);
+            let interaction = Interaction {
+                hovered,
+                pressed: self.list.pressed == Some(snippet.id) && hovered,
+                focused: self.list.focused && self.open == Some(snippet.id),
+                disabled: false,
+            };
+            let face = self.row_face(snippet, meta.as_deref(), column, interaction);
             let face = match snippets.get(i + 1) {
                 Some(next) => face.separator(self.open == Some(next.id)),
                 None => face,
@@ -226,44 +254,75 @@ impl Core {
         }
     }
 
-    /// The list's zero state: an empty library offers its one action; an
-    /// empty smart folder says what would fill it.
+    /// The list's zero state: one sentence saying what would fill the
+    /// place. Creating a snippet is the header's action.
     fn paint_list_empty(
-        &mut self,
+        &self,
         scene: &mut Scene,
         t: Affine,
         text: &mut TextRenderer,
         theme: &Theme,
         area: Rect,
     ) {
-        let library_empty = self.library.snippets.is_empty();
-        let title = if library_empty {
-            "No snippets yet"
-        } else {
-            match &self.selection {
-                Selection::Smart(SmartFolder::Favorites) => "No favorites yet",
-                Selection::Smart(SmartFolder::MostUsed) => "Nothing copied yet",
-                _ => "No snippets here",
-            }
-        };
+        let title = crate::tr(match &self.selection {
+            _ if self.library.snippets.is_empty() => "snippets-empty-library",
+            Selection::Smart(SmartFolder::Favorites) => "snippets-empty-favorites",
+            Selection::Smart(SmartFolder::MostUsed) => "snippets-empty-most-used",
+            _ => "snippets-empty-place",
+        });
         let content = EmptyStateContent {
-            icon: Some(if library_empty {
-                Icon::Code
-            } else {
-                Icon::Inbox
+            icon: Some(match &self.selection {
+                Selection::Smart(SmartFolder::Favorites) => Icon::Star,
+                Selection::Smart(SmartFolder::MostUsed) => Icon::History,
+                _ => Icon::Inbox,
             }),
-            action_label: library_empty.then_some("New snippet"),
-            ..EmptyStateContent::new(title)
+            ..EmptyStateContent::new(&title)
         };
-        let action = EmptyState::paint(
+        EmptyState::paint(
             &mut PaintCtx::new(scene, t, text, theme),
             area,
             &content,
             self.pointer,
         );
-        if let Some(rect) = action {
-            self.list.hits.push((rect, Action::NewSnippet));
+    }
+
+    /// Open the snippet `step` rows away from the open one (clamped to the
+    /// list), without bringing it to the front of a narrow window.
+    fn step_open(&mut self, step: isize) {
+        let Some(last) = self.visible.len().checked_sub(1) else {
+            return;
+        };
+        let current = self
+            .open
+            .and_then(|id| self.visible.iter().position(|v| *v == id));
+        let next = match (current, step) {
+            (None, _) => 0,
+            (Some(i), isize::MIN..=-1) => i.saturating_sub(step.unsigned_abs()),
+            (Some(i), _) => i.saturating_add(step.unsigned_abs()).min(last),
+        };
+        if let Some(id) = self.visible.get(next).copied() {
+            self.open = Some(id);
+            self.list.reveal = true;
         }
+    }
+
+    /// A key while the list has focus. Returns whether the list used it.
+    pub(crate) fn list_key(&mut self, key: &Key) -> bool {
+        let page = ((self.list.rect.height() / self.list.line.max(1.0)) as isize).max(1);
+        match key {
+            Key::Named(NamedKey::ArrowDown) => self.step_open(1),
+            Key::Named(NamedKey::ArrowUp) => self.step_open(-1),
+            Key::Named(NamedKey::PageDown) => self.step_open(page),
+            Key::Named(NamedKey::PageUp) => self.step_open(-page),
+            Key::Named(NamedKey::Home) => self.step_open(isize::MIN),
+            Key::Named(NamedKey::End) => self.step_open(isize::MAX),
+            Key::Named(NamedKey::Enter | NamedKey::Space) => match self.open {
+                Some(id) => self.open_snippet(id),
+                None => return false,
+            },
+            _ => return false,
+        }
+        true
     }
 
     /// Route `event` to the list. Returns whether the list used it.
@@ -275,7 +334,24 @@ impl Core {
     ) -> bool {
         let area = self.list.rect;
         let inside = area.contains(self.pointer);
+        let row_at = |list: &ListState, point: Point| {
+            list.hits
+                .iter()
+                .rev()
+                .find(|(rect, _)| rect.contains(point))
+                .and_then(|(_, action)| match action {
+                    Action::OpenSnippet(id) => Some(*id),
+                    _ => None,
+                })
+        };
         match event {
+            WindowEvent::KeyboardInput { event: key, .. }
+                if self.list.focused && key.state == ElementState::Pressed =>
+            {
+                let modifiers = ctx.modifiers.state();
+                !(modifiers.control_key() || modifiers.super_key() || modifiers.alt_key())
+                    && self.list_key(&key.logical_key)
+            }
             WindowEvent::CursorMoved { .. } => {
                 let track = self.list.track(gutter);
                 let metrics = self.list.metrics();
@@ -315,16 +391,10 @@ impl Core {
                         PressOutcome::Miss => {}
                     }
                 }
-                let hit = self
-                    .list
-                    .hits
-                    .iter()
-                    .rev()
-                    .find(|(rect, _)| rect.contains(self.pointer))
-                    .map(|(_, action)| action.clone());
-                if let Some(action) = hit {
+                self.list.pressed = row_at(&self.list, self.pointer);
+                if self.list.pressed.is_some() {
                     self.body_editor.set_focused(false);
-                    self.apply(action, ctx.state);
+                    *ctx.focus_target = Some(ctx.node_id);
                 }
                 true
             }
@@ -332,7 +402,18 @@ impl Core {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
-            } => self.list.bar.release(),
+            } => {
+                let released = self.list.bar.release();
+                let pressed = self.list.pressed.take();
+                if let Some(id) = pressed
+                    && inside
+                    && row_at(&self.list, self.pointer) == Some(id)
+                {
+                    self.apply(Action::OpenSnippet(id), ctx.state);
+                    return true;
+                }
+                released || pressed.is_some()
+            }
             _ => false,
         }
     }
@@ -342,24 +423,23 @@ impl Core {
             .list
             .hits
             .iter()
-            .map(|(rect, action)| match action {
-                Action::OpenSnippet(id) => {
-                    let face = self.library.get(*id).map(|snippet| {
-                        ListRowFace::new(&snippet.title)
-                            .secondary(secondary(snippet))
-                            .selected(self.open == Some(*id))
-                            .accessibility(*rect, action.semantic_id())
-                    });
-                    face.unwrap_or_else(|| AccessNode::new(Role::ListItem))
-                }
-                _ => AccessNode::new(action.role())
-                    .with_name(action.accessible_label(self))
-                    .with_action_target(action.semantic_id())
-                    .with_bounds(*rect)
-                    .with_state(ui::a11y::AccessState {
-                        focusable: true,
-                        ..Default::default()
-                    }),
+            .filter_map(|(rect, action)| match action {
+                Action::OpenSnippet(id) => self.library.get(*id).map(|snippet| {
+                    let meta = variables(snippet);
+                    let face = ListRowFace::new(&snippet.title)
+                        .secondary(secondary(snippet))
+                        .selected(self.open == Some(*id))
+                        .interaction(Interaction {
+                            focused: self.list.focused && self.open == Some(*id),
+                            ..Interaction::default()
+                        });
+                    match &meta {
+                        Some(meta) => face.meta(meta),
+                        None => face,
+                    }
+                    .accessibility(*rect, action.semantic_id())
+                }),
+                _ => None,
             })
             .collect();
         AccessNode::new(Role::List)
@@ -376,7 +456,7 @@ impl Core {
             .find(|(row, _, _)| row.contains(point))?;
         let snippet = self.library.get(*id)?;
         if lead.contains(point) {
-            Some((*lead, snippet.language.label().to_string()))
+            Some((*lead, snippet.language.name()))
         } else {
             Some((*row, uses(snippet)))
         }
@@ -436,6 +516,18 @@ impl Widget for ListPane {
         }
     }
 
+    fn is_focusable(&self) -> bool {
+        !self.core.borrow().visible.is_empty()
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.core.borrow_mut().list.focused = focused;
+    }
+
+    fn is_focused(&self) -> bool {
+        self.core.borrow().list.focused
+    }
+
     fn accessibility(&self) -> Option<AccessNode> {
         Some(self.core.borrow().list_accessibility())
     }
@@ -445,7 +537,8 @@ impl Widget for ListPane {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.core.borrow().list.bar.is_dragging()
+        let core = self.core.borrow();
+        core.list.bar.is_dragging() || core.list.pressed.is_some()
     }
 
     fn name(&self) -> &'static str {

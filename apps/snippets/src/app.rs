@@ -32,13 +32,14 @@ use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::actions::{self, SnippetsAction, SnippetsResourceCtx};
-use crate::detail_pane::{DetailPane, DetailState};
+use crate::detail_pane::{self, DetailKey};
 use crate::doc::SnippetsDoc;
 use crate::expand::ExpandModal;
 use crate::highlight;
 use crate::list_pane::{ListPane, ListState};
 use crate::model::{Language, Library, Selection, SmartFolder, Snippet, SnippetId};
 use crate::seed;
+use crate::{tr, tr_with};
 
 /// The core every part of the window reads and changes.
 pub(crate) type Shared = Rc<RefCell<Core>>;
@@ -58,7 +59,7 @@ pub(crate) enum Action {
     Duplicate(SnippetId),
     Delete(SnippetId),
     SetLanguage(SnippetId, Language),
-    /// Show the language picker under the language chip.
+    /// Show the language picker under the language button.
     PickLanguage(SnippetId),
     /// Show the menu of the snippet's less frequent actions.
     More(SnippetId),
@@ -67,10 +68,9 @@ pub(crate) enum Action {
 impl Action {
     pub(crate) fn semantic_id(&self) -> String {
         match self {
-            Self::Select(Selection::Smart(smart)) => format!(
-                "snippets.sidebar.smart:{}",
-                smart.label().to_lowercase().replace(' ', "-")
-            ),
+            Self::Select(Selection::Smart(smart)) => {
+                format!("snippets.sidebar.smart:{}", smart.key())
+            }
             Self::Select(Selection::Folder(folder)) => {
                 format!("snippets.sidebar.folder:{}", actions::stable_key(folder))
             }
@@ -84,31 +84,40 @@ impl Action {
             Self::Duplicate(id) => format!("snippets.snippet:{id}.duplicate"),
             Self::Delete(id) => format!("snippets.snippet:{id}.delete"),
             Self::SetLanguage(id, _) => format!("snippets.snippet:{id}.set-language"),
-            Self::PickLanguage(id) => format!("snippets.snippet:{id}.pick-language"),
+            Self::PickLanguage(id) => format!("snippets.snippet:{id}.language"),
             Self::More(id) => format!("snippets.snippet:{id}.more"),
         }
     }
 
     pub(crate) fn accessible_label(&self, core: &Core) -> String {
         match self {
-            Self::Select(Selection::Smart(smart)) => smart.label().into(),
-            Self::Select(Selection::Folder(folder)) => format!("Folder {folder}"),
-            Self::Select(Selection::Tag(tag)) => format!("Tag {tag}"),
+            Self::Select(Selection::Smart(smart)) => smart.label(),
+            Self::Select(Selection::Folder(folder)) => {
+                tr_with("snippets-folder-named", &[("name", folder)])
+            }
+            Self::Select(Selection::Tag(tag)) => tr_with("snippets-tag-named", &[("name", tag)]),
             Self::OpenSnippet(id) => core
                 .library
                 .get(*id)
-                .map_or_else(|| "Open snippet".into(), |snippet| snippet.title.clone()),
-            Self::NewSnippet => "New snippet".into(),
-            Self::Copy(id) => core.copy_label(*id).into(),
-            Self::ToggleFavorite(id) => core.favorite_label(*id).into(),
-            Self::Duplicate(_) => "Duplicate".into(),
-            Self::Delete(_) => "Delete".into(),
-            Self::SetLanguage(_, language) => format!("Set language to {}", language.label()),
+                .map_or_else(|| tr("snippets-untitled"), |snippet| snippet.title.clone()),
+            Self::NewSnippet => tr("snippets-new-snippet"),
+            Self::Copy(id) => core.copy_label(*id),
+            Self::ToggleFavorite(id) => core.favorite_label(*id),
+            Self::Duplicate(_) => tr("snippets-duplicate"),
+            Self::Delete(_) => tr("snippets-delete"),
+            Self::SetLanguage(_, language) => {
+                tr_with("snippets-set-language", &[("language", &language.name())])
+            }
             Self::PickLanguage(id) => core.library.get(*id).map_or_else(
-                || "Language".into(),
-                |snippet| format!("Language: {}", snippet.language.label()),
+                || tr("snippets-language"),
+                |snippet| {
+                    tr_with(
+                        "snippets-language-of",
+                        &[("language", &snippet.language.name())],
+                    )
+                },
             ),
-            Self::More(_) => "More actions".into(),
+            Self::More(_) => tr("snippets-more-actions"),
         }
     }
 
@@ -136,14 +145,6 @@ impl Action {
         }
     }
 
-    /// The accessibility role a painted control with this action has.
-    pub(crate) fn role(&self) -> ui::a11y::Role {
-        match self {
-            Self::ToggleFavorite(_) => ui::a11y::Role::ToggleButton,
-            _ => ui::a11y::Role::Button,
-        }
-    }
-
     /// The control binding a painted control with this action publishes.
     pub(crate) fn binding(&self) -> ui::widget::ControlBindingMetadata {
         let control_id = self.semantic_id();
@@ -157,25 +158,19 @@ impl Action {
     }
 }
 
-/// A short confirmation shown after an action (auto-dismisses).
+/// A short confirmation shown after an action; it goes after the toolkit's
+/// toast lifetime, read from the clock (pinned in captures).
 #[derive(Clone)]
 struct Toast {
     message: String,
-    /// Frames remaining before the toast fades.
-    ttl: u32,
+    shown_at: ui::clock::Instant,
 }
 
-/// What an open menu chooses between.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum MenuKind {
-    Language(SnippetId),
-    More(SnippetId),
-}
-
-/// The open menu: a language picker or the overflow menu.
+/// An open menu of the snippet: its language picker or its overflow menu.
 pub(crate) struct OpenMenu {
     pub(crate) menu: ContextMenu,
-    pub(crate) kind: MenuKind,
+    /// What the menu is called, for assistive technology.
+    pub(crate) name: String,
     /// What each item does, by index.
     pub(crate) actions: Vec<Action>,
 }
@@ -208,7 +203,10 @@ pub(crate) struct Core {
     /// The window, for dialogs and menus.
     pub(crate) window: Rect,
     pub(crate) list: ListState,
-    pub(crate) detail: DetailState,
+    /// Where the header's overflow button is, for its menu.
+    pub(crate) more_anchor: Rect,
+    /// Where the language button is, for its picker.
+    pub(crate) language_anchor: Rect,
     /// The screen a narrow window should bring to the front next.
     show_pane: Option<NavPane>,
     /// The body editor may take input (the content column is on screen and
@@ -237,7 +235,8 @@ impl Core {
             pointer: Point::ZERO,
             window: Rect::ZERO,
             list: ListState::default(),
-            detail: DetailState::default(),
+            more_anchor: Rect::ZERO,
+            language_anchor: Rect::ZERO,
             show_pane: None,
             body_reachable: false,
         };
@@ -277,9 +276,30 @@ impl Core {
     /// The column title of the list: what the chosen place is called.
     pub(crate) fn selection_title(&self) -> String {
         match &self.selection {
-            Selection::Smart(smart) => smart.label().to_string(),
+            Selection::Smart(smart) => smart.label(),
             Selection::Folder(folder) | Selection::Tag(folder) => folder.clone(),
         }
+    }
+
+    /// Open the snippet a capture shows off: a substantial, templated piece
+    /// of code, so the content column shows the highlighter and the
+    /// variables action.
+    fn open_specimen(&mut self) {
+        self.open = self
+            .visible
+            .iter()
+            .copied()
+            .max_by_key(|id| {
+                let s = self.library.get(*id);
+                let lines = s.map_or(0, |s| s.body.lines().count());
+                let templated = usize::from(s.is_some_and(Snippet::has_placeholders));
+                let is_program = usize::from(s.is_some_and(|s| {
+                    !matches!(s.language, Language::Markdown | Language::PlainText)
+                }));
+                (is_program, templated, lines)
+            })
+            .or_else(|| self.visible.first().copied());
+        self.list.reveal = true;
     }
 
     /// The column title of the content: the open snippet's title.
@@ -290,20 +310,22 @@ impl Core {
             .unwrap_or_default()
     }
 
-    pub(crate) fn copy_label(&self, id: SnippetId) -> &'static str {
-        if self.library.get(id).is_some_and(Snippet::has_placeholders) {
-            "Fill in and copy"
-        } else {
-            "Copy"
-        }
+    pub(crate) fn copy_label(&self, id: SnippetId) -> String {
+        tr(
+            if self.library.get(id).is_some_and(Snippet::has_placeholders) {
+                "snippets-fill-and-copy"
+            } else {
+                "snippets-copy"
+            },
+        )
     }
 
-    pub(crate) fn favorite_label(&self, id: SnippetId) -> &'static str {
-        if self.library.get(id).is_some_and(|s| s.favorite) {
-            "Remove from favorites"
+    pub(crate) fn favorite_label(&self, id: SnippetId) -> String {
+        tr(if self.library.get(id).is_some_and(|s| s.favorite) {
+            "snippets-remove-favorite"
         } else {
-            "Add to favorites"
-        }
+            "snippets-add-favorite"
+        })
     }
 
     /// The sidebar: the smart folders, then folders and tags (a section only
@@ -323,7 +345,11 @@ impl Core {
                 .count(count(self.library.query(&selection).len()))
         })
         .collect();
-        let mut sections = vec![NavSection::new("library", "Library", smart)];
+        let mut sections = vec![NavSection::new(
+            "library",
+            tr("snippets-section-library"),
+            smart,
+        )];
         let folders: Vec<NavItem> = self
             .library
             .folders()
@@ -336,7 +362,11 @@ impl Core {
             })
             .collect();
         if !folders.is_empty() {
-            sections.push(NavSection::new("folders", "Folders", folders));
+            sections.push(NavSection::new(
+                "folders",
+                tr("snippets-section-folders"),
+                folders,
+            ));
         }
         let tags: Vec<NavItem> = self
             .library
@@ -345,7 +375,7 @@ impl Core {
             .map(|(tag, n)| NavItem::new(nav_id(&Selection::Tag(tag.clone())), tag).count(count(n)))
             .collect();
         if !tags.is_empty() {
-            sections.push(NavSection::new("tags", "Tags", tags));
+            sections.push(NavSection::new("tags", tr("snippets-section-tags"), tags));
         }
         sections
     }
@@ -522,7 +552,7 @@ impl Core {
         }
         self.recompute_visible();
         self.open_snippet(id);
-        self.toast("New snippet created");
+        self.toast(&tr("snippets-created"));
     }
 
     fn copy(&mut self, id: SnippetId, doc: &mut AutoCommit) {
@@ -538,7 +568,7 @@ impl Core {
         if let Some(body) = self.library.get(id).map(|s| s.body.clone()) {
             ui::clipboard_copy(&body);
             self.record_use(id, doc);
-            self.toast("Copied to clipboard");
+            self.toast(&tr("snippets-copied"));
         }
     }
 
@@ -565,7 +595,7 @@ impl Core {
         if let Some(src) = self.library.get(id).cloned() {
             let mut copy = src.clone();
             copy.id = uuid::Uuid::new_v4();
-            copy.title = format!("{} (copy)", src.title);
+            copy.title = tr_with("snippets-copy-title", &[("title", &src.title)]);
             copy.favorite = false;
             copy.uses = 0;
             let new_id = copy.id;
@@ -574,7 +604,7 @@ impl Core {
             if self.visible.contains(&new_id) {
                 self.open_snippet(new_id);
             }
-            self.toast("Snippet duplicated");
+            self.toast(&tr("snippets-duplicated"));
         }
     }
 
@@ -584,7 +614,7 @@ impl Core {
             self.open = None;
         }
         self.recompute_visible();
-        self.toast("Snippet deleted");
+        self.toast(&tr("snippets-deleted"));
     }
 
     fn set_language(&mut self, id: SnippetId, lang: Language, doc: &mut AutoCommit) {
@@ -595,7 +625,7 @@ impl Core {
     fn toast(&mut self, message: &str) {
         self.toast = Some(Toast {
             message: message.to_string(),
-            ttl: 90,
+            shown_at: ui::clock::now(),
         });
     }
 
@@ -646,52 +676,62 @@ impl Core {
             Action::Duplicate(id) => self.duplicate(id, doc),
             Action::Delete(id) => self.delete(id, doc),
             Action::SetLanguage(id, lang) => self.set_language(id, lang, doc),
-            Action::PickLanguage(id) => self.open_menu(MenuKind::Language(id)),
-            Action::More(id) => self.open_menu(MenuKind::More(id)),
+            Action::PickLanguage(id) => self.open_languages(id),
+            Action::More(id) => self.open_more(id),
         }
     }
 
-    /// Open the language picker or the overflow menu under the control that
-    /// asked for it.
-    fn open_menu(&mut self, kind: MenuKind) {
-        let (anchor_action, id) = match kind {
-            MenuKind::Language(id) => (Action::PickLanguage(id), id),
-            MenuKind::More(id) => (Action::More(id), id),
-        };
-        let Some(anchor) = self
-            .detail
-            .hits
-            .iter()
-            .find(|(_, action)| *action == anchor_action)
-            .map(|(rect, _)| *rect)
-        else {
+    /// Open the snippet's language picker under the language button, the
+    /// current language checked.
+    pub(crate) fn open_languages(&mut self, id: SnippetId) {
+        let Some(current) = self.library.get(id).map(|s| s.language) else {
             return;
         };
         let mut menu = ContextMenu::new();
-        let mut actions = Vec::new();
-        match kind {
-            MenuKind::Language(_) => {
-                let current = self.library.get(id).map(|s| s.language);
-                for language in Language::ALL {
-                    menu.push(
-                        MenuItem::action(language.label(), || {})
-                            .with_checked(Some(language) == current),
-                    );
-                    actions.push(Action::SetLanguage(id, language));
-                }
-            }
-            MenuKind::More(_) => {
-                menu.push(MenuItem::action("Duplicate", || {}).with_icon(Icon::Copy));
-                actions.push(Action::Duplicate(id));
-                menu.push(MenuItem::destructive_action("Delete", || {}).with_icon(Icon::Trash2));
-                actions.push(Action::Delete(id));
-            }
+        for language in Language::ALL {
+            menu.push(MenuItem::action(language.name(), || {}).with_checked(language == current));
+        }
+        let actions = Language::ALL
+            .into_iter()
+            .map(|language| Action::SetLanguage(id, language))
+            .collect();
+        self.open_menu(menu, self.language_anchor, tr("snippets-language"), actions);
+    }
+
+    /// Open the snippet's overflow menu under the header's overflow button.
+    pub(crate) fn open_more(&mut self, id: SnippetId) {
+        if self.library.get(id).is_none() {
+            return;
+        }
+        let mut menu = ContextMenu::new();
+        menu.push(MenuItem::action(tr("snippets-duplicate"), || {}).with_icon(Icon::Copy));
+        menu.push(
+            MenuItem::destructive_action(tr("snippets-delete"), || {}).with_icon(Icon::Trash2),
+        );
+        self.open_menu(
+            menu,
+            self.more_anchor,
+            tr("snippets-more-actions"),
+            vec![Action::Duplicate(id), Action::Delete(id)],
+        );
+    }
+
+    /// Show `menu` under `anchor`, the control that asked for it.
+    fn open_menu(
+        &mut self,
+        mut menu: ContextMenu,
+        anchor: Rect,
+        name: String,
+        actions: Vec<Action>,
+    ) {
+        if anchor.area() <= 0.0 {
+            return;
         }
         menu.open_anchored(anchor, self.window);
         self.body_editor.set_focused(false);
         self.menu = Some(OpenMenu {
             menu,
-            kind,
+            name,
             actions,
         });
     }
@@ -724,14 +764,14 @@ impl Core {
             ExpandOutcome::Copy(text, id) => {
                 ui::clipboard_copy(&text);
                 self.record_use(id, doc);
-                self.toast("Copied to clipboard");
+                self.toast(&tr("snippets-copied"));
             }
         }
     }
 
-    /// Every painted control on screen, list first.
+    /// Every painted row on screen.
     pub(crate) fn hits(&self) -> impl Iterator<Item = &(Rect, Action)> {
-        self.list.hits.iter().chain(self.detail.hits.iter())
+        self.list.hits.iter()
     }
 
     fn handle_keyboard_input(&mut self, ctx: &mut ui::widget::EventCtx<'_>, key: &Key) -> bool {
@@ -792,12 +832,11 @@ impl Core {
     }
 
     fn update_toast(&mut self) {
-        if let Some(toast) = &mut self.toast {
-            if toast.ttl == 0 {
-                self.toast = None;
-            } else {
-                toast.ttl -= 1;
-            }
+        if self.toast.as_ref().is_some_and(|toast| {
+            ui::clock::now().saturating_duration_since(toast.shown_at)
+                >= ui::widget::toast::DEFAULT_TTL
+        }) {
+            self.toast = None;
         }
     }
 }
@@ -846,7 +885,7 @@ impl SidebarNav {
         };
         let list = NavList::new(sections.clone())
             .with_id("snippets.sidebar")
-            .with_accessible_name("Snippet library")
+            .with_accessible_name(tr("snippets-library"))
             .selected(&selected)
             .on_select(move |id| {
                 if let Some(selection) = selection_of(&id) {
@@ -923,8 +962,15 @@ pub struct SnippetsApp {
     shell: NavShell,
     /// The column titles last handed to the shell.
     titles: (String, String),
+    /// What the content column was last built for.
+    detail: DetailKey,
+    /// Whether the overview column is in the shell (not for an empty
+    /// library, whose one action the content column offers).
+    overview_shown: bool,
     /// A screenshot scenario to stage once the shell has laid out.
     pending_scenario: Option<String>,
+    /// The capture's specimen snippet has been opened.
+    specimen_open: bool,
     /// How many layouts in a row gave the window the same rect.
     settled_layouts: u32,
 }
@@ -941,35 +987,22 @@ impl SnippetsApp {
         Self::with_library(Library::new())
     }
 
-    /// Like [`Self::new`] but pre-seeded with the starter library and an
-    /// opened specimen — used by `--shots` so a capture shows the manager
-    /// doing real work. Never the live first-run path.
+    /// Like [`Self::new`] but with the starter library and a specimen open:
+    /// a library doing real work, for tests. A capture creates the same
+    /// library through the resource's actions instead
+    /// ([`Self::stage_scenario`]).
     pub fn new_demo() -> Self {
         let mut library = Library::new();
         for s in seed::starter_library() {
             library.insert(s);
         }
-        let app = Self::with_library(library);
+        let mut app = Self::with_library(library);
         {
             let mut core = app.core.borrow_mut();
-            // Open a substantial, templated piece of code so the content
-            // column shows the highlighter and the variables action.
-            core.open = core
-                .visible
-                .iter()
-                .copied()
-                .max_by_key(|id| {
-                    let s = core.library.get(*id);
-                    let lines = s.map_or(0, |s| s.body.lines().count());
-                    let templated = usize::from(s.is_some_and(Snippet::has_placeholders));
-                    let is_program = usize::from(s.is_some_and(|s| {
-                        !matches!(s.language, Language::Markdown | Language::PlainText)
-                    }));
-                    (is_program, templated, lines)
-                })
-                .or_else(|| core.visible.first().copied());
+            core.open_specimen();
             core.show_pane = None;
         }
+        app.refresh_columns();
         app
     }
 
@@ -978,86 +1011,136 @@ impl SnippetsApp {
         let requests: Requests = Rc::default();
         let new_snippet = {
             let requests = Rc::clone(&requests);
-            Button::icon_only("snippets.new", Icon::Plus, "New snippet")
+            Button::icon_only("snippets.new", Icon::Plus, &tr("snippets-new-snippet"))
                 .on_effect(move || requests.borrow_mut().push(Action::NewSnippet))
         };
         let search = ui::search::search_button(ui::search::SearchRequest::this_app());
-        let titles = {
+        let (titles, detail, library_empty) = {
             let core = core.borrow();
-            (core.selection_title(), core.open_title())
+            (
+                (core.selection_title(), core.open_title()),
+                DetailKey::of(&core),
+                core.library.snippets.is_empty(),
+            )
         };
-        let shell = NavShell::new()
+        let mut shell = NavShell::new()
             .with_id("snippets.shell")
             .sidebar(Box::new(SidebarNav::new(&core, &requests)))
-            .overview(Box::new(ListPane::new(&core)))
-            .content(Box::new(DetailPane::new(&core)))
+            .content(detail_pane::build(&core, &requests))
             .overview_header(
                 titles.0.clone(),
                 vec![Box::new(search) as Element, Box::new(new_snippet)],
             )
-            .content_header(titles.1.clone(), Vec::new());
+            .content_header(
+                titles.1.clone(),
+                vec![
+                    detail_pane::favorite_button(&core, &requests),
+                    detail_pane::more_button(&core, &requests),
+                ],
+            );
+        if !library_empty {
+            shell.set_overview(Some(Box::new(ListPane::new(&core))));
+        }
         Self {
             core,
             requests,
             shell,
             titles,
+            detail,
+            overview_shown: !library_empty,
             pending_scenario: None,
+            specimen_open: false,
             settled_layouts: 0,
         }
     }
 
-    /// Seeded constructor for the screenshot harness.
-    pub fn for_shot() -> Self {
-        Self::new_demo()
-    }
-
-    /// Stage a screenshot scenario once the window has its size:
+    /// Stage a capture: create the starter library through the resource's
+    /// own action (none for the `empty` scenario), then, once it is
+    /// presented and the window has its size, the scenario's view state:
     ///
-    /// * `"narrow"` — the sidebar drawer open over the content.
-    /// * `"detail"` — a narrow window showing the open snippet.
-    /// * `"expand"` — the fill-in-variables dialog over the open snippet.
-    /// * `"language"`, `"more"` — the language picker or the overflow menu.
-    /// * anything else — the default frame.
-    pub fn seed_shot_scenario(&mut self, scenario: &str) {
-        match scenario {
-            "narrow" | "detail" | "language" | "more" => {
-                self.pending_scenario = Some(scenario.to_string());
+    /// * `narrow` — the sidebar drawer open over the content.
+    /// * `detail` — a narrow window showing the open snippet.
+    /// * `expand` — the fill-in-variables dialog over the open snippet.
+    /// * `language`, `more` — the language picker or the overflow menu.
+    pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
+        let scenario = scenario.unwrap_or_default();
+        if scenario != "empty" {
+            let core = self.core.borrow();
+            if core.library.snippets.is_empty() {
+                core.actions.submit_all(
+                    seed::starter_library()
+                        .into_iter()
+                        .map(|snippet| SnippetsAction::CreateSnippet { snippet }),
+                );
             }
-            "expand" => {
-                let mut core = self.core.borrow_mut();
-                if let Some(id) = core.open {
-                    core.start_expand(id);
-                }
-            }
-            _ => {}
         }
+        self.pending_scenario = Some(scenario.to_string());
     }
 
     fn stage_pending_scenario(&mut self) {
         let Some(scenario) = self.pending_scenario.take() else {
             return;
         };
+        // The starter library is still on its way.
+        if scenario != "empty" && self.core.borrow().library.snippets.is_empty() {
+            self.pending_scenario = Some(scenario);
+            return;
+        }
+        // First open the specimen, and let the window lay its column out.
+        if !self.specimen_open {
+            self.specimen_open = true;
+            {
+                let mut core = self.core.borrow_mut();
+                core.open_specimen();
+                core.show_pane = None;
+            }
+            self.refresh_columns();
+            self.settled_layouts = 0;
+            self.pending_scenario = Some(scenario);
+            return;
+        }
         match scenario.as_str() {
             "narrow" => self.shell.open_sidebar(),
             "detail" => self.shell.show(NavPane::Content),
+            "expand" => {
+                let mut core = self.core.borrow_mut();
+                if let Some(id) = core.open {
+                    core.start_expand(id);
+                }
+            }
             "language" | "more" => {
                 let mut core = self.core.borrow_mut();
-                // A menu opens under its control: wait for the first paint.
-                let Some(id) = core.open.filter(|_| !core.detail.hits.is_empty()) else {
-                    drop(core);
-                    self.pending_scenario = Some(scenario);
-                    return;
-                };
-                core.open_menu(if scenario == "language" {
-                    MenuKind::Language(id)
-                } else {
-                    MenuKind::More(id)
-                });
+                if let Some(id) = core.open {
+                    if scenario == "language" {
+                        core.open_languages(id);
+                    } else {
+                        core.open_more(id);
+                    }
+                }
             }
             _ => {}
         }
-        self.core.borrow_mut().show_pane = None;
         self.shell.snap();
+    }
+
+    /// Keep the columns in step with the library: the overview while there
+    /// is a library to list, and the content column for what is open.
+    fn refresh_columns(&mut self) {
+        let (detail, library_empty) = {
+            let core = self.core.borrow();
+            (DetailKey::of(&core), core.library.snippets.is_empty())
+        };
+        if self.overview_shown == library_empty {
+            self.overview_shown = !library_empty;
+            self.shell.set_overview(
+                (!library_empty).then(|| Box::new(ListPane::new(&self.core)) as Element),
+            );
+        }
+        if detail != self.detail {
+            self.detail = detail;
+            self.shell
+                .set_content(detail_pane::build(&self.core, &self.requests));
+        }
     }
 
     /// Apply what retained controls asked for, bring the screen a choice
@@ -1067,6 +1150,7 @@ impl SnippetsApp {
         for action in requests {
             self.core.borrow_mut().apply(action, doc);
         }
+        self.refresh_columns();
         let (pane, titles) = {
             let mut core = self.core.borrow_mut();
             (
@@ -1541,10 +1625,7 @@ impl ui::widget::Decorator for SnippetsApp {
                 .collect();
             children.push(
                 AccessNode::new(Role::Menu)
-                    .with_name(match open.kind {
-                        MenuKind::Language(_) => "Language",
-                        MenuKind::More(_) => "More actions",
-                    })
+                    .with_name(open.name.clone())
                     .with_children(items),
             );
         }
@@ -1555,7 +1636,7 @@ impl ui::widget::Decorator for SnippetsApp {
         }
         Some(
             AccessNode::new(Role::Window)
-                .with_name("Snippets")
+                .with_name(<crate::resource::Snippets as ui::tilo_resource::Resource>::LABEL)
                 .with_semantic_key("snippets.application")
                 .with_children(children),
         )

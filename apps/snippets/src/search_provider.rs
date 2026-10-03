@@ -31,9 +31,6 @@ pub const TAG_KIND: &str = "Snippet tags";
 pub const LANGUAGE_FACET: &str = "language";
 pub const TAG_FACET: &str = "tag";
 
-/// Shown for a snippet whose title is still blank.
-const UNTITLED: &str = "Untitled snippet";
-
 /// What a facet filter checks a hit against, by the hit's resource id.
 #[derive(Default)]
 struct FacetIndex {
@@ -68,11 +65,11 @@ impl SnippetSearchProvider {
         provider
     }
 
-    fn display_title(s: &Snippet) -> &str {
+    fn display_title(s: &Snippet) -> String {
         if s.title.trim().is_empty() {
-            UNTITLED
+            crate::tr("snippets-untitled")
         } else {
-            s.title.as_str()
+            s.title.clone()
         }
     }
 
@@ -86,7 +83,7 @@ impl SnippetSearchProvider {
             Self::display_title(snippet),
             crate::actions::open_snippet_address(snippet.id),
         )
-        .with_subtitle(snippet.language.label())
+        .with_subtitle(snippet.language.name())
         .with_icon(Icon::Code);
         if snippet.favorite {
             result = result.with_score(1);
@@ -188,10 +185,7 @@ impl SnippetSearchProvider {
 
 /// "1 snippet", "3 snippets".
 fn snippet_count(count: usize) -> String {
-    ui::i18n::I18nManager::format(
-        "snippets-count",
-        &[("count", ui::i18n::ArgValue::Number(count as f64))],
-    )
+    crate::tr_count("snippets-count", count)
 }
 
 impl CatalogSearchProvider for SnippetSearchProvider {
@@ -204,22 +198,20 @@ impl CatalogSearchProvider for SnippetSearchProvider {
     }
 
     fn facets(&self) -> Vec<Facet> {
-        let languages = Language::ALL
-            .into_iter()
-            .fold(Facet::new(LANGUAGE_FACET, "Language"), |facet, language| {
-                facet.value(language.slug(), language.label())
-            });
+        let languages = Language::ALL.into_iter().fold(
+            Facet::new(LANGUAGE_FACET, crate::tr("snippets-language")),
+            |facet, language| facet.value(language.slug(), language.name()),
+        );
         let names = self
             .facets
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .tag_names
             .clone();
-        let tags = names
-            .iter()
-            .fold(Facet::new(TAG_FACET, "Tag"), |facet, tag| {
-                facet.value(tag.as_str(), tag.as_str())
-            });
+        let tags = names.iter().fold(
+            Facet::new(TAG_FACET, crate::tr("snippets-facet-tag")),
+            |facet, tag| facet.value(tag.as_str(), tag.as_str()),
+        );
         vec![languages, tags]
     }
 

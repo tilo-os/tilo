@@ -21,14 +21,12 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::app::ExpandOutcome;
-use crate::highlight;
+use crate::draw::{self, CodeRow};
 use crate::model::{self, Snippet, SnippetId};
 
-/// The most preview lines the dialog shows before it elides the rest.
-const PREVIEW_LINES: usize = 8;
-
-/// The dialog's title.
-const TITLE: &str = "Fill in variables";
+/// The most preview rows (wrapped lines) the dialog shows; a longer body
+/// ends in an ellipsis row.
+const PREVIEW_ROWS: usize = 12;
 
 /// One placeholder field: its name and the person's current value.
 struct Field {
@@ -47,6 +45,10 @@ struct Geometry {
 }
 
 pub struct ExpandModal {
+    /// The sheet's title and its two actions, in the person's language.
+    title: String,
+    cancel: String,
+    copy: String,
     snippet_id: SnippetId,
     body: String,
     language: crate::model::Language,
@@ -65,7 +67,7 @@ impl ExpandModal {
             .map(|name| Field {
                 input: TextInput::local()
                     .with_id(&format!("snippets.expand.field.{name}"))
-                    .with_placeholder("Value")
+                    .with_placeholder(&crate::tr("snippets-expand-value"))
                     .with_text_role(TextRole::Code),
                 name,
             })
@@ -74,6 +76,9 @@ impl ExpandModal {
             first.input.set_focus(true);
         }
         Self {
+            title: crate::tr("snippets-expand-title"),
+            cancel: crate::tr("snippets-cancel"),
+            copy: crate::tr("snippets-copy"),
             snippet_id: s.id,
             body: s.body.clone(),
             language: s.language,
@@ -101,7 +106,7 @@ impl ExpandModal {
         self.geometry.card
     }
 
-    fn actions(&self) -> [ModalAction<'static>; 2] {
+    fn actions<'a>(&self, cancel: &'a str, copy: &'a str) -> [ModalAction<'a>; 2] {
         let hovered = |index: usize| {
             self.geometry
                 .actions
@@ -109,8 +114,8 @@ impl ExpandModal {
                 .is_some_and(|rect| rect.contains(self.pointer))
         };
         [
-            ModalAction::secondary("Cancel").hovered(hovered(0)),
-            ModalAction::primary("Copy").hovered(hovered(1)),
+            ModalAction::secondary(cancel).hovered(hovered(0)),
+            ModalAction::primary(copy).hovered(hovered(1)),
         ]
     }
 
@@ -126,7 +131,7 @@ impl ExpandModal {
             .ceil()
     }
 
-    fn body_height(&self, text: &mut TextRenderer, theme: &Theme) -> f64 {
+    fn body_height(&self, text: &mut TextRenderer, theme: &Theme, body_w: f64) -> f64 {
         let rhythm = &theme.tokens.spacing.rhythm;
         let field_h = ControlSize::Regular.height(theme);
         let rows = self.fields.len() as f64;
@@ -139,13 +144,36 @@ impl ExpandModal {
             + f64::from(rhythm.group)
             + heading
             + f64::from(rhythm.related)
-            + self.preview_height(theme)
+            + self.preview_height(text, theme, body_w)
     }
 
-    fn preview_height(&self, theme: &Theme) -> f64 {
+    /// The filled body wrapped to the preview well `width` wide, cut to
+    /// [`PREVIEW_ROWS`], and whether it was cut.
+    fn preview_rows(
+        &self,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        width: f64,
+    ) -> (Vec<CodeRow>, bool) {
+        let pad = f64::from(theme.tokens.spacing.s3);
+        let mut rows = draw::wrap_code(
+            text,
+            &theme.text(TextRole::Code),
+            &self.preview(),
+            self.language,
+            width - pad * 2.0,
+        );
+        let cut = rows.len() > PREVIEW_ROWS;
+        // The last kept row makes room for the ellipsis that says so.
+        rows.truncate(if cut { PREVIEW_ROWS - 1 } else { PREVIEW_ROWS });
+        (rows, cut)
+    }
+
+    fn preview_height(&self, text: &mut TextRenderer, theme: &Theme, width: f64) -> f64 {
         let line = f64::from(theme.text(TextRole::Code).line_height_px());
-        let lines = self.preview().lines().count().clamp(1, PREVIEW_LINES);
-        lines as f64 * line + f64::from(theme.tokens.spacing.s3) * 2.0
+        let (rows, cut) = self.preview_rows(text, theme, width);
+        let shown = rows.len() + usize::from(cut);
+        shown.max(1) as f64 * line + f64::from(theme.tokens.spacing.s3) * 2.0
     }
 
     /// Paint the dialog over `window` and record where its parts landed.
@@ -157,11 +185,11 @@ impl ExpandModal {
         theme: &Theme,
         window: Rect,
     ) {
-        let actions = self.actions();
-        let spec = ModalSpec::new(TITLE)
-            .closable(false)
-            .actions(&actions)
-            .body_height(self.body_height(text, theme));
+        let (title, cancel, copy) = (self.title.clone(), self.cancel.clone(), self.copy.clone());
+        let actions = self.actions(&cancel, &copy);
+        let spec = ModalSpec::new(&title).closable(false).actions(&actions);
+        let body_w = modal_dialog::body_width(window, spec.max_width, theme);
+        let spec = spec.body_height(self.body_height(text, theme, body_w));
         let layout = modal_dialog::layout(window, &spec, text, theme);
         modal_dialog::paint_backdrop(scene, t, text, theme, &layout, &spec);
 
@@ -199,7 +227,7 @@ impl ExpandModal {
         y += f64::from(rhythm.group);
         let mut ctx = PaintCtx::new(scene, t, text, &ink);
         ctx.text_role(
-            "Preview",
+            &crate::tr("snippets-expand-preview"),
             TextRole::Subheading,
             ink.text_primary,
             Point::new(body.x0, y),
@@ -210,7 +238,7 @@ impl ExpandModal {
             body.x0,
             y,
             body.x1,
-            (y + self.preview_height(theme)).min(body.y1),
+            (y + self.preview_height(text, theme, body.width())).min(body.y1),
         );
         self.paint_preview(scene, t, text, theme, well);
 
@@ -220,6 +248,8 @@ impl ExpandModal {
         self.geometry.actions = layout.actions;
     }
 
+    /// The filled body as it will be copied: long lines wrap inside the
+    /// well, and a body longer than the well ends in an ellipsis row.
     fn paint_preview(
         &self,
         scene: &mut Scene,
@@ -237,33 +267,20 @@ impl ExpandModal {
             ground,
         );
         let ink = theme.on_ground(ground);
-        let code = theme.text(TextRole::Code);
-        let line = f64::from(code.line_height_px());
         let pad = f64::from(theme.tokens.spacing.s3);
-        let preview = self.preview();
+        let (rows, cut) = self.preview_rows(text, theme, well.width());
+        let line = f64::from(theme.text(TextRole::Code).line_height_px());
         let mut ctx = PaintCtx::new(scene, t, text, &ink);
-        let mut y = well.y0 + pad;
-        for spans in highlight::highlight_lines(&preview, self.language).take(PREVIEW_LINES) {
-            if y + line > well.y1 {
-                break;
-            }
-            let mut x = well.x0 + pad;
-            for span in spans {
-                if x >= well.x1 - pad {
-                    break;
-                }
-                let max = (well.x1 - pad - x) as f32;
-                let shown = ctx.text.elide_to_width_style(&span.text, max, &code);
-                ctx.text(
-                    &shown,
-                    &code,
-                    theme.tokens.syntax.color(span.kind),
-                    Point::new(x, y),
-                    None,
-                );
-                x += f64::from(ctx.text.measure_style(&shown, None, &code).0);
-            }
-            y += line;
+        let origin = Point::new(well.x0 + pad, well.y0 + pad);
+        draw::paint_code_rows(&mut ctx, &rows, origin, None);
+        if cut {
+            ctx.text_role(
+                "…",
+                TextRole::Code,
+                ink.text_tertiary,
+                Point::new(origin.x, origin.y + rows.len() as f64 * line),
+                None,
+            );
         }
     }
 
@@ -459,8 +476,8 @@ impl ExpandModal {
                 .unwrap_or(Rect::ZERO)
         };
         for (target, label, bounds) in [
-            ("snippets.expand.cancel", "Cancel", rect(0)),
-            ("snippets.expand.copy", "Copy", rect(1)),
+            ("snippets.expand.cancel", self.cancel.as_str(), rect(0)),
+            ("snippets.expand.copy", self.copy.as_str(), rect(1)),
         ] {
             children.push(
                 AccessNode::new(Role::Button)
@@ -475,7 +492,7 @@ impl ExpandModal {
         }
         Some(
             AccessNode::new(Role::Dialog)
-                .with_name(TITLE)
+                .with_name(&self.title)
                 .with_children(children),
         )
     }
