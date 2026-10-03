@@ -1153,7 +1153,7 @@ impl Widget for MusicApp {
                     | (View::Playlists, "playlists")
                     | (View::Downloads, "downloads")
                     | (View::Liked, "liked")
-                    | (View::Browse, "search")
+                    | (View::Browse, "browse")
                     | (View::Queue, "queue")
                     | (View::Lyrics, "lyrics")
             )
@@ -1214,8 +1214,8 @@ impl Widget for MusicApp {
             View::Artists => "Artists".to_string(),
             View::Playlists => "Playlists".to_string(),
             View::Downloads => "Downloads".to_string(),
-            View::Liked => "Liked Songs".to_string(),
-            View::Browse => "Search results".to_string(),
+            View::Liked => "Liked songs".to_string(),
+            View::Browse => "Browse".to_string(),
             View::Queue => "Queue".to_string(),
             View::Lyrics => "Lyrics".to_string(),
             View::Album(id) => self.lib.album_title(id).to_string(),
@@ -2119,8 +2119,7 @@ impl MusicApp {
         false
     }
 
-    /// Track the pointer, forwarding to the search field while it's hovered or
-    /// mid drag-select, and resolve an in-progress scrubber/volume drag.
+    /// Track the pointer and resolve an in-progress scrubber/volume drag.
     fn on_cursor_moved(
         &mut self,
         event: &WindowEvent,
@@ -2299,9 +2298,6 @@ impl MusicApp {
         // `handle_event` (the shared ModalDialog owns typing / Esc / buttons),
         // so `on_key` never runs with it open.
 
-        // (The focused search field routes its keystrokes to the real
-        // `ui::TextInput` up in `handle_event`, before `on_key` is reached.)
-
         match key {
             Key::Named(NamedKey::Escape) => {
                 // Dismiss an open overlay sidebar.
@@ -2371,20 +2367,10 @@ impl MusicApp {
     // ---- artwork ----------------------------------------------------------
 
     /// Paint an entity's cover art (album / track / playlist / artist) into
-    /// `rect`: the loaded image, else the toolkit's generated placeholder.
-    /// `id` keys the cover cache.
-    fn draw_cover(&self, ctx: &mut PaintCtx<'_>, rect: Rect, id: &str) {
-        let image = self.art_image(id);
-        let art = image
-            .as_ref()
-            .map_or(MediaArt::Placeholder, MediaArt::Image);
-        MediaCardFace::new(art).paint(ctx, rect);
-    }
-
-    /// A large cover that names its subject: the placeholder carries the
-    /// title's initials. The face sets the title under its art; only the art
-    /// is kept.
-    fn draw_titled_cover(&self, ctx: &mut PaintCtx<'_>, rect: Rect, id: &str, title: &str) {
+    /// `rect`: the loaded image, else the toolkit's generated placeholder,
+    /// which carries the initials of `title`. The face sets the title under
+    /// its art; only the art is kept. `id` keys the cover cache.
+    fn draw_cover(&self, ctx: &mut PaintCtx<'_>, rect: Rect, id: &str, title: &str) {
         let image = self.art_image(id);
         let art = image
             .as_ref()
@@ -2450,22 +2436,32 @@ impl MusicApp {
         glyph: Glyph,
         name: &str,
         on: bool,
-        action: Action,
+        action: Option<Action>,
     ) {
+        let enabled = action.is_some();
         let face = ButtonFace::new(rect, "")
             .accessible_name(name)
-            .role(ButtonRole::Plain);
-        let hovered = self.push_hit(face.hit_rect(ctx.theme), action);
-        let face = face.hovered(hovered && !on).pressed(on);
+            .role(ButtonRole::Plain)
+            .disabled(!enabled);
+        let hovered = self.push_hit(face.hit_rect(ctx.theme), action.unwrap_or(Action::None));
+        let face = face.hovered(hovered && !on).pressed(on && enabled);
         Button::paint(ctx.scene, ctx.transform, ctx.text, ctx.theme, &face);
         let (_, _, ink) = face.colors(ctx.theme);
         let side = f64::from(ctx.theme.tokens.metrics.icon_md);
-        glyph.draw(
-            ctx.scene,
-            ctx.transform,
-            square_around(rect.center(), side),
-            ink,
-        );
+        let glyph_rect = square_around(rect.center(), side);
+        if !enabled {
+            ctx.scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                ui::widget::DISABLED_ALPHA,
+                ctx.transform,
+                &glyph_rect,
+            );
+        }
+        glyph.draw(ctx.scene, ctx.transform, glyph_rect, ink);
+        if !enabled {
+            ctx.scene.pop_layer();
+        }
     }
 
     /// The width a button with `label` (and `icon`) needs at `size`.
@@ -3734,7 +3730,7 @@ impl MusicApp {
         }
         .min(right - left);
         let art = Rect::new(left, y, left + side, y + side);
-        self.draw_titled_cover(ctx, art, header.id, header.title);
+        self.draw_cover(ctx, art, header.id, header.title);
 
         let tx = if wide { art.x1 + look.gutter } else { left };
         let text_w = (right - tx).max(0.0);
@@ -4535,7 +4531,7 @@ impl MusicApp {
         let side = row_h - look.related;
         for tk in &rows {
             let art = Rect::new(panel.x0 + pad, y, panel.x0 + pad + side, y + side);
-            self.draw_cover(ctx, art, &tk.cover_id());
+            self.draw_cover(ctx, art, &tk.cover_id(), &tk.album);
             let tx = art.x1 + look.sibling;
             let maxw = panel.x1 - pad - tx;
             let block = line_of(ctx, &body) + line_of(ctx, &caption);
@@ -4780,7 +4776,7 @@ impl MusicApp {
         tk: &TrackDisp,
     ) {
         let cover = self.best_cover_id(&tk.id, &tk.album_id);
-        self.draw_titled_cover(ctx, art, &cover, &tk.album);
+        self.draw_cover(ctx, art, &cover, &tk.album);
         let title = ctx.theme.text(TextRole::Title);
         let body = ctx.theme.text(TextRole::Body);
         let y = art.y1 + look.section;
@@ -5027,7 +5023,7 @@ impl MusicApp {
         };
         let art = Rect::new(r.x0, r.y0, r.x0 + r.height(), r.y1);
         let cover = self.best_cover_id(&tk.id, &tk.album_id);
-        self.draw_cover(ctx, art, &cover);
+        self.draw_cover(ctx, art, &cover, &tk.album);
         // Clicking the art jumps to its album.
         if !tk.album_id.is_empty() {
             self.push_hit(art, Action::Nav(View::Album(tk.album_id.clone())));
@@ -5122,6 +5118,9 @@ impl MusicApp {
             x += control + look.related;
             rect
         };
+        // With nothing to play the transport rests, disabled.
+        let idle = self.pb.current.is_none() && self.pb.queue.is_empty();
+        let act = |action: Action| (!idle).then_some(action);
         let (shuffle, prev, play, next, repeat) = (
             next_slot(),
             next_slot(),
@@ -5135,22 +5134,28 @@ impl MusicApp {
             Glyph::Shuffle,
             "Shuffle",
             self.pb.shuffle,
-            Action::ToggleShuffle,
+            act(Action::ToggleShuffle),
         );
         self.icon_button(
             ctx,
             ButtonFace::icon_only(prev, Icon::SkipBack, "Previous track")
-                .control_size(ControlSize::Regular),
+                .control_size(ControlSize::Regular)
+                .disabled(idle),
             false,
-            Action::Prev,
+            act(Action::Prev).unwrap_or(Action::None),
         );
         let (icon, name) = if self.pb.playing {
             (Icon::Pause, "Pause")
         } else {
             (Icon::Play, "Play")
         };
-        let face = ButtonFace::icon_only(play, icon, name).role(ButtonRole::Primary);
-        let hovered = self.push_hit(face.hit_rect(ctx.theme), Action::TogglePlay);
+        let face = ButtonFace::icon_only(play, icon, name)
+            .role(ButtonRole::Primary)
+            .disabled(idle);
+        let hovered = self.push_hit(
+            face.hit_rect(ctx.theme),
+            act(Action::TogglePlay).unwrap_or(Action::None),
+        );
         Button::paint(
             ctx.scene,
             ctx.transform,
@@ -5161,9 +5166,10 @@ impl MusicApp {
         self.icon_button(
             ctx,
             ButtonFace::icon_only(next, Icon::SkipForward, "Next track")
-                .control_size(ControlSize::Regular),
+                .control_size(ControlSize::Regular)
+                .disabled(idle),
             false,
-            Action::Next,
+            act(Action::Next).unwrap_or(Action::None),
         );
         let (glyph, name) = match self.pb.repeat {
             RepeatMode::One => (Glyph::RepeatOne, "Repeat one"),
@@ -5176,15 +5182,15 @@ impl MusicApp {
             glyph,
             name,
             self.pb.repeat != RepeatMode::Off,
-            Action::CycleRepeat,
+            act(Action::CycleRepeat),
         );
 
         let scrub = Rect::new(r.x0, y0 + control + look.tight, r.x1, r.y1);
-        self.draw_scrubber(ctx, look, scrub);
+        self.draw_scrubber(ctx, look, scrub, idle);
     }
 
     /// Elapsed time, the draggable position and the total time, in `r`.
-    fn draw_scrubber(&mut self, ctx: &mut PaintCtx<'_>, look: &Look, r: Rect) {
+    fn draw_scrubber(&mut self, ctx: &mut PaintCtx<'_>, look: &Look, r: Rect, idle: bool) {
         let dur = self.current_duration_ms();
         let pos = self.playhead_ms.min(dur as f64).max(0.0);
         let frac = if dur > 0 { pos / dur as f64 } else { 0.0 };
@@ -5205,8 +5211,9 @@ impl MusicApp {
         self.scrubber_rect = Rect::new(track.x0, slider.y0, track.x1, slider.y1);
         let active = self.scrubber_rect.contains(self.mouse) || self.drag == Some(Drag::Scrubber);
         let face = face
-            .hovered(active)
-            .dragging(self.drag == Some(Drag::Scrubber));
+            .hovered(active && !idle)
+            .dragging(self.drag == Some(Drag::Scrubber))
+            .disabled(idle);
         Slider::paint(ctx.scene, ctx.transform, ctx.theme, &face);
     }
 
@@ -5375,6 +5382,8 @@ impl MusicApp {
             rect
         };
         let (prev, play, next) = (next_slot(), next_slot(), next_slot());
+        let idle = self.pb.current.is_none() && self.pb.queue.is_empty();
+        let act = |action: Action| if idle { Action::None } else { action };
 
         let cur = self
             .pb
@@ -5386,7 +5395,7 @@ impl MusicApp {
         if let Some(tk) = cur {
             let art = Rect::new(top.x0, top.y0, top.x0 + top.height(), top.y1);
             let cover = self.best_cover_id(&tk.id, &tk.album_id);
-            self.draw_cover(ctx, art, &cover);
+            self.draw_cover(ctx, art, &cover, &tk.album);
             self.push_hit(art, Action::Nav(View::Lyrics));
             let tx = art.x1 + look.sibling;
             let title = body.strong();
@@ -5423,17 +5432,20 @@ impl MusicApp {
         self.icon_button(
             ctx,
             ButtonFace::icon_only(prev, Icon::SkipBack, "Previous track")
-                .control_size(ControlSize::Regular),
+                .control_size(ControlSize::Regular)
+                .disabled(idle),
             false,
-            Action::Prev,
+            act(Action::Prev),
         );
         let (icon, name) = if self.pb.playing {
             (Icon::Pause, "Pause")
         } else {
             (Icon::Play, "Play")
         };
-        let face = ButtonFace::icon_only(play, icon, name).role(ButtonRole::Primary);
-        let hovered = self.push_hit(face.hit_rect(ctx.theme), Action::TogglePlay);
+        let face = ButtonFace::icon_only(play, icon, name)
+            .role(ButtonRole::Primary)
+            .disabled(idle);
+        let hovered = self.push_hit(face.hit_rect(ctx.theme), act(Action::TogglePlay));
         Button::paint(
             ctx.scene,
             ctx.transform,
@@ -5444,12 +5456,13 @@ impl MusicApp {
         self.icon_button(
             ctx,
             ButtonFace::icon_only(next, Icon::SkipForward, "Next track")
-                .control_size(ControlSize::Regular),
+                .control_size(ControlSize::Regular)
+                .disabled(idle),
             false,
-            Action::Next,
+            act(Action::Next),
         );
         let scrub = Rect::new(r.x0, r.y1 - scrub_h, r.x1, r.y1);
-        self.draw_scrubber(ctx, look, scrub);
+        self.draw_scrubber(ctx, look, scrub, idle);
     }
 
     // ---- toast ------------------------------------------------------------
