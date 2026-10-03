@@ -166,6 +166,26 @@ fn mono_now_ms() -> u64 {
     u64::try_from(START.get_or_init(Instant::now).elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
+/// Why [`MediaEngine::seek_and_wait`] returned without a picture.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SeekWaitError {
+    /// The pipeline reported a fatal error.
+    Failed(String),
+    /// No picture landed before the timeout.
+    TimedOut,
+}
+
+impl std::fmt::Display for SeekWaitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Failed(reason) => write!(f, "the pipeline failed: {reason}"),
+            Self::TimedOut => f.write_str("no picture arrived in time"),
+        }
+    }
+}
+
+impl std::error::Error for SeekWaitError {}
+
 /// A collaborative, source-agnostic media engine. Construct with [`Self::new`],
 /// point it at a [`Source`] with [`Self::open`], drive it with `play` / `pause`
 /// / `seek_ms` / `set_volume`, and pump it once per frame with [`Self::poll`],
@@ -444,14 +464,23 @@ impl MediaEngine {
         accepted
     }
 
-    /// Seek to `ms` and pump until the picture for that time has landed, or
-    /// `timeout` elapses. Returns whether a frame arrived.
+    /// Seek to `ms` and pump until the picture for that time has landed, the
+    /// pipeline fails, or `timeout` elapses.
     ///
     /// The blocking counterpart to [`Self::seek_ms`], for callers that need a
     /// specific frame in hand rather than eventually — extracting a thumbnail,
     /// or settling a scrub before a screenshot. An interactive preview should
     /// keep using `seek_ms` + [`Self::poll`] and stay non-blocking.
-    pub fn seek_and_wait(&mut self, ms: u64, timeout: tilo_clock::Duration) -> bool {
+    ///
+    /// # Errors
+    ///
+    /// [`SeekWaitError::Failed`] with the pipeline's reason, or
+    /// [`SeekWaitError::TimedOut`] when no picture landed in `timeout`.
+    pub fn seek_and_wait(
+        &mut self,
+        ms: u64,
+        timeout: tilo_clock::Duration,
+    ) -> Result<(), SeekWaitError> {
         // `Instant + Duration` panics on overflow, and the only way to reach
         // that is a `timeout` of hundreds of billions of years — a caller
         // spelling "wait as long as it takes" as `Duration::MAX`. `None` here
@@ -463,8 +492,14 @@ impl MediaEngine {
         if matches!(self.backend, Backend::Web(_)) {
             let _ = timeout;
             let accepted = self.seek_with(ms, SeekMode::Accurate);
-            self.poll();
-            return accepted && self.frame_is_current();
+            if let Some(reason) = Self::failure(self.poll()) {
+                return Err(SeekWaitError::Failed(reason));
+            }
+            return if accepted && self.frame_is_current() {
+                Ok(())
+            } else {
+                Err(SeekWaitError::TimedOut)
+            };
         }
         let deadline = Instant::now().checked_add(timeout);
         // A pipeline that has not finished prerolling refuses seeks, so the
@@ -482,15 +517,25 @@ impl MediaEngine {
             if !accepted {
                 accepted = self.seek_with(ms, SeekMode::Accurate);
             }
-            self.poll();
+            // A pipeline error stops the engine: no picture is coming.
+            if let Some(reason) = Self::failure(self.poll()) {
+                return Err(SeekWaitError::Failed(reason));
+            }
             if accepted && self.frame_is_current() {
-                return true;
+                return Ok(());
             }
             if deadline.is_some_and(|d| Instant::now() >= d) {
-                return false;
+                return Err(SeekWaitError::TimedOut);
             }
             std::thread::sleep(tilo_clock::Duration::from_millis(5));
         }
+    }
+
+    fn failure(events: Vec<MediaEvent>) -> Option<String> {
+        events.into_iter().find_map(|event| match event {
+            MediaEvent::Error(reason) => Some(reason),
+            _ => None,
+        })
     }
 
     /// Set output volume in `0.0..=1.0`.
@@ -1090,7 +1135,7 @@ mod tests {
                 url: "https://x/v.mp4".into(),
             });
             assert!(
-                e.seek_and_wait(1_000, tilo_clock::Duration::MAX),
+                e.seek_and_wait(1_000, tilo_clock::Duration::MAX).is_ok(),
                 "an unbounded wait still returns the frame it waited for"
             );
         }
