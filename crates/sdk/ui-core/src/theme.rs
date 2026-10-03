@@ -12,6 +12,7 @@ pub use crate::theme_layers::{
 };
 pub use crate::tokens::contrast::{ContrastFinding, ContrastFloor, Role as ContrastRole};
 use crate::tokens::{Colors, DEFAULT_NEUTRAL_HUE, PresenceHue, Tokens};
+pub use settings_store::day_schedule::{AUTOMATIC_MODE, is_automatic as is_automatic_mode};
 use vello::peniko::Color;
 
 fn mix_spring(
