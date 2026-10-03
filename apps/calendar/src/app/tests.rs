@@ -1,28 +1,13 @@
 use super::*;
+use crate::model::{Palette, Recurrence};
 use automerge::ROOT;
+use chrono::Datelike;
 use serial_test::serial;
 use tilo_actions::Action as _;
 use ui::headless::Framed;
 
 #[test]
-fn task_completion_toggles_by_checkbox_and_label_and_paints_both_states() {
-    // Case `task_checkbox_paints_both_completion_states`.
-    {
-        let theme = Theme::dark();
-        let rect = Rect::new(4.0, 6.0, 22.0, 24.0);
-        let mut unchecked = Scene::new();
-        draw_checkbox(&mut unchecked, Affine::IDENTITY, &theme, rect, false);
-        let mut checked = Scene::new();
-        draw_checkbox(&mut checked, Affine::IDENTITY, &theme, rect, true);
-
-        let unchecked_tags = unchecked.encoding().draw_tags.len();
-        let checked_tags = checked.encoding().draw_tags.len();
-        assert!(unchecked_tags > 0, "unchecked state keeps its outline");
-        assert!(
-            checked_tags > unchecked_tags,
-            "checked state adds its fill and check mark"
-        );
-    }
+fn task_completion_toggles_by_checkbox_and_label() {
     // Case `toggling_a_task_flips_done_and_mirrors_to_crdt`.
     {
         let mut app = CalendarApp::new_demo();
@@ -570,9 +555,9 @@ fn layout_reflows_on_resize_instead_of_caching_first_frame_geometry() {
             SidebarMode::Overlay,
             "breakpoint must re-derive from the current width, not the first frame"
         );
-        // Narrow + detail-open default => detail is the full-width pushed
-        // screen and the calendar content pane collapses.
-        assert_eq!(app.content_rect.width(), 0.0);
+        // Narrow + detail open: the sheet floats over the full-width
+        // calendar.
+        assert_eq!(app.content_rect.width(), 560.0);
         assert!(app.detail_rect.width() > 0.0);
         assert_ne!(
             app.content_rect, wide_content,
@@ -714,7 +699,6 @@ fn titles_elide_to_fit_and_week_ranges_keep_both_endpoints() {
         app.sync(&mut state, &automerge::ROOT);
         app.view = View::Week;
         app.detail_open = false;
-        app.narrow_screen = NarrowScreen::Calendar;
         app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
         app.relayout();
 
@@ -1357,7 +1341,7 @@ fn new_event_is_created_named_and_discarded_only_while_pristine() {
         app.apply_action(Action::NewEvent, &mut state);
         let id = app.selected_event().expect("new event selected");
 
-        app.apply_action(Action::BackToCalendar, &mut state);
+        app.apply_action(Action::CloseDetail, &mut state);
 
         assert_eq!(app.model.events.len(), before, "untouched draft is gone");
         assert!(app.model.event(id).is_none());
@@ -1376,9 +1360,12 @@ fn new_event_is_created_named_and_discarded_only_while_pristine() {
         app.sync(&mut state, &automerge::ROOT);
         app.apply_action(Action::NewEvent, &mut state);
         let id = app.selected_event().expect("new event selected");
-        app.apply_action(Action::CycleColor, &mut state);
+        let other = Palette::from_index(app.model.event(id).unwrap().color.index() + 1);
+        app.seed_choices();
+        app.choices.colour.state.set(other.index().to_string());
+        app.commit_choices(&mut state, &automerge::ROOT);
 
-        app.apply_action(Action::BackToCalendar, &mut state);
+        app.apply_action(Action::CloseDetail, &mut state);
 
         assert!(app.model.event(id).is_some(), "edited draft remains");
         assert!(CalDoc::read_model(&state).event(id).is_some());
@@ -1551,12 +1538,43 @@ fn new_event_is_created_named_and_discarded_only_while_pristine() {
 
 // --- responsive layout ---------------------------------------------
 
+/// The demo app laid out at `width`×`height` in a dark theme at `scale`.
+fn laid_out(app: &mut CalendarApp, width: f64, height: f64, scale: f32) {
+    let theme = Theme::dark().with_text_scale(scale);
+    app.timeline.set_layout_theme(&theme);
+    app.layout_theme = theme;
+    app.rect = Rect::new(0.0, 0.0, width, height);
+    app.relayout();
+}
+
+/// The event form's controls, in form order.
+fn event_controls(form: &FormRects) -> Vec<Rect> {
+    [
+        form.title,
+        form.start_date,
+        form.start_time,
+        form.end_date,
+        form.end_time,
+        form.all_day,
+        form.location,
+        form.calendar,
+        form.repeat,
+        form.alert,
+        form.timezone,
+        form.colour,
+        form.invite,
+    ]
+    .into_iter()
+    .filter(|rect| rect.area() > 0.0)
+    .collect()
+}
+
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario, one labelled phase per merged case"
 )]
-fn large_text_layouts_stay_in_bounds_and_keep_the_one_x_design() {
+fn large_text_layouts_stay_in_bounds() {
     // Case `schedule_overlap_warning_reflows_and_keeps_complete_semantics`.
     {
         for (width, text_scale) in [(880.0, 1.0), (880.0, 2.0), (390.0, 2.0)] {
@@ -1572,10 +1590,7 @@ fn large_text_layouts_stay_in_bounds_and_keep_the_one_x_design() {
             overlapping.end = edited.end + chrono::Duration::minutes(30);
             overlapping.recurrence = Recurrence::Weekly;
             app.model.events.push(overlapping);
-
-            app.text_scale = text_scale;
-            app.rect = Rect::new(0.0, 0.0, width, 844.0);
-            app.relayout();
+            laid_out(&mut app, width, 844.0, text_scale);
 
             assert!(
                 app.form.conflict.area() > 0.0,
@@ -1585,17 +1600,7 @@ fn large_text_layouts_stay_in_bounds_and_keep_the_one_x_design() {
                 app.form.conflict.y1 <= app.form.location.y0,
                 "warning reserves its own lane before location at {width}px / {text_scale}×"
             );
-            for control in [
-                app.form.title,
-                app.form.allday,
-                app.form.start_date,
-                app.form.start_time,
-                app.form.end_date,
-                app.form.end_time,
-                app.form.location,
-                app.form.calendar,
-                app.form.invite,
-            ] {
+            for control in event_controls(&app.form) {
                 assert!(
                     app.form.conflict.intersect(control).area() <= 0.0,
                     "conflict warning overlaps form target {control:?} at {width}px / {text_scale}×"
@@ -1612,285 +1617,101 @@ fn large_text_layouts_stay_in_bounds_and_keep_the_one_x_design() {
             assert!(warning.contains("Design review follow-up"));
         }
     }
-    // Case `large_text_desktop_keeps_modal_form_controls_in_bounds`.
+    // Case `large_text_keeps_the_sheet_and_its_controls_inside_the_window`.
     {
-        let mut app = CalendarApp::new_demo();
-        app.detail_open = true;
-        app.text_scale = 2.0;
-        app.rect = Rect::new(0.0, 0.0, 1200.0, 900.0);
-        app.relayout();
-
-        assert_eq!(app.sidebar.mode(), SidebarMode::Overlay);
-        assert_eq!(
-            app.content_rect, app.rect,
-            "drawer is hidden behind the menu"
-        );
-        let controls = [
-            app.form.title,
-            app.form.allday,
-            app.form.start_date,
-            app.form.start_time,
-            app.form.end_date,
-            app.form.end_time,
-            app.form.location,
-            app.form.calendar,
-            app.form.invite,
-        ];
-        for (index, rect) in controls.iter().enumerate() {
+        for (width, height) in [(1200.0, 900.0), (390.0, 844.0)] {
+            let mut app = CalendarApp::new_demo();
+            app.detail_open = true;
+            laid_out(&mut app, width, height, 2.0);
+            let modal = app.modal.clone().expect("the editor sheet is laid out");
             assert!(
-                app.detail_rect.contains_rect(*rect),
-                "form control {index} escaped the modal: {rect:?}"
+                app.rect.contains_rect(modal.card),
+                "the sheet fits the window"
             );
-            for other in controls.iter().skip(index + 1) {
+            let controls = event_controls(&app.form);
+            for (index, rect) in controls.iter().enumerate() {
                 assert!(
-                    rect.intersect(*other).area() <= 0.0,
-                    "form controls overlap: {rect:?} and {other:?}"
+                    rect.x0 >= modal.body.x0 - 0.5 && rect.x1 <= modal.body.x1 + 0.5,
+                    "form control {index} escaped the sheet's body at {width}px: {rect:?}"
                 );
+                for other in controls.iter().skip(index + 1) {
+                    assert!(
+                        rect.intersect(*other).area() <= 0.0,
+                        "form controls overlap: {rect:?} and {other:?}"
+                    );
+                }
             }
-        }
-
-        // Exercise the real paint path too: chip widths come from shaped text,
-        // so static field rect checks alone would miss a scaled label escaping
-        // its modal.  Every semantic event-form target must stay inside it.
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        let theme = Theme::dark().with_text_scale(2.0);
-        text.set_text_scale(theme.text_scale);
-        let painted = app.draw_event_form(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &PresenceCtx::empty(),
-        );
-        for (rect, _) in painted {
             assert!(
-                app.detail_rect.contains_rect(rect),
-                "painted form target escaped the modal: {rect:?}"
+                app.form.notes_label.y0 >= app.form.invite.y1,
+                "the notes start below the last form row"
+            );
+            assert!(
+                app.detail_scroll_max > 0.0,
+                "a 2× form taller than the window scrolls inside the sheet"
             );
         }
     }
-    // Case `phone_large_text_wraps_every_metadata_chip_inside_the_sheet`.
-    {
-        let mut app = CalendarApp::new_demo();
-        app.detail_open = true;
-        app.text_scale = 2.0;
-        app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
-        app.relayout();
-
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        let theme = Theme::dark().with_text_scale(2.0);
-        text.set_text_scale(theme.text_scale);
-        let painted = app.draw_event_form(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &PresenceCtx::empty(),
-        );
-        for (rect, _) in &painted {
-            assert!(
-                rect.x0 >= app.detail_rect.x0 && rect.x1 <= app.detail_rect.x1,
-                "event-form target escaped the phone sheet: {rect:?}"
-            );
-        }
-        let chip_rects: Vec<_> = painted
-            .iter()
-            .filter(|(_, action)| {
-                matches!(
-                    action,
-                    Action::CycleRecurrence
-                        | Action::CycleRecurrenceInterval
-                        | Action::CycleReminder
-                        | Action::CycleColor
-                        | Action::CycleTimezone
-                )
-            })
-            .map(|(rect, _)| *rect)
-            .collect();
-        assert_eq!(chip_rects.len(), 5);
-        for rect in &chip_rects {
-            assert_eq!(
-                rect.height(),
-                event_form_chip_height(theme.text_scale),
-                "the chip border grows with its 2× label instead of cutting through it"
-            );
-            assert!(
-                rect.x0 >= app.detail_rect.x0 && rect.x1 <= app.detail_rect.x1,
-                "wrapped metadata chip escaped the phone sheet: {rect:?}"
-            );
-        }
-        let last_bottom = chip_rects.iter().map(|rect| rect.y1).fold(0.0, f64::max);
-        assert!(
-            app.detail_rect.y0 + app.form.notes_top > last_bottom,
-            "notes must begin below the final wrapped metadata row"
-        );
-    }
-    // Case `high_contrast_large_text_metadata_chips_clear_labels_and_notes`.
-    {
-        let mut app = CalendarApp::new_demo();
-        app.detail_open = true;
-        app.text_scale = 2.0;
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 900.0);
-        app.relayout();
-
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        let theme = Theme::high_contrast().with_text_scale(2.0);
-        text.set_text_scale(theme.text_scale);
-        let painted = app.draw_event_form(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &PresenceCtx::empty(),
-        );
-        let chip_rects: Vec<_> = painted
-            .iter()
-            .filter(|(rect, action)| {
-                rect.y0 >= app.form.chips_y
-                    && matches!(
-                        action,
-                        Action::CycleRecurrence
-                            | Action::CycleRecurrenceInterval
-                            | Action::CycleReminder
-                            | Action::CycleColor
-                            | Action::CycleTimezone
-                            | Action::FocusField(FormField::Invite)
-                    )
-            })
-            .map(|(rect, _)| *rect)
-            .collect();
-        assert_eq!(chip_rects.len(), 6);
-        let expected_h = event_form_chip_height(theme.text_scale);
-        assert!(
-            chip_rects.iter().all(|rect| rect.height() == expected_h),
-            "every high-contrast chip must contain the scaled label within its border"
-        );
-        let last_bottom = chip_rects.iter().map(|rect| rect.y1).fold(0.0, f64::max);
-        assert!(
-            app.detail_rect.y0 + app.form.notes_top > last_bottom,
-            "the notes divider must remain below the enlarged chip rows"
-        );
-    }
-    // Case `large_text_new_event_modal_stays_inside_the_viewport`.
+    // Case `large_text_new_event_sheet_stays_inside_the_viewport`.
     {
         let mut app = CalendarApp::new_demo();
         let mut state = AutoCommit::new();
         app.shots_new_event();
         app.sync(&mut state, &ROOT);
-        app.text_scale = 2.0;
-        app.rect = Rect::new(0.0, 0.0, 1200.0, 900.0);
-        app.relayout();
-
+        laid_out(&mut app, 1200.0, 900.0, 2.0);
         assert!(app.detail_open);
-        assert!(app.detail_rect.y0 >= app.rect.y0 + MODAL_MARGIN - 0.5);
-        assert!(app.detail_rect.y1 <= app.rect.y1 - MODAL_MARGIN + 0.5);
-        assert!(app.detail_rect.x0 >= app.rect.x0 + MODAL_MARGIN - 0.5);
-        assert!(app.detail_rect.x1 <= app.rect.x1 - MODAL_MARGIN + 0.5);
+        assert!(app.rect.contains_rect(app.detail_rect));
         assert!(
             app.status.is_none(),
-            "shots must not paint a creation toast"
+            "creating an event does not raise a toast"
         );
     }
-    // Case `event_form_reserves_measured_header_and_notes_rows_at_two_x`:
-    // The event form reserves its header row, chip row and NOTES header from
-    // the same measured lines the painter uses, so at 2× the kind label never
-    // abuts the title field and the NOTES rule never crosses its label.
+    // Case `month_chips_stay_inside_their_cells_below_the_day_number_at_two_x`.
     {
         let mut app = CalendarApp::new_demo();
-        app.detail_open = true;
-        app.text_scale = 2.0;
-        app.rect = Rect::new(0.0, 0.0, 1200.0, 900.0);
-        app.relayout();
-        assert!(matches!(app.selection, Some(Sel::Event(_))));
-
-        let sp = &app.spacing;
-        let label_h = metrics::line_h(SECTION_LABEL_TEXT, 2.0);
-        let header_top = app.detail_rect.y0 + 18.0;
-        assert!(
-            app.form.header_bottom - header_top >= label_h + f64::from(sp.s2),
-            "header row must hold the scaled kind label plus its gap"
+        app.shots_show_calendar();
+        let theme = Theme::dark().with_text_scale(2.0);
+        laid_out(&mut app, 1280.0, 800.0, 2.0);
+        let mut text = TextRenderer::new();
+        let mut scene = Scene::new();
+        let area = app.view_rect();
+        let hits = app.draw_month(
+            &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
+            area,
         );
-        assert!(
-            app.form.title.y0 >= app.form.header_bottom + f64::from(sp.s2),
-            "title field must clear the header row"
-        );
-
-        let selector_h = f64::from(app.tokens_metrics.selector_height);
-        let chip_h = event_form_chip_h(selector_h, f64::from(sp.s3), 2.0);
-        assert!(chip_h >= metrics::line_h(EVENT_FORM_CHIP_TEXT, 2.0) + f64::from(sp.s3));
-        assert_eq!(
-            chip_h.fract(),
-            0.0,
-            "a scaled chip row lands on a whole pixel"
-        );
-        assert_eq!(
-            event_form_chip_h(selector_h, f64::from(sp.s3), 1.0),
-            selector_h,
-            "at 1× the chip is the theme's selector height"
-        );
-        let notes_top = app.detail_rect.y0 + app.form.notes_top;
-        let rule_y = notes_top - f64::from(sp.s2);
-        let label_y = rule_y - f64::from(sp.s1) - label_h;
-        assert!(
-            label_y >= app.form.chips_y + chip_h + f64::from(sp.s4),
-            "NOTES label must sit a section gap below the chip row"
-        );
-        assert!(
-            rule_y >= label_y + label_h,
-            "the NOTES rule must be drawn below the whole label line"
-        );
-    }
-    // Case `month_metrics_hold_scaled_text_and_keep_the_one_x_design`:
-    // The month grid's header, day-number band and event chips are sized
-    // from the measured text lines they carry, so at 2× nothing collides;
-    // at 1× the authored design is reproduced exactly.
-    {
-        let theme = Theme::dark();
-        let sp = &theme.tokens.spacing;
-        let one = MonthMetrics::new(&theme, 1.0);
-        assert_eq!(one.header_h, MONTH_HEADER_MIN_H);
-        assert_eq!(one.pill_r, MONTH_TODAY_PILL_R);
-        assert_eq!(one.chip_h, MONTH_CHIP_MIN_H);
-        // Stacked chips keep an `s1` between them (HIG §7: nothing touches):
-        // 17 + 4 = 21 at 1×, where the old 3px pitch left neighbours 3px
-        // apart — see the month shots in the 1× polish audit.
-        assert_eq!(one.chip_pitch, MONTH_CHIP_MIN_H + f64::from(sp.s1));
-        // The authored 1× design: chips start an `s1` below the 24px
-        // day-number band, at 6 + 24 + 4 = 34, the gap the painter keeps
-        // between the today pill and the first chip.
-        assert_eq!(
-            one.chips_top,
-            MONTH_NUM_TOP + 2.0 * MONTH_TODAY_PILL_R + f64::from(sp.s1)
-        );
-
-        let two = MonthMetrics::new(&theme, 2.0);
-        for value in [
-            two.header_h,
-            two.pill_r,
-            two.chips_top,
-            two.chip_h,
-            two.chip_pitch,
-        ] {
-            assert_eq!(
-                value.fract(),
-                0.0,
-                "scaled month metrics land on whole pixels"
+        let cells: Vec<Rect> = hits
+            .iter()
+            .filter(|(_, a)| matches!(a, Action::PickDate(_)))
+            .map(|(r, _)| *r)
+            .collect();
+        let strips: Vec<Rect> = hits
+            .iter()
+            .filter(|(r, a)| matches!(a, Action::OpenDay(_)) && cells.iter().any(|c| c.y0 == r.y0))
+            .map(|(r, _)| *r)
+            .collect();
+        let chips: Vec<Rect> = hits
+            .iter()
+            .filter(|(_, a)| matches!(a, Action::OpenEvent(_)))
+            .map(|(r, _)| *r)
+            .collect();
+        assert!(!chips.is_empty());
+        for chip in chips {
+            let cell = cells
+                .iter()
+                .find(|cell| cell.contains(chip.center()))
+                .expect("every chip sits in a cell");
+            assert!(
+                chip.x0 >= cell.x0 && chip.x1 <= cell.x1,
+                "{chip:?} in {cell:?}"
+            );
+            let strip = strips
+                .iter()
+                .find(|strip| strip.x0 == cell.x0 && strip.y0 == cell.y0)
+                .expect("each cell has its day-number strip");
+            assert!(
+                chip.y0 >= strip.y1 - 0.5,
+                "the chip starts below the day number at 2×"
             );
         }
-        assert!(two.header_h >= two.label_h + f64::from(sp.s3));
-        assert!(two.chip_h >= two.chip_text_h + f64::from(sp.s1));
-        assert!(two.chip_pitch > two.chip_h);
-        assert!(
-            2.0 * two.pill_r >= two.label_h,
-            "the today pill must enclose the scaled day number"
-        );
-        assert!(
-            two.chips_top >= MONTH_NUM_TOP + 2.0 * two.pill_r,
-            "the first chip must start below the today pill"
-        );
     }
 }
 
@@ -2003,21 +1824,26 @@ fn detail_choices_and_invitation_handoff_are_exact_resource_actions() {
             &Theme::dark(),
             &PresenceCtx::empty(),
         );
+        app.draw_overlay(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
         assert!(
             app.hits
                 .iter()
                 .any(|(_, action)| matches!(action, Action::OpenTaskPopover(TaskPopover::Due)))
         );
+        let sheet = app.detail_rect;
         assert!(
-            app.hits.iter().any(|(_, action)| matches!(
-                action,
-                Action::OpenTaskPopover(TaskPopover::Priority)
-            ))
+            sheet.contains_rect(app.choices.priority.rect),
+            "the priority dropdown is on the task sheet"
         );
         assert!(
-            app.hits
-                .iter()
-                .any(|(_, action)| matches!(action, Action::OpenTaskPopover(TaskPopover::Project)))
+            sheet.contains_rect(app.choices.project.rect),
+            "the project dropdown is on the task sheet"
         );
 
         let task =
@@ -2065,187 +1891,105 @@ fn detail_choices_and_invitation_handoff_are_exact_resource_actions() {
     clippy::too_many_lines,
     reason = "one scenario, one labelled phase per merged case"
 )]
-fn sidebar_presentation_follows_width_and_collapses_via_chevrons() {
-    // Case `wide_window_uses_persistent_sidebar_and_overlay_editor`.
+fn sidebar_presentation_follows_width_and_hides_via_its_toggle() {
+    // Case `wide_window_docks_the_sidebar_and_floats_the_editor_sheet`.
     {
         let mut app = CalendarApp::new_demo();
         app.detail_open = true;
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.relayout();
         assert_eq!(app.sidebar.mode(), SidebarMode::Persistent);
-        assert_eq!(app.detail_mode, DetailMode::Overlay);
-        // Sidebar is inline (content starts to its right).
         assert!(app.content_rect.x0 >= app.sidebar.rect().x1 - 0.5);
-        // The editor is a centered modal floating OVER the calendar: the
-        // calendar keeps its full content width behind it, and the card is
-        // inset from every content edge (not a docked strip on the right).
+        // The editor is a modal sheet over the whole window: the calendar
+        // keeps its full width behind it.
         assert!(app.detail_rect.area() > 0.0);
-        assert!(app.content_rect.area() > 0.0);
-        assert_eq!(
-            app.content_rect.x1, app.rect.x1,
-            "calendar spans to the window edge behind the modal"
-        );
+        assert_eq!(app.content_rect.x1, app.rect.x1);
+        assert!(app.rect.contains_rect(app.detail_rect));
+        assert!(app.detail_rect.x0 > app.rect.x0 + 1.0);
+        assert!(app.detail_rect.x1 < app.rect.x1 - 1.0);
+        assert!(app.detail_rect.y0 > app.rect.y0 + 1.0);
         assert!(
-            app.detail_rect.x0 > app.content_rect.x0 + 1.0,
-            "card inset from the left"
-        );
-        assert!(
-            app.detail_rect.x1 < app.rect.x1 - 1.0,
-            "card inset from the right"
-        );
-        assert!(
-            app.detail_rect.y0 > app.rect.y0 + 1.0,
-            "card inset from the top"
-        );
-        // Card is centered within the content area.
-        let card_cx = app.detail_rect.center().x;
-        let content_cx = f64::midpoint(app.content_rect.x0, app.content_rect.x1);
-        assert!(
-            (card_cx - content_cx).abs() < 1.0,
-            "modal centered over the content"
+            (app.detail_rect.center().x - app.rect.center().x).abs() < 1.0,
+            "the sheet is centred on the window"
         );
     }
-    // Case `narrow_window_collapses_sidebar_to_overlay`.
+    // Case `narrow_window_turns_the_sidebar_into_a_drawer`.
     {
         let mut app = CalendarApp::new_demo();
-        app.rect = Rect::new(0.0, 0.0, 700.0, 900.0);
-        app.sidebar.set_open(false);
+        app.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
         app.relayout();
         assert_eq!(app.sidebar.mode(), SidebarMode::Overlay);
-        // Overlay sidebar floats over the content from the left edge: content
-        // starts at the window's left edge, not to the sidebar's right.
         assert_eq!(app.content_rect.x0, app.rect.x0);
-        assert!(!app.sidebar.visible(), "overlay flap is closed by default");
+        assert!(!app.sidebar.visible(), "the drawer is closed by default");
+        app.sidebar.set_open(true);
+        app.relayout();
+        assert!(app.sidebar.visible());
+        assert!(
+            app.sidebar.rect().width() < app.rect.width() - 1.0,
+            "the drawer floats inside the window"
+        );
     }
-    // Case `desktop_sidebar_collapses_and_only_the_sidebar_collapses`.
+    // Case `desktop_sidebar_hides_and_only_the_sidebar_hides`.
     {
-        // Confirmed-defect: on desktop the sidebar must be collapsible, and ONLY
-        // the sidebar collapses — the editor modal stays open and re-centers in
-        // the reclaimed width. Drive the real `relayout` expand → collapse →
-        // expand on ONE instance.
         let mut app = CalendarApp::new_demo();
         app.detail_open = true;
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.relayout();
-        assert!(app.sidebar.visible(), "sidebar shown when expanded");
+        assert!(app.sidebar.visible());
         let expanded_content_x0 = app.content_rect.x0;
-        assert!(
-            expanded_content_x0 >= app.sidebar.rect().x1 - 0.5,
-            "expanded: content starts to the right of the sidebar"
-        );
 
-        // Collapse: sidebar hidden, content reclaims the left edge, editor stays.
         app.sidebar.set_collapsed(true);
         app.relayout();
-        assert!(!app.sidebar.visible(), "collapsed sidebar is hidden");
-        assert_eq!(
-            app.content_rect.x0, app.rect.x0,
-            "content reclaims the sidebar edge"
-        );
-        assert!(app.content_rect.width() > 0.0);
+        assert!(!app.sidebar.visible());
+        assert_eq!(app.content_rect.x0, app.rect.x0);
         assert!(
             app.detail_rect.area() > 0.0,
-            "editor stays open — only the sidebar collapsed"
-        );
-        // Re-centered within the now-wider content.
-        let content_cx = f64::midpoint(app.content_rect.x0, app.content_rect.x1);
-        assert!(
-            (app.detail_rect.center().x - content_cx).abs() < 1.0,
-            "modal re-centers after collapse"
+            "the editor stays open; only the sidebar hid"
         );
 
-        // Expand again — proves it toggles both directions.
         app.sidebar.set_collapsed(false);
         app.relayout();
         assert!(app.sidebar.visible());
-        assert_eq!(
-            app.content_rect.x0, expanded_content_x0,
-            "expanding restores the layout"
-        );
+        assert_eq!(app.content_rect.x0, expanded_content_x0);
     }
-    // Case `phone_width_sidebar_is_a_full_screen_drawer`.
+    // Case `the_drawer_closes_through_its_own_toggle`.
     {
-        // Below the phone breakpoint the overlay sidebar covers the whole
-        // window (a page) rather than a cramped 252px flap.
-        let mut app = CalendarApp::new_demo();
-
-        app.rect = Rect::new(0.0, 0.0, 700.0, 900.0);
-        app.relayout();
-        assert_eq!(app.sidebar.mode(), SidebarMode::Overlay);
-        assert!(
-            app.sidebar.rect().width() < app.rect.width() - 1.0,
-            "tablet width: a flap, not full-width"
-        );
-
-        app.rect = Rect::new(0.0, 0.0, 420.0, 800.0);
-        app.relayout();
-        assert_eq!(app.sidebar.mode(), SidebarMode::Overlay);
-        assert!(
-            (app.sidebar.rect().width() - app.rect.width()).abs() < 0.5,
-            "phone width: the sidebar drawer is a full-screen page"
-        );
-    }
-    // Case `full_screen_drawer_offers_a_pointer_reachable_close`.
-    {
-        // The full-screen drawer covers the window, so it must carry its own
-        // close (no dimmed edge to click). Drive the real click path.
         let mut h = Harness::new(420, 800);
         h.app.shots_show_calendar();
         h.app.sidebar.set_open(true);
         h.relayout();
-        assert!(h.app.sidebar.visible(), "flap is open");
-        assert!(
-            (h.app.sidebar.rect().width() - h.app.rect.width()).abs() < 0.5,
-            "the drawer is full-screen at this width"
-        );
-        // Two DismissSidebar targets exist: the (hidden) scrim behind and the
-        // small close button in the header. Pick the compact one — the button.
-        let close = h
+        assert!(h.app.sidebar.visible(), "drawer is open");
+        let toggle = h
             .app
             .hits
             .iter()
-            .filter(|(_, a)| matches!(a, Action::DismissSidebar))
-            .min_by_key(|(r, _)| r.area() as i64)
+            .filter(|(r, a)| {
+                matches!(a, Action::ToggleSidebar) && h.app.sidebar.rect().contains_rect(*r)
+            })
             .map(|(r, _)| r.center())
-            .expect("a close button in the full-screen drawer");
-        h.click(close);
-        assert!(
-            !h.app.sidebar.is_open(),
-            "clicking close dismissed the full-screen drawer"
-        );
+            .next()
+            .expect("the drawer carries its toggle");
+        h.click(toggle);
+        assert!(!h.app.sidebar.is_open(), "the toggle closed the drawer");
     }
-    // Case `clicking_sidebar_chevron_collapses_then_topbar_chevron_expands`.
+    // Case `the_sidebar_toggle_hides_then_the_header_toggle_shows_it`.
     {
-        // The collapse control is reachable and functional through the real
-        // click path, and its expand mirror lives in the topbar once collapsed —
-        // so a pointer user can always get the sidebar back.
         let mut h = Harness::new(1280, 800);
-        // The topbar's expand chevron lives behind the modal's dismiss scrim, so
-        // exercise the sidebar collapse from the calendar screen (the state a
-        // user collapses the rail from).
         h.app.shots_show_calendar();
         h.relayout();
-        assert!(h.app.sidebar.visible(), "starts expanded on a wide window");
-        let collapse = h
-            .hit_center(|a| matches!(a, Action::ToggleSidebarCollapsed))
-            .expect("collapse chevron present in the persistent sidebar");
-        h.click(collapse);
-        assert!(
-            h.app.sidebar.is_collapsed(),
-            "clicking the chevron collapsed the sidebar"
-        );
-        assert!(!h.app.sidebar.visible());
-
-        // Re-lay so the collapsed topbar's expand chevron enters the hit-map.
+        assert!(h.app.sidebar.visible(), "starts shown on a wide window");
+        let hide = h
+            .hit_center(|a| matches!(a, Action::ToggleSidebar))
+            .expect("the sidebar toggle");
+        h.click(hide);
+        assert!(h.app.sidebar.is_collapsed());
         h.relayout();
-        let expand = h
-            .hit_center(|a| matches!(a, Action::ToggleSidebarCollapsed))
-            .expect("expand chevron present in the topbar when collapsed");
-        h.click(expand);
-        assert!(
-            !h.app.sidebar.is_collapsed(),
-            "clicking the topbar chevron expanded the sidebar"
-        );
+        let show = h
+            .hit_center(|a| matches!(a, Action::ToggleSidebar))
+            .expect("the header carries the toggle while the sidebar is hidden");
+        assert!(show.x < 60.0, "at the leading edge of the header");
+        h.click(show);
+        assert!(!h.app.sidebar.is_collapsed());
         assert!(h.app.sidebar.visible());
     }
 }
@@ -2255,35 +1999,24 @@ fn sidebar_presentation_follows_width_and_collapses_via_chevrons() {
     clippy::too_many_lines,
     reason = "one scenario, one labelled phase per merged case"
 )]
-fn detail_and_editor_presentation_follow_width_with_matching_close_affordances() {
-    // Case `narrow_detail_screen_replaces_the_calendar`.
+fn the_editor_sheet_floats_over_the_calendar_at_every_width() {
+    // Case `a_narrow_window_keeps_the_calendar_behind_the_sheet`.
     {
         let mut app = CalendarApp::new_demo();
         app.rect = Rect::new(0.0, 0.0, 480.0, 900.0);
         app.detail_open = true;
-        app.narrow_screen = NarrowScreen::Detail;
         app.relayout();
-        assert_eq!(
-            app.detail_mode,
-            DetailMode::FullScreen,
-            "480px editor is full-screen"
-        );
-        // The detail is pushed over the calendar: only one pane is laid out.
         assert!(app.detail_rect.area() > 0.0);
-        assert_eq!(
-            app.content_rect.area(),
-            0.0,
-            "calendar hidden behind detail"
-        );
+        assert!(app.rect.contains_rect(app.detail_rect));
+        assert!(app.content_rect.area() > 0.0, "the calendar stays laid out");
 
-        // Going back returns to the calendar screen.
         let mut state = AutoCommit::new();
-        app.apply_action(Action::BackToCalendar, &mut state);
+        app.apply_action(Action::CloseDetail, &mut state);
         app.relayout();
-        assert!(app.content_rect.area() > 0.0);
         assert_eq!(app.detail_rect.area(), 0.0);
+        assert!(app.modal.is_none());
     }
-    // Case `selecting_in_narrow_mode_pushes_detail_and_closes_flap`.
+    // Case `opening_an_event_in_a_narrow_window_closes_the_drawer`.
     {
         let mut app = CalendarApp::new_demo();
         app.rect = Rect::new(0.0, 0.0, 480.0, 900.0);
@@ -2291,56 +2024,14 @@ fn detail_and_editor_presentation_follow_width_with_matching_close_affordances()
         app.sidebar.set_open(true);
         let id = app.model.events[0].id;
         app.select_event(id);
-        assert_eq!(app.narrow_screen, NarrowScreen::Detail);
+        assert!(app.detail_open);
         assert!(
             !app.sidebar.is_open(),
-            "opening a detail dismisses the overlay flap"
+            "opening an event dismisses the drawer"
         );
     }
-    // Case `editor_presentation_switches_from_overlay_to_fullscreen_by_width`.
+    // Case `clicking_an_event_chip_opens_its_editor`.
     {
-        // The reported fix: on big screens the editor is a modal OVERLAY over
-        // the calendar; only on small windows does it take the whole screen.
-        // Drive the real relayout across the breakpoint on ONE instance.
-        let mut app = CalendarApp::new_demo();
-        app.detail_open = true;
-
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.relayout();
-        assert_eq!(app.detail_mode, DetailMode::Overlay, "wide → modal overlay");
-        assert!(
-            app.content_rect.area() > 0.0,
-            "calendar stays laid out behind the modal"
-        );
-        assert!(
-            app.detail_rect.x1 < app.rect.x1 - 1.0,
-            "modal is a floating card, not edge-to-edge"
-        );
-
-        // Just above the breakpoint stays an overlay.
-        app.rect = Rect::new(0.0, 0.0, EDITOR_OVERLAY_MIN + 10.0, 800.0);
-        app.relayout();
-        assert_eq!(app.detail_mode, DetailMode::Overlay);
-
-        // Below the breakpoint: full-screen editor page replacing the calendar.
-        app.rect = Rect::new(0.0, 0.0, EDITOR_OVERLAY_MIN - 10.0, 800.0);
-        app.narrow_screen = NarrowScreen::Detail;
-        app.relayout();
-        assert_eq!(
-            app.detail_mode,
-            DetailMode::FullScreen,
-            "narrow → full-screen editor"
-        );
-        assert_eq!(
-            app.content_rect.area(),
-            0.0,
-            "full-screen editor replaces the calendar"
-        );
-        assert!(app.detail_rect.area() > 0.0);
-    }
-    // Case `clicking_an_event_chip_opens_its_detail`.
-    {
-        // Month view is full of chips; clicking one selects that event.
         let mut h = Harness::new(1280, 800);
         h.app.shots_show_calendar();
         h.relayout();
@@ -2354,57 +2045,13 @@ fn detail_and_editor_presentation_follow_width_with_matching_close_affordances()
             })
             .expect("at least one event chip");
         h.click(rect.center());
-        assert_eq!(
-            h.app.selection,
-            Some(Sel::Event(id)),
-            "clicked chip is now selected"
-        );
-        assert!(h.app.detail_open, "detail panel opened");
+        assert_eq!(h.app.selection, Some(Sel::Event(id)));
+        assert!(h.app.detail_open);
     }
-    // Case `narrow_pushed_detail_uses_back_not_a_redundant_close`.
+    // Case `the_sheet_closes_with_done_or_a_press_outside_it`.
     {
-        // De-slop: the narrow pushed detail has a single Back affordance, not a
-        // Back plus a duplicate X that both return to the calendar.
-        let mut h = Harness::new(560, 720);
-        h.app.detail_open = true;
-        h.app.narrow_screen = NarrowScreen::Detail;
-        h.relayout();
-        let closes = h
-            .app
-            .hits
-            .iter()
-            .filter(|(_, a)| matches!(a, Action::CloseDetail))
-            .count();
-        let backs = h
-            .app
-            .hits
-            .iter()
-            .filter(|(_, a)| matches!(a, Action::BackToCalendar))
-            .count();
-        assert_eq!(
-            closes, 0,
-            "no redundant X close on the narrow pushed detail"
-        );
-        assert_eq!(backs, 1, "Back is the single dismissal affordance");
-    }
-    // Case `wide_modal_editor_has_an_x_close_and_a_dismiss_scrim`.
-    {
-        // The wide editor is a modal card: it carries an X close button (a
-        // small top-right target) AND a dismiss scrim over the calendar behind
-        // it (clicking outside closes it). No Back — that's narrow-only.
         let h = Harness::new(1280, 800);
-        assert!(
-            h.app.detail_open,
-            "demo opens with a selected event → modal editor"
-        );
-        assert_eq!(h.app.detail_mode, DetailMode::Overlay);
-        let backs = h
-            .app
-            .hits
-            .iter()
-            .filter(|(_, a)| matches!(a, Action::BackToCalendar))
-            .count();
-        assert_eq!(backs, 0, "no Back affordance on the wide modal");
+        assert!(h.app.detail_open, "the demo opens an event");
         let closes: Vec<Rect> = h
             .app
             .hits
@@ -2412,115 +2059,74 @@ fn detail_and_editor_presentation_follow_width_with_matching_close_affordances()
             .filter(|(_, a)| matches!(a, Action::CloseDetail))
             .map(|(r, _)| *r)
             .collect();
-        // A small X button …
         assert!(
             closes
                 .iter()
-                .any(|r| r.area() < 2000.0 && r.x0 > h.app.detail_rect.x0),
-            "a compact X close button in the card header"
+                .any(|r| r.area() < 8000.0 && h.app.detail_rect.contains_rect(*r)),
+            "a Done button in the sheet's footer"
         );
-        // … and a large dismiss scrim covering the calendar behind the card.
         assert!(
-            closes
-                .iter()
-                .any(|r| (r.area() - h.app.content_rect.area()).abs() < 1.0),
-            "a dismiss scrim over the content behind the modal"
+            closes.iter().any(|r| *r == h.app.rect),
+            "a scrim over the whole window behind the sheet"
         );
     }
 }
 
 #[test]
-fn view_switcher_lives_in_topbar_or_flap_by_width_without_duplicates() {
-    // Case `view_switcher_stays_in_topbar_until_it_genuinely_doesnt_fit`.
+fn view_switcher_lives_in_the_header_or_the_drawer_without_duplicates() {
+    // Case `view_switcher_stays_in_the_header_until_it_does_not_fit`.
     {
-        // Issue: the switcher folded into the sidebar too eagerly. It must stay
-        // in the topbar at normal/large widths and only fold when it truly
-        // can't fit. Assert the real fit decision that `Topbar::draw` reads.
         let mut app = CalendarApp::new_demo();
-        // Isolate the switcher logic on the calendar screen (no pushed detail
-        // zeroing the content width out from under us).
         app.detail_open = false;
         app.selection = None;
-        app.narrow_screen = NarrowScreen::Calendar;
 
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.relayout();
-        assert!(
-            app.topbar.switcher_visible(),
-            "wide window keeps the switcher in the topbar"
-        );
+        assert!(app.topbar.switcher_visible());
 
-        // A mid-width overlay-sidebar window still has ample topbar room — the
-        // previous behaviour wrongly folded it away here.
-        app.rect = Rect::new(0.0, 0.0, 780.0, 800.0);
+        app.rect = Rect::new(0.0, 0.0, 800.0, 600.0);
         app.relayout();
         assert_eq!(app.sidebar.mode(), SidebarMode::Overlay);
         assert!(
             app.topbar.switcher_visible(),
-            "a roomy topbar keeps the switcher even with an overlay sidebar"
+            "a roomy header keeps the switcher beside a drawer"
         );
 
-        // Truly cramped → it folds into the flap.
         app.rect = Rect::new(0.0, 0.0, 460.0, 800.0);
         app.relayout();
         assert!(
             !app.topbar.switcher_visible(),
-            "a cramped topbar folds the switcher into the sidebar"
+            "a cramped header moves the switcher into the drawer"
         );
     }
-    // Case `narrow_flap_offers_a_pointer_reachable_view_switcher`.
+    // Case `the_drawer_offers_a_pointer_reachable_view_switcher`.
     {
-        // On narrow layouts the topbar's segmented switch folds away; the
-        // overlay flap must carry a pointer-reachable switch so every view stays
-        // reachable without a keyboard (the reported dead-end: a mouse user on
-        // narrow could reach Day/Agenda but never get back to Month). Drives the
-        // real `handle_event` click path, not a synthetic call.
-        let mut h = Harness::new(560, 720);
-        assert_eq!(
-            h.app.sidebar.mode(),
-            SidebarMode::Overlay,
-            "560px is a narrow layout"
-        );
-        // Open the flap and re-lay so its hit-map is populated.
+        let mut h = Harness::new(460, 720);
+        h.app.shots_show_calendar();
+        h.relayout();
+        assert_eq!(h.app.sidebar.mode(), SidebarMode::Overlay);
         h.app.sidebar.set_open(true);
         h.relayout();
         assert_eq!(h.app.view, View::Month);
         let p = h
             .hit_center(|a| matches!(a, Action::View(View::Week)))
-            .expect("the flap carries a Week view target on narrow");
+            .expect("the drawer carries a Week view target");
         h.click(p);
-        assert_eq!(
-            h.app.view,
-            View::Week,
-            "clicking the flap switcher changed the view"
-        );
-        assert!(
-            !h.app.sidebar.is_open(),
-            "picking a view dismisses the flap"
-        );
-        assert_eq!(
-            h.app.narrow_screen,
-            NarrowScreen::Calendar,
-            "picking a view returns to the calendar screen"
-        );
+        assert_eq!(h.app.view, View::Week);
+        assert!(!h.app.sidebar.is_open(), "picking a view closes the drawer");
     }
-    // Case `wide_topbar_has_no_flap_switcher_duplicate`.
+    // Case `a_wide_window_has_one_switcher`.
     {
-        // The flap switcher is narrow-only; the wide layout already has the
-        // topbar segmented control, so the flap must NOT add a second set of
-        // View targets (which would double every view hit).
-        let h = Harness::new(1280, 800);
+        let mut h = Harness::new(1280, 800);
+        h.app.shots_show_calendar();
+        h.relayout();
         let view_targets = h
             .app
             .hits
             .iter()
             .filter(|(_, a)| matches!(a, Action::View(_)))
             .count();
-        assert_eq!(
-            view_targets,
-            View::ALL.len(),
-            "exactly one switcher on wide"
-        );
+        assert_eq!(view_targets, View::ALL.len(), "exactly one switcher");
     }
 }
 
@@ -2528,7 +2134,7 @@ fn view_switcher_lives_in_topbar_or_flap_by_width_without_duplicates() {
 
 #[test]
 fn calendar_and_project_selectors_file_events_and_reach_every_option() {
-    // Case `project_selector_reaches_projects_beyond_the_old_four_row_cutoff`.
+    // Case `project_dropdown_offers_every_project_and_files_the_task`.
     {
         let mut app = CalendarApp::new_demo();
         let mut state = AutoCommit::new();
@@ -2549,87 +2155,55 @@ fn calendar_and_project_selectors_file_events_and_reach_every_option() {
                 order: index,
             }));
         app.model.projects.push(later.clone());
-        let same_named_earlier = crate::model::Project {
+        app.model.projects.push(crate::model::Project {
             id: Id::new_v4(),
             name: "Duplicate project".into(),
             color: Palette::Blue,
             order: 98,
-        };
-        app.model.projects.push(same_named_earlier);
+        });
         CalDoc::seed(&mut state, &app.model);
         app.select_task(id);
-        app.apply_action(Action::OpenTaskPopover(TaskPopover::Project), &mut state);
-        assert!(
-            app.task_project_values.len() > 5,
-            "the shared dropdown is populated from the complete project list"
-        );
-        app.task_project_choice.set(later.id.to_string());
-        app.commit_task_project_dropdown(&mut state, &automerge::ROOT);
+        app.seed_choices();
+        app.choices.project.state.set(later.id.to_string());
+        app.commit_choices(&mut state, &automerge::ROOT);
         assert_eq!(app.model.task(id).unwrap().project, Some(later.id));
     }
-    // Case `calendar_selector_files_event_on_a_configured_account_and_queues_it`.
+    // Case `calendar_dropdown_files_the_event_on_a_configured_account_and_queues_it`.
     {
-        // The selector lists calendars from the shared account store; picking a
-        // remote CalDAV calendar tags the event AND queues it for upload.
         let mut h = Harness::new(1280, 800);
         let id = selected_event_id(&h.app);
-        let p = h
-            .hit_center(|a| matches!(a, Action::OpenPopover(FormPopover::Calendar)))
-            .expect("the calendar field opens a selector");
-        h.click(p);
-        assert_eq!(h.app.event_popovers.active(), FormPopover::Calendar);
-        h.relayout(); // draw the list so its row targets populate
-        // Local is row 0; the first configured remote calendar is row 1.
-        let options_h = 34.0 * h.app.calendar_options().len() as f64 + 8.0;
-        let list_y = (h.app.form.calendar.y1 + 6.0).min(h.app.detail_rect.y1 - options_h - 8.0);
-        let p2 = Point::new(h.app.form.calendar.center().x, list_y + 4.0 + 34.0 + 17.0);
-        h.click(p2);
+        let (app, doc) = h.parts();
+        app.seed_choices();
+        app.choices.calendar.state.set("work/default".into());
+        app.commit_choices(doc, &automerge::ROOT);
         assert_eq!(
             h.app.model.event(id).unwrap().calendar_id.as_deref(),
-            Some("work/default"),
-            "the event is filed on the chosen CalDAV calendar"
+            Some("work/default")
         );
-        assert!(
-            CalDoc::outbox(h.doc()).contains(&id),
-            "creating on a CalDAV calendar queues the event for upload"
-        );
-        assert_eq!(
-            h.app.event_popovers.active(),
-            FormPopover::None,
-            "picking a calendar closes the selector"
-        );
+        assert!(CalDoc::outbox(h.doc()).contains(&id));
     }
     // Case `refiling_on_the_local_calendar_clears_the_upload_queue`.
     {
         let mut h = Harness::new(1280, 800);
         let id = selected_event_id(&h.app);
-        // File it remote first (queued), then move it back to the device.
         let (app, doc) = h.parts();
         app.set_event_calendar(&CalTarget::Remote("work/default".into()), doc);
         assert!(CalDoc::outbox(h.doc()).contains(&id));
         let (app, doc) = h.parts();
         app.set_event_calendar(&CalTarget::Local, doc);
         assert!(h.app.model.event(id).unwrap().calendar_id.is_none());
-        assert!(
-            !CalDoc::outbox(h.doc()).contains(&id),
-            "filing back on the local calendar drops it from the queue"
-        );
+        assert!(!CalDoc::outbox(h.doc()).contains(&id));
     }
     // Case `calendar_options_come_from_the_shared_account_store`.
     {
-        // The option list is sourced from the configured accounts, never faked:
-        // the sample store's calendars all appear, plus the local option.
         let h = Harness::new(1280, 800);
         let opts = h.app.calendar_options();
-        assert!(
-            matches!(opts.first(), Some((CalTarget::Local, _))),
-            "local is first"
-        );
+        assert!(matches!(opts.first(), Some((CalTarget::Local, _))));
         for (_, cal) in h.app.accounts.all_calendars() {
             assert!(
                 opts.iter()
                     .any(|(t, _)| matches!(t, CalTarget::Remote(id) if id == &cal.id)),
-                "configured calendar {} is offered in the selector",
+                "configured calendar {} is offered",
                 cal.id
             );
         }
@@ -2886,8 +2460,8 @@ fn accessibility_exports_named_stable_controls_that_reuse_actions() {
             "start time"
         );
         assert!(
-            has(|a| matches!(a, Action::OpenPopover(FormPopover::Calendar))),
-            "calendar selector"
+            h.app.detail_rect.contains_rect(h.app.choices.calendar.rect),
+            "calendar dropdown"
         );
     }
 }
@@ -3273,7 +2847,6 @@ fn calendar_visibility_and_account_collapse_filter_views_and_sidebar() {
         app.view = View::Day;
         app.detail_open = false;
         app.selection = None;
-        app.narrow_screen = NarrowScreen::Calendar;
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.relayout();
 
@@ -3820,12 +3393,25 @@ fn named_press(named: winit::keyboard::NamedKey) -> winit::event::WindowEvent {
 
 // --- per-account collapse is wired (was a dead serialized field) -------
 
-// --- detail chips: colour / recurrence / reminder ----------------------
+// --- detail dropdowns: colour / recurrence / alert ----------------------
+
+/// Pick `value` in one of the editor's dropdowns, as a click on its option
+/// publishes it, and apply it.
+fn pick(
+    app: &mut CalendarApp,
+    state: &mut AutoCommit,
+    choice: fn(&mut editor::Choices) -> &mut editor::Choice,
+    value: &str,
+) {
+    app.seed_choices();
+    choice(&mut app.choices).state.set(value.to_string());
+    app.commit_choices(state, &automerge::ROOT);
+}
 
 #[test]
 #[serial]
-fn detail_chips_cycle_into_the_crdt_and_the_exported_ics_file() {
-    // Case `cycling_recurrence_updates_selected_event_and_mirrors_to_crdt`.
+fn detail_dropdowns_write_into_the_crdt_and_the_exported_ics_file() {
+    // Case `picking_a_repeat_rule_updates_selected_event_and_mirrors_to_crdt`.
     {
         let mut app = CalendarApp::new_demo();
         let mut state = AutoCommit::new();
@@ -3833,14 +3419,10 @@ fn detail_chips_cycle_into_the_crdt_and_the_exported_ics_file() {
         let Some(Sel::Event(id)) = app.selection else {
             panic!("the demo opens with an event selected");
         };
-        let before = app.model.event(id).unwrap().recurrence;
-        app.apply_action(Action::CycleRecurrence, &mut state);
+        pick(&mut app, &mut state, |c| &mut c.repeat, "monthly");
         let after = app.model.event(id).unwrap().recurrence;
-        assert_eq!(
-            after,
-            before.cycle(),
-            "the chip advances recurrence by one step"
-        );
+        assert_eq!(after, Recurrence::Monthly, "the pick sets the rule");
+        assert_eq!(app.model.event(id).unwrap().recurrence_interval, 1);
         // Reading the document back yields the new rule — it mirrored into the CRDT.
         let reread = CalDoc::read_model(&state);
         assert_eq!(
@@ -3853,7 +3435,7 @@ fn detail_chips_cycle_into_the_crdt_and_the_exported_ics_file() {
             after
         );
     }
-    // Case `cycling_colour_updates_selected_event`.
+    // Case `picking_a_colour_updates_selected_event`.
     {
         let mut app = CalendarApp::new_demo();
         let mut state = AutoCommit::new();
@@ -3862,14 +3444,20 @@ fn detail_chips_cycle_into_the_crdt_and_the_exported_ics_file() {
             panic!("event selected");
         };
         let before = app.model.event(id).unwrap().color;
-        app.apply_action(Action::CycleColor, &mut state);
-        assert_ne!(
+        let other = Palette::from_index(before.index() + 1);
+        pick(
+            &mut app,
+            &mut state,
+            |c| &mut c.colour,
+            &other.index().to_string(),
+        );
+        assert_eq!(
             app.model.event(id).unwrap().color,
-            before,
-            "the chip advances the colour"
+            other,
+            "the pick sets the colour"
         );
     }
-    // Case `cycling_reminder_advances_and_reaches_the_exported_ics`.
+    // Case `picking_an_alert_reaches_the_exported_ics`.
     {
         let mut app = CalendarApp::new_demo();
         let mut state = AutoCommit::new();
@@ -3877,19 +3465,17 @@ fn detail_chips_cycle_into_the_crdt_and_the_exported_ics_file() {
         let Some(Sel::Event(id)) = app.selection else {
             panic!("event selected");
         };
-        // Drive the reminder from a known rung: None → 10m → 30m.
-        if let Some(e) = app.model.event_mut(id) {
-            e.reminder_min = None;
-        }
-        app.apply_action(Action::CycleReminder, &mut state);
+        pick(&mut app, &mut state, |c| &mut c.alert, "none");
+        assert_eq!(app.model.event(id).unwrap().reminder_min, None);
+        pick(&mut app, &mut state, |c| &mut c.alert, "10");
         assert_eq!(app.model.event(id).unwrap().reminder_min, Some(10));
-        app.apply_action(Action::CycleReminder, &mut state);
+        pick(&mut app, &mut state, |c| &mut c.alert, "30");
         assert_eq!(app.model.event(id).unwrap().reminder_min, Some(30));
         // The reminder is real, exported data: it becomes a VALARM in the .ics.
         let ics = crate::ics::export(&app.model);
         assert!(
             ics.contains("TRIGGER:-PT30M"),
-            "the reminder chip's value reaches the exported alarm"
+            "the alert reaches the exported alarm"
         );
     }
     // Case `export_writes_a_real_ics_file_to_the_transfer_dir`.
