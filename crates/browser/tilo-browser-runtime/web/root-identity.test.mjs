@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {
-  addPasskey, base64url, createIdentity, formatRecoveryKey, IdentityError, parseRecoveryKey, unbase64url, unhex,
+  addPasskey, base64url, certifyDevice, createIdentity, formatRecoveryKey, IdentityError, parseRecoveryKey, unbase64url, unhex,
   unlockIdentity,
 } from './root-identity.mjs';
 import {fakeAuthenticator} from './testing/fake-authenticator.mjs';
@@ -56,6 +56,7 @@ test('another passkey can be added and opens alone', async () => {
   const credentials = fakeAuthenticator();
   const {envelope, identity} = await createIdentity({...OPTIONS, credentials});
   const more = await addPasskey(envelope, {identity, ...OPTIONS, credentials});
+  assert.deepEqual(credentials.log.at(-1).exclude, [envelope.wraps[0].credential_id]);
   assert.equal(more.wraps.length, 3);
   assert.deepEqual(more.wraps.slice(0, 2), envelope.wraps);
   credentials.remove(unbase64url(envelope.wraps[0].credential_id));
@@ -115,4 +116,19 @@ test('an envelope stored earlier still opens (native code reads the same one)', 
   await credentials.create({publicKey: {rp: {id: fixture.envelope.wraps[0].rp_id}, extensions: {}}});
   const byPasskey = await unlockIdentity(fixture.envelope, {passkey: true, credentials});
   assert.ok(await signsAsRoot(byPasskey, fixture.envelope.root_public_key));
+});
+
+test('certifying a device hands the wasm runtime the root as a signer', async () => {
+  const {identity} = await createIdentity({...OPTIONS, passkey: false});
+  const seen = [];
+  const runtime = {issueDeviceCert: async (...args) => { seen.push(args); return '{"cert":1}'; }};
+  const node = 'AB'.repeat(32);
+  assert.equal(await certifyDevice({identity, runtime, devicePublicKey: node}), '{"cert":1}');
+  assert.deepEqual(seen[0].slice(1), ['ab'.repeat(32), 'Tilo node', 'node']);
+  assert.equal(seen[0][0], identity);
+  await certifyDevice({identity, runtime, devicePublicKey: new Uint8Array(32).fill(1), label: 'Phone', role: 'browser'});
+  assert.deepEqual(seen[1].slice(1), ['01'.repeat(32), 'Phone', 'browser']);
+  await assert.rejects(certifyDevice({identity, runtime, devicePublicKey: 'abcd'}), {code: 'malformed'});
+  identity.lock();
+  await assert.rejects(certifyDevice({identity, runtime, devicePublicKey: node}), {code: 'locked'});
 });

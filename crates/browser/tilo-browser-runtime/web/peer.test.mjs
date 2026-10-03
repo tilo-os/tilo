@@ -79,6 +79,10 @@ function fakeRuntime({phase = 'ready'} = {}) {
       onPairingCode('123456');
       return JSON.stringify({cert: {device: calls.certify.length}, hostCert: {host: true}});
     },
+    async certifyWithRoot(post, root, custody, label) {
+      calls.certify.push({post, root, custody, label});
+      return JSON.stringify({cert: {device: calls.certify.length, expires_at_ns: calls.expiresAtNs ?? (Date.now() + 30 * 86_400_000) * 1e6}, hostCert: {host: true}});
+    },
     encodeLivePresence: json => new TextEncoder().encode(json),
     decodeLiveFrame: bytes => {
       const value = JSON.parse(new TextDecoder().decode(bytes));
@@ -178,6 +182,28 @@ test('first connect certifies over HTTPS once, shows the pairing code and keeps 
   assert.equal(runtime.calls.certify.length, 1, 'the stored certificate is reused');
   await second.dispose();
   assert.equal(runtime.peer.disposed, true);
+});
+
+test('a page holding the root certifies itself, with no pairing code, and renews a certificate about to expire', async () => {
+  const runtime = fakeRuntime();
+  const store = memoryStore();
+  const codes = [];
+  const identity = {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xbb), userPublicKey: 'bb'.repeat(32), sign: async () => new Uint8Array(64)};
+  const peer = await connect(options(runtime, store, {userPublicKey: undefined, identity, onPairingCode: code => codes.push(code)}));
+  assert.deepEqual(codes, []);
+  assert.equal(runtime.calls.certify.length, 1);
+  assert.equal(runtime.calls.certify[0].root, identity);
+  assert.equal(runtime.peer.config.cert.device, 1);
+  await peer.dispose();
+
+  const again = await connect(options(runtime, store, {identity}));
+  assert.equal(runtime.calls.certify.length, 1, 'a current certificate is reused');
+  await again.dispose();
+  await store.put('certificate', JSON.stringify({cert: {device: 9, expires_at_ns: (Date.now() + 3_600_000) * 1e6}, hostCert: {}}));
+  const renewed = await connect(options(runtime, store, {identity}));
+  assert.equal(runtime.calls.certify.length, 2, 'one about to expire is issued anew');
+  await renewed.dispose();
+  await assert.rejects(connect(options(runtime, store, {userPublicKey: 'cc'.repeat(32), identity})), TypeError);
 });
 
 test('the live layer joins over the carrier with the session grant and interpolates members', async () => {
