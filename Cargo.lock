@@ -15999,7 +15999,6 @@ dependencies = [
 name = "tilo-power-mgmt"
 version = "0.1.0"
 dependencies = [
- "bounded-command",
  "futures-util",
  "serde",
  "serde_json",
