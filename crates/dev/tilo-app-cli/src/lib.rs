@@ -6613,14 +6613,17 @@ fn dev_session_dir(app_dir: &Path) -> PathBuf {
     std::env::temp_dir().join(format!("tilo-dev-{:016x}", hasher.finish()))
 }
 
-fn attach_dev_session_env(command: &mut ProcessCommand, app_dir: &Path) {
+/// The environment of an app `dev` starts: its dev session, its runtime host,
+/// and inside a Tilo session the shell's file chooser. Returns this process's
+/// end of the chooser connection, to keep until the app has started.
+fn attach_dev_session_env(command: &mut ProcessCommand, app_dir: &Path) -> Option<DevChooser> {
     let dir = dev_session_dir(app_dir);
     if let Err(error) = std::fs::create_dir_all(&dir) {
         eprintln!(
             "[tilo-app] cannot keep the dev session at {}: {error}",
             dir.display()
         );
-        return;
+        return None;
     }
     command.env("TILO_DEV_SESSION", dir);
     if let Some(runtime) = DEV_RUNTIME.get().and_then(Option::as_ref) {
@@ -6628,6 +6631,75 @@ fn attach_dev_session_env(command: &mut ProcessCommand, app_dir: &Path) {
             .env("TILO_RUNTIME_BINARY", &runtime.host)
             .env("TILO_RUNTIME_PROFILE", &runtime.profile);
     }
+    #[cfg(target_os = "linux")]
+    {
+        attach_session_chooser(command, app_dir)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+/// `dev`'s end of the connection an app it started chooses files over.
+#[cfg(target_os = "linux")]
+type DevChooser = std::os::fd::OwnedFd;
+#[cfg(not(target_os = "linux"))]
+type DevChooser = ();
+
+/// The room of the workspace in front of the Tilo session this command runs
+/// in, as its shell publishes it; `None` outside a session.
+#[cfg(target_os = "linux")]
+fn session_room() -> Option<String> {
+    let runtime = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?);
+    if !runtime.is_absolute() {
+        return None;
+    }
+    let room = std::fs::read_to_string(runtime.join("tilo-session").join("workspace-id")).ok()?;
+    let room = room.trim();
+    (!room.is_empty()).then(|| room.to_owned())
+}
+
+/// Hand the app the session shell's file chooser, the way the launcher hands
+/// one to an app the shell starts: connected on the app's behalf and named
+/// for the app and the room it runs in before the app holds it. Inside a
+/// Tilo session that runs no desktop portal this is how an app chooses
+/// files; elsewhere nothing is attached. The returned descriptor is this
+/// process's end, kept until the app has started.
+#[cfg(target_os = "linux")]
+fn attach_session_chooser(
+    command: &mut ProcessCommand,
+    app_dir: &Path,
+) -> Option<std::os::fd::OwnedFd> {
+    use std::os::fd::AsRawFd as _;
+    let room = session_room()?;
+    let source = std::fs::read_to_string(app_dir.join("tilo-app.toml")).ok()?;
+    let manifest = tilo_app_package::Manifest::from_toml_str(&source).ok()?;
+    let chooser =
+        match launcher::services::resolve_chooser_bind(&manifest.package.id, Some(&room), false) {
+            Ok(chooser) => chooser?,
+            Err(error) => {
+                eprintln!("[tilo-app] the session's file chooser is unavailable: {error}");
+                return None;
+            }
+        };
+    let fd = chooser.host;
+    // The app inherits this descriptor; the launcher hands it at a fixed
+    // slot inside its sandbox, an unsandboxed app takes it where it is.
+    // SAFETY: `fd` is an open descriptor this process owns; F_GETFD and
+    // F_SETFD only read and change its close-on-exec flag.
+    let inheritable = unsafe {
+        let flags = libc::fcntl(fd.as_raw_fd(), libc::F_GETFD);
+        flags >= 0 && libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, flags & !libc::FD_CLOEXEC) == 0
+    };
+    if !inheritable {
+        return None;
+    }
+    command.env(
+        launcher::sandbox::svc_env_var(&chooser.name),
+        fd.as_raw_fd().to_string(),
+    );
+    Some(fd)
 }
 
 /// The runtime [`provide_runtime_host`] built for this dev session.
@@ -6810,7 +6882,7 @@ fn spawn_dev_child(plan: &CargoPlan) -> Result<Child> {
     let mut command = ProcessCommand::new(&plan.program);
     command.args(&plan.args).current_dir(&plan.app_dir);
     attach_live_graph_env(&mut command, &plan.app_dir);
-    attach_dev_session_env(&mut command, &plan.app_dir);
+    let _chooser = attach_dev_session_env(&mut command, &plan.app_dir);
     #[cfg(unix)]
     command.process_group(0);
     let child = command
@@ -6834,7 +6906,7 @@ fn spawn_dev_binary(app_dir: &Path, executable: &Path, forwarded: &[OsString]) -
     let mut command = ProcessCommand::new(executable);
     command.args(forwarded).current_dir(app_dir);
     attach_live_graph_env(&mut command, app_dir);
-    attach_dev_session_env(&mut command, app_dir);
+    let _chooser = attach_dev_session_env(&mut command, app_dir);
     #[cfg(unix)]
     command.process_group(0);
     let child = command
@@ -7313,7 +7385,7 @@ fn spawn_thin_dev_binary(
     let mut command = ProcessCommand::new(executable);
     command.args(forwarded).current_dir(app_dir);
     attach_live_graph_env(&mut command, app_dir);
-    attach_dev_session_env(&mut command, app_dir);
+    let _chooser = attach_dev_session_env(&mut command, app_dir);
     attach_dynamic_loader_env(&mut command, app_dir, executable);
     #[cfg(unix)]
     command.process_group(0);
