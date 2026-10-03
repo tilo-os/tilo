@@ -1227,6 +1227,27 @@ pub(crate) fn close_frame_spares_other_scanouts(
     covered == 1
 }
 
+/// Construct the vello bridge on the calling thread if there is none. Returns whether one exists.
+fn ensure_bridge(paint: &mut Option<paint::VelloDrmBridge>, target_size: (u32, u32)) -> bool {
+    if paint.is_some() {
+        return true;
+    }
+    match paint::VelloDrmBridge::new(target_size.0, target_size.1) {
+        Ok(mut bridge) => {
+            // Four `Instant` samples per completed frame buy the minimum useful physical
+            // performance record. Verbose per-frame output remains opt-in in DrmPresenter;
+            // ordinary sessions emit only one aggregate every two seconds.
+            bridge.set_phase_timing_enabled(true);
+            *paint = Some(bridge);
+            true
+        }
+        Err(e) => {
+            tracing::error!("DRM backend: VelloDrmBridge::new: {e}");
+            false
+        }
+    }
+}
+
 /// Render the frame's scene into `scanouts`, sized to the combined geometry of
 /// `outputs`; lazily (re)allocates `*paint` to that size. Shared by
 /// [`DrmPresenter::render`] (post-split, render thread) and
@@ -1270,20 +1291,8 @@ fn paint_scanouts(
         }
         *paint = None;
     }
-    if paint.is_none() {
-        match paint::VelloDrmBridge::new(target_size.0, target_size.1) {
-            Ok(mut bridge) => {
-                // Four `Instant` samples per completed frame buy the minimum useful physical
-                // performance record. Verbose per-frame output remains opt-in in DrmPresenter;
-                // ordinary sessions emit only one aggregate every two seconds.
-                bridge.set_phase_timing_enabled(true);
-                *paint = Some(bridge);
-            }
-            Err(e) => {
-                tracing::error!("DRM backend: VelloDrmBridge::new: {e}");
-                return PaintScanoutSample::default();
-            }
-        }
+    if !ensure_bridge(paint, target_size) {
+        return PaintScanoutSample::default();
     }
     let mut bridge_resized = false;
     {
@@ -2316,6 +2325,18 @@ fn paint_one_scanout(
 impl Presenter for DrmPresenter {
     fn present(&mut self, scene: &Scene, _output: OutputId) {
         self.render(scene);
+    }
+
+    /// Mesa's CPU Vulkan driver compiles each pipeline on its first dispatch, seconds of work
+    /// the bridge's warm-up pays up front. Starting it here overlaps the compositor's startup.
+    fn prepare(&mut self) {
+        if self.scanouts.iter().all(|entry| entry.powered_off) {
+            return;
+        }
+        let target_size = combined_geometry(&self.outputs);
+        if target_size.0 != 0 && target_size.1 != 0 {
+            ensure_bridge(&mut self.paint, target_size);
+        }
     }
 
     fn present_frame(&mut self, frame: &FramePaint, _output: OutputId) {
