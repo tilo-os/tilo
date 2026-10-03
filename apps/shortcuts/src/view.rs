@@ -18,11 +18,11 @@ use tilo_automation::{
 };
 use ui::framework::{Actions, Live};
 use ui::prelude::*;
-use ui::tilo_actions::{ActionBinding, ActionParam, ParamType};
+use ui::tilo_actions::{ActionParam, ParamType};
 use ui::widget::{Actions as ActionGroup, ModalDialog, NumberInput};
 use ui::{LocalState, RemoteActions};
 
-use crate::door::{self, Door, DoorCore, DoorState, Loaded, Notice, RunStatus};
+use crate::door::{self, Door, DoorCore, DoorEffect, DoorState, Loaded, Notice, RunStatus};
 use crate::editor::{self, Choice};
 use crate::grant::{self, Permission};
 use crate::model::{Draft, INPUT_TYPES, Workbench, block_at};
@@ -151,7 +151,6 @@ struct Ui {
     picker: LocalState<Option<String>>,
     sheet: LocalState<bool>,
     running: LocalState<Option<String>>,
-    door_resource: ui::tilo_actions::Resource,
 }
 
 impl Ui {
@@ -163,16 +162,9 @@ impl Ui {
         self.actions.bind(control, action)
     }
 
-    fn door_button(
-        &self,
-        button: Button,
-        action: &str,
-        arguments: serde_json::Map<String, Value>,
-    ) -> Button {
-        match ActionBinding::static_json_for(&self.door_resource, action, arguments) {
-            Ok(binding) => button.on_action(binding),
-            Err(_) => button.with_enabled(false),
-        }
+    /// `button`, invoking one door effect.
+    fn door_button(&self, button: Button, effect: &DoorEffect) -> Button {
+        self.actions.bind_effect_invocation(button, effect)
     }
 }
 
@@ -187,7 +179,6 @@ pub(crate) fn root(cx: &ViewCx<Workbench>) -> Element {
         picker: LocalState::new(None),
         sheet: LocalState::new(false),
         running: LocalState::new(None),
-        door_resource: door::resource(),
     };
     let core = Rc::new(RefCell::new(DoorCore::new(
         RemoteActions::current(),
@@ -203,12 +194,22 @@ pub(crate) fn root(cx: &ViewCx<Workbench>) -> Element {
         .with_sidebar_width(360.0)
         .with_breakpoint(820.0)
         .with_narrow_screen_state(&ui.narrow);
-    let door = Door::new(Box::new(shell), Rc::clone(&core)).following(Box::new(move || {
-        if let Ok(mut follow) = follow.try_borrow_mut() {
-            follow();
-        }
-    }));
-    ui::widget::resource_actions::background(Box::new(door), door::resource(), door::handler(core))
+    let handler = Rc::clone(&core);
+    cx.effects(move |effect: DoorEffect, cx| {
+        let mut core = handler
+            .try_borrow_mut()
+            .map_err(|_| "the door is busy".to_owned())?;
+        core.perform(effect, cx.reply())?;
+        core.pump();
+        Ok(Effected::Pending)
+    });
+    Box::new(
+        Door::new(Box::new(shell), core).following(Box::new(move || {
+            if let Ok(mut follow) = follow.try_borrow_mut() {
+                follow();
+            }
+        })),
+    )
 }
 
 /// What [`follow`] last derived the editor from: the open draft, the door,
@@ -317,10 +318,10 @@ fn library(cx: &ViewCx<Workbench>, ui: &Ui) -> Element {
         Button::new("new-shortcut", "shortcuts-new", None).primary(),
         Workbench::NEW_DRAFT.map(|()| String::from("New shortcut")),
     );
-    let reload = match ActionBinding::unit_for(&ui.door_resource, door::REFRESH) {
-        Ok(binding) => Button::new("reload", "shortcuts-reload", None).on_action(binding),
-        Err(_) => Button::new("reload", "shortcuts-reload", None).with_enabled(false),
-    };
+    let reload = ui.door_button(
+        Button::new("reload", "shortcuts-reload", None),
+        &DoorEffect::Refresh,
+    );
     let notice = Text::from_state(&ui.door, |door| match &door.notice {
         Some(Notice::Saved(name)) => format!("Saved “{name}”"),
         Some(Notice::Deleted(name)) => format!("Deleted “{name}”"),
@@ -430,28 +431,11 @@ fn describe_panel(
         .with_placeholder("shortcuts-describe-placeholder")
         .multiline(true);
     let source = description.clone();
-    let ask = ui
-        .door_resource
-        .actions
-        .iter()
-        .find(|spec| spec.id == door::DESCRIBE)
-        .and_then(|spec| {
-            ActionBinding::new(&ui.door_resource, spec, move |()| {
-                serde_json::Map::from_iter([(
-                    "description".to_owned(),
-                    Value::String(source.get()),
-                )])
-            })
-            .ok()
-        })
-        .map_or_else(
-            || Button::new("draft-with-agent", "shortcuts-draft-it", None).with_enabled(false),
-            |binding| {
-                Button::new("draft-with-agent", "shortcuts-draft-it", None)
-                    .with_enabled(!matches!(drafted, Some(door::Drafting::Drafting)))
-                    .on_action(binding)
-            },
-        );
+    let ask = ui.actions.bind_effect(
+        Button::new("draft-with-agent", "shortcuts-draft-it", None)
+            .with_enabled(!matches!(drafted, Some(door::Drafting::Drafting))),
+        DoorEffect::DESCRIBE.map(move |()| source.get()),
+    );
     let mut column = Column::new()
         .with_intrinsic_height()
         .with_no_padding()
@@ -572,8 +556,10 @@ fn saved_row(ui: &Ui, shortcut: &Shortcut) -> Element {
     let run = if shortcut.inputs.is_empty() {
         ui.door_button(
             Button::new(&format!("run-{id}"), "shortcuts-run", None).primary(),
-            door::RUN,
-            serde_json::Map::from_iter([("shortcut".into(), Value::String(id.clone()))]),
+            &DoorEffect::Run {
+                shortcut: id.clone(),
+                inputs: None,
+            },
         )
     } else {
         let running = ui.running.clone();
@@ -591,8 +577,7 @@ fn saved_row(ui: &Ui, shortcut: &Shortcut) -> Element {
     );
     let delete = ui.door_button(
         Button::new(&format!("delete-{id}"), "shortcuts-delete", None).danger_outline(),
-        door::DELETE,
-        serde_json::Map::from_iter([("shortcut".into(), Value::String(id))]),
+        &DoorEffect::Delete { shortcut: id },
     );
     let mut column = Column::new()
         .with_intrinsic_height()
@@ -650,30 +635,18 @@ fn run_form(ui: &Ui, shortcut: &Shortcut) -> Element {
         )));
     }
     let start_id = format!("start-{id}");
-    let arguments = move |()| {
-        let inputs: serde_json::Map<String, Value> = fields
-            .iter()
-            .map(|(input, value)| (input.name.to_string(), editor::literal(&value.get(), input)))
-            .collect();
-        serde_json::Map::from_iter([
-            ("shortcut".to_owned(), Value::String(id.clone())),
-            ("inputs".to_owned(), Value::Object(inputs)),
-        ])
-    };
-    let start = ui
-        .door_resource
-        .actions
-        .iter()
-        .find(|spec| spec.id == door::RUN)
-        .and_then(|spec| ActionBinding::new(&ui.door_resource, spec, arguments).ok())
-        .map_or_else(
-            || Button::new(&start_id, "shortcuts-run", None).with_enabled(false),
-            |binding| {
-                Button::new(&start_id, "shortcuts-run", None)
-                    .primary()
-                    .on_action(binding)
-            },
-        );
+    let start = ui.actions.bind_effect(
+        Button::new(&start_id, "shortcuts-run", None).primary(),
+        DoorEffect::RUN.map(move |()| {
+            let inputs: serde_json::Map<String, Value> = fields
+                .iter()
+                .map(|(input, value)| {
+                    (input.name.to_string(), editor::literal(&value.get(), input))
+                })
+                .collect();
+            (id.clone(), Some(inputs))
+        }),
+    );
     Box::new(form.push(Box::new(start)))
 }
 
@@ -1701,11 +1674,9 @@ fn grant_body(ui: &Ui, input: &EditorInput) -> Element {
     let save = ui
         .door_button(
             Button::new("grant-save", "shortcuts-save", None).primary(),
-            door::SAVE,
-            serde_json::Map::from_iter([(
-                "draft".into(),
-                Value::String(draft_id.as_str().to_owned()),
-            )]),
+            &DoorEffect::Save {
+                draft: draft_id.as_str().to_owned(),
+            },
         )
         .with_enabled(!blocked);
     Box::new(body.push(Box::new(ActionGroup::new(save).secondary(cancel))))
