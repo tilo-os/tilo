@@ -122,17 +122,10 @@ pub enum Msg {
 pub struct Job {
     rx: Receiver<Msg>,
     cancel: Arc<AtomicBool>,
-    query: Query,
     finished: bool,
 }
 
 impl Job {
-    /// The query this job is running, so the app can ignore a stale job's
-    /// results after the user has typed on.
-    pub fn query(&self) -> &Query {
-        &self.query
-    }
-
     /// Whether the worker reported completion.
     pub fn is_finished(&self) -> bool {
         self.finished
@@ -178,7 +171,7 @@ pub fn start(root: &Path, query: Query) -> Job {
     let cancel = Arc::new(AtomicBool::new(false));
     let worker_cancel = cancel.clone();
     let root = root.to_path_buf();
-    let worker_query = query.clone();
+    let worker_query = query;
     // The OS refusing to spawn a worker thread (resource exhaustion) is not
     // fatal here: `tx` drops with the closure, so `rx` reports done
     // immediately and the search just comes back empty instead of crashing
@@ -193,7 +186,6 @@ pub fn start(root: &Path, query: Query) -> Job {
     Job {
         rx,
         cancel,
-        query,
         finished: false,
     }
 }
@@ -641,7 +633,6 @@ mod tests {
     fn the_background_job_streams_results_and_finishes() {
         let d = fixture();
         let mut job = start(d.path(), q("needle"));
-        assert_eq!(job.query().needle, "needle");
         let mut hits = Vec::new();
         let deadline = ui::time::now() + HANG_BOUND;
         while ui::time::now() < deadline {

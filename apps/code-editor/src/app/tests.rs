@@ -220,7 +220,7 @@ fn search_hits_open_through_exported_actions_and_stale_addresses_are_refused() {
     // Each phase builds a fresh synced sample.
     file_search_uses_the_exported_open_action();
     symbol_search_resolves_and_reproduces_the_exact_caret();
-    project_result_search_resolves_and_restores_results_context();
+    project_text_search_hit_opens_the_file_at_its_line();
     stale_search_address_is_refused_by_current_widget_authority();
 }
 
@@ -329,29 +329,6 @@ fn search_projection_rebuilds_only_for_document_project_or_result_revisions() {
                     ))
             })
     );
-
-    app.search_hits.push(search::Hit {
-        path: "/virtual/project-revision-needle.rs".into(),
-        rel: "project-revision-needle.rs".into(),
-        line: 1,
-        col: 0,
-        len: 6,
-        preview: "result_revision_needle".into(),
-        preview_offset: 0,
-    });
-    app.invalidate_search_projection();
-    app.sync(&mut doc, &automerge::ROOT);
-    let after_results = app.search_refresh_stats();
-    assert_eq!(
-        after_results.rebuilds,
-        after_project.rebuilds.saturating_add(1)
-    );
-    assert!(
-        ui::search::capability::search_providers(&app)[0]
-            .search("result_revision_needle")
-            .iter()
-            .any(|hit| hit.kind == crate::search_provider::RESULT_KIND)
-    );
 }
 
 fn exhausted_search_projection_generation_rebuilds_instead_of_reusing_a_cursor() {
@@ -447,33 +424,88 @@ fn symbol_search_resolves_and_reproduces_the_exact_caret() {
     assert_eq!(app.editor.primary_caret(), (expected_line, expected_col));
 }
 
-fn project_result_search_resolves_and_restores_results_context() {
-    let (mut app, mut doc) = synced_sample();
-    let node = app.active_file_node().unwrap();
-    app.search_hits = vec![search::Hit {
-        path: "/virtual/ferris-cli/src/main.rs".into(),
-        rel: app.session.project.path_of(node),
-        line: 12,
-        col: 4,
-        len: 6,
-        preview: "canonical_result_needle".into(),
-        preview_offset: 0,
-    }];
-    app.last_search_needle = "canonical_result_needle".into();
-    app.push_search_state();
-    app.invalidate_search_projection();
-    app.refresh_search_catalog(&mut doc);
+fn project_text_search_hit_opens_the_file_at_its_line() {
+    let dir = tempfile::tempdir().expect("temp project");
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(
+        dir.path().join("src/lib.rs"),
+        "pub fn first() {}\n\npub fn canonical_result_needle() {}\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("README.md"), "nothing to see\n").unwrap();
+    let mut app = CodeApp::open_path(dir.path());
+    let mut doc = AutoCommit::new();
+    app.sync(&mut doc, &automerge::ROOT);
 
-    invoke_search_hit(
-        &mut app,
-        &mut doc,
-        "canonical_result_needle",
-        crate::search_provider::RESULT_KIND,
+    // The palette asks the text provider for a page: it answers at once with
+    // nothing and a token, then with the hits once the walk ends.
+    let providers = ui::search::capability::search_providers(&app);
+    let provider = &providers[1];
+    let first = provider.search_page(
+        &ui::search::SearchQuery::new("canonical_result_needle"),
+        None,
+        64,
+        16,
     );
-    assert_eq!(app.active_file_node(), Some(node));
-    assert_eq!(app.editor.primary_caret(), (11, 4));
-    assert!(app.panel_visible);
-    assert_eq!(app.panel.active_tab(), PanelTab::Search);
+    assert!(first.results.is_empty(), "the walk never blocks the query");
+    let token = first.pending.expect("the rest is on its way");
+    let deadline = ui::time::now() + HANG_BOUND;
+    let page = loop {
+        match provider.poll_page(&token) {
+            ui::search::PagePoll::Ready(page) => break page,
+            ui::search::PagePoll::Pending => {
+                assert!(ui::time::now() < deadline, "the walk ended");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        }
+    };
+    assert_eq!(page.results.len(), 1, "one line holds the needle");
+    let hit = &page.results[0];
+    match hit.row.as_ref().expect("a match in a file draws as one") {
+        ui::search::SearchRow::FileHit {
+            path,
+            line,
+            snippet,
+            matched,
+        } => {
+            assert_eq!(path, "src/lib.rs");
+            assert_eq!(*line, Some(3));
+            assert_eq!(snippet, "pub fn canonical_result_needle() {}");
+            assert_eq!(
+                matched.clone(),
+                Some(7..30),
+                "the match is marked in the line"
+            );
+        }
+        other => panic!("not a file hit: {other:?}"),
+    }
+
+    // Activating the hit opens the file with the caret on the match, without
+    // asking for any panel: the palette is where results are shown.
+    let address = hit.action_address().expect("canonical address");
+    let resource = ui::resources::resource(&app, &doc, &address.resource)
+        .expect("a text hit resolves through current widget authority");
+    let encoded = tilo_actions::door::encode(&[resource], &address, None)
+        .expect("the hit exports its reveal action");
+    assert!(matches!(
+        Widget::start_operation(
+            &mut app,
+            &ui::widget::ResourceOperation::local(
+                ui::tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::View,
+                &encoded.type_id,
+                &encoded.payload
+            ),
+            &mut doc,
+            &automerge::ROOT
+        )
+        .unwrap(),
+        Some(ui::widget::ResourceOperationStart::Completed(_))
+    ));
+    app.sync(&mut doc, &automerge::ROOT);
+    assert_eq!(app.session.active_buffer().unwrap().name, "lib.rs");
+    assert_eq!(app.editor.primary_caret(), (2, 7));
+    assert!(!app.panel_visible, "the editor opens no results panel");
 }
 
 #[test]
@@ -546,7 +578,6 @@ fn tab_pills_mirror_open_buffers_by_node_id_and_close_prompts_only_when_dirty() 
     opening_a_second_file_adds_a_tab();
     reconcile_tabs_keys_pills_to_open_buffers_by_node_id();
     reconcile_tabs_mirrors_dirty_into_the_shared_bars_modified_mark();
-    sync_tab_accents_tints_each_pill_by_its_buffers_language();
     closing_the_shared_bars_pill_removes_the_matching_buffer_by_id_not_position();
     selecting_a_different_pill_is_read_back_via_active_id();
     closing_a_dirty_tab_prompts_before_discarding();
@@ -615,21 +646,6 @@ fn reconcile_tabs_mirrors_dirty_into_the_shared_bars_modified_mark() {
     );
 }
 
-fn sync_tab_accents_tints_each_pill_by_its_buffers_language() {
-    // `with_sample` opens main.rs, a Rust file.
-    let mut app = CodeApp::with_sample();
-    let theme = Theme::dark();
-    let id = app.session.active_buffer().unwrap().node as u64;
-
-    app.sync_tab_accents(&theme);
-
-    assert_eq!(
-        app.tabs.accent(id),
-        Some(lang_accent(Language::Rust, &theme)),
-        "a Rust buffer's pill must carry the theme's Rust accent"
-    );
-}
-
 fn closing_the_shared_bars_pill_removes_the_matching_buffer_by_id_not_position() {
     // The whole point of reconciling by node id rather than position: the
     // pill the user clicked × on must be the buffer that closes — even
@@ -662,8 +678,8 @@ fn closing_the_shared_bars_pill_removes_the_matching_buffer_by_id_not_position()
     // it and publishes the id via `take_close`, independent of position.
     app.tabs.start_closing(prime_id);
 
-    let doc = AutoCommit::new();
-    app.drain_child_events(&doc);
+    let mut doc = AutoCommit::new();
+    app.drain_child_events(&mut doc);
 
     let remaining: Vec<&str> = app.session.open.iter().map(|b| b.name.as_str()).collect();
     assert_eq!(
@@ -694,8 +710,8 @@ fn selecting_a_different_pill_is_read_back_via_active_id() {
     app.tabs.set_active(main_node as u64);
     app.bound_node = Some(main_node.wrapping_add(1)); // sentinel, must be cleared
 
-    let doc = AutoCommit::new();
-    app.drain_child_events(&doc);
+    let mut doc = AutoCommit::new();
+    app.drain_child_events(&mut doc);
 
     assert_eq!(
         app.session.active,
@@ -875,9 +891,10 @@ fn layout_is_docked_when_wide_overlay_when_narrow() {
     app.set_width_hint(600.0);
     assert_eq!(app.sidebar_layout(), SplitLayout::Overlay);
     // Boundary is inclusive at the breakpoint → docked.
-    app.set_width_hint(SIDEBAR_BREAKPOINT);
+    let breakpoint = app.drawer.resolved_breakpoint();
+    app.set_width_hint(breakpoint);
     assert_eq!(app.sidebar_layout(), SplitLayout::Docked);
-    app.set_width_hint(SIDEBAR_BREAKPOINT - 1.0);
+    app.set_width_hint(breakpoint - 1.0);
     assert_eq!(app.sidebar_layout(), SplitLayout::Overlay);
 }
 
@@ -1248,10 +1265,10 @@ fn edit_and_save_round_trips_to_disk() {
 /// Find populates real matches over the active buffer, hands them to the
 /// editor's highlight layer, and stepping to a match selects it.
 fn find_highlights_and_navigates_matches() {
-    let (mut app, doc) = synced_sample();
-    app.open_find(false, &doc);
+    let (mut app, mut doc) = synced_sample();
+    app.open_find();
     app.find.set_query("primes");
-    app.refresh_find(&doc);
+    app.drive_find(&mut doc);
 
     assert!(
         app.find_matches.len() >= 2,
@@ -1265,9 +1282,11 @@ fn find_highlights_and_navigates_matches() {
         "the editor received every match to highlight"
     );
 
-    // Stepping to the second match navigates the caret onto it and marks it
-    // as the current (filled) highlight.
-    app.focus_match(Some(1));
+    // The bar lands on the first match; stepping to the second navigates the
+    // caret onto it and marks it as the current highlight.
+    assert_eq!(app.find_current, Some(0));
+    app.find.next();
+    app.drive_find(&mut doc);
     let m = app.find_matches[1];
     assert_eq!(app.find_current, Some(1), "the second match is now current");
     assert_eq!(
@@ -1503,7 +1522,7 @@ fn keyboard_closing_a_focused_terminal_returns_to_the_trigger_without_refocusing
             .focused_access_node()
             .and_then(|node| node.name)
             .as_deref(),
-        Some("Show bottom panel"),
+        Some("Show panel"),
         "keyboard close returns focus to the retained disclosure"
     );
 
@@ -1516,7 +1535,7 @@ fn keyboard_closing_a_focused_terminal_returns_to_the_trigger_without_refocusing
             .focused_access_node()
             .and_then(|node| node.name)
             .as_deref(),
-        Some("Hide bottom panel"),
+        Some("Hide panel"),
         "reopening keeps focus on the disclosure instead of hidden Terminal content"
     );
 
@@ -1555,19 +1574,18 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
         .get("code.bottom-panel-toggle")
         .copied()
         .expect("retained dock trigger");
-    // The trigger stays in the chrome row, centred an `s1` clear of the
-    // row's top and of the editor below it (HIG §7: nothing touches), so
-    // it neither spans the full bar nor shares pixels with the content.
-    let inset = f64::from(ui::theme::Theme::dark().tokens.spacing.s1);
+    // The trigger is an icon button of the toolkit's size, centred on the
+    // tab strip's row, so it neither spans the bar nor touches the content.
+    let target = f64::from(ui::theme::Theme::dark().tokens.metrics.min_pointer_target);
     assert!(
-        (trigger.y0 - (tabs.y0 + inset)).abs() < 0.01,
-        "trigger stays in the existing chrome row, inset s1: {} vs {}",
-        trigger.y0,
-        tabs.y0
+        (trigger.center().y - tabs.center().y).abs() < 0.01,
+        "trigger is centred on the tab row: {} vs {}",
+        trigger.center().y,
+        tabs.center().y
     );
     assert!(
-        (trigger.height() - (tabs.height() - 2.0 * inset)).abs() < 0.01,
-        "trigger is the chrome row minus the s1 insets: {} vs {}",
+        trigger.height() >= target && trigger.height() <= tabs.height(),
+        "trigger is a pointer-target square inside the row: {} in {}",
         trigger.height(),
         tabs.height()
     );
@@ -1577,7 +1595,7 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
     );
     let closed_snapshot = driver.inspection();
     let closed = trigger_semantics(&closed_snapshot);
-    assert_eq!(closed.name.as_deref(), Some("Show bottom panel"));
+    assert_eq!(closed.name.as_deref(), Some("Show panel"));
     assert_eq!(closed.state.expanded, Some(false));
     assert!(!closed.state.selected);
 
@@ -1587,7 +1605,7 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
     assert!(driver.targets().contains_key("bottom_panel"));
     let open_snapshot = driver.inspection();
     let open = trigger_semantics(&open_snapshot);
-    assert_eq!(open.name.as_deref(), Some("Hide bottom panel"));
+    assert_eq!(open.name.as_deref(), Some("Hide panel"));
     assert_eq!(open.state.expanded, Some(true));
     assert!(open.state.selected);
     assert_eq!(
@@ -1595,7 +1613,7 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
             .focused_access_node()
             .and_then(|node| node.name)
             .as_deref(),
-        Some("Hide bottom panel"),
+        Some("Hide panel"),
         "click transfers keyboard focus to the retained trigger"
     );
 
@@ -1623,12 +1641,12 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
             .focused_access_node()
             .and_then(|node| node.name)
             .as_deref(),
-        Some("Show bottom panel"),
+        Some("Show panel"),
         "Escape returns focus to the retained trigger"
     );
 
     let trigger_node = driver
-        .a11y_node_named("Show bottom panel")
+        .a11y_node_named("Show panel")
         .expect("trigger is exported to assistive technology");
     driver
         .perform_a11y_action(trigger_node, &ui::a11y::Action::Activate)
@@ -1649,7 +1667,6 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
     driver.resize((800, 700)).expect("resize open editor");
     let resized = driver.targets();
     let panel_standard = resized["bottom_panel"];
-    let tabs_standard = resized["tabs"];
     let trigger_standard = resized["code.bottom-panel-toggle"];
     assert!(
         panel_standard.x0 >= 0.0
@@ -1659,14 +1676,14 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
         "open panel stays inside the resized viewport"
     );
     assert_eq!(panel_standard.height(), panel_narrow.height());
-    // Same inset geometry after the resize: in the chrome row, `s1` clear
-    // of its top and of the editor.
-    assert!((trigger_standard.y0 - (tabs_standard.y0 + inset)).abs() < 0.01);
-    assert!((trigger_standard.height() - (tabs_standard.height() - 2.0 * inset)).abs() < 0.01);
-    assert!(tabs_standard.x1 <= trigger_standard.x0);
+    // Same geometry after the resize: centred on the document tabs' row (the
+    // open dock has a tab strip of its own, answering to the same name).
+    assert!((trigger_standard.center().y - tabs.center().y).abs() < 0.01);
+    assert!((trigger_standard.height() - trigger.height()).abs() < 0.01);
+    assert!(trigger_standard.x1 <= 800.0);
     let resized_snapshot = driver.inspection();
     let resized_trigger = trigger_semantics(&resized_snapshot);
-    assert_eq!(resized_trigger.name.as_deref(), Some("Hide bottom panel"));
+    assert_eq!(resized_trigger.name.as_deref(), Some("Hide panel"));
     assert_eq!(resized_trigger.state.expanded, Some(true));
     assert!(resized_trigger.state.selected);
 
@@ -1674,5 +1691,8 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
     let restored = driver.targets();
     assert!(restored.contains_key("bottom_panel"));
     assert_eq!(restored["bottom_panel"].height(), panel_narrow.height());
-    assert!(restored["tabs"].x1 <= restored["code.bottom-panel-toggle"].x0);
+    assert!(
+        (restored["code.bottom-panel-toggle"].y0 - trigger.y0).abs() < 0.01,
+        "the trigger keeps its place in the row"
+    );
 }

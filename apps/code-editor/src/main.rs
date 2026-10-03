@@ -31,19 +31,9 @@
     )
 )]
 
-use std::collections::HashMap;
-
-use taffy::prelude::*;
-use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
-use ui::offscreen::OffscreenRenderer;
-use ui::permissions::PermissionContext;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec, ShotFrame};
 use ui::theme::Theme;
 use ui::widget::Widget;
-use vello::Scene;
-use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
@@ -51,14 +41,14 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 /// rather than only in the `match` arms is what lets an unknown name be an
 /// error instead of a silently ordinary screenshot.
 const SCENARIOS: &[&str] = &[
+    "empty",
     "terminal",
     "selection",
     "completion",
+    "problems",
     "find",
-    "search",
     "conflict",
     "indexing",
-    "goto",
     "close-prompt",
     "status",
 ];
@@ -136,9 +126,14 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         LaunchError::Operation("code editor screenshot handler called without --shots".into())
     })?;
     let viewport = args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-    let mut app = requested_path(args).map_or_else(code_editor::CodeApp::with_sample, |path| {
-        code_editor::CodeApp::open_path(&path)
-    });
+    // The `empty` scenario is the editor as it opens with no project at all.
+    let mut app = if args.scenario.as_deref() == Some("empty") {
+        code_editor::CodeApp::new()
+    } else {
+        requested_path(args).map_or_else(code_editor::CodeApp::with_sample, |path| {
+            code_editor::CodeApp::open_path(&path)
+        })
+    };
     app.set_width_hint(f64::from(viewport.0));
     if args.has("--sidebar-open") {
         app.shots_snap_sidebar(true);
@@ -146,7 +141,7 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
     render_scenario_to_png(
         app,
         viewport,
-        &ui::launch::shot_theme(args),
+        ui::launch::shot_theme(args),
         out,
         args.scenario.as_deref(),
     )
@@ -154,26 +149,20 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
 }
 
 /// Render one offscreen frame of the `CodeApp`, optionally staging a scenario
-/// first. Mirrors `ui::App`'s cycle (sync → `build_layout` → `compute_layout` →
-/// `apply_layout` → draw); for the `terminal` scenario it also drives the live
-/// PTY and pumps `sync` a few times so real shell output lands in the frame.
+/// first. Mirrors `ui::App`'s cycle (sync, layout, draw, then the top layer);
+/// for the `terminal` scenario it also drives the live PTY and pumps `sync` a
+/// few times so real shell output lands in the frame.
 ///
 /// # Errors
-/// Returns an error if taffy fails to assemble or measure the offscreen
-/// layout tree.
+/// Returns an error if the offscreen layout cannot be solved.
 fn render_scenario_to_png(
     mut app: code_editor::CodeApp,
     viewport: (u32, u32),
-    theme: &Theme,
+    theme: Theme,
     out: &std::path::Path,
     scenario: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (w, h) = viewport;
-    let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
-    let mut text_renderer = TextRenderer::new();
-    text_renderer.set_text_scale(theme.text_scale);
-    let mut state = ui::State::new();
+    let mut frame = ShotFrame::new(viewport, theme);
 
     // Pre-sync staging: opening the terminal must happen before the first sync
     // so its grid is initialised and pumped from the start.
@@ -185,7 +174,7 @@ fn render_scenario_to_png(
     // from the tree; on the demo tree `main.rs` is already open.
     if matches!(
         scenario,
-        Some("find" | "conflict" | "indexing" | "goto" | "close-prompt")
+        Some("find" | "conflict" | "indexing" | "close-prompt")
     ) {
         if let Some(path) = std::env::var_os("TILO_SHOTS_OPEN") {
             app.shots_open_path(std::path::Path::new(&path));
@@ -194,147 +183,61 @@ fn render_scenario_to_png(
         }
     }
 
-    app.sync(&mut state.doc, &state.root);
-    build_and_apply_layout(&mut app, theme, &mut text_renderer, w, h)?;
+    frame.sync(&mut app);
+    frame.layout(&mut app)?;
 
-    stage_scenario(
-        &mut app,
-        scenario,
-        &mut state,
-        &mut text_renderer,
-        theme,
-        &presence,
-        &permission,
-    );
+    stage_scenario(&mut app, scenario, &mut frame);
 
-    // The staged scenarios change the layout (the find bar appears, the search
-    // panel is taller), so the tree has to be rebuilt before the final draw or
-    // the new surfaces get last frame's geometry.
-    if matches!(scenario, Some("find" | "search")) {
-        build_and_apply_layout(&mut app, theme, &mut text_renderer, w, h)?;
+    // The staged scenarios change the layout (the find bar appears), so the
+    // tree has to be rebuilt before the final draw or the new surfaces get
+    // last frame's geometry.
+    if matches!(scenario, Some("find" | "problems")) {
+        frame.layout(&mut app)?;
     }
 
-    let scene = draw_frame(&mut app, &mut text_renderer, theme, &presence, &permission);
-
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let mut renderer = OffscreenRenderer::new(w, h);
-    renderer.render_png(&scene, Color::TRANSPARENT, out);
+    let mut scene = frame.draw(&mut app);
+    frame.draw_overlay(&mut app, &mut scene);
+    frame.write_png(&scene, out);
     println!("code_editor: wrote shot to {}", out.display());
     Ok(())
-}
-
-/// Build `app`'s widget tree at `w`×`h`, measure it, and apply the result —
-/// the `build_layout` → `compute_layout` → `apply_layout` third of the cycle,
-/// shared by the initial layout and the rebuild after a scenario changes it.
-///
-/// # Errors
-/// Returns an error if taffy fails to assemble or measure the layout tree.
-fn build_and_apply_layout(
-    app: &mut code_editor::CodeApp,
-    theme: &Theme,
-    text_renderer: &mut TextRenderer,
-    w: u32,
-    h: u32,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let child = app.build_layout(&mut taffy, theme, &mut node_map);
-    let root = taffy.new_with_children(
-        Style {
-            size: Size {
-                width: Dimension::length(w as f32),
-                height: Dimension::length(h as f32),
-            },
-            ..Default::default()
-        },
-        &[child],
-    )?;
-    let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
-    // SAFETY: `app`, `taffy`, `child`, and `node_map` describe the same
-    // exclusively owned live widget tree throughout this solve.
-    unsafe {
-        bindings.rebuild(app, &taffy, child, &node_map);
-        ui::widget::compute_widget_layout(
-            &mut taffy,
-            root,
-            taffy::Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
-            },
-            &node_map,
-            &bindings,
-            text_renderer,
-        )?;
-    }
-    app.apply_layout(&taffy, child, Point::ORIGIN);
-    Ok(())
-}
-
-/// Run one full draw pass into a fresh scene.
-fn draw_frame(
-    app: &mut code_editor::CodeApp,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    presence: &PresenceCtx,
-    permission: &PermissionContext,
-) -> Scene {
-    let mut scene = Scene::new();
-    app.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        text_renderer,
-        theme,
-        presence,
-        permission,
-    );
-    scene
 }
 
 /// Stage the requested `--scenario` after the first layout pass: select
 /// words, open the find bar, drive the live terminal's PTY, and so on. A
 /// `None` scenario (the default cold-start frame) stages nothing.
-fn stage_scenario(
-    app: &mut code_editor::CodeApp,
-    scenario: Option<&str>,
-    state: &mut ui::State,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    presence: &PresenceCtx,
-    permission: &PermissionContext,
-) {
+fn stage_scenario(app: &mut code_editor::CodeApp, scenario: Option<&str>, frame: &mut ShotFrame) {
     match scenario {
         Some("terminal") => {
             // One draw settles the terminal's cell metrics + placement, then we
             // drive the real shell and pump `sync` to collect its output.
-            let _ = draw_frame(app, text_renderer, theme, presence, permission);
+            let _ = frame.draw(app);
             app.shots_terminal_input(terminal::demo_session_input());
             for _ in 0..24 {
-                app.sync(&mut state.doc, &state.root);
+                frame.sync(app);
                 std::thread::sleep(std::time::Duration::from_millis(60));
             }
         }
         Some("selection") => app.shots_select_words(),
-        Some("completion") => app.shots_completion_demo(&state.doc),
+        Some("completion") => {
+            app.shots_completion_demo(&frame.state.doc);
+            frame.sync(app);
+        }
+        Some("problems") => {
+            app.shots_problems(&frame.state.doc);
+            frame.sync(app);
+        }
         Some("find") => {
             // `TILO_SHOTS_FIND` overrides the query so a shot of a real project
             // can search for something that is actually in it.
             let q = std::env::var("TILO_SHOTS_FIND").unwrap_or_else(|_| "primes".to_string());
-            app.shots_open_find(&q, true, &state.doc);
-        }
-        Some("search") => {
-            let q = std::env::var("TILO_SHOTS_SEARCH").unwrap_or_else(|_| "fn main".to_string());
-            app.shots_project_search(&q);
-            app.sync(&mut state.doc, &state.root);
+            app.shots_open_find(&q, &frame.state.doc);
         }
         Some("conflict") => app.shots_conflict(),
-        Some("goto") => {
-            let n = std::env::var("TILO_SHOTS_GOTO").unwrap_or_else(|_| "42".to_string());
-            app.shots_open_goto(&n);
-        }
         Some("close-prompt") => app.shots_close_prompt(),
-        Some("status") => app.shots_status(),
+        Some("status") => {
+            app.shots_status();
+            frame.sync(app);
+        }
         Some("indexing") => {
             app.shots_indexing();
             // The status bar and the Problems panel read the server state
@@ -342,7 +245,7 @@ fn stage_scenario(
             // the frame from before the state was staged — an "indexing"
             // screenshot with no indexing in it, which would have looked like
             // the feature working.
-            app.sync(&mut state.doc, &state.root);
+            frame.sync(app);
         }
         _ => {}
     }
