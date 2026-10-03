@@ -50,10 +50,10 @@ def _parse_sample(text):
 
 
 def measure(ctx, seconds: int) -> dict:
-    t0 = core.trace_now_us(ctx)
     script = SAMPLE.replace("__SECS__", str(seconds)).replace("__UID__", str(ctx.vm.slot_uid()))
+    mark = core.trace_mark(ctx)
     text = ctx.vm.root_exec(script, timeout=seconds + 90)
-    rows = core.trace_since(core.read_trace(ctx), t0 + 1)
+    rows = core.trace_after(ctx, mark)
     (a, b), totals, hz = _parse_sample(text)
     procs = []
     for pid, (comm, ticks, cs) in b.items():
@@ -206,13 +206,13 @@ def mem(ctx, res):
         raise core.Unobservable("; ".join(unobserved))
 
 
-@check("R04", AREA, "Frame work p50/p95/p99 during overview, focus and workspace interactions")
+@check("R04", AREA, "Frame CPU p50/p95/p99 during overview, focus and workspace interactions")
 def frame_work(ctx, res):
     ctx.reset()
     for _ in range(2):
         ctx.new_terminal_window()
     time.sleep(2)
-    t0 = core.trace_now_us(ctx)
+    mark = core.trace_mark(ctx)
     for _ in range(3):
         ctx.vm.key("super+Tab")
         time.sleep(0.8)
@@ -227,15 +227,24 @@ def frame_work(ctx, res):
     time.sleep(0.6)
     ctx.vm.key("super+minus")
     time.sleep(1.0)
-    rows = core.trace_since(core.read_trace(ctx), t0 + 1)
+    rows = core.trace_after(ctx, mark)
     st = core.frame_stats(rows)
-    res.metrics.update(st, renderer=ctx.facts.get("renderer"))
-    ctx.write("R04-frames.csv", "\n".join(",".join(str(r[k]) for k in r) for r in rows))
+    display = ctx.facts.get("display") or {}
+    res.metrics.update(st, renderer=ctx.facts.get("renderer"), display=display)
+    ctx.write("R04-frames.csv", core.trace_csv(rows))
     b = ctx.config["budgets"]
     expect(st["painted"] > 0, "no frame painted during the interactions")
+    if not core.has_cpu(rows):
+        raise core.Unobservable("the frame trace carries no per-tick CPU time (cpu_us), so the "
+                                "compositor's own work cannot be told from time the thread was "
+                                "descheduled or blocked; the installed compositor predates it")
+    # CPU per painted frame is the compositor's alone. Wall time per frame also holds
+    # time the thread was descheduled or blocked: judged only on real hardware, where
+    # that is the compositor's to answer for, and kept as evidence elsewhere.
     problems = []
-    if st["work_ms_p95"] > b["work_ms_p95"]:
-        problems.append(f"frame work p95 {st['work_ms_p95']} ms > {b['work_ms_p95']} ms")
-    if st["work_ms_p99"] > b["work_ms_p99"]:
-        problems.append(f"frame work p99 {st['work_ms_p99']} ms > {b['work_ms_p99']} ms")
+    for pct in ("p95", "p99"):
+        if st[f"cpu_ms_{pct}"] > b[f"work_ms_{pct}"]:
+            problems.append(f"frame CPU {pct} {st[f'cpu_ms_{pct}']} ms > {b[f'work_ms_{pct}']} ms")
+        if display.get("hardware") and st[f"work_ms_{pct}"] > b[f"work_ms_{pct}"]:
+            problems.append(f"frame wall time {pct} {st[f'work_ms_{pct}']} ms > {b[f'work_ms_{pct}']} ms")
     expect(not problems, "; ".join(problems) + f" [renderer: {ctx.facts.get('renderer')}]")

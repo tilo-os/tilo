@@ -284,6 +284,32 @@ mod tests {
         .unwrap();
         assert_eq!(env.context, None, "content without context stays as it was");
         assert_eq!(last_message(&mut a), None);
+
+        // A context may say a content action is nobody's step this time; an
+        // action's own declaration is never overridden by a context.
+        let seeded = Counter::Put {
+            key: "score".into(),
+            value: 2,
+        };
+        let env = apply_local_with_context(
+            &mut a,
+            &seeded,
+            EncodedAction::encode(COUNTER_TYPE, &seeded).unwrap(),
+            None,
+            ActionContext::default().with_change(ChangeKind::External),
+        )
+        .unwrap();
+        assert_eq!(last_context(&mut a).unwrap().change, ChangeKind::External);
+        assert!(!env.context.unwrap().change.is_step());
+        apply_local_with_context(
+            &mut a,
+            &Seen(5),
+            EncodedAction::encode(SEEN_TYPE, &Seen(5)).unwrap(),
+            None,
+            ActionContext::default().with_change(ChangeKind::External),
+        )
+        .unwrap();
+        assert!(last_context(&mut a).unwrap().is_housekeeping());
     }
 
     /// Seed two independent replicas that share history (so a replayed

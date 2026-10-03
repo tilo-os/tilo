@@ -4,7 +4,9 @@
 //! provisioned with a device key and an install token and no certificate;
 //! the root certifies it and the page installs the certificate through the
 //! node's install route, as `tilo-relay run --web … --install-token-file`
-//! serves it. The node then starts as the founder's host and the governor of
+//! serves it. With it the root certifies the session beside the node, which
+//! runs the person's apps and agents with a key of its own: the node vouches
+//! for that key, and the session becomes one of her devices, never a host. The node then starts as the founder's host and the governor of
 //! their rooms: the page's own device connects, creates the company
 //! workspace and writes a document, which leaves the page sealed and is
 //! retained on the node only as ciphertext, under channel keys the node
@@ -45,7 +47,7 @@ use tilo_browser_peer::{
 };
 use tilo_relay::RelayConfig;
 use tilo_relay::daemon::{Relay, RelayIdentity};
-use tilo_relay::web::install::InstallListener;
+use tilo_relay::web::install::{InstallListener, SessionDevice};
 use tilo_relay::web::{TlsSource, WebConfig};
 use tilo_relay_protocol::rooms::{
     JoinReply, JoinStep, PreAdmission, RoomNotice, RoomRole, RoomsReply, RoomsRequest,
@@ -175,7 +177,11 @@ async fn a_company_node_governs_and_stewards_the_workspace_people_join() {
     let state = node.path().join("state");
     let (device, _) = tilo_user_identity::load_or_create_device_key(&paths).unwrap();
     let device = device.verifying_key().to_bytes();
-    let install = InstallListener::bind(
+    let session_paths = IdentityPaths::under(node.path().join("session-identity"));
+    let (session, _) = tilo_user_identity::load_or_create_device_key(&session_paths).unwrap();
+    let session = session.verifying_key().to_bytes();
+    let session_cert_out = node.path().join("session.cert");
+    let install = InstallListener::bind_with_session(
         &WebConfig {
             listen: "127.0.0.1:0".parse().unwrap(),
             tls: dev_tls(&state),
@@ -184,9 +190,22 @@ async fn a_company_node_governs_and_stewards_the_workspace_people_join() {
         },
         paths.clone(),
         INSTALL_TOKEN,
+        Some(SessionDevice {
+            public_key: session,
+            cert_out: session_cert_out.clone(),
+        }),
     )
     .unwrap();
     let install_origin = format!("http://{}", install.plain_addr.unwrap());
+
+    // The node names the session beside it, vouched for by the key the
+    // page got out of band.
+    let info = root
+        .call(json!({"info": {
+            "origin": install_origin, "devicePublicKey": hex::encode(device), "installToken": INSTALL_TOKEN,
+        }}))
+        .await;
+    assert_eq!(info["sessionPublicKey"], hex::encode(session), "{info}");
 
     // The page's root certifies the node, and the page installs it in the
     // canonical encoding `certifyDevice` hands it.
@@ -201,9 +220,17 @@ async fn a_company_node_governs_and_stewards_the_workspace_people_join() {
         }}))
         .await;
     assert!(refused["error"].is_string(), "{refused}");
+    let session_cert = issue_device_cert(&root, session, "Apps on Acme node", IssuedRole::Session)
+        .await
+        .unwrap();
     let installed = root
         .call(json!({"install": {
-            "origin": install_origin, "certificate": certificate, "installToken": INSTALL_TOKEN,
+            "origin": install_origin,
+            "certificate": certificate,
+            "sessionCertificate": hex::encode(
+                tilo_user_identity::canonical::canonical_bytes(&session_cert).unwrap()
+            ),
+            "installToken": INSTALL_TOKEN,
         }}))
         .await;
     assert_eq!(
@@ -217,6 +244,10 @@ async fn a_company_node_governs_and_stewards_the_workspace_people_join() {
             .unwrap(),
         node_cert
     );
+    let delivered = tilo_user_identity::persist::read_device_cert(&session_cert_out).unwrap();
+    assert_eq!(delivered, session_cert);
+    assert_eq!(delivered.user_public_key, root.public_key);
+    assert!(!delivered.capabilities.can_act_as_host && !delivered.capabilities.can_admit_devices);
 
     // It starts as `tilo-relay run` then does: the person's host, on the
     // identity it was installed with.

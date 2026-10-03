@@ -163,6 +163,9 @@ impl TextAlign {
 
 /// A laid-out block of attributed text.
 pub struct RichTextLayout {
+    /// One exact source snapshot, scoped to this layout owner. It avoids
+    /// reconstructing runs/offset maps/buffer lines for unchanged rich input.
+    prepared: Option<RichPreparation>,
     pub(crate) buffer: Buffer,
     /// Global byte offset of every cosmic-text logical line. cosmic-text
     /// cursors are `(line, byte-within-line)`; the public toolkit API uses a
@@ -189,6 +192,35 @@ pub struct RichTextLayout {
     fragmentation: crate::text_render::Fragmentation,
 }
 
+struct RichPreparation {
+    spans: Vec<RichSpan>,
+    style: crate::text_render::TextStyle,
+    width: Option<f32>,
+    align: TextAlign,
+    browser_emoji: bool,
+}
+
+impl RichPreparation {
+    fn matches(
+        &self,
+        spans: &[RichSpan],
+        style: &crate::text_render::TextStyle,
+        width: Option<f32>,
+        align: TextAlign,
+        browser_emoji: bool,
+    ) -> bool {
+        // A custom hyphenator's Arc is not an immutable revision witness.
+        !matches!(
+            style.hyphenation,
+            crate::text_render::Hyphenation::Custom(_)
+        ) && self.spans == spans
+            && self.style == *style
+            && self.width == width
+            && self.align == align
+            && self.browser_emoji == browser_emoji
+    }
+}
+
 /// Cosmic-text runs plus the byte-ranged background/baseline decoration
 /// tables built alongside them by `RichTextLayout::build_rich_runs`.
 type RichRuns<'a, 's> = (
@@ -198,6 +230,12 @@ type RichRuns<'a, 's> = (
 );
 
 impl RichTextLayout {
+    /// Revealed secret controls need geometry without an additional retained
+    /// plaintext source snapshot. They opt out before keeping the layout.
+    pub(crate) fn discard_prepared_inputs(&mut self) {
+        self.prepared = None;
+    }
+
     fn line_map(text: &str) -> (Vec<usize>, Vec<usize>) {
         let mut line_starts = vec![0];
         let mut line_lens = Vec::new();
@@ -280,6 +318,7 @@ impl RichTextLayout {
         }
         let (line_starts, line_lens) = Self::line_map(&shaping_text);
         Self {
+            prepared: None,
             buffer,
             line_starts,
             line_lens,
@@ -358,8 +397,9 @@ impl RichTextLayout {
     /// Reuse unchanged paragraphs from this renderer's previous layout.
     /// The caller must enforce the same font-system identity and generation;
     /// font replacement or locale changes require `previous = None`.
-    /// Fresh paragraph construction remains authoritative for attributes and
-    /// document offsets; only compatible cosmic shape/layout caches move over.
+    /// Exact retained inputs skip preparation; otherwise fresh paragraph
+    /// construction remains authoritative for attributes and document offsets,
+    /// and only compatible cosmic shape/layout caches move over.
     pub fn shape_styled_reusing(
         fs: &mut FontSystem,
         spans: &[RichSpan],
@@ -375,6 +415,38 @@ impl RichTextLayout {
     }
 
     pub(crate) fn shape_styled_reusing_browser(
+        fs: &mut FontSystem,
+        spans: &[RichSpan],
+        style: &crate::text_render::TextStyle,
+        max_width: Option<f32>,
+        align: TextAlign,
+        previous: Option<Self>,
+        browser_emoji: bool,
+    ) -> Self {
+        if let Some(mut retained) = previous {
+            if retained.prepared.as_ref().is_some_and(|prepared| {
+                prepared.matches(spans, style, max_width, align, browser_emoji)
+            }) {
+                // Decorations are supplied by the new call, not part of shape
+                // identity. In particular, an old IME underline must not leak.
+                retained.underlines.clear();
+                retained.strikes.clear();
+                return retained;
+            }
+            return Self::build_styled_reusing_browser(
+                fs,
+                spans,
+                style,
+                max_width,
+                align,
+                Some(retained),
+                browser_emoji,
+            );
+        }
+        Self::build_styled_reusing_browser(fs, spans, style, max_width, align, None, browser_emoji)
+    }
+
+    fn build_styled_reusing_browser(
         fs: &mut FontSystem,
         spans: &[RichSpan],
         style: &crate::text_render::TextStyle,
@@ -471,6 +543,17 @@ impl RichTextLayout {
         }
 
         Self {
+            prepared: (!matches!(
+                style.hyphenation,
+                crate::text_render::Hyphenation::Custom(_)
+            ))
+            .then(|| RichPreparation {
+                spans: spans.to_vec(),
+                style: style.clone(),
+                width: max_width,
+                align,
+                browser_emoji,
+            }),
             buffer,
             line_starts,
             line_lens,
@@ -531,23 +614,56 @@ impl RichTextLayout {
             .take_while(|(a, b)| same(a, b))
             .count();
         let mut old_lines = previous.lines.into_iter();
-        let mut new_lines = buffer.lines.iter_mut();
-        for (old, new) in old_lines
-            .by_ref()
-            .take(prefix)
-            .zip(new_lines.by_ref().take(prefix))
-        {
+        for (new, old) in buffer.lines.iter_mut().take(prefix).zip(old_lines.by_ref()) {
             *new = old;
         }
-        // Both iterators now exclude the common prefix, so a fully unchanged
-        // document cannot reuse a paragraph twice when walking the suffix.
-        for (old, new) in old_lines
+        for (new, old) in buffer
+            .lines
+            .iter_mut()
             .rev()
             .take(suffix)
-            .zip(new_lines.rev().take(suffix))
+            .zip(old_lines.by_ref().rev())
         {
             *new = old;
         }
+        let end = buffer.lines.len() - suffix;
+        if prefix == end || old_lines.len() == 0 {
+            return;
+        }
+        // Prefix/suffix alone miss paragraphs between separate edits or moved
+        // intact blocks. Index the remaining candidates, then verify exact text,
+        // ending, attributes and alignment before moving a cache. Consume each
+        // old paragraph once. A hash collision conservatively reshapes instead
+        // of trusting the hash or scanning an unbounded collision chain.
+        let mut candidates = std::collections::HashMap::<u64, Vec<BufferLine>>::new();
+        for old in old_lines {
+            candidates
+                .entry(Self::paragraph_fingerprint(&old))
+                .or_default()
+                .push(old);
+        }
+        for new in &mut buffer.lines[prefix..end] {
+            if let Some(bucket) = candidates.get_mut(&Self::paragraph_fingerprint(new))
+                && bucket.last().is_some_and(|old| same(new, old))
+                && let Some(old) = bucket.pop()
+            {
+                *new = old;
+            }
+        }
+    }
+
+    fn paragraph_fingerprint(line: &BufferLine) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        line.text().hash(&mut hash);
+        (line.ending() as u8).hash(&mut hash);
+        line.align().map(|align| align as u8).hash(&mut hash);
+        line.attrs_list().defaults().hash(&mut hash);
+        for (range, attrs) in line.attrs_list().spans_iter() {
+            range.hash(&mut hash);
+            attrs.hash(&mut hash);
+        }
+        hash.finish()
     }
 
     /// Build cosmic-text runs (with their `Attrs`) for `spans`, plus the
