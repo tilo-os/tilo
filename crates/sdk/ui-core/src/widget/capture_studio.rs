@@ -18,13 +18,14 @@ use crate::{
     surface,
     text_render::{TextRenderer, TextStyle, TextWeight},
     theme::Theme,
-    widget::{Button, ButtonFace, Chip, ChipLead, ChipStyle, TaffyTreeExt, Widget},
+    widget::{Button, ButtonFace, ChipFace, ChipLead, ChipStyle, TaffyTreeExt, Tone, Widget},
 };
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 
 use crate::time::{Duration, Instant};
 use crate::tokens::TextRole;
+use crate::widget::ButtonRole;
 use taffy::{Dimension, NodeId, Size as TaffySize, Style, TaffyTree};
 use vello::{
     Scene,
@@ -1515,7 +1516,9 @@ impl CaptureStudio {
         let visible = labels.into_iter().flatten().collect::<Vec<_>>();
         let width = visible
             .iter()
-            .map(|label| Chip::natural_width_at(label, 24.0, ChipLead::None, theme, text_renderer))
+            .map(|label| {
+                ChipFace::intrinsic_width(label, ChipLead::None, false, text_renderer, theme)
+            })
             .sum::<f64>()
             + visible.len().saturating_sub(1) as f64 * 4.0;
         let chrome = Self::region_chrome_layout(region, width, self.selection_bounds(), regions);
@@ -2670,17 +2673,26 @@ impl CaptureStudio {
         icon: Icon,
     ) {
         let face = if on {
-            ButtonFace::new(r, "").primary()
+            ButtonFace::new(r, "").role(ButtonRole::Primary)
         } else {
             ButtonFace::new(r, "")
         }
         .icon(icon)
-        .radius(10.0)
         .hovered(hovered);
         Button::paint(scene, t, tr, theme, &face);
     }
 
     /// The tint a capture in the current mode marks its selection with.
+    /// What the selection's metadata chips say: a recording is live, a
+    /// picture-in-picture is information, a screenshot is neutral.
+    fn selection_tone(&self) -> Tone {
+        match self.mode {
+            CaptureMode::Screenshot => Tone::Neutral,
+            CaptureMode::Recording => Tone::Danger,
+            CaptureMode::Pip => Tone::Info,
+        }
+    }
+
     fn selection_color(&self, theme: &Theme) -> Color {
         let c = &theme.tokens.colors;
         match self.mode {
@@ -3063,12 +3075,11 @@ impl CaptureStudio {
 
     fn option_face(rect: Rect, label: &str, icon: Icon, active: bool) -> ButtonFace<'_> {
         if active {
-            ButtonFace::new(rect, label).primary()
+            ButtonFace::new(rect, label).role(ButtonRole::Primary)
         } else {
             ButtonFace::new(rect, label)
         }
         .icon(icon)
-        .radius(9.0)
     }
 
     fn scrim_path(&self, regions: &[Rect]) -> BezPath {
@@ -4873,35 +4884,22 @@ impl Widget for CaptureStudio {
                 .into_iter()
                 .flatten()
                 {
-                    let width = Chip::natural_width_at(
-                        label,
-                        chrome.metadata.height(),
-                        ChipLead::None,
-                        theme,
-                        tr,
-                    );
+                    let width = ChipFace::intrinsic_width(label, ChipLead::None, false, tr, theme);
                     let rect = Rect::new(
                         metadata_x,
                         chrome.metadata.y0,
                         metadata_x + width,
                         chrome.metadata.y1,
                     );
-                    Chip::draw_at(
-                        s,
-                        t,
-                        rect,
-                        label,
-                        ChipLead::None,
-                        ChipStyle::tinted(selection_color),
-                        theme,
-                        tr,
-                    );
+                    ChipFace::new(rect, label)
+                        .style(ChipStyle::Tinted(self.selection_tone()))
+                        .paint(s, t, tr, theme);
                     metadata_x = rect.x1 + 4.0;
                 }
                 let hovered = chrome.remove.contains(self.cursor);
                 let face = if hovered {
                     ButtonFace::new(chrome.remove, "")
-                        .danger()
+                        .role(ButtonRole::Destructive)
                         .icon(Icon::X)
                         .accessible_name("Remove selection")
                 } else {
@@ -4909,7 +4907,6 @@ impl Widget for CaptureStudio {
                         .icon(Icon::X)
                         .accessible_name("Remove selection")
                 }
-                .radius(12.0)
                 .hovered(hovered);
                 Button::paint(s, t, tr, theme, &face);
                 self.region_remove_rects.push(chrome.remove);
@@ -5263,14 +5260,13 @@ impl Widget for CaptureStudio {
                 ""
             };
             let face = if danger_action && emphasized {
-                ButtonFace::new(r, label).danger()
+                ButtonFace::new(r, label).role(ButtonRole::Destructive)
             } else if emphasized {
-                ButtonFace::new(r, label).primary()
+                ButtonFace::new(r, label).role(ButtonRole::Primary)
             } else {
                 ButtonFace::new(r, label)
             }
             .icon(icon)
-            .radius(10.0)
             .hovered(hovered)
             .disabled(!active);
             Button::paint(s, bottom_t, tr, theme, &face);

@@ -983,11 +983,7 @@ impl NavShell {
     }
 
     fn shell_button(id: &str, icon: Icon, name: &str, on_press: impl FnMut() + 'static) -> Button {
-        Button::new(id, "", None)
-            .with_icon(icon)
-            .with_accessible_name(name)
-            .ghost()
-            .on_view(on_press)
+        Button::icon_only(id, icon, name).on_view(on_press)
     }
 
     // --- slots -------------------------------------------------------------

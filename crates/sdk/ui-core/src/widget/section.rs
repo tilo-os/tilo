@@ -27,6 +27,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::ButtonRole;
 use crate::widget::{Button, Element, TaffyTreeExt, Text, Widget};
 
 /// How prominent a section's title is.
@@ -105,7 +106,7 @@ impl SectionHeader {
         }
         let has_action = self.action.is_some();
         if let Some(action) = self.action {
-            children.push(Box::new(action.ghost().with_action_sizing()));
+            children.push(Box::new(action.role(ButtonRole::Plain)));
         }
         HeaderRow {
             parts: Parts::new(children),

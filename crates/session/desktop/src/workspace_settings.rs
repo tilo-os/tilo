@@ -26,7 +26,7 @@ use ui::overlay::FocusTrap;
 use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{AvatarFace, Badge, Button, ButtonFace, SegmentedFace, SegmentedStyle};
+use ui::widget::{AvatarFace, BadgeFace, Button, ButtonFace, ChipStyle, SegmentedFace, Tone};
 
 use collab_types::caps::{CapOverride, Effect, Expiry, Principal, Scope, Subject, Verb};
 use collab_types::role::Role as CapRole;
@@ -34,6 +34,7 @@ use tilo_desktop_model::service_member::{ServiceMember, service_purpose};
 use tilo_desktop_model::{UserId, Workspace, WorkspaceId};
 use ui::TextRole;
 use ui::text_render::TextStyle;
+use ui::widget::ButtonRole;
 
 pub mod overlay;
 
@@ -595,14 +596,6 @@ fn at(transform: Affine, dx: f64, dy: f64) -> Affine {
     transform * Affine::translate((dx, dy))
 }
 
-/// A colour paired with the alpha to paint it at, bundled so a caller of
-/// [`draw_pill`] doesn't pass a bare `f32` beside a `Color`.
-#[derive(Clone, Copy)]
-struct Tint {
-    color: Color,
-    alpha: f32,
-}
-
 /// Width of the modal's left sidebar in CSS px: the docked navigation
 /// sidebar width (HIG §9.6, `Metrics::sidebar_width`), unscaled like the
 /// rest of this lens's geometry.
@@ -1161,56 +1154,34 @@ fn draw_pane_intro(
         transform,
         Point::new(rect.x1 - 14.0, rect.center().y),
         status,
-        Tint {
-            color: colors.intent.inverted,
-            alpha: 1.0,
-        },
+        ChipStyle::Neutral,
         text_renderer,
         theme,
     );
 }
 
-/// Paint a small pill with `label` centred, tinted `tint`. Returns the
+/// Paint a badge with `label` centred, in `style`. Returns the
 /// pill's rect so callers can lay out rightwards from its left edge.
 fn draw_pill(
     scene: &mut Scene,
     transform: Affine,
     anchor: Point,
     label: &str,
-    tint: Tint,
+    style: ChipStyle,
     text_renderer: &mut TextRenderer,
     theme: &Theme,
 ) -> Rect {
-    let tokens = &theme.tokens;
-    let style = tokens.typography.style(TextRole::Caption);
-    let (tw, th) = text_renderer.measure_style(label, None, &style);
-    let pad_x = 8.0;
-    let pad_y = 4.0;
-    let w = f64::from(tw) + pad_x * 2.0;
-    let h = f64::from(th) + pad_y * 2.0;
+    let w = BadgeFace::intrinsic_width(label, text_renderer, theme);
+    let h = BadgeFace::height(theme);
     let rect = Rect::new(
         anchor.x - w,
         anchor.y - h / 2.0,
         anchor.x,
         anchor.y + h / 2.0,
     );
-    // Every pill sits on a raised row or intro card; the badge picks its ink
-    // against the colour that reaches the screen, so hand it the composite.
-    let chip = tokens.colors.tinted_chip_on(
-        tokens.colors.surfaces.raised,
-        tint.color,
-        0.20 * tint.alpha,
-        ui::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
-    );
-    Badge::paint_at(
-        scene,
-        transform,
-        rect,
-        label,
-        chip.fill,
-        text_renderer,
-        theme,
-    );
+    BadgeFace::new(rect, label)
+        .style(style)
+        .paint(scene, transform, text_renderer, theme);
     rect
 }
 
@@ -1388,7 +1359,9 @@ fn draw_danger_button(
         transform,
         text_renderer,
         theme,
-        &ButtonFace::new(rect, label).danger().disabled(!enabled),
+        &ButtonFace::new(rect, label)
+            .role(ButtonRole::Destructive)
+            .disabled(!enabled),
     );
 }
 
@@ -1407,7 +1380,9 @@ fn draw_primary_button(
         transform,
         text_renderer,
         theme,
-        &ButtonFace::new(rect, label).primary().disabled(!enabled),
+        &ButtonFace::new(rect, label)
+            .role(ButtonRole::Primary)
+            .disabled(!enabled),
     );
 }
 
@@ -2672,10 +2647,7 @@ fn draw_member_row(context: &mut MemberRowDrawContext<'_>, row: &MemberRow) {
             *transform,
             Point::new(text_limit, row.row_rect.center().y),
             &t("workspace-settings-you"),
-            Tint {
-                color: colors.intent.inverted,
-                alpha: 1.0,
-            },
+            ChipStyle::Neutral,
             text_renderer,
             theme,
         );
@@ -2997,10 +2969,7 @@ fn draw_agent_row(
         } else {
             "workspace-settings-badge-agent"
         }),
-        Tint {
-            color: colors.intent.inverted,
-            alpha: 1.0,
-        },
+        ChipStyle::Neutral,
         text_renderer,
         theme,
     );
@@ -3044,10 +3013,7 @@ fn draw_agent_row(
         transform,
         Point::new(row.role_rect.x1, row.role_rect.center().y),
         &t("workspace-settings-admitted"),
-        Tint {
-            color: colors.semantic.success,
-            alpha: 1.0,
-        },
+        ChipStyle::Tinted(Tone::Success),
         text_renderer,
         theme,
     );
@@ -4117,9 +4083,7 @@ fn draw_expiry_track(
         transform,
         text_renderer,
         theme,
-        &SegmentedFace::new(&layout.expiry_rects, &labels, selected)
-            .style(SegmentedStyle::Solid)
-            .radius(f64::from(theme.tokens.radii.control)),
+        &SegmentedFace::new(&layout.expiry_rects, &labels, selected),
     );
     if !is_owner {
         scene.pop_layer();
@@ -4162,10 +4126,7 @@ fn draw_permission_row(
         transform,
         Point::new(row.revoke_rect.x0 - 12.0, row.row_rect.center().y),
         &row.expiry,
-        Tint {
-            color: colors.intent.inverted,
-            alpha: 1.0,
-        },
+        ChipStyle::Neutral,
         text_renderer,
         theme,
     );

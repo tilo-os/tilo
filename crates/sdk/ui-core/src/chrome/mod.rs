@@ -1,6 +1,6 @@
 //! Reusable *chrome* — the framed UI around content. Two layers, not the
-//! same thing: **application chrome** ([`page`], [`status_bar`],
-//! [`toolbar`]) is the frame an app draws around its own content (the app
+//! same thing: **application chrome** ([`page`], [`status_bar`] and the
+//! [`crate::widget::Toolbar`]) is the frame an app draws around its own content (the app
 //! owns button specs and click handling, the toolkit owns the look);
 //! **shell chrome** ([`shell`]) is the vocabulary the *OS* paints in
 //! around and between apps — top bar, window decorations, workspace disc,
@@ -10,7 +10,6 @@ pub mod nav_row;
 pub mod page;
 pub mod shell;
 pub mod status_bar;
-pub mod toolbar;
 
 pub use nav_row::{
     NavCount, NavRowFace, NavRowLayout, NavRowStyle, NavSectionFace, NavSectionLayout,
@@ -23,7 +22,4 @@ pub use shell::{
     SelectionTier, chrome_hairline, fill_scrim, glass_selector, lightness_step,
     paint_row_selection, panel_border, panel_ground, panel_shadow, scrim_maps,
     selection_floor_ramp, selection_tier, selection_tier_on,
-};
-pub use toolbar::{
-    LabelCue, TOOLBAR_HEIGHT, ToolbarItem, ToolbarMetrics, bar_padding, item_rects, paint_bar,
 };

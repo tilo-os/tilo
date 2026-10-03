@@ -453,52 +453,6 @@ pub fn elevation(scene: &mut Scene, transform: Affine, rect: Rect, token: &Shado
     shadow(scene, transform, rect, 0.0, token);
 }
 
-/// The one contract for "is this small selectable chrome element active"
-/// — scope pills, filter chips, tab pills, toggle cards.
-///
-/// Quiet (HIG §9.5 "Chip quiet"): `surfaces.raised` under a rest edge
-/// derived from that fill by [`edge_on`], so the chip keeps a visible
-/// outline on a raised or overlay ground where the declared
-/// `border_standard` vanished. Selected: solid accent, no edge.
-pub fn chip_colors(theme: &Theme, selected: bool) -> (Color, Option<Color>) {
-    let c = &theme.tokens.colors;
-    if selected {
-        (c.intent.inverted, None)
-    } else {
-        (c.surfaces.raised, Some(edge_on(c.surfaces.raised)))
-    }
-}
-
-/// Draw a pill / chip: a fully-rounded (or `radius`-rounded) filled rect
-/// with an optional 1px border. Pass `radius = None` for a fully-rounded
-/// capsule (`height/2`). The border is a crisp inset stroke on
-/// [`edge_outline`], like [`card`]: it covers the pill's outermost pixel
-/// row instead of straddling the edge as a half-covered, half-alpha smear.
-pub fn pill(
-    scene: &mut Scene,
-    transform: Affine,
-    rect: Rect,
-    fill: Color,
-    border: Option<Color>,
-    radius: Option<f64>,
-) {
-    if rect.width() <= 0.0 || rect.height() <= 0.0 {
-        return;
-    }
-    let r = radius.unwrap_or_else(|| rect.height() / 2.0);
-    let shape = RoundedRect::new(rect.x0, rect.y0, rect.x1, rect.y1, r);
-    scene.fill(Fill::NonZero, transform, fill, None, &shape);
-    if let Some(bc) = border {
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            bc,
-            None,
-            &edge_outline(rect, r),
-        );
-    }
-}
-
 /// The regions a window is made of (HIG §9.2). Each has one ground, and
 /// the framework paints it: an app declares which region an area is (a
 /// `NavShell` slot, or [`region`] in a painted app) and never fills it.
@@ -968,36 +922,30 @@ mod tests {
             assert!(edge_outline(rect, 0.0).radii().top_left.abs() < 1e-9);
         }
 
-        // Case `chip_colors_selected_is_solid_accent_no_border`.
-        {
-            let theme = Theme::dark();
-            let (fill, border) = chip_colors(&theme, true);
-            assert_eq!(fill, theme.tokens.colors.intent.inverted);
-            assert!(border.is_none(), "selected chip has no border");
-            let (fill_idle, border_idle) = chip_colors(&theme, false);
-            assert_eq!(fill_idle, theme.tokens.colors.surfaces.raised);
-            assert!(border_idle.is_some(), "idle chip has a border");
-        }
-
-        // Case `chip_colors_quiet_edge_registers_on_every_preset`:
+        // Case `quiet_chip_edge_registers_on_every_preset`:
         // The quiet chip's edge is derived from its own fill, so it registers
         // on every preset — the declared `border_standard` it replaces measured
         // under the visibility floor on the dark preset's raised surface.
         {
             for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-                let (fill, border) = chip_colors(&theme, false);
-                let edge = border.expect("quiet chip has an edge");
+                let quiet = crate::widget::ChipStyle::Neutral.colors(
+                    &theme,
+                    theme.tokens.colors.surfaces.content,
+                    false,
+                    false,
+                );
+                let edge = quiet.edge.expect("quiet chip has an edge");
                 assert_eq!(
                     edge,
-                    edge_on(fill),
+                    edge_on(quiet.fill),
                     "{}: edge derives from the fill",
                     theme.name
                 );
                 assert!(
-                    edge_delta(edge, fill) >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
+                    edge_delta(edge, quiet.fill) >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
                     "{}: quiet chip edge moved only {:.4}",
                     theme.name,
-                    edge_delta(edge, fill)
+                    edge_delta(edge, quiet.fill)
                 );
             }
         }

@@ -25,6 +25,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::ButtonRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::{Button, ButtonFace, Widget};
 
@@ -569,7 +570,7 @@ fn paint_card_actions(
     }
     Button::paint(scene, transform, text_renderer, theme, &secondary_face);
     let mut primary_face = ButtonFace::new(primary, card.primary_action)
-        .primary()
+        .role(ButtonRole::Primary)
         .hovered(card.primary_action_hovered);
     if let Some(icon) = card.primary_action_icon {
         primary_face = primary_face.icon(icon);
@@ -675,7 +676,7 @@ fn paint_dismiss_button(
         text_renderer,
         theme,
         &ButtonFace::new(close_rect, "")
-            .ghost()
+            .role(ButtonRole::Plain)
             .icon(crate::icons::Icon::X)
             .control_size(crate::widget::control_size::ControlSize::Small)
             .hovered(card.close_hovered)

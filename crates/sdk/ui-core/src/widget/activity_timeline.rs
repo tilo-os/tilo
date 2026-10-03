@@ -1810,14 +1810,11 @@ struct BandHeader<'a> {
 }
 
 /// The filter strip's frame-wide paint inputs, shared by its chip row and
-/// its author pill: chip text size and the selected / idle chip colours.
+/// its author pill.
 struct FilterStripPaint {
     strip: Rect,
-    text_style: TextStyle,
-    active_fill: Color,
-    idle_fill: Color,
-    active_text: Color,
-    idle_text: Color,
+    /// The chip height, never taller than the strip.
+    chip_h: f64,
 }
 
 /// When a row's change was made; empty for the genesis, which no one made
@@ -2685,18 +2682,20 @@ impl ActivityTimeline {
         theme: &Theme,
     ) {
         let strip = self.filter_strip_rect();
-        let chip_text_style = theme.text(TextRole::Caption);
-
-        // Chip quiet (HIG §9.5): raised rest fill under a derived edge (added
-        // where the chip is painted); selected: solid accent with ink chosen
-        // against it, no edge.
+        // The filter chips are the shared chip: quiet at rest, a lift when
+        // chosen (HIG §9.5).
         let paint = FilterStripPaint {
             strip,
-            text_style: chip_text_style.clone(),
-            active_fill: crate::surface::chip_colors(theme, true).0,
-            idle_fill: crate::surface::chip_colors(theme, false).0,
-            active_text: theme.tokens.colors.intent.on_inverted,
-            idle_text: theme.tokens.colors.text_dim,
+            chip_h: crate::widget::ChipFace::height(theme).min(strip.height()),
+        };
+        let chip_width = |tr: &mut TextRenderer, label: &str| {
+            crate::widget::ChipFace::intrinsic_width(
+                label,
+                crate::widget::ChipLead::None,
+                false,
+                tr,
+                theme,
+            )
         };
 
         // Rebuild the chip-rect cache every frame so click hit-testing lines up
@@ -2711,12 +2710,7 @@ impl ActivityTimeline {
             format!("author:{}", self.author_query)
         };
         let author_full_w = if self.show_author_pill {
-            (f64::from(
-                text_renderer
-                    .measure_style(&author_label, None, &chip_text_style)
-                    .0,
-            ) + 16.0)
-                .min(strip.width() * 0.45)
+            chip_width(text_renderer, &author_label).min(strip.width() * 0.45)
         } else {
             0.0
         };
@@ -2734,8 +2728,7 @@ impl ActivityTimeline {
                 } else {
                     chip.label()
                 };
-                total +=
-                    f64::from(tr.measure_style(&l, None, &chip_text_style).0) + 16.0 + CHIP_GAP;
+                total += chip_width(tr, &l) + CHIP_GAP;
             }
             total
         };
@@ -2763,16 +2756,9 @@ impl ActivityTimeline {
             scene,
             transform,
             text: text_renderer,
-            ..
+            theme,
         } = ctx.reborrow();
-        let &FilterStripPaint {
-            strip,
-            text_style: ref chip_text_style,
-            active_fill,
-            idle_fill,
-            active_text,
-            idle_text,
-        } = paint;
+        let &FilterStripPaint { strip, chip_h } = paint;
         let mut x = strip.x0;
         for chip in ChipKind::ALL {
             let label = if use_short {
@@ -2780,9 +2766,13 @@ impl ActivityTimeline {
             } else {
                 chip.label()
             };
-            let (w, _) = text_renderer.measure_style(&label, None, chip_text_style);
-            let chip_w = f64::from(w) + 16.0;
-            let chip_h = (strip.height() - 8.0).max(20.0);
+            let chip_w = crate::widget::ChipFace::intrinsic_width(
+                &label,
+                crate::widget::ChipLead::None,
+                false,
+                text_renderer,
+                theme,
+            );
             let cy = f64::midpoint(strip.y0, strip.y1);
             // Stop rather than paint a chip half-under the author pill; an
             // unpainted chip is not in `chip_rects`, so it cannot be clicked.
@@ -2792,26 +2782,9 @@ impl ActivityTimeline {
             let chip_rect = Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
             self.chip_rects
                 .push((chip, self.hit_rect_within(chip_rect, strip)));
-            let active = self.active_chip == chip;
-            let body = if active { active_fill } else { idle_fill };
-            let text_color = if active { active_text } else { idle_text };
-            let edge = (!active).then(|| crate::surface::edge_on(body));
-            crate::surface::pill(scene, transform, chip_rect, body, edge, None);
-            let (lw, lh) = text_renderer.measure_style(&label, None, chip_text_style);
-            text_renderer.draw_style(
-                scene,
-                &label,
-                text_color,
-                translated(
-                    transform,
-                    (
-                        chip_rect.x0 + (chip_rect.width() - f64::from(lw)) / 2.0,
-                        chip_rect.y0 + (chip_rect.height() - f64::from(lh)) / 2.0,
-                    ),
-                ),
-                None,
-                chip_text_style,
-            );
+            crate::widget::ChipFace::new(chip_rect, &label)
+                .selected(self.active_chip == chip)
+                .paint(scene, transform, text_renderer, theme);
             x += chip_w + CHIP_GAP;
         }
     }
@@ -2828,58 +2801,17 @@ impl ActivityTimeline {
             scene,
             transform,
             text: text_renderer,
-            ..
+            theme,
         } = ctx.reborrow();
-        let &FilterStripPaint {
-            strip,
-            text_style: ref chip_text_style,
-            active_fill,
-            idle_fill,
-            active_text,
-            idle_text,
-        } = paint;
+        let &FilterStripPaint { strip, chip_h } = paint;
         let cy = f64::midpoint(strip.y0, strip.y1);
-        let chip_h = (strip.height() - 8.0).max(20.0);
         let arx1 = strip.x1;
         let arx0 = arx1 - author_full_w;
         let chip_rect = Rect::new(arx0, cy - chip_h / 2.0, arx1, cy + chip_h / 2.0);
         self.author_pill_rect = self.hit_rect_within(chip_rect, strip);
-        let drawn_author = fit_text(
-            text_renderer,
-            author_label,
-            chip_text_style,
-            chip_rect.width() - 12.0,
-        );
-        let body = if self.author_query.is_empty() {
-            idle_fill
-        } else {
-            active_fill
-        };
-        let text_color = if self.author_query.is_empty() {
-            idle_text
-        } else {
-            active_text
-        };
-        let edge = self
-            .author_query
-            .is_empty()
-            .then(|| crate::surface::edge_on(body));
-        crate::surface::pill(scene, transform, chip_rect, body, edge, None);
-        let (lw, lh) = text_renderer.measure_style(&drawn_author, None, chip_text_style);
-        text_renderer.draw_style(
-            scene,
-            &drawn_author,
-            text_color,
-            translated(
-                transform,
-                (
-                    chip_rect.x0 + (chip_rect.width() - f64::from(lw)) / 2.0,
-                    chip_rect.y0 + (chip_rect.height() - f64::from(lh)) / 2.0,
-                ),
-            ),
-            None,
-            chip_text_style,
-        );
+        crate::widget::ChipFace::new(chip_rect, author_label)
+            .selected(!self.author_query.is_empty())
+            .paint(scene, transform, text_renderer, theme);
     }
 
     fn draw_selection_bar(

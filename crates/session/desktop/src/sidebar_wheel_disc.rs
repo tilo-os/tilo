@@ -27,7 +27,7 @@ use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::{Gesture, SpringPresets, rubber_band};
-use ui::widget::{Chip, ChipLead, ChipStyle, Widget};
+use ui::widget::{ChipFace, ChipLead, Widget};
 
 use tilo_desktop_model::WorkspaceId;
 use ui::time::{Duration, Instant};
@@ -697,7 +697,7 @@ impl SidebarWheelDisc {
         let steps = steps as u32;
         for i in (0..=steps).rev() {
             let step = SECTOR_CHIP_H_MIN + f64::from(i) * STEP;
-            let need = Chip::natural_width_at(&spoke.text, step, lead, theme, text_renderer);
+            let need = ChipFace::intrinsic_width(&spoke.text, lead, false, text_renderer, theme);
             if need <= chip_w {
                 return Some(step);
             }
@@ -1639,7 +1639,7 @@ impl SidebarWheelDisc {
             layout.inactive_h
         };
         let label = self.spokes.get(slot.idx).map_or("", |s| s.text.as_str());
-        let natural_w = Chip::natural_width_at(label, row_h, lead, ctx.theme, ctx.text_renderer);
+        let natural_w = ChipFace::intrinsic_width(label, lead, false, ctx.text_renderer, ctx.theme);
         let chip_w = natural_w.clamp(LABEL_MIN_W, layout.max_w);
         let chip = Rect::new(
             layout.radial_start,
@@ -1658,7 +1658,6 @@ impl SidebarWheelDisc {
 
         Self::draw_rim_marker(ctx, geom, slot, fade_a);
 
-        let style = Self::sector_label_style(ctx.theme, slot.is_active).with_alpha(fade_a);
         // `Affine * Affine` is matrix composition — total, no
         // overflow/panic path, unlike scalar arithmetic.
         #[allow(
@@ -1666,39 +1665,18 @@ impl SidebarWheelDisc {
             reason = "affine composition, not scalar arithmetic"
         )]
         let chip_transform = ctx.transform * rotate;
-        Chip::draw_at(
-            ctx.scene,
-            chip_transform,
-            chip,
-            label,
-            lead,
-            style,
-            ctx.theme,
-            ctx.text_renderer,
-        );
+        // Labels hang outside the rim over the workspace's wallpaper, which
+        // can be any image under any theme, so each is a raised pill rather
+        // than bare text; the active workspace's is lifted.
+        ChipFace::new(chip, label)
+            .lead(lead)
+            .selected(slot.is_active)
+            .opacity(fade_a)
+            .paint(ctx.scene, chip_transform, ctx.text_renderer, ctx.theme);
 
         let marker = Rect::from_center_size(anchor, (28.0, 28.0));
         self.claim_hit_rect(hit_claim, slot, placed.union(marker));
         self.draw_presence_dots(ctx, geom, slot);
-    }
-
-    /// Labels hang outside the rim over the workspace's wallpaper, which
-    /// can be any image under any theme, so each sits on the raised tier
-    /// rather than on whatever is behind it. Resting sectors keep the
-    /// palette's own secondary ink — under high contrast that is kept
-    /// near-white for AAA, which a derived alpha would not be.
-    fn sector_label_style(theme: &Theme, is_active: bool) -> ChipStyle {
-        let colors = &theme.tokens.colors;
-        let fill = colors.surfaces.raised;
-        ChipStyle::measured(ui::tokens::colors::TintedChip {
-            fill,
-            border: ui::surface::edge_on(fill),
-            ink: if is_active {
-                colors.text_primary
-            } else {
-                colors.text_dim
-            },
-        })
     }
 
     /// Restrained selection treatment: a small seat on the rim and, for the
@@ -4080,12 +4058,12 @@ mod tests {
                     (SECTOR_CHIP_H..=SECTOR_CHIP_H_ACTIVE).contains(&h),
                     "{name}: chip height {h} outside the family's two sizes"
                 );
-                let need = Chip::natural_width_at(
+                let need = ChipFace::intrinsic_width(
                     name,
-                    h,
                     ChipLead::Glyph(d.spoke_icon(idx)),
-                    &theme,
+                    false,
                     &mut tr,
+                    &theme,
                 );
                 assert!(
                     need <= chip_w,
@@ -4133,12 +4111,12 @@ mod tests {
                         (SECTOR_CHIP_H_MIN..=SECTOR_CHIP_H_ACTIVE).contains(&h),
                         "{name}: chip height {h} outside [{SECTOR_CHIP_H_MIN}, {SECTOR_CHIP_H_ACTIVE}]"
                     );
-                    let need = Chip::natural_width_at(
+                    let need = ChipFace::intrinsic_width(
                         name,
-                        h,
                         ChipLead::Glyph(d.spoke_icon(idx)),
-                        &theme,
+                        false,
                         &mut tr,
+                        &theme,
                     );
                     assert!(
                         need <= chip_w,

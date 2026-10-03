@@ -4,7 +4,6 @@
 crates/sdk/ui-core/src/widget/candlestick_chart.rs declared_border 1
 crates/sdk/ui-core/src/widget/cartesian_plot.rs declared_border 1
 crates/sdk/ui-core/src/widget/category_chart.rs declared_border 1
-crates/sdk/ui-core/src/widget/context_menu.rs declared_border 1
 crates/sdk/ui-core/src/widget/distribution_chart.rs declared_border 1
 crates/sdk/ui-core/src/widget/divider.rs declared_border 1
 crates/sdk/ui-core/src/widget/heatmap.rs declared_border 1

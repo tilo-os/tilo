@@ -130,8 +130,11 @@ fn manual_composition_preserves_focus_selection_clicks_and_children_across_frame
         app.init_layout();
         let node = app.layout.root_node.unwrap();
         run_layout_pass(&mut app, node, 500, 300, 1.0, false, None).unwrap();
-        app.root_widget =
-            Box::new(Button::new("ordinary", "Ordinary", None).with_size(100.25, 40.25));
+        app.root_widget = Box::new(
+            crate::widget::Container::new()
+                .with_no_padding()
+                .with_size(100.25, 40.25),
+        );
         app.layout.structure_dirty = true;
         app.layout.layout_dirty = true;
         let node = app.layout.root_node.unwrap();

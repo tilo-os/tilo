@@ -25,6 +25,7 @@ use tilo_desktop::drill_in::{
     centred_text_top, control_radius, leading_glyph, paint_control, trailing_glyph,
 };
 use ui::TextRole;
+use ui::widget::ButtonRole;
 
 /// The artwork square: a list row plus one sibling step, so the three text
 /// lines beside it sit comfortably at 1×.
@@ -129,12 +130,11 @@ pub fn paint_transport(
             .hovered(enabled && cursor.is_some_and(|p| rect.contains(p)))
             .focused(focused == Some(*transport))
             .disabled(!enabled)
-            .radius(rect.height() / 2.0)
             .accessible_name(&label);
         face = if *transport == Transport::PlayPause {
-            face.primary()
+            face.role(ButtonRole::Primary)
         } else {
-            face.ghost()
+            face.role(ButtonRole::Plain)
         };
         Button::paint(scene, transform, text, theme, &face);
     }
@@ -941,7 +941,7 @@ impl NowPlayingCard {
                 theme,
                 &ButtonFace::new(rect, "")
                     .icon(icon)
-                    .ghost()
+                    .role(ButtonRole::Plain)
                     .pressed(open)
                     .hovered(cursor.is_some_and(|p| rect.contains(p)))
                     .focused(self.focus == Some(target))

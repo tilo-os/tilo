@@ -30,21 +30,15 @@ use crate::widget::{AppModel, ModelPath};
 use crate::widget::{TextInput, TextInputKind};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-/// Default control height in logical pixels — matches [`TextInput`]'s
-/// 40px form-field band closely enough while staying compact for an
-/// inspector row.
-const DEFAULT_HEIGHT: f64 = 32.0;
-/// Default overall width. The stepper buttons are `height`-sized squares;
-/// the field takes the remainder.
+/// Narrowest framed control at 1×. The stepper buttons are `height`-sized
+/// squares; the field takes the remainder.
 const DEFAULT_WIDTH: f64 = 140.0;
 /// Gap between the field and each stepper button.
 const GAP: f64 = 4.0;
-/// Point size of the `−` / `+` stepper glyphs.
-const STEP_GLYPH_SIZE: f32 = 18.0;
 
 /// Parse the leading numeric portion of `s` into an `f64`. Tolerates a
 /// leading sign, one decimal point, and any trailing non-numeric suffix
@@ -174,10 +168,15 @@ pub struct NumberInput {
     binding: Option<BoxedBinding<f64>>,
     action: Option<ActionEmitter<f64>>,
     enabled: bool,
-    width: f64,
-    height: f64,
-    automatic_minimum: Option<Size<f32>>,
+    /// The control's height and the role of its value.
+    control_size: crate::widget::ControlSize,
+    /// An inline stepper (`−  value  +`) with bare steppers and no field
+    /// frame, for toolbars (zoom, page, point size, copies).
+    compact: bool,
+    /// The footprint and type seen in `build_layout`, for the measured width.
+    minimum: Size<f32>,
     field_padding: f32,
+    value_style: crate::text_render::TextStyle,
     interaction: crate::interaction::InteractionEnvironment,
 }
 
@@ -212,10 +211,13 @@ impl NumberInput {
             binding: None,
             action: None,
             enabled: true,
-            width: DEFAULT_WIDTH,
-            height: DEFAULT_HEIGHT,
-            automatic_minimum: Some(Size::ZERO),
+            control_size: crate::widget::ControlSize::Regular,
+            compact: false,
+            minimum: Size::ZERO,
             field_padding: 0.0,
+            value_style: crate::tokens::typography::stock()
+                .style(crate::widget::ControlSize::Regular.text_role())
+                .numeric(),
             interaction: crate::interaction::InteractionEnvironment::default(),
         };
         s.value = s.value.clamp(s.min, s.max);
@@ -288,12 +290,21 @@ impl NumberInput {
         self
     }
 
-    /// Fixed control width / height in logical pixels.
+    /// The control's height and the role of its value (see
+    /// [`ControlSize`](crate::widget::ControlSize)). The width is always
+    /// measured to hold every value the control can show.
     #[must_use]
-    pub fn with_size(mut self, width: f64, height: f64) -> Self {
-        self.width = width;
-        self.height = height;
-        self.automatic_minimum = None;
+    pub fn control_size(mut self, size: crate::widget::ControlSize) -> Self {
+        self.control_size = size;
+        self
+    }
+
+    /// An inline stepper: bare `−` and `+` icon buttons either side of the
+    /// value, no field frame, as wide as the widest value. Clicking the value
+    /// edits it in place. For toolbars: zoom, page, point size, copies.
+    #[must_use]
+    pub fn compact(mut self) -> Self {
+        self.compact = true;
         self
     }
 
@@ -387,31 +398,35 @@ impl NumberInput {
         minimum: Size<f32>,
         field_padding: f32,
         display: &str,
+        style: &crate::text_render::TextStyle,
         text: &mut TextRenderer,
     ) -> f32 {
-        let (value_width, _) = text.measure(
-            display,
-            crate::tokens::typography::stock().size(crate::tokens::TextRole::Body),
-            None,
-        );
+        let (value_width, _) = text.measure_style(display, None, style);
         minimum
             .width
             .max(value_width + field_padding * 2.0 + minimum.height * 2.0 + px_f32(GAP * 2.0))
             .ceil()
     }
 
-    /// The footprint `build_layout` starts from: the configured size, text-
-    /// scaled when the width is automatic, the height never below the
-    /// pointer target.
+    /// The footprint `build_layout` starts from: the size's height (a
+    /// coarse pointer grows it to the minimum target; a fine one reaches the
+    /// target through the steppers' hit rects) and, for the framed control,
+    /// the reference width at the text scale.
     fn base_footprint(&self, theme: &Theme) -> Size<f32> {
-        let scale = if self.automatic_minimum.is_some() {
-            f64::from(theme.text_scale)
+        let height = self.control_size.height(theme);
+        let height = if self.interaction.supports_hover() {
+            height
         } else {
-            1.0
+            height.max(f64::from(self.interaction.minimum_target()))
+        };
+        let width = if self.compact {
+            0.0
+        } else {
+            DEFAULT_WIDTH * f64::from(theme.text_scale)
         };
         Size {
-            width: px_f32(self.width * scale),
-            height: px_f32((self.height * scale).max(f64::from(self.interaction.minimum_target()))),
+            width: px_f32(width),
+            height: px_f32(height),
         }
     }
 
@@ -425,10 +440,13 @@ impl NumberInput {
     pub fn preferred_width(&self, theme: &Theme, text: &mut TextRenderer) -> f64 {
         let minimum = self.base_footprint(theme);
         let padding = px_f32(self.field.text_padding_x(theme));
+        let style = self.value_style_in(theme);
         let widest = [self.value, self.min, self.max]
             .into_iter()
             .filter(|value| value.is_finite())
-            .map(|value| Self::required_width(minimum, padding, &self.format_display(value), text))
+            .map(|value| {
+                Self::required_width(minimum, padding, &self.format_display(value), &style, text)
+            })
             .fold(minimum.width, f32::max);
         f64::from(widest)
     }
@@ -481,6 +499,22 @@ impl NumberInput {
         self.plus_rect = Rect::new(x1 - h, y0, x1, y1);
         self.field_rect = Rect::new(self.minus_rect.x1 + GAP, y0, self.plus_rect.x0 - GAP, y1);
         self.field.apply_layout_external(self.field_rect);
+    }
+
+    /// The value's type: the field's body text, or the size's label role
+    /// with tabular figures when compact.
+    fn value_style_in(&self, theme: &Theme) -> crate::text_render::TextStyle {
+        if self.compact {
+            self.control_size.label_style(theme).numeric()
+        } else {
+            theme.text(crate::tokens::TextRole::Body)
+        }
+    }
+
+    /// Where a pointer presses a stepper: its face grown to the minimum
+    /// target about its centre.
+    fn stepper_hit(&self, stepper: Rect) -> Rect {
+        self.interaction.minimum_target_rect(stepper)
     }
 
     /// Flush a pending committed value to the bound CRDT field, if any.
@@ -548,10 +582,9 @@ impl Widget for NumberInput {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let size = self.base_footprint(theme);
-        if self.automatic_minimum.is_some() {
-            self.automatic_minimum = Some(size);
-            self.field_padding = px_f32(self.field.text_padding_x(theme));
-        }
+        self.minimum = size;
+        self.field_padding = px_f32(self.field.text_padding_x(theme));
+        self.value_style = self.value_style_in(theme);
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::length(size.width),
@@ -573,10 +606,20 @@ impl Widget for NumberInput {
         node: NodeId,
         text: &mut TextRenderer,
     ) -> bool {
-        let Some(minimum) = self.automatic_minimum else {
-            return false;
-        };
-        let width = Self::required_width(minimum, self.field_padding, &self.format_value(), text);
+        // Every value the control can show fits, so stepping never resizes it.
+        let width = [self.value, self.min, self.max]
+            .into_iter()
+            .filter(|value| value.is_finite())
+            .map(|value| {
+                Self::required_width(
+                    self.minimum,
+                    self.field_padding,
+                    &self.format_display(value),
+                    &self.value_style,
+                    text,
+                )
+            })
+            .fold(self.minimum.width, f32::max);
         let Ok(current) = tree.style(node) else {
             return false;
         };
@@ -606,8 +649,6 @@ impl Widget for NumberInput {
         theme: &Theme,
         presence: &crate::presence::PresenceCtx,
     ) {
-        let colors = &theme.tokens.colors;
-        let radius = f64::from(theme.tokens.radii.control);
         let disabled = !self.effectively_enabled();
         if disabled {
             scene.push_layer(
@@ -619,50 +660,53 @@ impl Widget for NumberInput {
             );
         }
 
-        // --- Stepper buttons ---
-        for (btn_rect, glyph, hovered) in [
-            (self.minus_rect, "\u{2212}", self.minus_hover), // − (minus sign)
-            (self.plus_rect, "+", self.plus_hover),
+        // --- Stepper buttons: the shared button face, bare when compact ---
+        let role = if self.compact {
+            crate::widget::ButtonRole::Plain
+        } else {
+            crate::widget::ButtonRole::Secondary
+        };
+        for (btn_rect, icon, name, hovered) in [
+            (
+                self.minus_rect,
+                crate::icons::Icon::Minus,
+                "Decrease",
+                self.minus_hover,
+            ),
+            (
+                self.plus_rect,
+                crate::icons::Icon::Plus,
+                "Increase",
+                self.plus_hover,
+            ),
         ] {
-            let shape = RoundedRect::from_rect(btn_rect, radius);
-            let bg = if hovered && !disabled {
-                colors.lift_on(colors.surfaces.raised, 0.5)
-            } else {
-                colors.surfaces.raised
-            };
-            scene.fill(vello::peniko::Fill::NonZero, transform, bg, None, &shape);
-            // Stepper edge derived from its rest surface, as a Neutral
-            // button (HIG §9.5), held across hover.
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                crate::surface::edge_on(colors.surfaces.raised),
-                None,
-                &crate::surface::edge_outline(btn_rect, radius),
-            );
-
-            let (gw, gh) = text_renderer.measure(glyph, STEP_GLYPH_SIZE, None);
-            let line_height = f64::from(gh);
-            let gx = btn_rect.x0 + (btn_rect.width() - f64::from(gw)) / 2.0;
-            let gy = btn_rect.y0 + (btn_rect.height() - line_height) / 2.0;
-            let glyph_color = if disabled {
-                theme.text_dim
-            } else {
-                theme.text_primary
-            };
-            text_renderer.draw_text(
-                scene,
-                glyph,
-                STEP_GLYPH_SIZE,
-                glyph_color,
-                translated(transform, gx, gy),
-                None,
-            );
+            let face = crate::widget::ButtonFace::icon_only(btn_rect, icon, name)
+                .role(role)
+                .control_size(self.control_size)
+                .hovered(hovered && !disabled);
+            crate::widget::Button::paint(scene, transform, text_renderer, theme, &face);
         }
 
-        // --- Editable field (embedded TextInput draws its own chrome) ---
-        self.field
-            .draw(scene, transform, text_renderer, theme, presence);
+        // --- Value: the embedded field (its own chrome), or, compact and at
+        // rest, the bare value centred between the steppers ---
+        if self.compact && !self.field.is_focused() {
+            let style = self.value_style_in(theme);
+            let shown = self.format_value();
+            let (w, h) = text_renderer.measure_style(&shown, None, &style);
+            let x = self.field_rect.center().x - f64::from(w) / 2.0;
+            let y = self.field_rect.center().y - f64::from(h) / 2.0;
+            text_renderer.draw_style(
+                scene,
+                &shown,
+                theme.tokens.colors.text_primary,
+                translated(transform, x, y),
+                None,
+                &style,
+            );
+        } else {
+            self.field
+                .draw(scene, transform, text_renderer, theme, presence);
+        }
 
         if disabled {
             scene.pop_layer();
@@ -687,8 +731,8 @@ impl Widget for NumberInput {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor = p;
-                let mh = self.minus_rect.contains(p);
-                let ph = self.plus_rect.contains(p);
+                let mh = self.stepper_hit(self.minus_rect).contains(p);
+                let ph = !mh && self.stepper_hit(self.plus_rect).contains(p);
                 if mh != self.minus_hover || ph != self.plus_hover {
                     self.minus_hover = mh;
                     self.plus_hover = ph;
@@ -700,7 +744,7 @@ impl Widget for NumberInput {
                 button: MouseButton::Left,
                 ..
             } if *el == ElementState::Pressed => {
-                if self.minus_rect.contains(self.last_cursor) {
+                if self.minus_hover {
                     // Commit any half-typed edit before stepping so the step
                     // is relative to what the user last saw, then blur the field.
                     if self.field.is_focused() {
@@ -711,7 +755,7 @@ impl Widget for NumberInput {
                     self.flush_crdt(ctx.state, ctx.path);
                     *ctx.focus_target = Some(ctx.node_id);
                     *ctx.handled = true;
-                } else if self.plus_rect.contains(self.last_cursor) {
+                } else if self.plus_hover {
                     if self.field.is_focused() {
                         self.commit_local();
                         self.field.set_focus(false);
@@ -977,12 +1021,15 @@ mod tests {
                 let mut number = NumberInput::new(15.0).with_suffix("min");
                 layout_with_theme(&mut number, &theme);
                 assert!(number.rect.width() >= DEFAULT_WIDTH * f64::from(scale));
-                assert_eq!(number.rect.height(), DEFAULT_HEIGHT * f64::from(scale));
+                assert_eq!(
+                    number.rect.height(),
+                    crate::widget::ControlSize::Regular.height(&theme)
+                );
                 assert!(number.rect.width() <= 292.0, "starter narrow control width");
-                let (value_width, value_height) = text.measure(
+                let (value_width, value_height) = text.measure_style(
                     number.field.value(),
-                    crate::tokens::typography::stock().size(crate::tokens::TextRole::Body),
                     None,
+                    &theme.text(crate::tokens::TextRole::Body),
                 );
                 assert!(
                     f64::from(value_width) + 2.0 * number.field.text_padding_x(&theme)
@@ -1003,9 +1050,23 @@ mod tests {
                 number.commit_local();
                 assert_eq!(number.value(), 25.0);
                 assert_eq!(number.field.value(), "25 min");
-                let mut explicit = NumberInput::new(15.0).with_size(170.0, 38.0);
-                layout_with_theme(&mut explicit, &theme);
-                assert_eq!(explicit.rect.size(), vello::kurbo::Size::new(170.0, 38.0));
+                let mut compact = NumberInput::new(100.0)
+                    .with_range(10.0, 400.0)
+                    .with_suffix("%")
+                    .compact()
+                    .control_size(crate::widget::ControlSize::Small);
+                layout_with_theme(&mut compact, &theme);
+                assert!(
+                    compact.rect.width() < number.rect.width(),
+                    "a compact stepper hugs its value: {:?}",
+                    compact.rect
+                );
+                assert_eq!(
+                    compact.rect.height(),
+                    crate::widget::ControlSize::Small.height(&theme)
+                );
+                let (widest, _) = text.measure_style("400 %", None, &compact.value_style);
+                assert!(f64::from(widest) <= compact.field_rect.width());
             }
         }
 
@@ -1031,49 +1092,34 @@ mod tests {
             );
         }
 
-        // Case `stepper_glyphs_use_scaled_line_box_for_centering`.
+        // Case `steppers_are_square_icon_buttons_with_pointer_target_hits`.
         {
-            for scale in [1.0, 2.0] {
-                let theme = Theme::dark().with_text_scale(scale);
-                let mut text = TextRenderer::new();
-                text.set_text_scale(scale);
-                let mut number = NumberInput::new(15.0);
+            let theme = Theme::dark();
+            for compact in [false, true] {
+                let mut number =
+                    NumberInput::new(15.0).control_size(crate::widget::ControlSize::Small);
+                if compact {
+                    number = number.compact();
+                }
                 layout_with_theme(&mut number, &theme);
+                for stepper in [number.minus_rect, number.plus_rect] {
+                    assert_eq!(stepper.width(), stepper.height(), "{stepper:?}");
+                    let hit = number.stepper_hit(stepper);
+                    assert!(hit.width() >= 32.0 && hit.height() >= 32.0, "{hit:?}");
+                }
                 let mut scene = Scene::new();
                 number.draw(
                     &mut scene,
                     Affine::IDENTITY,
-                    &mut text,
+                    &mut TextRenderer::new(),
                     &theme,
                     &crate::PresenceCtx::default(),
                 );
-                for (index, (rect, glyph)) in [(number.minus_rect, "−"), (number.plus_rect, "+")]
-                    .into_iter()
-                    .enumerate()
-                {
-                    let (width, height) = text.measure(glyph, STEP_GLYPH_SIZE, None);
-                    assert!(f64::from(height) <= rect.height());
-                    assert!(f64::from(width) <= rect.width());
-                    let mut expected = Scene::new();
-                    text.draw_text(
-                        &mut expected,
-                        glyph,
-                        STEP_GLYPH_SIZE,
-                        theme.text_primary,
-                        Affine::translate((
-                            rect.x0 + (rect.width() - f64::from(width)) / 2.0,
-                            rect.y0 + (rect.height() - f64::from(height)) / 2.0,
-                        )),
-                        None,
-                    );
-                    let actual_run = &scene.encoding().resources.glyph_runs[index];
-                    let expected_run = &expected.encoding().resources.glyph_runs[0];
-                    assert_eq!(
-                        actual_run.transform.translation,
-                        expected_run.transform.translation
-                    );
-                    assert_eq!(actual_run.font_size, expected_run.font_size);
-                }
+                assert_eq!(
+                    scene.encoding().resources.glyph_runs.len(),
+                    1,
+                    "the steppers are icons; only the value is text"
+                );
             }
         }
 
@@ -1091,13 +1137,13 @@ mod tests {
                 .with_suffix("px");
             let preferred = input.preferred_width(&theme, &mut text);
 
-            let (widest, _) = text.measure(
+            let (widest, _) = text.measure_style(
                 "1000.00 px",
-                crate::tokens::typography::stock().size(crate::tokens::TextRole::Body),
                 None,
+                &theme.text(crate::tokens::TextRole::Body),
             );
             let padding = px_f32(input.field.text_padding_x(&theme));
-            let height = px_f32(DEFAULT_HEIGHT.max(f64::from(input.interaction.minimum_target())));
+            let height = px_f32(crate::widget::ControlSize::Regular.height(&theme));
             let required = f64::from(widest + padding * 2.0 + height * 2.0 + px_f32(GAP * 2.0));
             assert!(
                 preferred + 1e-6 >= required,
@@ -1119,15 +1165,9 @@ mod tests {
     }
 
     fn layout_at(n: &mut NumberInput, x0: f64, y0: f64) {
-        // Mirror `apply_layout`'s arithmetic without a taffy pass.
-        let x1 = x0 + n.width;
-        let y1 = y0 + n.height;
-        n.rect = Rect::new(x0, y0, x1, y1);
-        let h = n.height;
-        n.minus_rect = Rect::new(x0, y0, x0 + h, y1);
-        n.plus_rect = Rect::new(x1 - h, y0, x1, y1);
-        n.field_rect = Rect::new(n.minus_rect.x1 + GAP, y0, n.plus_rect.x0 - GAP, y1);
-        n.field.apply_layout_external(n.field_rect);
+        // The Regular footprint at 1×, placed without a taffy pass.
+        let height = crate::widget::ControlSize::Regular.height(&Theme::dark());
+        n.apply_layout_external(Rect::new(x0, y0, x0 + DEFAULT_WIDTH, y0 + height));
     }
 
     fn dispatch(n: &mut NumberInput, event: &WindowEvent) {

@@ -1,7 +1,7 @@
 //! Every label a filled control paints on its own fill, measured on every
 //! theme the shell can be running under.
 //!
-//! This exists because the defect it guards shipped: `ButtonStyle::Primary`
+//! This exists because the defect it guards shipped: `ButtonRole::Primary`
 //! and `Danger` hard-coded a white label over `accent_primary` /
 //! `semantic.danger`, and a toggle group's selected segment did the same. On
 //! the dark palette the primary button's label measured 3.17:1, and
@@ -28,7 +28,7 @@ use tilo_ui::color_compat::ColorCompat;
 use tilo_ui::theme::Theme;
 use tilo_ui::tokens::colors::{NON_TEXT_MIN_CONTRAST, ON_FILL_MIN_CONTRAST};
 use tilo_ui::widget::{
-    ButtonInteract, ButtonStyle, SegmentedStyle, ToggleInteract, face_colors, segment_colors,
+    ButtonInteract, ButtonRole, SegmentedStyle, ToggleInteract, face_colors, segment_colors,
     toggle_face_colors,
 };
 use vello::peniko::Color;
@@ -79,12 +79,11 @@ fn interacts() -> [(&'static str, ButtonInteract); 4] {
     ]
 }
 
-const STYLES: [ButtonStyle; 5] = [
-    ButtonStyle::Neutral,
-    ButtonStyle::Primary,
-    ButtonStyle::Danger,
-    ButtonStyle::Ghost,
-    ButtonStyle::DangerOutline,
+const STYLES: [ButtonRole; 4] = [
+    ButtonRole::Secondary,
+    ButtonRole::Primary,
+    ButtonRole::Destructive,
+    ButtonRole::Plain,
 ];
 
 #[test]
@@ -144,9 +143,9 @@ fn filled_control_labels_clear_their_floor_in_every_theme_and_state() {
         let mut failures = Vec::new();
         for theme in themes() {
             for style in [
-                SegmentedStyle::Solid,
-                SegmentedStyle::Pill,
-                SegmentedStyle::Underline,
+                SegmentedStyle::Segmented,
+                SegmentedStyle::Tabs,
+                SegmentedStyle::Quiet,
             ] {
                 for selected in [true, false] {
                     for hovered in [true, false] {
@@ -201,7 +200,8 @@ fn toggle_knobs_stay_visible_and_in_place() {
                         },
                     ),
                 ] {
-                    let (track, knob, _border, _w) = toggle_face_colors(&theme, on, interact);
+                    let face = toggle_face_colors(&theme, on, interact);
+                    let (track, knob) = (face.track, face.knob_outline());
                     let ratio = contrast_ratio(knob, track);
                     if ratio < NON_TEXT_MIN_CONTRAST {
                         failures.push(format!(
@@ -228,8 +228,8 @@ fn toggle_knobs_stay_visible_and_in_place() {
     {
         for theme in themes() {
             for on in [true, false] {
-                let (track, rest, _, _) = toggle_face_colors(&theme, on, ToggleInteract::default());
-                let (_, hovered, _, _) = toggle_face_colors(
+                let rest = toggle_face_colors(&theme, on, ToggleInteract::default());
+                let hovered = toggle_face_colors(
                     &theme,
                     on,
                     ToggleInteract {
@@ -237,6 +237,8 @@ fn toggle_knobs_stay_visible_and_in_place() {
                         ..Default::default()
                     },
                 );
+                let (track, rest, hovered) =
+                    (rest.track, rest.knob_outline(), hovered.knob_outline());
                 let lighter_than_track = |k: Color| {
                     contrast_ratio(k, Color::from_rgb8(255, 255, 255))
                         < contrast_ratio(track, Color::from_rgb8(255, 255, 255))

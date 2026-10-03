@@ -37,6 +37,7 @@ use crate::shell::overlay_host::layers::{
     LayerCx, LayerGeometry, LayerId, LayerIntent, LayerPaint, Routed, ShellLayer,
 };
 use ui::TextRole;
+use ui::widget::ButtonRole;
 
 /// How often a shown prompt re-reads the transaction, so it follows the
 /// backend (applied elsewhere, restored on timeout) without per-frame I/O.
@@ -129,7 +130,7 @@ pub(crate) fn paint_keep_revert_band(
         text_renderer,
         theme,
         &ui::widget::ButtonFace::new(keep, &keep_label)
-            .style(ui::widget::ButtonStyle::Primary)
+            .role(ButtonRole::Primary)
             .focused(focus == Some(BandFocus::Keep)),
     );
     ui::widget::Button::paint(
