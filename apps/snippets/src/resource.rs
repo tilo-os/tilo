@@ -82,7 +82,7 @@ impl Resource for Snippets {
             .map(|snippet| SearchEntry {
                 anchor: Some(snippet_resource_id(snippet.id)),
                 title: if snippet.title.trim().is_empty() {
-                    "Untitled snippet".into()
+                    crate::tr("snippets-untitled")
                 } else {
                     snippet.title.clone()
                 },
@@ -105,6 +105,24 @@ impl ResourceApp for SnippetsShell {
     fn view(cx: &mut ViewCx<Snippets>) -> Element {
         cx.surface(SnippetsApp::new())
     }
+
+    /// * `narrow` — the sidebar drawer open over a narrow window.
+    /// * `detail` — a very narrow window showing the open snippet pushed in
+    ///   front of the list.
+    /// * `empty` — a fresh install with no snippets.
+    /// * `expand` — the fill-in-variables dialog over the open snippet.
+    /// * `language`, `more` — the language picker or the overflow menu.
+    fn scenarios() -> &'static [&'static str] {
+        &["narrow", "detail", "empty", "expand", "language", "more"]
+    }
+
+    fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
+        match name {
+            "narrow" => Some((800, 600)),
+            "detail" => Some((520, 800)),
+            _ => None,
+        }
+    }
 }
 
 impl ResourceSurface<Snippets> for SnippetsApp {
@@ -116,6 +134,14 @@ impl ResourceSurface<Snippets> for SnippetsApp {
 
     fn attach(&mut self, cx: SurfaceCx<Snippets>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    /// A capture shows the starter library at work (an empty one for the
+    /// `empty` scenario): its snippets are created through the same action
+    /// a person's "New snippet" dispatches, then the scenario's view state
+    /// is staged once they are presented.
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario);
     }
 }
 
@@ -165,6 +191,18 @@ impl ActionSink {
             None => self
                 .local
                 .dispatch_with_context(doc, type_id, action, context),
+        }
+    }
+
+    /// Submit `actions` through the framework as one edit, applied before
+    /// the next frame. Only a hosted app has the framework to submit to.
+    pub(crate) fn submit_all(&self, actions: impl IntoIterator<Item = SnippetsAction>) {
+        if let Some(dispatcher) = &self.framework {
+            dispatcher.group(|| {
+                for action in actions {
+                    dispatcher.apply(&action);
+                }
+            });
         }
     }
 

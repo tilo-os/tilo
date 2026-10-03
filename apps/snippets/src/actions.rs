@@ -330,7 +330,11 @@ fn encode_spec(id: &str, label: &str, action: &SnippetsAction) -> ActionSpec {
 /// One-line label for a snippet resource in the palette.
 fn snippet_label(s: &Snippet) -> String {
     let t = s.title.trim();
-    if t.is_empty() { "Untitled snippet" } else { t }.to_string()
+    if t.is_empty() {
+        crate::tr("snippets-untitled")
+    } else {
+        t.to_string()
+    }
 }
 
 /// Document-derived children for [`tilo_resource::publish`]: tags and snippets.
@@ -420,9 +424,9 @@ pub fn provide_snippet_resource(s: &Snippet) -> Resource {
 
     r = r.with_action(ActionSpec::prompted(
         "edit-body",
-        ui::i18n!("snippets-edit-body"),
-        ui::i18n!("snippets-body-placeholder"),
-        ui::i18n!("snippets-body-placeholder"),
+        crate::tr("snippets-edit-body"),
+        crate::tr("snippets-body-placeholder"),
+        crate::tr("snippets-body-placeholder"),
         ExecutionLocus::ClientLocal,
         move |text: &str| encode(&set_body_action(id, text)),
     ));

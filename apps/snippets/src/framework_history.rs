@@ -223,7 +223,7 @@ impl HistoryPreview for SnippetsPreview {
                     .height
                     + f64::from(spacing.rhythm.section);
             }
-            let height = crate::draw::code_height(theme, s);
+            let height = crate::draw::code_height(tr, theme, width, s);
             crate::draw::paint_code(
                 scene,
                 t,
@@ -234,7 +234,7 @@ impl HistoryPreview for SnippetsPreview {
             );
         } else {
             PaintCtx::new(scene, t, tr, theme).text_role(
-                "No snippets in this version",
+                &crate::tr("snippets-history-empty"),
                 TextRole::Body,
                 theme.text_dim,
                 Point::new(x, y),
@@ -258,7 +258,7 @@ impl HistoryPreview for SnippetsPreview {
                 .iter()
                 .find(|s| Some(s.id.to_string()) == self.view.page)
                 .map_or_else(
-                    || "No snippets in this version".into(),
+                    || crate::tr("snippets-history-empty"),
                     |s| {
                         let mut lines = vec![s.title.clone()];
                         lines.extend(
@@ -281,24 +281,26 @@ impl HistoryPreview for SnippetsPreview {
 }
 
 /// A past version's facts, as label and value.
-fn facts(s: &crate::model::Snippet) -> Vec<(&'static str, String)> {
-    let mut facts = vec![("Language", s.language.label().to_string())];
+fn facts(s: &crate::model::Snippet) -> Vec<(String, String)> {
+    use crate::tr;
+    let mut facts = vec![(tr("snippets-fact-language"), s.language.name())];
     if !s.folder.is_empty() {
-        facts.push(("Folder", s.folder.clone()));
+        facts.push((tr("snippets-fact-folder"), s.folder.clone()));
     }
     if !s.tags.is_empty() {
-        facts.push(("Tags", s.tags.join(", ")));
+        facts.push((tr("snippets-fact-tags"), s.tags.join(", ")));
     }
     facts.push((
-        "Favorite",
-        if s.favorite { "Yes" } else { "No" }.to_string(),
+        tr("snippets-fact-favorite"),
+        tr(if s.favorite {
+            "snippets-yes"
+        } else {
+            "snippets-no"
+        }),
     ));
     facts.push((
-        "Copied",
-        ui::i18n::I18nManager::format(
-            "snippets-uses",
-            &[("count", ui::i18n::ArgValue::Number(f64::from(s.uses)))],
-        ),
+        tr("snippets-fact-copied"),
+        crate::tr_count("snippets-uses", s.uses as usize),
     ));
     facts
 }

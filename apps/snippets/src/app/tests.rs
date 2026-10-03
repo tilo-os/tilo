@@ -214,40 +214,77 @@ fn copy_and_creation_flows_update_the_library() {
         assert_eq!(reopened.library_len_for_test(), 1);
     }
 
-    // Case `the_language_menu_sets_the_chosen_language`.
+    // Case `the_language_picker_sets_the_chosen_language`.
     {
         let mut app = SnippetsApp::new_demo();
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
         let id = app.open_id_for_test().unwrap();
-        let anchor = Rect::new(0.0, 0.0, 80.0, 28.0);
-        app.core
+        app.requests
             .borrow_mut()
-            .detail
-            .hits
-            .push((anchor, Action::PickLanguage(id)));
-        app.core.borrow_mut().window = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        assert!(Widget::perform_semantic_action(
-            &mut app,
-            &Action::PickLanguage(id).semantic_id(),
-            &ui::a11y::Action::Activate,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        let rust = Language::ALL
-            .iter()
-            .position(|language| *language == Language::Rust)
-            .unwrap();
-        assert!(Widget::perform_semantic_action(
-            &mut app,
-            &format!("snippets.menu:{rust}"),
-            &ui::a11y::Action::Activate,
-            &mut doc,
-            &automerge::ROOT,
-        ));
+            .push(Action::SetLanguage(id, Language::Rust));
+        app.settle(&mut doc);
         assert_eq!(SnippetsDoc::get(&doc, id).unwrap().language, Language::Rust);
+        assert_eq!(
+            app.detail,
+            DetailKey::of(&app.core.borrow()),
+            "the content column follows the new language"
+        );
+    }
+
+    // Case `the_overflow_menu_opens_under_its_button_and_duplicates`.
+    {
+        let mut app = SnippetsApp::new_demo();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        let id = app.open_id_for_test().unwrap();
+        let before = app.library_len_for_test();
+        {
+            let mut core = app.core.borrow_mut();
+            core.window = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            core.more_anchor = Rect::new(1200.0, 12.0, 1232.0, 44.0);
+        }
+        app.requests.borrow_mut().push(Action::More(id));
+        app.settle(&mut doc);
+        let menu = app
+            .core
+            .borrow()
+            .menu
+            .as_ref()
+            .map(|open| Widget::get_rect(&open.menu))
+            .expect("the overflow menu is open");
+        assert!(menu.y0 >= 44.0, "the menu opens below its button");
+        assert!(Widget::perform_semantic_action(
+            &mut app,
+            "snippets.menu:0",
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert_eq!(app.library_len_for_test(), before + 1);
         assert!(app.core.borrow().menu.is_none(), "choosing closes the menu");
     }
+}
+
+/// The list is one focus stop whose keys move the open snippet.
+#[test]
+fn the_list_moves_the_open_snippet_by_keys() {
+    let app = SnippetsApp::new_demo();
+    let mut core = app.core.borrow_mut();
+    let first = core.visible[0];
+    let second = core.visible[1];
+    let last = *core.visible.last().unwrap();
+    core.open = Some(first);
+    assert!(core.list_key(&Key::Named(NamedKey::ArrowDown)));
+    assert_eq!(core.open, Some(second));
+    assert!(core.list_key(&Key::Named(NamedKey::ArrowUp)));
+    assert!(core.list_key(&Key::Named(NamedKey::ArrowUp)));
+    assert_eq!(core.open, Some(first), "Up stops at the top");
+    assert!(core.list_key(&Key::Named(NamedKey::End)));
+    assert_eq!(core.open, Some(last));
+    assert!(core.list_key(&Key::Named(NamedKey::Home)));
+    assert_eq!(core.open, Some(first));
+    assert!(!core.list_key(&Key::Character("a".into())));
 }
 
 /// The variable dialog is addressable, IME edits undo, and the body editor adopts peer changes.
@@ -610,4 +647,33 @@ fn controls_dispatch_palette_actions_with_one_undo() {
         assert_eq!(app.library_len_for_test(), before - 1);
         assert!(!library_of(&app).iter().any(|s| s.id == id));
     }
+}
+
+/// The content column's controls keep their measured size across a window
+/// resize and a rebuild for another snippet, and its header buttons follow
+/// the open snippet.
+#[test]
+fn the_content_column_lays_out_its_controls() {
+    let mut app = framed(SnippetsApp::new_demo(), 1280);
+    let sizes = |app: &Framed<SnippetsApp>| {
+        let id = app.open_id_for_test().unwrap();
+        let targets = Framed::harness(app).targets();
+        let rect = |name: String| targets.get(&name).copied().unwrap_or(Rect::ZERO);
+        (
+            rect(format!("snippets.snippet:{id}.language")),
+            rect(format!("snippets.snippet:{id}.copy")),
+        )
+    };
+    let (language, copy) = sizes(&app);
+    assert!(language.width() > language.height() && copy.width() > copy.height());
+    Framed::harness_mut(&mut app).resize((960, 800)).unwrap();
+    assert_eq!(sizes(&app).1.size(), copy.size(), "a resize keeps the size");
+    let other = app.core.borrow().visible[2];
+    app.requests.borrow_mut().push(Action::OpenSnippet(other));
+    Framed::harness_mut(&mut app).relayout();
+    let (language, copy) = sizes(&app);
+    assert_eq!(app.open_id_for_test(), Some(other));
+    assert!(language.width() > language.height() && copy.width() > copy.height());
+    let targets = Framed::harness(&app).targets();
+    assert!(targets.contains_key("snippets.favorite") && targets.contains_key("snippets.more"));
 }
