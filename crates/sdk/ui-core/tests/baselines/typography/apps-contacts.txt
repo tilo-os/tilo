@@ -1,0 +1,9 @@
+# The typography ratchet for apps-contacts: counts may only fall (HIG §9.13).
+# Format: <path relative to the repository root> <pattern> <count>
+# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
+apps/contacts/src/app.rs font_size_const 3
+apps/contacts/src/app.rs legacy_size_api 58
+apps/contacts/src/app.rs literal_font_size 7
+apps/contacts/src/app.rs raw_type_step 3
+apps/contacts/src/export_dialog.rs legacy_size_api 5
+apps/contacts/src/framework_history.rs legacy_size_api 1

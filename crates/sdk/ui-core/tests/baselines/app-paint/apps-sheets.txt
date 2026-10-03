@@ -1,0 +1,12 @@
+# The app-paint ratchet for apps-sheets: counts may only fall (HIG §9.13).
+# Format: <path relative to the repository root> <pattern> <count>
+# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
+apps/sheets/src/app.rs desktop_ground 7
+apps/sheets/src/app.rs glyph_icon 2
+apps/sheets/src/app.rs literal_alpha 2
+apps/sheets/src/app.rs ramp_slot 12
+apps/sheets/src/app.rs raw_paint 25
+apps/sheets/src/grid.rs desktop_ground 4
+apps/sheets/src/grid.rs literal_alpha 6
+apps/sheets/src/grid.rs ramp_slot 11
+apps/sheets/src/grid.rs raw_paint 25
