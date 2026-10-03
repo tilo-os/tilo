@@ -65,14 +65,15 @@ pub fn load_policy() -> PowerPolicy {
 
 /// Load Settings policy for a profile already obtained from
 /// power-profiles-daemon. This avoids spawning its CLI from the D-Bus monitor.
+/// The result is already narrowed to this machine's duty: a host never
+/// suspends on its own.
 pub fn load_policy_for_profile(active_profile: Option<&str>) -> PowerPolicy {
-    let Some(path) = settings_path() else {
-        return default_policy();
-    };
-    match std::fs::read_to_string(&path) {
-        Ok(text) => policy_from_settings_json_for_profile(&text, active_profile),
-        Err(_) => default_policy(),
-    }
+    let configured = settings_path()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .map_or_else(default_policy, |text| {
+            policy_from_settings_json_for_profile(&text, active_profile)
+        });
+    configured.for_duty(crate::policy::this_machine_duty())
 }
 
 /// The policy a freshly-installed machine runs (Settings defaults). This

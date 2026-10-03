@@ -78,7 +78,7 @@ pub use history::{
 pub use inhibit::{InhibitRegistry, InhibitToken};
 #[cfg(feature = "service")]
 pub use logind::{LogindInhibitor, LogindManager};
-pub use policy::{PowerAction, PowerPolicy};
+pub use policy::{MachineDuty, PowerAction, PowerPolicy, this_machine_duty};
 #[cfg(feature = "service")]
 pub use profiles::PowerProfilesMonitor;
 #[cfg(feature = "service")]
