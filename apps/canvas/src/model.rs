@@ -25,7 +25,7 @@ pub const MAX_POINTS: usize = 4096;
 /// The support the artwork is made on.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Ground {
-    /// `smooth`, `paper`, `cold-press`, `rough` or `linen`.
+    /// `smooth`, `paper`, `cold-press`, `rough`, `linen` or `panel`.
     pub texture: String,
     /// The ground's colour, `#rrggbb`.
     pub colour: String,

@@ -17,7 +17,7 @@ use crate::colour::{Rgb, encode8, from_linear};
 use crate::engine::{Blend, Canvas, Fill, LayerSim, Mark, MediumEngine, ParamSpec, Settings};
 use crate::field::ColourField;
 use crate::grid::{Area, at, box_blur, cell, float, key, read, smoothstep};
-use crate::ground::{fbm, hash01, mix};
+use crate::ground::{fbm, hash01, mix, value_noise};
 use crate::mask::{Coverage, fill};
 
 /// The oil engine.
@@ -91,6 +91,13 @@ impl Oil {
                     "How far, in brush widths, a filled shape's edge is worked soft into what is beside it.",
                     (0.0, 4.0),
                     0.0,
+                ),
+                ParamSpec::new(
+                    "edge",
+                    "Broken edge",
+                    "How irregularly a filled shape's edge is painted: the brush overshoots and falls short of the outline and breaks dry over the tooth there. 0 is a clean, drawn edge; 1 wanders half a brush width.",
+                    (0.0, 1.0),
+                    0.25,
                 ),
             ]
             .into(),
@@ -269,6 +276,13 @@ impl Glaze {
     }
 }
 
+/// How much body paint of `colour` has: lights are mixed with lead white
+/// and laid thick, darks are lean and lie thin.
+fn body_of(colour: Rgb) -> f32 {
+    let luma = (0.2126 * colour.r + 0.7152 * colour.g + 0.0722 * colour.b).max(0.0);
+    0.5 + 0.9 * luma.sqrt()
+}
+
 /// `under` seen through a coat of `paint`: a glaze filters the light, so it
 /// darkens toward its own colour and never lightens.
 fn glazed(under: Rgb, paint: Rgb, strength: f32) -> Rgb {
@@ -345,19 +359,31 @@ impl OilLayer {
                 // How far, in cells, a full bristle travels before it is dry.
                 let reach = pass.size * (10.0 + 30.0 * (1.0 - streak * uneven)) + 80.0;
                 let shade = 1.0 + (hash01(pass.seed, 19, key(index)) - 0.5) * 0.1 * (0.5 + streak);
+                // Paint is never mixed through on the palette: each bristle
+                // carries a little more of one pigment or the other, warmer
+                // or cooler, so a stroke is broken colour, not one flat hue.
+                let warmth = (hash01(pass.seed, 37, key(index)) - 0.5) * 0.08 * (0.5 + streak);
+                let colour = pass.colour.scale(shade);
+                let colour = Rgb::new(
+                    colour.r * (1.0 + warmth),
+                    colour.g,
+                    colour.b * (1.0 - warmth),
+                );
                 // Outer bristles touch down later and lift sooner than the
-                // middle of the brush, so an end narrows as well as frays.
+                // middle of the brush, so an end narrows as well as frays;
+                // the middle meets the canvas at once, so strokes laid end
+                // to end still join.
                 let edge = offset.abs();
-                let ragged = pass.size * pass.ragged;
+                let ragged = pass.size * pass.ragged * (0.15 + 0.85 * edge);
                 Bristle {
                     offset,
                     load: pass.load * (1.0 - streak * 0.6 * uneven),
                     spend: 1.0 / (reach * (0.6 + 0.8 * hash01(pass.seed, 17, key(index)))),
-                    colour: pass.colour.scale(shade).clamp(),
+                    colour: colour.clamp(),
                     shade,
                     ridge: hash01(pass.seed, 23, key(index)),
-                    land: ragged * (0.5 * edge + hash01(pass.seed, 29, key(index))),
-                    lift: ragged * (0.5 * edge + hash01(pass.seed, 31, key(index))),
+                    land: ragged * (0.3 + hash01(pass.seed, 29, key(index))),
+                    lift: ragged * (0.3 + hash01(pass.seed, 31, key(index))),
                 }
             })
             .collect()
@@ -426,15 +452,18 @@ impl OilLayer {
                 {
                     continue;
                 }
-                let centre = (
-                    sample.x - sample.ty * bristle.offset * half,
-                    sample.y + sample.tx * bristle.offset * half,
-                );
                 let streak = fbm(
                     sample.distance / streak_length,
                     bristle.offset * lanes,
                     pass.seed ^ 0x7a3d,
                     2,
+                );
+                // The outer hairs splay and gather as the brush travels, so
+                // a stroke's sides fray instead of running ruler-straight.
+                let splay = bristle.offset + (streak - 0.5) * bristle.offset.abs();
+                let centre = (
+                    sample.x - sample.ty * splay * half,
+                    sample.y + sample.tx * splay * half,
                 );
                 let contact = smoothstep(0.25, 0.75, streak * 0.65 + patch * 0.35);
                 let touch = Touch {
@@ -505,8 +534,11 @@ impl OilLayer {
                 let grip = tooth * 0.4 + press;
                 let catch = smoothstep(0.45 - bristle.load * 0.9, 0.95 - bristle.load * 0.9, grip);
                 // A glaze is thinned to flow: it settles into the weave
-                // instead of catching on the threads.
-                let catch = catch + (1.0 - catch) * pass.glaze.map_or(0.0, |glaze| glaze.amount);
+                // instead of catching on the threads, but its bristles still
+                // drag it out in streaks along the stroke.
+                let thinned = pass.glaze.map_or(0.0, |glaze| glaze.amount);
+                let catch = (catch + (1.0 - catch) * thinned)
+                    * (1.0 - thinned * 0.4 * (1.0 - touch.contact));
                 let deposit =
                     (reach_here.min(1.0) * clip * catch * bristle.load.min(1.0) * pass.opacity)
                         .clamp(0.0, 1.0);
@@ -529,12 +561,22 @@ impl OilLayer {
                     pass.glaze,
                     (x, y),
                 );
+                // However many strokes of a lay-in cross a cell its outline
+                // only grazes, they cover no more of it than the outline
+                // does, so the edge keeps its smoothness.
+                let cover = if clip < 1.0 {
+                    cover.min(cover_here.max(clip))
+                } else {
+                    cover
+                };
                 self.write(index, colour, cover);
                 // Each bristle leaves its own ridge; the light reads them as
                 // the stroke's direction. A glaze is too thin to leave one.
                 if let Some(value) = self.thickness.get_mut(index) {
-                    let ridge =
-                        (0.15 + body) * (0.35 + 1.3 * bristle.ridge) * bristle.load.min(1.2);
+                    let ridge = (0.15 + body)
+                        * (0.35 + 1.3 * bristle.ridge)
+                        * bristle.load.min(1.2)
+                        * body_of(bristle.colour);
                     let body_share = 1.0 - pass.glaze.map_or(0.0, |glaze| glaze.amount);
                     *value += (ridge - *value) * (deposit * 0.7 * body_share);
                 }
@@ -620,7 +662,7 @@ impl OilLayer {
                 let (_, covered) = coat((under, cover), paint, deposit, glaze, (x, y));
                 self.write(index, colour, covered);
                 if let Some(value) = self.thickness.get_mut(index) {
-                    *value = value.max(deposit * 0.08 * (1.0 - transparency));
+                    *value = value.max(deposit * 0.08 * (1.0 - transparency) * body_of(paint));
                 }
                 if let Some(value) = self.wet.get_mut(index) {
                     *value = value.max(deposit);
@@ -633,7 +675,7 @@ impl OilLayer {
     /// The brushwork laying in a region: parallel strokes along `angle`,
     /// broken into lengths and clipped to the outline.
     fn lay_in(&mut self, settings: &Settings, region: &Fill, seed: u64) {
-        let Some(coverage) = self.region_coverage(settings, region) else {
+        let Some(coverage) = self.region_coverage(settings, region, seed) else {
             return;
         };
         let opacity = region.opacity.clamp(0.0, 1.0) * region.paint.alpha;
@@ -718,7 +760,7 @@ impl OilLayer {
 
     /// Where a region's paint goes, its edge softened as far as it is worked
     /// into what is beside it.
-    fn region_coverage(&self, settings: &Settings, region: &Fill) -> Option<Coverage> {
+    fn region_coverage(&self, settings: &Settings, region: &Fill, seed: u64) -> Option<Coverage> {
         let brush = region.brush.max(2.0);
         let feather = settings.get("feather") * brush;
         let coverage = fill(
@@ -733,12 +775,13 @@ impl OilLayer {
         }
         let area = coverage.area;
         let (span, rows) = (area.width(), area.height());
+        let values = self.broken(&coverage, brush, settings.get("edge"), seed);
         // Paint laid wet into wet is worked into its neighbour: its edge
         // feathers over half a brush instead of stopping at the outline.
         let values = if region.wet {
-            box_blur(&coverage.values, span, rows, cell(brush * 0.5, 256).max(1))
+            box_blur(&values, span, rows, cell(brush * 0.5, 256).max(1))
         } else {
-            coverage.values
+            values
         };
         // A feathered edge is worked out further, and twice over, so it
         // fades without a visible ramp.
@@ -749,6 +792,37 @@ impl OilLayer {
             values
         };
         Some(Coverage { area, values })
+    }
+
+    /// `coverage` with its outline painted by hand: within `edge` half
+    /// brush widths of it the paint overshoots and falls short over a few
+    /// brush widths, and breaks dry where the tooth stands high.
+    fn broken(&self, coverage: &Coverage, brush: f32, edge: f32, seed: u64) -> Vec<f32> {
+        let reach = edge * brush * 0.5;
+        if reach < 0.5 {
+            return coverage.values.clone();
+        }
+        let area = coverage.area;
+        let radius = cell(reach, 256).max(1);
+        let soft = box_blur(&coverage.values, area.width(), area.height(), radius);
+        // However little the edge wanders, it stays at least a cell soft,
+        // so a thin brush's outline does not step from cell to cell.
+        let window = (0.6 / float(radius.saturating_mul(2).saturating_add(1))).max(0.1);
+        let wander = (brush * 1.5).max(3.0);
+        soft.iter()
+            .enumerate()
+            .map(|(local, &value)| {
+                if value <= 0.0 || value >= 1.0 {
+                    return value;
+                }
+                let (x, y) = area.position(local);
+                let along = fbm(float(x) / wander, float(y) / wander, seed ^ 0x3e11, 3);
+                let grit = self.canvas.ground.at(x, y);
+                let threshold =
+                    (0.5 + (along - 0.5) * 1.1 + (grit - 0.5) * 0.5 * edge).clamp(0.1, 0.85);
+                smoothstep(threshold - window, threshold + window, value)
+            })
+            .collect()
     }
 
     /// The strokes laying in `area`: overlapping lengths roughly along
@@ -1038,17 +1112,29 @@ impl OilLayer {
             return here;
         }
         // The hairs of a blender drag in lanes, so even a softened passage
-        // keeps a faint grain along the stroke.
+        // keeps a grain along the stroke: some lanes carry the paint
+        // through, others barely move it.
         let across = px * -dy + py * dx;
         let along = px * dx + py * dy;
-        let lane = 0.7
-            + 0.3
-                * fbm(
-                    across / lane_size,
-                    along / (lane_size * 12.0),
-                    seed ^ 0x6b1d,
-                    2,
+        let lane = 0.35
+            + 0.65
+                * smoothstep(
+                    0.2,
+                    0.8,
+                    fbm(
+                        across / lane_size,
+                        along / (lane_size * 12.0),
+                        seed ^ 0x6b1d,
+                        2,
+                    ),
                 );
+        // Each hair leaves a groove in the paint it combs, finer than the
+        // lanes, which the light picks out as the blender's direction.
+        let groove = value_noise(
+            across / (lane_size * 0.6),
+            along / (lane_size * 10.0),
+            seed ^ 0x6b1e,
+        );
         let pull = (strength * inside * mobile * lane).clamp(0.0, 1.0);
         let mean_cover = covered / weight;
         let new_cover = cover + (mean_cover - cover) * pull;
@@ -1062,8 +1148,10 @@ impl OilLayer {
         } else {
             before
         };
-        // Blending levels the paint: the ridges of the strokes beneath go.
-        let new_thickness = (thickness + (body / weight - thickness) * pull) * (1.0 - 0.4 * pull);
+        // Blending levels the ridges of the strokes beneath and combs its
+        // own into what is left.
+        let levelled = (thickness + (body / weight - thickness) * pull) * (1.0 - 0.4 * pull);
+        let new_thickness = levelled + pull * 0.2 * groove * mean_cover;
         let new_wet = if new_cover > 0.0 { wet.max(pull) } else { wet };
         [
             colour.r,
@@ -1080,7 +1168,7 @@ impl OilLayer {
         let strength = settings.get("blender");
         match mark {
             Mark::Fill(region) => {
-                let Some(coverage) = self.region_coverage(settings, region) else {
+                let Some(coverage) = self.region_coverage(settings, region, seed) else {
                     return;
                 };
                 let (sin, cos) = region.angle.to_radians().sin_cos();
@@ -1146,7 +1234,7 @@ impl LayerSim for OilLayer {
                         load: settings.get("load"),
                         seed,
                         clip: None,
-                        ragged: 0.35,
+                        ragged: 0.9,
                         field: None,
                         glaze: glaze.as_ref(),
                     },
@@ -1176,7 +1264,7 @@ impl LayerSim for OilLayer {
                             return fallback;
                         }
                         let paint = read(&self.thickness, width, x, y, 0.0);
-                        paint + self.canvas.ground.at(x, y) * 0.3 * (1.0 - paint.min(1.0))
+                        paint + self.canvas.ground.at(x, y) * 0.65 * (1.0 - paint.min(1.0))
                     };
                     let here = surface(x, y, 0.0);
                     let left = surface(x.saturating_sub(1), y, here);
