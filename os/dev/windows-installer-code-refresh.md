@@ -62,3 +62,9 @@ admission rejects active channels, any refresh history, omitted host evidence,
 or guest override markers.
 
 Python 3 must be on PATH, or set `TILO_PYTHON` to its executable. Helpers must use LF line endings. Hot refresh is allowed only during the explicit paused window; creating `continue-install` permanently closes that window before the first installer action. The guest independently checks active installer units/processes and the backend lock. Files are staged together and new bind mounts are rolled back on failure; a failed rollback stops the disposable VM greeter. Proof emitters, verification preflight and refresh bootstrap are excluded from refresh.
+
+Privileged integration proof is an explicit fail-fast command (ordinary unit tests have no skip gates):
+
+```sh
+sudo unshare -m --propagation private python3 os/tests/probe_installer_code_refresh_mounts.py
+```
