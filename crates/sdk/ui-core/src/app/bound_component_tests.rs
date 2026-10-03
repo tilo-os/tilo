@@ -2364,3 +2364,56 @@ fn collaboration_walk_enters_bound_owner_and_refuses_closing_lifetime() {
         "callback captured the component lifetime, not detached execution"
     );
 }
+
+fn behaviour_probe_factory(
+    context: HostContext,
+    target: LaunchTarget,
+    restore: RestoreInput,
+) -> Result<AppComponent, crate::launch::LaunchError> {
+    let mut component = collaboration_probe_factory(context, target, restore)?;
+    component.set_behaviour(crate::application::ComponentBehaviour {
+        autofocus_on_structure_change: true,
+        appearance_reconcile: true,
+    });
+    Ok(component)
+}
+
+fn hosted_behaviour(
+    create: crate::application::ComponentFactory,
+) -> crate::application::ComponentBehaviour {
+    let host = crate::application_test_support::ProbeHost::new();
+    let definition = crate::application_test_support::definition(create);
+    let target = LaunchTarget::New;
+    let context = host
+        .prepare_with_permissions(
+            &definition,
+            92,
+            &target,
+            crate::application_test_support::runner_permissions(),
+        )
+        .unwrap();
+    let component = definition
+        .instantiate(context, target, RestoreInput::None)
+        .unwrap();
+    let app =
+        App::from_component(component, crate::application_test_support::runner_inputs()).unwrap();
+    crate::application::ComponentBehaviour {
+        autofocus_on_structure_change: app.autofocus_on_structure_change,
+        appearance_reconcile: app.appearance_reconcile,
+    }
+}
+
+#[test]
+fn the_hosting_window_takes_the_components_behaviour() {
+    assert_eq!(
+        hosted_behaviour(collaboration_probe_factory),
+        crate::application::ComponentBehaviour::default()
+    );
+    assert_eq!(
+        hosted_behaviour(behaviour_probe_factory),
+        crate::application::ComponentBehaviour {
+            autofocus_on_structure_change: true,
+            appearance_reconcile: true,
+        }
+    );
+}
