@@ -97,6 +97,22 @@ pub enum ManifestError {
     TargetEntrypointMismatch(String),
     #[error("target.module {0:?} is not in the payload")]
     TargetModuleMissing(String),
+    #[error("kind={0} requires an `[image]` block")]
+    ImageMissing(Kind),
+    #[error("only kind=env-runtime and kind=tool packages have an `[image]` block")]
+    ImageOnNonImage,
+    #[error("kind=tool requires `image.runtime`, the exact env-runtime package id it was built on")]
+    ToolWithoutRuntime,
+    #[error("kind=env-runtime is the base of a stack and names no `image.runtime`")]
+    EnvRuntimeWithRuntime,
+    #[error("kind={kind} is an image and is never launched; remove `{block}`")]
+    ImageLaunchable { kind: Kind, block: &'static str },
+    #[error("kind={0} requires `[package.isa]` for the architecture its binaries are built for")]
+    ImageWithoutArch(Kind),
+    #[error("image.packages entry {0:?} is empty, padded or repeated")]
+    BadImagePackage(String),
+    #[error("{0}")]
+    ImageTree(String),
     #[error(
         "package `{package}` declares `sandbox.fs.write = [{entry:?}]`, and an app does not \
          choose where it writes.\n  \
@@ -228,8 +244,9 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
                 return Err(ManifestError::FormatProviderMissingMime);
             }
         }
-        Kind::Service | Kind::Plugin | Kind::Runtime => {}
+        Kind::Service | Kind::Plugin | Kind::Runtime | Kind::EnvRuntime | Kind::Tool => {}
     }
+    validate_image(m)?;
     validate_declarations(m)?;
 
     m.publisher
@@ -239,6 +256,53 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
         .signature_bytes()
         .map_err(|e| ManifestError::BadPublisherSignature(e.to_string()))?;
     validate_target(m)
+}
+
+/// An image is a directory tree for an environment's `/usr` and `/etc`:
+/// bound to its runtime when it is a tool, built for a named architecture,
+/// and with nothing a launcher could start.
+fn validate_image(m: &Manifest) -> Result<(), ManifestError> {
+    let kind = m.package.kind;
+    let Some(image) = &m.image else {
+        return if kind.is_image() {
+            Err(ManifestError::ImageMissing(kind))
+        } else {
+            Ok(())
+        };
+    };
+    if !kind.is_image() {
+        return Err(ManifestError::ImageOnNonImage);
+    }
+    match (kind, image.runtime) {
+        (Kind::Tool, None) => return Err(ManifestError::ToolWithoutRuntime),
+        (Kind::EnvRuntime, Some(_)) => return Err(ManifestError::EnvRuntimeWithRuntime),
+        _ => {}
+    }
+    let launchable = [
+        ("[entrypoint]", m.entrypoint.is_some()),
+        ("[cli]", m.cli.is_some()),
+        ("[target]", m.target.is_some()),
+        ("package.runtime", m.package.runtime.is_some()),
+        (
+            "[providers]",
+            !(m.providers.mime.is_empty()
+                && m.providers.ext.is_empty()
+                && m.providers.schemes.is_empty()),
+        ),
+    ];
+    if let Some((block, _)) = launchable.iter().find(|(_, present)| *present) {
+        return Err(ManifestError::ImageLaunchable { kind, block });
+    }
+    if m.package.isa.x86_64.is_none() && m.package.isa.aarch64.is_none() {
+        return Err(ManifestError::ImageWithoutArch(kind));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for package in &image.packages {
+        if package.trim().is_empty() || package.trim() != package || !seen.insert(package) {
+            return Err(ManifestError::BadImagePackage(package.clone()));
+        }
+    }
+    Ok(())
 }
 
 /// What the app claims to open and the resource kinds its records hold.
@@ -325,7 +389,7 @@ fn validate_target(m: &Manifest) -> Result<(), ManifestError> {
             }
         }
         Kind::Runtime => {}
-        Kind::Service | Kind::FormatProvider | Kind::Plugin => {
+        Kind::Service | Kind::FormatProvider | Kind::Plugin | Kind::EnvRuntime | Kind::Tool => {
             return Err(ManifestError::TargetKindUnsupported);
         }
     }
@@ -542,6 +606,17 @@ pub fn validate_manifest_with_payload(
             .any(|p| p.file_name().is_some_and(|n| n == FORMAT_PROVIDER_MODULE))
     {
         return Err(ManifestError::FormatProviderMissingModule);
+    }
+    if m.package.kind.is_image()
+        && !payload_files
+            .iter()
+            .any(|path| path.as_os_str() == crate::image::TREE_FILE)
+    {
+        return Err(ManifestError::ImageTree(format!(
+            "kind={} requires {} at the payload root",
+            m.package.kind,
+            crate::image::TREE_FILE
+        )));
     }
     if let Some(target) = &m.target
         && !payload_files.iter().any(|path| {
