@@ -1,10 +1,15 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <glyph name="dieresistonos" format="2">
-  <advance width="758"/>
+  <advance width="573"/>
   <unicode hex="0385"/>
   <outline>
-    <component base="dotaccentcomb" xOffset="2"/>
-    <component base="dotaccentcomb" xOffset="475"/>
-    <component base="tonos" xOffset="204" yOffset="34"/>
+    <contour>
+      <point x="320" y="707" type="line"/>
+      <point x="379" y="862" type="line"/>
+      <point x="260" y="862" type="line"/>
+      <point x="240" y="707" type="line"/>
+    </contour>
+    <component base="dotaccentcomb" xOffset="-8" yOffset="-1"/>
+    <component base="dotaccentcomb" xOffset="301" yOffset="-1"/>
   </outline>
 </glyph>

@@ -7,20 +7,20 @@
     <contour>
       <point x="63" y="720" type="line"/>
       <point x="63" y="420" type="line" smooth="yes"/>
-      <point x="63" y="260"/>
-      <point x="140" y="164"/>
-      <point x="268" y="164" type="curve" smooth="yes"/>
-      <point x="397" y="164"/>
-      <point x="474" y="260"/>
+      <point x="63" y="262"/>
+      <point x="140" y="167"/>
+      <point x="268" y="167" type="curve" smooth="yes"/>
+      <point x="397" y="167"/>
+      <point x="474" y="262"/>
       <point x="474" y="420" type="curve" smooth="yes"/>
       <point x="474" y="720" type="line"/>
       <point x="402" y="720" type="line"/>
       <point x="402" y="420" type="line" smooth="yes"/>
-      <point x="402" y="300"/>
-      <point x="352" y="228"/>
-      <point x="268" y="228" type="curve" smooth="yes"/>
-      <point x="185" y="228"/>
-      <point x="135" y="300"/>
+      <point x="402" y="298"/>
+      <point x="352" y="225"/>
+      <point x="268" y="225" type="curve" smooth="yes"/>
+      <point x="185" y="225"/>
+      <point x="135" y="298"/>
       <point x="135" y="420" type="curve" smooth="yes"/>
       <point x="135" y="720" type="line"/>
     </contour>

@@ -1,0 +1,14 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<glyph name="dieresistonos.ss01" format="2">
+  <advance width="580"/>
+  <outline>
+    <contour>
+      <point x="427" y="707" type="line"/>
+      <point x="523" y="862" type="line"/>
+      <point x="395" y="862" type="line"/>
+      <point x="348" y="707" type="line"/>
+    </contour>
+    <component base="dotaccentcomb.ss01" xOffset="-9" yOffset="-1"/>
+    <component base="dotaccentcomb.ss01" xOffset="304" yOffset="-1"/>
+  </outline>
+</glyph>

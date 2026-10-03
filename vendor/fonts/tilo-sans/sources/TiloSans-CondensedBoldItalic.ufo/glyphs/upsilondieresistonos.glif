@@ -4,8 +4,6 @@
   <unicode hex="03B0"/>
   <outline>
     <component base="upsilon"/>
-    <component base="dotaccentcomb" xOffset="-119"/>
-    <component base="dotaccentcomb" xOffset="304"/>
-    <component base="tonos" xOffset="121" yOffset="34"/>
+    <component base="dieresistonos" xOffset="-28"/>
   </outline>
 </glyph>

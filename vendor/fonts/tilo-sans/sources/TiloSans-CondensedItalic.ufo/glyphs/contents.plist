@@ -154,6 +154,8 @@
     <string>I_ota.glif</string>
     <key>Iotadieresis</key>
     <string>I_otadieresis.glif</string>
+    <key>Iotadieresis.ss01</key>
+    <string>I_otadieresis.ss01.glif</string>
     <key>Iotatonos</key>
     <string>I_otatonos.glif</string>
     <key>J</key>
@@ -324,6 +326,8 @@
     <string>U_psilon.glif</string>
     <key>Upsilondieresis</key>
     <string>U_psilondieresis.glif</string>
+    <key>Upsilondieresis.ss01</key>
+    <string>U_psilondieresis.ss01.glif</string>
     <key>Upsilontonos</key>
     <string>U_psilontonos.glif</string>
     <key>Uring</key>
@@ -420,6 +424,8 @@
     <string>ampersand.ss11.glif</string>
     <key>anoteleia</key>
     <string>anoteleia.glif</string>
+    <key>anoteleia.ss01</key>
+    <string>anoteleia.ss01.glif</string>
     <key>aogonek</key>
     <string>aogonek.glif</string>
     <key>aogonek.ss02</key>
@@ -548,6 +554,8 @@
     <string>dieresiscomb.ss01.glif</string>
     <key>dieresistonos</key>
     <string>dieresistonos.glif</string>
+    <key>dieresistonos.ss01</key>
+    <string>dieresistonos.ss01.glif</string>
     <key>divide</key>
     <string>divide.glif</string>
     <key>divide.tf</key>
@@ -736,8 +744,12 @@
     <string>iota.glif</string>
     <key>iotadieresis</key>
     <string>iotadieresis.glif</string>
+    <key>iotadieresis.ss01</key>
+    <string>iotadieresis.ss01.glif</string>
     <key>iotadieresistonos</key>
     <string>iotadieresistonos.glif</string>
+    <key>iotadieresistonos.ss01</key>
+    <string>iotadieresistonos.ss01.glif</string>
     <key>iotatonos</key>
     <string>iotatonos.glif</string>
     <key>j</key>
@@ -932,6 +944,8 @@
     <string>questiondown.ss01.glif</string>
     <key>questiongreek</key>
     <string>questiongreek.glif</string>
+    <key>questiongreek.ss01</key>
+    <string>questiongreek.ss01.glif</string>
     <key>quotedbl</key>
     <string>quotedbl.glif</string>
     <key>quotedblbase</key>
@@ -1086,8 +1100,12 @@
     <string>upsilon.glif</string>
     <key>upsilondieresis</key>
     <string>upsilondieresis.glif</string>
+    <key>upsilondieresis.ss01</key>
+    <string>upsilondieresis.ss01.glif</string>
     <key>upsilondieresistonos</key>
     <string>upsilondieresistonos.glif</string>
+    <key>upsilondieresistonos.ss01</key>
+    <string>upsilondieresistonos.ss01.glif</string>
     <key>upsilontonos</key>
     <string>upsilontonos.glif</string>
     <key>uring</key>

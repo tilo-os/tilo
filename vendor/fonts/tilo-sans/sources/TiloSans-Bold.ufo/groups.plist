@@ -4,6 +4,7 @@
   <dict>
     <key>public.kern1.KO_A</key>
     <array>
+      <string>lambda</string>
       <string>Alphatonos</string>
       <string>Lambda</string>
       <string>Delta</string>
@@ -226,6 +227,7 @@
     </array>
     <key>public.kern1.KO_Y</key>
     <array>
+      <string>Upsilondieresis.ss01</string>
       <string>Upsilontonos</string>
       <string>Upsilondieresis</string>
       <string>Upsilon</string>
@@ -301,6 +303,7 @@
     </array>
     <key>public.kern1.KO_colon</key>
     <array>
+      <string>questiongreek.ss01</string>
       <string>colon.ss01</string>
       <string>semicolon.ss01</string>
     </array>
@@ -472,8 +475,16 @@
     </array>
     <key>public.kern1.KO_o</key>
     <array>
+      <string>upsilondieresistonos.ss01</string>
+      <string>upsilondieresis.ss01</string>
+      <string>upsilondieresistonos</string>
+      <string>upsilondieresis</string>
+      <string>omegatonos</string>
+      <string>upsilontonos</string>
       <string>omicrontonos</string>
+      <string>omega</string>
       <string>phi</string>
+      <string>upsilon</string>
       <string>omicron</string>
       <string>theta</string>
       <string>delta</string>
@@ -526,11 +537,13 @@
     </array>
     <key>public.kern1.KO_period</key>
     <array>
+      <string>anoteleia.ss01</string>
       <string>period.ss01</string>
       <string>ellipsis.ss01</string>
     </array>
     <key>public.kern1.KO_period.ss01</key>
     <array>
+      <string>anoteleia</string>
       <string>period</string>
       <string>comma</string>
     </array>
@@ -617,7 +630,13 @@
     </array>
     <key>public.kern1.KO_t</key>
     <array>
+      <string>iotadieresistonos.ss01</string>
+      <string>iotadieresis.ss01</string>
+      <string>iotadieresistonos</string>
+      <string>iotadieresis</string>
+      <string>iotatonos</string>
       <string>tau</string>
+      <string>iota</string>
       <string>t</string>
       <string>tcommaaccent</string>
       <string>tcommaaccent.ss01</string>
@@ -640,19 +659,9 @@
     </array>
     <key>public.kern1.KO_u</key>
     <array>
-      <string>upsilondieresistonos</string>
-      <string>iotadieresistonos</string>
-      <string>upsilondieresis</string>
-      <string>iotadieresis</string>
-      <string>omegatonos</string>
-      <string>upsilontonos</string>
-      <string>iotatonos</string>
       <string>alphatonos</string>
-      <string>omega</string>
       <string>psi</string>
-      <string>upsilon</string>
       <string>mu</string>
-      <string>iota</string>
       <string>alpha</string>
       <string>gbreve</string>
       <string>gcommaaccent</string>
@@ -704,7 +713,6 @@
     <key>public.kern1.KO_x</key>
     <array>
       <string>chi</string>
-      <string>lambda</string>
       <string>x</string>
     </array>
     <key>public.kern1.KO_y</key>
@@ -902,6 +910,7 @@
     </array>
     <key>public.kern2.KO_Y</key>
     <array>
+      <string>Upsilondieresis.ss01</string>
       <string>Upsilondieresis</string>
       <string>Upsilon</string>
       <string>Y</string>
@@ -951,6 +960,7 @@
     </array>
     <key>public.kern2.KO_colon</key>
     <array>
+      <string>questiongreek.ss01</string>
       <string>colon.ss01</string>
       <string>semicolon.ss01</string>
     </array>
@@ -1097,14 +1107,15 @@
     </array>
     <key>public.kern2.KO_idieresis</key>
     <array>
+      <string>iotadieresistonos.ss01</string>
+      <string>iotadieresis.ss01</string>
+      <string>iotadieresistonos</string>
+      <string>iotadieresis</string>
       <string>idieresis</string>
     </array>
     <key>public.kern2.KO_idotless</key>
     <array>
-      <string>iotadieresistonos</string>
-      <string>iotadieresis</string>
-      <string>iotatonos</string>
-      <string>kappa</string>
+      <string>etatonos</string>
       <string>iota</string>
       <string>idotless</string>
       <string>nacute</string>
@@ -1120,6 +1131,7 @@
     </array>
     <key>public.kern2.KO_j</key>
     <array>
+      <string>iotatonos</string>
       <string>iacute</string>
       <string>idotaccent</string>
       <string>igrave</string>
@@ -1184,11 +1196,13 @@
     </array>
     <key>public.kern2.KO_period</key>
     <array>
+      <string>anoteleia.ss01</string>
       <string>period.ss01</string>
       <string>comma.ss01</string>
     </array>
     <key>public.kern2.KO_period.ss01</key>
     <array>
+      <string>anoteleia</string>
       <string>period</string>
       <string>comma</string>
     </array>
@@ -1270,6 +1284,8 @@
     </array>
     <key>public.kern2.KO_u</key>
     <array>
+      <string>upsilondieresistonos.ss01</string>
+      <string>upsilondieresis.ss01</string>
       <string>upsilondieresistonos</string>
       <string>upsilondieresis</string>
       <string>omegatonos</string>
@@ -1319,7 +1335,6 @@
     <key>public.kern2.KO_x</key>
     <array>
       <string>chi</string>
-      <string>lambda</string>
       <string>x</string>
     </array>
     <key>public.kern2.KO_y.ss03</key>

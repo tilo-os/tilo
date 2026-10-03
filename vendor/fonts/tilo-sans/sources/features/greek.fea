@@ -2,3 +2,28 @@
 feature case {
 sub questiongreek by semicolon.case;
 } case;
+
+# Round dots for the Greek dotted letters and punctuation, like the Latin ones.
+feature ss01 {
+sub iotadieresis by iotadieresis.ss01;
+sub upsilondieresis by upsilondieresis.ss01;
+sub Iotadieresis by Iotadieresis.ss01;
+sub Upsilondieresis by Upsilondieresis.ss01;
+sub iotadieresistonos by iotadieresistonos.ss01;
+sub upsilondieresistonos by upsilondieresistonos.ss01;
+sub dieresistonos by dieresistonos.ss01;
+sub anoteleia by anoteleia.ss01;
+sub questiongreek by questiongreek.ss01;
+} ss01;
+
+# Ano teleia. Greek text carries U+00B7 MIDDLE DOT: U+0387 normalizes to it
+# (NFC) and Greek keyboards type it. In a Greek run the middle dot therefore
+# takes the ano teleia's form: at the x-height, spaced like a period. These
+# lookups come after ss01's, so its round-dot middle dot is caught too.
+feature locl {
+script grek;
+lookup locl_grek_anoteleia {
+	sub periodcentered by anoteleia;
+	sub periodcentered.ss01 by anoteleia.ss01;
+} locl_grek_anoteleia;
+} locl;

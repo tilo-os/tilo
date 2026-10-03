@@ -37,6 +37,7 @@ vendor/fonts/tilo-sans/
   scripts/measure.py       metrics, stems, overshoots, sidebearings per master
   scripts/verify_upstream.py   every upstream glyph unchanged?
   scripts/import_upstream.py   how sources/ was made from upstream (do not rerun)
+  scripts/greek/           the Greek: outline generator, kerning, checks (see Greek)
   sources/
     TiloSans.designspace           upright: 4 masters
     TiloSans-Italic.designspace    italic: 4 masters
@@ -237,25 +238,63 @@ tonos and dialytika letters (Ά Έ Ή Ί Ό Ύ Ώ Ϊ Ϋ, ά έ ή ί ό ύ ώ ϊ
 ΄, dialytika-tonos ΅, ano teleia ·, the Greek question mark ; and the numeral
 signs ʹ ͵ (`numeral-greek`, `lowernumeral-greek`).
 
-* Capitals that are Latin shapes (Α Β Ε Ζ Η Ι Κ Μ Ν Ο Ρ Τ Υ Χ) and ο are
-  components of the Latin glyphs; Ά Έ … are the tonos plus the letter, moved
-  right to make room. Everything else is drawn from the same master's Latin
-  parts: η from n, μ from u, κ from k, ι and τ from t, α from the single-storey
-  a with t's tail, ρ σ θ φ from the o bowl, γ ν from v, λ from y turned, Γ Δ Λ Π
-  Ξ from F, A, H and E's stems and bars. The free shapes (β δ ε ζ ξ ς υ ψ ω Φ Ψ
-  Ω) follow Instrument's rules: o's curve tension, vertical/horizontal stroke
-  contrast, terminals cut horizontally on curves and vertically on horizontal
-  strokes.
-* The tonos is the acute stood up (steeper, a little taller, same weight). Over
-  a capital it sits in front of the letter at cap height. In ΐ ΰ ΅ it stands
-  between the dots, which are set apart to clear it.
-* Kerning: each Greek glyph joins the Latin kerning classes of the Latin
-  shape its sides match (Γ's arm kerns like T's, Δ Λ like A, ρ like p on its
-  right and o on its left, …). The kern writer splits pairs per script, so
-  Greek and Latin never kern against each other.
-* Features: `languagesystem grek dflt`; `features/greek.fea` maps the Greek
-  question mark to the case form under `case`. Dropping the tonos in all-caps
-  text is left to the text layer.
+**The Greek glyphs are generated.** `scripts/greek/gen.py` draws every one of
+them into all eight masters from that master's own Latin parts and measured
+stems, and overwrites their `.glif` files. Change a Greek glyph in the
+generator, never in the `.glif`, or the next run loses the edit:
+
+```sh
+cd vendor/fonts/tilo-sans/scripts/greek
+uv run --with ufoLib2 --with fonttools python gen.py [glyph ...]   # all, or the named glyphs
+uv run kern.py [--report]          # Greek kerning groups and pairs, all masters
+uv run view.py out.png --masters Bold,CondensedBold --glyphs "beta xi"   # sources, no build
+uv run check.py                    # after build.py: pair kerning, substitutions, accent overhang
+```
+
+* Shared shapes: Α Β Ε Ζ Η Ι Κ Μ Ν Ο Ρ Τ Υ Χ and ο are components of the Latin
+  glyphs; η comes from n, μ from u, κ from k, ι and τ from t, α from the
+  single-storey a with t's tail, ρ σ from o, ν γ from v, λ from y turned, Γ Δ Λ
+  Π Ξ from F, A, H and E's stems and bars. Bowls (δ θ φ Φ) are the master's o or O
+  stretched, so they carry Instrument's curve tension, and in the italic its
+  corrected italic o.
+* Drawn shapes (β ε ζ ξ ς υ ψ ω Ψ Ω) are skeleton strokes outlined with an
+  elliptical pen using o's vertical and horizontal weights; terminals are cut
+  across the stroke like c's and j's, and the descender hooks of ζ ξ ς taper.
+  Joins are thinned where strokes meet (β's waist and stem joins, δ's neck,
+  ψ and ω's bottoms, φ's bowl where the stem crosses it), more in Bold. Heavy
+  masters lighten small bowls (β's and ε's upper bowls, φ, ψ) and widen the
+  letters whose counters would otherwise close (φ Φ ψ Ψ ω θ in Condensed Bold).
+* ζ and ξ leave their top bar from its right end, the bar ending flush with the
+  stroke. β is one stroke: the stem rolls over into the upper bowl, pinches at
+  the waist and the lower bowl runs back into the stem. γ's arms meet above the
+  baseline and run into a lighter tail.
+* Italic masters are drawn upright and sheared 13°. Strokes are pre-compensated
+  so the shear keeps the upright's weight distribution (a plain shear thickens
+  `\` strokes and thins `/` strokes by about 11%).
+* The tonos is the acute stood up. Over a capital it sits in front of the letter
+  at cap height; Ε Η Ι Ο set the white beside it, Υ and Α (whose sides run away
+  from it) match Ε's mean white, and Ω's arch comes a little closer than Ο.
+  In ΐ ΰ ΅ the tonos stands up between the dots, narrower and steeper in the
+  heavy masters, with its foot between the dots' tops; the dots keep the
+  dieresis spacing where they can. No accent hangs more than about 36 units
+  past the advance: ϊ ϋ Ϊ Ϋ ΐ ΰ take extra sidebearing where needed.
+* Kerning (`scripts/greek/kern.py`): each Greek glyph joins the Latin
+  kerning groups of the Latin glyph its sides match (Γ's arm kerns like T's,
+  Δ Λ like A, ρ like p then o, υ ω like o on the right, ι like t, λ like A on
+  the right and l on the left, accented letters like the Latin letter with
+  the same accent). The kern writer splits pairs per script, so Greek and Latin
+  never kern against each other. Where Instrument kerns the Latin analogue as
+  a single glyph (T-u is a glyph pair), the Greek pair gets the same value as
+  a glyph pair, so Τυ Τω Τμ Γω Υω kern like Tu. A collision guard then opens
+  any Greek letter pair whose outlines come closer than nearly all Latin pairs
+  do in that master. Deliberate exceptions: κλ +10, φχ φλ 0, T-like arms before
+  a capital with tonos +20 to +40.
+* Features (`features/greek.fea`): `languagesystem grek dflt`; the Greek
+  question mark follows the capitals under `case`; `ss01` (round dots) covers
+  ϊ ϋ Ϊ Ϋ ΐ ΰ ΅, the ano teleia and the question mark; and `locl` for Greek
+  maps U+00B7 MIDDLE DOT to the ano teleia, since NFC turns U+0387 into
+  U+00B7 and Greek keyboards type it. Dropping the tonos in all-caps text is
+  left to the text layer.
 
 ## Editing
 
