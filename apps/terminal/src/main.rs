@@ -143,7 +143,8 @@ fn parse_size(raw: &str) -> Option<(u32, u32)> {
 }
 
 fn run_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
-    let scenario = args.scenario.as_deref();
+    // A plain `--shots` is the live shell, which is the app's main screen.
+    let scenario = Some(args.scenario.as_deref().unwrap_or("shell"));
     let mut widget = match scenario {
         Some("shell" | "shell-select") | None => TerminalWidget::spawn_default(),
         Some("ended") => {
@@ -224,10 +225,11 @@ fn render_shot_to_png(
     Ok(())
 }
 
-/// Drive the real login shell for the `shell` shot: let the prompt settle,
-/// send a short demo command exactly as a keystroke would, and pump `sync` so
-/// the live PTY output lands in the captured frame. This exercises the same
-/// reader → `sync` → vte → CRDT path the live terminal uses every frame.
+/// Drive the real login shell for the `shell` shot: give it a fixed demo
+/// prompt, send a few short commands exactly as keystrokes would, and pump
+/// `sync` so the live PTY output lands in the captured frame. This exercises
+/// the same reader → `sync` → vte → CRDT path the live terminal uses every
+/// frame.
 fn drive_live_shell(
     widget: &mut TerminalWidget,
     doc: &mut automerge::AutoCommit,
@@ -239,14 +241,23 @@ fn drive_live_shell(
         widget.sync(doc, root);
         std::thread::sleep(Duration::from_millis(40));
     }
-    // A short demo: identify the shell, print some content, and end with a
-    // green "done" so the shot shows real SGR-coloured output.
+    // Replace the host's prompt (it differs per machine) with a fixed one and
+    // start from a clean screen, so the shot reads the same everywhere.
     #[cfg(unix)]
-    widget.write_input(
-        b"clear; printf 'Tilo terminal - live PTY session\\n'; \
-          printf 'primes below 20: 2 3 5 7 11 13 17 19\\n'; \
-          printf '\\033[1;32mdone\\033[0m\\n'\r",
-    );
+    {
+        widget.write_input(b"PS1='user@tilo ~ $ '; clear\r");
+        for _ in 0..10 {
+            widget.sync(doc, root);
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        // A short demo: print some content and end with a green "done" so the
+        // shot shows real SGR-coloured output.
+        widget.write_input(
+            b"echo 'Tilo terminal - live PTY session'\r\
+              echo 'primes below 20: 2 3 5 7 11 13 17 19'\r\
+              tput bold; tput setaf 2; echo done; tput sgr0\r",
+        );
+    }
     #[cfg(windows)]
     widget.write_input(
         b"@echo off\r\ncls\r\necho Tilo terminal - live PTY session\r\necho primes below 20: 2 3 5 7 11 13 17 19\r\necho \x1b[1;32mdone\x1b[0m\r\n",
@@ -254,6 +265,12 @@ fn drive_live_shell(
     for _ in 0..150 {
         widget.sync(doc, root);
         if widget.grid_text().lines().any(|line| line.trim() == "done") {
+            // One more beat so the prompt that follows the last command is in
+            // the frame too.
+            for _ in 0..5 {
+                widget.sync(doc, root);
+                std::thread::sleep(Duration::from_millis(40));
+            }
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -276,6 +293,58 @@ fn apply_demo_selection(widget: &mut TerminalWidget) {
     } else if let Some(row) = widget.find_row_last("done") {
         widget.set_selection_cells(GridPos { row, col: 0 }, GridPos { row, col: cols });
     }
+}
+
+/// Feed the `tui` scenario: an alternate-screen redraw sized to the grid.
+fn feed_tui(widget: &mut TerminalWidget, doc: &mut automerge::AutoCommit, root: &automerge::ObjId) {
+    let (cols, rows) = widget.grid_size();
+    let mut s = String::new();
+    s.push_str("\x1b[?1049h\x1b[2J\x1b[H");
+    // Reverse-video title bar across the top.
+    let title = format!(
+        " {:<width$}",
+        "Tilo EDIT  main.rs  [+]",
+        width = cols.saturating_sub(1)
+    );
+    let _ = write!(s, "\x1b[1;1H\x1b[7m{title}\x1b[0m");
+    #[allow(
+        clippy::literal_string_with_formatting_args,
+        reason = "demo source text shown verbatim in the tui shot; the braces are \
+                      the sample code's own println! syntax, not a format template here"
+    )]
+    let lines = [
+        "fn start() {",
+        "    // alternate-screen redraw via CSI ?1049h",
+        "    let greeting = \"hello, Tilo\";",
+        "    for i in 0..3 {",
+        "        println!(\"{i}: {greeting}\");",
+        "    }",
+        "}",
+    ];
+    for (i, line) in lines.iter().enumerate() {
+        // Line-number gutter in a dim color, then source text.
+        let _ = write!(
+            s,
+            "\x1b[{};1H\x1b[38;5;240m{:>3} \x1b[0m{}",
+            i + 3,
+            i + 1,
+            line
+        );
+    }
+    // A status line on the second-to-last row in reverse video, and
+    // the command line on the last.
+    let status = format!(
+        " {:<width$}",
+        "NORMAL  main.rs  3,17  Top",
+        width = cols.saturating_sub(1)
+    );
+    let _ = write!(
+        s,
+        "\x1b[{};1H\x1b[7m{status}\x1b[0m",
+        rows.saturating_sub(1)
+    );
+    let _ = write!(s, "\x1b[{rows};1H:wq");
+    widget.feed(doc, root, s.as_bytes());
 }
 
 /// Feed a named demo scenario's VT byte sequences through the widget's
@@ -313,45 +382,14 @@ fn run_scenario(
             s.push_str("\r\n\r\n styles:         ");
             s.push_str("\x1b[1mbold\x1b[0m  \x1b[2mdim\x1b[0m  \x1b[3mitalic\x1b[0m  \x1b[4munderline\x1b[0m  \x1b[9mstrike\x1b[0m  \x1b[7mreverse\x1b[0m\r\n");
             s.push_str("\r\n foreground:     ");
-            s.push_str("\x1b[38;2;255;90;90mred \x1b[38;2;90;220;120mgreen \x1b[38;2;110;160;255mblue\x1b[0m\r\n");
-            s.push_str("\r\n$ \x1b[38;5;120mecho\x1b[0m \x1b[38;5;223m\"hello, Tilo\"\x1b[0m\r\n");
+            s.push_str("\x1b[38;2;214;62;62mred \x1b[38;2;34;150;78mgreen \x1b[38;2;52;108;220mblue\x1b[0m\r\n");
+            s.push_str("\r\n$ \x1b[32mecho\x1b[0m \x1b[33m\"hello, Tilo\"\x1b[0m\r\n");
             widget.feed(doc, root, s.as_bytes());
         }
-        // A full-screen alternate-screen redraw resembling a text editor.
-        "tui" => {
-            let mut s = String::new();
-            s.push_str("\x1b[?1049h\x1b[2J\x1b[H");
-            // Reverse-video title bar across the top.
-            s.push_str("\x1b[1;1H\x1b[7m Tilo EDIT  main.rs  [+]                                      unix  utf-8 \x1b[0m");
-            #[allow(
-                clippy::literal_string_with_formatting_args,
-                reason = "demo source text shown verbatim in the tui shot; the braces are \
-                          the sample code's own println! syntax, not a format template here"
-            )]
-            let lines = [
-                "fn start() {",
-                "    // alternate-screen redraw via CSI ?1049h",
-                "    let greeting = \"hello, Tilo\";",
-                "    for i in 0..3 {",
-                "        println!(\"{i}: {greeting}\");",
-                "    }",
-                "}",
-            ];
-            for (i, line) in lines.iter().enumerate() {
-                // Line-number gutter in a dim color, then source text.
-                let _ = write!(
-                    s,
-                    "\x1b[{};1H\x1b[38;5;240m{:>3} \x1b[0m{}",
-                    i + 3,
-                    i + 1,
-                    line
-                );
-            }
-            // A status line near the bottom in reverse video.
-            s.push_str("\x1b[23;1H\x1b[7m NORMAL                                              3,17          Top \x1b[0m");
-            s.push_str("\x1b[24;1H:wq");
-            widget.feed(doc, root, s.as_bytes());
-        }
+        // A full-screen alternate-screen redraw resembling a text editor,
+        // sized to the grid so its bars span the window and its status line
+        // sits on the last rows, as a real editor draws them.
+        "tui" => feed_tui(widget, doc, root),
         // Long output, then scrolled back so history is on screen.
         "scrollback" => {
             let mut s = String::new();
