@@ -187,60 +187,13 @@ pub fn badge_column_width(text: &mut TextRenderer, theme: &Theme, badges: &[&str
         .ceil()
 }
 
-/// Paint the fill a row shows in `state` on the ground of `theme`: the
-/// selection lift when selected, half of it under the pointer, nothing at
-/// rest. Lists that paint their own rows (a tree, a table) use this so every
-/// row in Tilo selects the same way.
-pub fn paint_row_fill(
-    scene: &mut Scene,
-    transform: Affine,
-    theme: &Theme,
-    rect: Rect,
-    selected: bool,
-    hovered: bool,
-) {
-    let Some(fill) = row_fill(theme, selected, hovered) else {
-        return;
-    };
-    let radius = f64::from(theme.tokens.radii.item);
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        fill,
-        None,
-        &RoundedRect::from_rect(rect, radius),
-    );
-}
-
-/// The selection lift under `theme`'s ground. On a near-black ground (the
-/// high-contrast material) the shared lift does not register, so the row
-/// takes a floor of its own that still carries the theme's text.
+/// The fill a row shows: the selection lift of `theme`'s ground when
+/// selected (or pressed), half of it under the pointer, nothing at rest.
 fn row_fill(theme: &Theme, selected: bool, hovered: bool) -> Option<Color> {
-    if selected {
-        Some(crate::widget::data_table::selection_fill(theme))
-    } else if hovered {
-        Some(theme.tokens.colors.intent.selection_hover)
-    } else {
-        None
-    }
-}
-
-/// A selected row mid-transition (a row fading in or out of a list),
-/// flat so a run of selected rows reads as one lift.
-pub(crate) fn paint_row_selection_faded(
-    scene: &mut Scene,
-    transform: Affine,
-    theme: &Theme,
-    rect: Rect,
-    opacity: f32,
-) {
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        crate::widget::data_table::selection_fill(theme).multiply_alpha(opacity),
-        None,
-        &rect,
-    );
+    let state = crate::chrome::SelectionState::new(selected, hovered, false);
+    (selected || hovered).then(|| {
+        crate::chrome::selection_tier_on(theme, state, theme.tokens.colors.surfaces.content).fill
+    })
 }
 
 /// Immediate-mode list row. Build one per row per frame, `measure` it for
