@@ -1066,7 +1066,6 @@ survey again after every attempt.
 | diffmerge | `diffmerge.merge#edit-merged` | declared | yes | yes |
 | ebook | `ebook.library#toggle-hide-read` | declared | yes | yes |
 | hex-editor | none: edits a local file | — | yes (open) | yes |
-| image-editor | `image-editor.project#exposure` | declared | yes | yes |
 | notes | `notes.notebook#new-page` | declared | yes | yes |
 | passwords | none: device secret store | — | yes (open) | yes |
 | scratchpad | `scratchpad.note#edit` | declared | yes | yes |
@@ -1080,8 +1079,7 @@ survey again after every attempt.
 
 Clocks, hex-editor and passwords keep their state off the shared record
 by design. The agent operates them like anyone else, and there is nothing to
-sync. Image-editor's declared actions needed `component_actions` in its
-definition, a fix that applies to every in-process host.
+sync.
 
 ## Reused from PR 541
 

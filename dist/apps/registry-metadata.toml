@@ -71,9 +71,6 @@ tagline = "See every byte"
 [apps.hot-reload-demo]
 description = "A small document you can keep editing while its code reloads in the same windows."
 tagline = "Change the app without closing it"
-[apps.image-editor]
-description = "Make focused edits to images without leaving your desktop."
-tagline = "Images, made yours"
 [apps.imager]
 description = "Write verified Tilo and disk images to removable media."
 tagline = "Prepare media with confidence"
