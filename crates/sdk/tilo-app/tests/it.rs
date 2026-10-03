@@ -21,6 +21,8 @@ pub mod identity;
 pub mod incremental;
 #[path = "item_actions.rs"]
 pub mod item_actions;
+#[path = "kinds.rs"]
+pub mod kinds;
 #[path = "launch.rs"]
 pub mod launch;
 #[path = "live_permissions.rs"]
