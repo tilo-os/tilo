@@ -3135,6 +3135,25 @@ jobs:
           path: tilo-os-release-index.json
           if-no-files-found: error
 
+      # A device of this release downloads its media codecs only through a
+      # signed manifest resolved for exactly its base (extension-manifests.yml).
+      # Requested by dispatch: a called workflow gets no OIDC credentials to
+      # sign with. The daily run catches up on a request that fails here.
+      - name: Request the system extension manifests for the promoted index
+        continue-on-error: true
+        env:
+          FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          image="$(jq -er .image tilo-os-release-index.json)"
+          [[ $image =~ ^registry\.tilo\.so/tilo/tilo@sha256:[0-9a-f]{64}$ ]]
+          curl --fail-with-body --silent --show-error -X POST \
+            -H "Authorization: token ${FORGEJO_TOKEN}" \
+            -H 'Content-Type: application/json' \
+            "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/actions/workflows/extension-manifests.yml/dispatches" \
+            --data "$(jq -cn --arg images "$image" '{ref:"main",inputs:{images:$images}}')"
+          echo "::notice::requested extension manifests for $image"
+
   # A board's flashable disk, installed from the sealed board image the
   # aarch64 lane published (os/dev/build-board-image.sh): a job of its own,
   # off the path to the board's -ci tag, which the lane already moved.
@@ -3607,6 +3626,23 @@ jobs:
           fi
           skopeo copy --multi-arch index-only --preserve-digests "docker://$repository@$digest" "docker://$moving"
           echo "::notice::$moving -> $source ($digest)"
+      # A dev VM of this commit downloads its media codecs only through a
+      # signed manifest resolved for exactly its base (extension-manifests.yml).
+      - name: Request the system extension manifests for this commit's dev images
+        continue-on-error: true
+        env:
+          FORGEJO_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          source="registry.tilo.so/tilo/tilo-vm:main-${GITHUB_SHA:0:7}-ci"
+          digest="sha256:$(skopeo inspect --raw "docker://$source" | sha256sum | awk '{print $1}')"
+          image="registry.tilo.so/tilo/tilo-vm@$digest"
+          curl --fail-with-body --silent --show-error -X POST \
+            -H "Authorization: token ${FORGEJO_TOKEN}" \
+            -H 'Content-Type: application/json' \
+            "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/actions/workflows/extension-manifests.yml/dispatches" \
+            --data "$(jq -cn --arg images "$image" '{ref:"main",inputs:{images:$images}}')"
+          echo "::notice::requested extension manifests for $image ($source)"
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
           name: tilo-os-integration-index
