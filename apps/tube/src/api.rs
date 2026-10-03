@@ -116,7 +116,7 @@ pub enum Update {
         channel: Box<Channel>,
         uploads: Vec<Video>,
     },
-    /// Which data source is currently answering (drives the top-bar pill).
+    /// Which data source is currently answering (drives the header status badge).
     Status {
         live: bool,
         label: String,
