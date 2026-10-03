@@ -487,6 +487,94 @@ fn a_column_without_a_shell_has_no_header_row() {
 }
 
 #[test]
+fn history_is_one_glyph_in_the_window_top_trailing_corner() {
+    // Case `only_where_the_host_gives_the_shell_history`.
+    {
+        let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
+        settle(&mut h, 1280, 800);
+        assert_eq!(geometry(&h).history, Rect::ZERO);
+        assert!(child_rect(&h, "nav-shell-history").is_none());
+    }
+
+    // Case `closed_it_stands_at_the_trailing_edge_of_the_row`.
+    {
+        let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
+        h.root_mut::<NavShell>()
+            .set_history_control(Some(HistoryControl::Closed));
+        settle(&mut h, 1280, 800);
+        let g = geometry(&h);
+        assert!(g.history.width() > 0.0);
+        assert!(g.history.x1 > 1280.0 - 24.0 && g.history.x1 <= 1280.0);
+        assert!(g.history.y1 <= g.header_height);
+        let button = h
+            .root::<NavShell>()
+            .children()
+            .into_iter()
+            .find(|child| child.test_id() == Some("nav-shell-history"))
+            .and_then(Widget::accessibility)
+            .unwrap();
+        assert_eq!(button.state.checked, Some(false));
+        assert!(
+            g.actions_band(Column::Content).x1 <= g.history.x0,
+            "the app's actions end before it"
+        );
+    }
+
+    // Case `open_it_reads_as_on`.
+    {
+        let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
+        h.root_mut::<NavShell>()
+            .set_history_control(Some(HistoryControl::Open));
+        settle(&mut h, 1280, 800);
+        let button = h
+            .root::<NavShell>()
+            .children()
+            .into_iter()
+            .find(|child| child.test_id() == Some("nav-shell-history"))
+            .and_then(Widget::accessibility)
+            .unwrap();
+        assert_eq!(button.state.checked, Some(true));
+    }
+
+    // Case `the_inspector_toggle_stands_just_before_it`.
+    {
+        let shell = NavShell::new()
+            .content(Probe::boxed("content").0)
+            .inspector(Probe::boxed("inspector").0);
+        let mut h = harness(shell, 1280, 800, Theme::dark());
+        h.root_mut::<NavShell>()
+            .set_history_control(Some(HistoryControl::Closed));
+        settle(&mut h, 1280, 800);
+        let g = geometry(&h);
+        assert!(g.inspector_toggle.width() > 0.0);
+        assert!(g.inspector_toggle.x1 < g.history.x0, "{g:?}");
+        assert!((g.inspector_toggle.y0 - g.history.y0).abs() < 0.5);
+    }
+
+    // Case `a_shell_without_headers_grows_a_row_for_it`.
+    {
+        let shell = NavShell::new().content(Probe::boxed("content").0);
+        let mut h = harness(shell, 1024, 700, Theme::dark());
+        h.root_mut::<NavShell>()
+            .set_history_control(Some(HistoryControl::Closed));
+        settle(&mut h, 1024, 700);
+        let g = geometry(&h);
+        assert!(g.header_height > 0.0);
+        assert!(g.history.x1 > 1024.0 - 24.0);
+    }
+
+    // Case `a_narrow_push_stack_keeps_it_on_the_front_screen`.
+    {
+        let mut h = harness(mail_shell(), 560, 800, Theme::dark());
+        h.root_mut::<NavShell>()
+            .set_history_control(Some(HistoryControl::Closed));
+        settle(&mut h, 560, 800);
+        let g = geometry(&h);
+        assert!(g.history.width() > 0.0 && g.history.x1 <= 560.0, "{g:?}");
+    }
+}
+
+#[test]
 fn slides_take_the_motion_duration_and_reduced_motion_jumps() {
     let theme = Theme::dark();
     let mut h = harness(mail_shell(), 1280, 800, theme.clone());

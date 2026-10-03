@@ -364,8 +364,8 @@ set it themselves.
 
 ### The UI face
 
-The system UI face is Instrument Sans; Greek and Cyrillic fall back to faces
-matched to its x-height and weight (Geologica, Onest), Vietnamese to Noto Sans
+The system UI face is Tilo Sans, which sets Latin, Vietnamese and Greek;
+Cyrillic falls back to Onest, matched to its x-height and weight
 ([Script fallbacks](typography.md#script-fallbacks)). A theme or the
 accessibility layer may choose the built-in `Hyperlegible` face instead. Code
 never names a family: `TextRole` picks sans, serif (`Reading`) or mono
@@ -645,6 +645,8 @@ Selection forks:
 | `chrome::selection_tier_on(theme, state, ground)` | Now one surface step of `ground` (`SELECTION_MIN_STEP`, ΔL 0.06, on every ground). |
 | `SidebarDrawer::paint_panel(scene, transform, theme) -> Theme` | A painted app's sidebar or inspector panel, docked or floating. |
 | `HostShortcut::Sidebar` | Ctrl+Shift+L / ⌘⇧L: show or hide the sidebar in every app. |
+| The window's History control in the header row | Put there by the host where the app has History: `Icon::History` at the trailing edge, on while History shows. `NavGeometry::history` is its rect. |
+| `Button::toggled(on)`, `set_toggled(on)`, `is_toggled()`; `ButtonFace::toggled(on)` | A toggle button: on, a Plain glyph stands on the selection lift and is announced as a pressed toggle. |
 | `Icon::PanelLeft`, `Icon::PanelRight` | The sidebar and inspector toggles. |
 | `theme.tokens.metrics.{header_height, nav_row_height, rail_width, inspector_width, sidebar_min_width, sidebar_max_width, content_min_width, detail_min_width}` | The shell metrics (HIG §9.6). |
 
@@ -1317,7 +1319,6 @@ clock. HIG §7c is the rule; this section is the mechanical part.
 | `ui::overlay::scrim::vertical_fade(scene, t, rect, FadeEdge::Top / Bottom, strength, theme)` | One smooth gradient under text on media. |
 | `theme.tokens.colors.media.{letterbox, scrim, ink, ink_dim}` | Media colours, the same in every theme. |
 | `ui::icons::Icon::TriangleAlert` | Warning icon (the `BannerKind::Warning` default). |
-| `ui::widget::history_button()` | The History button for an app's own toolbar; the window then draws no History bar. |
 | `ui::clock::{local_now, today, CAPTURE_LOCAL_TIME}` | Local date and time; pinned to 30 June 2026, 10:42 in captures. |
 | `FrameHarness::settle_for_capture(bound)` | Run frames until no animation runs and no image load is in flight. |
 | `ui::image_store::loads_in_flight()` | Image loads in flight across every store. |
@@ -1425,10 +1426,18 @@ and `draw_pill`, and draws its arrows with `ui::icons::Icon::ChevronLeft` /
 
 ### History
 
-- Toolbar apps (logs, themes, weather and any app with its own header row):
-  put `ui::widget::history_button()` into that row (trailing group). The
-  window then draws no History bar; delete any top padding or band the app
-  added under the bar.
+History is one window control: a Plain `Icon::History` button named
+"History", which the framework puts at the trailing edge of the `NavShell`
+header row and which reads as on while History shows. Apps place nothing.
+
+| Before | After |
+|---|---|
+| `ui::widget::history_button()` in an app's toolbar | Delete it. Build the window with `NavShell`; its header row holds History. |
+| A "History" text button, menu item or glyph an app or shell draws itself | Delete it; the shortcut, the palette and the header row's control are the doors. |
+| Top padding or a band an app added under the window's History bar | Delete it. An app with a `NavShell` has no bar; any other app's bar is the framework's. |
+
+- An app without a header row (a single canvas or form) keeps the window's
+  History bar: the same glyph at its trailing edge, nothing else.
 - `HistoryScopeDefinition::title` is a short noun ("Notebook", "Saved
   places"). Delete descriptions and developer notes from it: "(not
   recorded)", "(forecasts are not recorded)", "Process output (not
@@ -1463,6 +1472,9 @@ and `draw_pill`, and draws its arrows with `ui::icons::Icon::ChevronLeft` /
    (`ui::launch::render_widget_png` does all three).
 6. Light shots through a remote cargo drop-in: pass `--theme light` (the
    environment is not forwarded).
+7. History mode: pass `--history` with `--shots` or `--responsive-matrix`;
+   the capture opens History first (`FrameHarness::open_history`), as the
+   History shortcut does.
 
 ### What to delete in an app
 
