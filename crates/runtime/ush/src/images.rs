@@ -157,8 +157,10 @@ pub fn on_this_device() -> std::sync::Arc<dyn Images> {
     if let Some(root) = std::env::var_os("TILO_USH_IMAGES") {
         return std::sync::Arc::new(DirImages::at(PathBuf::from(root)));
     }
-    match StoreImages::from_env() {
-        Ok(images) => std::sync::Arc::new(images),
+    match package_store::Store::from_env() {
+        Ok(store) => std::sync::Arc::new(StoreImages::new(
+            env_tools::store::trusting_device_tools(store),
+        )),
         Err(reason) => std::sync::Arc::new(NoImages(format!(
             "the package store cannot be opened: {reason}"
         ))),

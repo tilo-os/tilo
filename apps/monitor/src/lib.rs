@@ -16,8 +16,9 @@
 //! - [`tree`]       — pure parent→child process tree + subtree-sum roll-ups.
 //! - [`doc`]        — collaborative view preferences (tab, sort, filter,
 //!   selection) stored in Automerge.
-//! - [`prefs`]      — per-window device observation and safety preferences,
-//!   deliberately outside Automerge and collaborative history.
+//! - [`prefs`]      — the person's cadence, kernel-thread and kill-confirmation
+//!   preferences (a personal settings section, outside Automerge and
+//!   collaborative history) and the window's sampling switch.
 //! - [`responsive`] — width-driven Processes push navigation + dashboard reflow.
 //! - [`app`]        — the root [`app::MonitorApp`] widget.
 //!

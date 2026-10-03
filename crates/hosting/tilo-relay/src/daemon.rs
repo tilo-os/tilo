@@ -301,12 +301,21 @@ pub struct Relay {
 pub(crate) struct WebContext {
     pub(crate) relay: RelayProtocol,
     pub(crate) certification: crate::certification::CertificationProtocol,
+    /// The device of the session beside this node, once named.
+    pub(crate) node_session: Arc<std::sync::OnceLock<[u8; 32]>>,
 }
 
 impl Relay {
     #[cfg(feature = "web")]
     pub(crate) fn web_context(&self) -> &WebContext {
         &self.web
+    }
+
+    /// Name the device of the session beside this node (the shell that runs
+    /// the person's apps), which pages address to open apps there. Named
+    /// once; a later call keeps the first.
+    pub fn set_node_session(&self, device: [u8; 32]) {
+        let _ = self.web.node_session.set(device);
     }
 }
 
@@ -752,6 +761,7 @@ impl Relay {
         let web = Box::new(WebContext {
             relay: handler.clone(),
             certification: certification.clone(),
+            node_session: Arc::default(),
         });
         let governed_access_update = Arc::new(AsyncMutex::new(()));
         // A certified host governs the rooms it creates, unless its embedder

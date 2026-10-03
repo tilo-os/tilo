@@ -191,7 +191,10 @@
                     "save-medium",
                     "remove-medium",
                     "align",
-                    "set-reference"
+                    "set-reference",
+                    "select",
+                    "use-selection",
+                    "combine"
                   ]
                 }
               },
@@ -265,6 +268,41 @@
         "ty": "text",
         "required": true,
         "description": "The name",
+        "nullable": false
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "combine",
+    "resource_kind": "canvas.artwork",
+    "label": "Combine shapes",
+    "description": "Combine shapes into one path mark, in the bottom one's place and style.",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "ids",
+        "ty": "array",
+        "required": true,
+        "description": "Marks or groups.",
+        "schema": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Marks or groups."
+        },
+        "nullable": false
+      },
+      {
+        "name": "op",
+        "ty": "text",
+        "required": true,
+        "description": "`union`, `subtract` (from the bottom one), `intersect` or `exclude`.",
+        "schema": {
+          "type": "string",
+          "description": "`union`, `subtract` (from the bottom one), `intersect` or `exclude`."
+        },
         "nullable": false
       }
     ]
@@ -799,12 +837,19 @@
                 ],
                 "description": "`0..=1`."
               },
-              "brush": {
+              "brush_size": {
                 "type": [
                   "number",
                   "null"
                 ],
-                "description": "Painted layers: the brush width a filled shape is laid in with."
+                "description": "Painted layers: the brush size a filled shape is laid in with."
+              },
+              "brush": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "A stroke's brush preset, as `paint` takes it."
               },
               "angle": {
                 "type": [
@@ -942,7 +987,7 @@
                   "string",
                   "null"
                 ],
-                "description": "Cut to this mark's shape (opacity 0 hides that mark)."
+                "description": "Cut to this mark's shape (opacity 0 hides that mark), or `selection`."
               },
               "transform": {
                 "type": [
@@ -1077,6 +1122,48 @@
           "description": "`0..=1`: let the ground's tooth show through the layer's marks."
         },
         "nullable": true
+      },
+      {
+        "name": "mask",
+        "ty": "text",
+        "required": false,
+        "description": "`reveal`, `hide` or `remove`: a mask layer `<id>-mask` to paint greys on, white shows, black hides.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`reveal`, `hide` or `remove`: a mask layer `<id>-mask` to paint greys on, white shows, black hides."
+        },
+        "nullable": true
+      },
+      {
+        "name": "invert",
+        "ty": "boolean",
+        "required": false,
+        "description": "Invert the mask.",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Invert the mask."
+        },
+        "nullable": true
+      },
+      {
+        "name": "clip",
+        "ty": "boolean",
+        "required": false,
+        "description": "Clip to the layer below.",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Clip to the layer below."
+        },
+        "nullable": true
       }
     ]
   },
@@ -1085,7 +1172,7 @@
     "action": "edit-marks",
     "resource_kind": "canvas.artwork",
     "label": "Edit marks",
-    "description": "Change marks by id: colours, opacity, name, move_by [dx,dy], scale and rotate about their centre, or move them to another layer.",
+    "description": "Change marks by id: colours, opacity, name, move_by [dx,dy], scale and rotate about their centre, or move them to another layer. Strokes: re-brush (brush, size, params), smooth, simplify, extend, split at a point, merge.",
     "operation": "Document",
     "params": [
       {
@@ -1722,14 +1809,43 @@
       },
       {
         "name": "brush",
+        "ty": "text",
+        "required": false,
+        "description": "A stroke's brush preset (see paint).",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A stroke's brush preset (see paint)."
+        },
+        "nullable": true
+      },
+      {
+        "name": "size",
         "ty": "number",
         "required": false,
-        "description": "brush",
+        "description": "A stroke's width.",
         "schema": {
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "description": "A stroke's width."
+        },
+        "nullable": true
+      },
+      {
+        "name": "brush_size",
+        "ty": "number",
+        "required": false,
+        "description": "Painted layers: the brush size a filled shape is laid in with.",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Painted layers: the brush size a filled shape is laid in with."
         },
         "nullable": true
       },
@@ -1851,6 +1967,87 @@
           "description": "An affine `[a, b, c, d, e, f]` in artwork units applied after the rest, to all the marks as one: a stretch or turn about any point."
         },
         "nullable": true
+      },
+      {
+        "name": "smooth",
+        "ty": "number",
+        "required": false,
+        "description": "Strokes: take the wobble out of their paths, 0..=1.",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Strokes: take the wobble out of their paths, 0..=1."
+        },
+        "nullable": true
+      },
+      {
+        "name": "simplify",
+        "ty": "number",
+        "required": false,
+        "description": "Strokes: drop points within this many units of the line.",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Strokes: drop points within this many units of the line."
+        },
+        "nullable": true
+      },
+      {
+        "name": "extend",
+        "ty": "array",
+        "required": false,
+        "description": "A stroke: continue it through these points, from the end they start nearer.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "description": "A stroke: continue it through these points, from the end they start nearer."
+        },
+        "nullable": true
+      },
+      {
+        "name": "split",
+        "ty": "array",
+        "required": false,
+        "description": "A stroke: cut it in two at the point nearest x, y; the far part gets a new id.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "A stroke: cut it in two at the point nearest x, y; the far part gets a new id."
+        },
+        "nullable": true
+      },
+      {
+        "name": "merge",
+        "ty": "boolean",
+        "required": false,
+        "description": "Strokes: join them, in the order named, into the first.",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Strokes: join them, in the order named, into the first."
+        },
+        "nullable": true
       }
     ]
   },
@@ -1958,7 +2155,10 @@
                       "remove-medium",
                       "align",
                       "set-reference",
-                      "import-svg"
+                      "import-svg",
+                      "select",
+                      "use-selection",
+                      "combine"
                     ]
                   },
                   "args": {
@@ -2011,7 +2211,10 @@
                                   "save-medium",
                                   "remove-medium",
                                   "align",
-                                  "set-reference"
+                                  "set-reference",
+                                  "select",
+                                  "use-selection",
+                                  "combine"
                                 ]
                               }
                             }
@@ -2352,7 +2555,7 @@
     "action": "paint",
     "resource_kind": "canvas.artwork",
     "label": "Paint strokes",
-    "description": "Paint brush strokes on a layer in one step. On an oil or watercolour layer the medium simulates real paint; on a plain layer strokes are ink. Each stroke: points [[x,y] or [x,y,pressure]], size, colour (#rrggbb or pigment:<name>). One stroke can be many: forks grows a branch or bare tree; dabs scatters foliage, flowers or (with dab_length, angle -90) grass. Work like a painter, looking close after each passage: big shapes first, blended while wet on the same layer; then forms in a few values (dark mass, middle, lit side); small lights and accents last.",
+    "description": "Paint brush strokes on a layer in one step. On an oil or watercolour layer the medium simulates real paint; on a plain layer the brush preset draws them: pen for clean line art (pressure swells the line), pencil or charcoal to shade (light pressure, many strokes; charcoal catches the paper), marker for flat see-through tone, airbrush for soft glows, calligraphy for lettering. brush eraser (no colour) clears paint under it on its layer; remove-marks along takes whole strokes. Each stroke: points [[x,y] or [x,y,pressure]], size, colour (#rrggbb or pigment:<name>). One stroke can be many: forks grows a branch or bare tree; dabs scatters foliage, flowers or (with dab_length, angle -90) grass. Work like a painter, looking close after each passage: big shapes first; then forms in a few values (dark mass, middle, lit side); small lights and accents last.",
     "operation": "Document",
     "params": [
       {
@@ -2380,8 +2583,7 @@
             "type": "object",
             "required": [
               "points",
-              "size",
-              "colour"
+              "size"
             ],
             "properties": {
               "id": {
@@ -2412,7 +2614,14 @@
               },
               "colour": {
                 "type": "string",
-                "description": "`#rrggbb[aa]` or `pigment:<name>`."
+                "description": "`#rrggbb[aa]` or `pigment:<name>`; an eraser takes none."
+              },
+              "brush": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Plain layers: `pen` (crisp ink, pressure sets width), `pencil` (grainy, pressure sets darkness), `marker` (flat, overlaps darken), `airbrush` (soft spray that builds up), `charcoal` (picks up the ground's tooth), `calligraphy` (broad nib at `angle`, default 45). Any layer: `eraser` clears paint beneath it on its layer. A round ink brush when absent."
               },
               "opacity": {
                 "type": [
@@ -2432,7 +2641,7 @@
                   "object",
                   "null"
                 ],
-                "description": "Medium parameter overrides for this stroke (`{\"load\": 0.2}` for dry brush)."
+                "description": "Medium overrides on a painted layer (`{\"load\": 0.2}` for dry brush); on a plain layer the brush's flow, hardness, spacing, smoothing and taper, each 0..=1."
               },
               "forks": {
                 "type": [
@@ -2485,7 +2694,7 @@
                   "string",
                   "null"
                 ],
-                "description": "Keep the paint inside this mark's shape, as a painter cuts in against an edge: texture a rock or a crown within its silhouette."
+                "description": "Keep the paint inside this mark's shape, as a painter cuts in against an edge: texture a rock or a crown within its silhouette. Or `selection`."
               }
             },
             "additionalProperties": false,
@@ -2538,7 +2747,7 @@
     "action": "remove-marks",
     "resource_kind": "canvas.artwork",
     "label": "Remove marks",
-    "description": "Remove marks by id, or every mark of a layer.",
+    "description": "Remove marks by id, every mark of a layer, or the strokes a path along crosses.",
     "operation": "Document",
     "params": [
       {
@@ -2558,13 +2767,35 @@
         "name": "layer",
         "ty": "text",
         "required": false,
-        "description": "Remove every mark on this layer.",
+        "description": "Remove every mark on this layer (with along: only its strokes).",
         "schema": {
           "type": [
             "string",
             "null"
           ],
-          "description": "Remove every mark on this layer."
+          "description": "Remove every mark on this layer (with along: only its strokes)."
+        },
+        "nullable": true
+      },
+      {
+        "name": "along",
+        "ty": "array",
+        "required": false,
+        "description": "Remove the brush strokes this path `[[x, y], …]` crosses, as a stroke eraser does.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "description": "Remove the brush strokes this path `[[x, y], …]` crosses, as a stroke eraser does."
         },
         "nullable": true
       }
@@ -2725,6 +2956,209 @@
           "description": "A medium: one of the built-in engines with its parameters, a suggested ground and a palette. Saving one makes it part of the artwork, shared with everyone who opens it."
         },
         "nullable": false
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "select",
+    "resource_kind": "canvas.artwork",
+    "label": "Select area",
+    "description": "Select an area: shapes, marks, magic wand (at) or colour; add, subtract, intersect, grow, feather, invert. Then use-selection, or clip: \"selection\" in paint or draw. Bucket fill: select at, use-selection fill. look outlines it",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "rect",
+        "ty": "array",
+        "required": false,
+        "description": "`[x, y, w, h]`.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number"
+          },
+          "minItems": 4,
+          "maxItems": 4,
+          "description": "`[x, y, w, h]`."
+        },
+        "nullable": true
+      },
+      {
+        "name": "ellipse",
+        "ty": "array",
+        "required": false,
+        "description": "In `[x, y, w, h]`.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number"
+          },
+          "minItems": 4,
+          "maxItems": 4,
+          "description": "In `[x, y, w, h]`."
+        },
+        "nullable": true
+      },
+      {
+        "name": "points",
+        "ty": "array",
+        "required": false,
+        "description": "Lasso `[[x, y], …]`.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "description": "Lasso `[[x, y], …]`."
+        },
+        "nullable": true
+      },
+      {
+        "name": "d",
+        "ty": "text",
+        "required": false,
+        "description": "SVG path data.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "SVG path data."
+        },
+        "nullable": true
+      },
+      {
+        "name": "marks",
+        "ty": "array",
+        "required": false,
+        "description": "Marks or groups.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Marks or groups."
+        },
+        "nullable": true
+      },
+      {
+        "name": "at",
+        "ty": "array",
+        "required": false,
+        "description": "Magic wand `[x, y]`: like colour touching it.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "Magic wand `[x, y]`: like colour touching it."
+        },
+        "nullable": true
+      },
+      {
+        "name": "colour",
+        "ty": "text",
+        "required": false,
+        "description": "`#rrggbb`, everywhere.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`#rrggbb`, everywhere."
+        },
+        "nullable": true
+      },
+      {
+        "name": "tolerance",
+        "ty": "number",
+        "required": false,
+        "description": "0..1, default 0.15.",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "0..1, default 0.15."
+        },
+        "nullable": true
+      },
+      {
+        "name": "mode",
+        "ty": "text",
+        "required": false,
+        "description": "`replace`, `add`, `subtract`, `intersect` or `none`.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`replace`, `add`, `subtract`, `intersect` or `none`."
+        },
+        "nullable": true
+      },
+      {
+        "name": "feather",
+        "ty": "number",
+        "required": false,
+        "description": "Units.",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Units."
+        },
+        "nullable": true
+      },
+      {
+        "name": "grow",
+        "ty": "number",
+        "required": false,
+        "description": "Units; negative shrinks.",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Units; negative shrinks."
+        },
+        "nullable": true
+      },
+      {
+        "name": "invert",
+        "ty": "boolean",
+        "required": false,
+        "description": "invert",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "nullable": true
       }
     ]
   },
@@ -2911,6 +3345,81 @@
         "ty": "text",
         "required": false,
         "description": "An agent run id from history",
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "use-selection",
+    "resource_kind": "canvas.artwork",
+    "label": "Use selection",
+    "description": "Fill or stroke the selection as a mark on a layer, mask the layer to it, or clear it from the layer (by its mask, a layer of grey marks).",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "do",
+        "ty": "text",
+        "required": true,
+        "description": "`fill`, `stroke`, `mask` or `clear`.",
+        "schema": {
+          "type": "string",
+          "description": "`fill`, `stroke`, `mask` or `clear`."
+        },
+        "nullable": false
+      },
+      {
+        "name": "layer",
+        "ty": "text",
+        "required": false,
+        "description": "layer",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "colour",
+        "ty": "text",
+        "required": false,
+        "description": "colour",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "width",
+        "ty": "number",
+        "required": false,
+        "description": "Stroke width (2).",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Stroke width (2)."
+        },
+        "nullable": true
+      },
+      {
+        "name": "id",
+        "ty": "text",
+        "required": false,
+        "description": "The new mark's.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The new mark's."
+        },
         "nullable": true
       }
     ]

@@ -428,6 +428,18 @@ fn shown_window(
     h.pump();
     shell::shell::foreign::release_frame_throttle(&mut h.state);
     h.pump_until("frame 1's callback", |c| c.frames_done.contains(&1));
+    // Frame 1 is captured too: a window handed out here has nothing in
+    // flight, whatever the load on the machine.
+    let client_index = u32::try_from(id >> 32).expect("a client index");
+    let deadline = tilo_test_env::hang_deadline();
+    while shell::compositor::foreign::store().capturing_for_client(client_index) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "frame 1 was never captured"
+        );
+        h.pump();
+        std::thread::yield_now();
+    }
     (compositor, wm, surface, xdg, buffer)
 }
 

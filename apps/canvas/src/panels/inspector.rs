@@ -9,9 +9,10 @@ use ui::prelude::*;
 use ui::widget::{ColorSwatchPicker, Toggle};
 
 use super::{caption, heading, icon_button, percent};
+use crate::brushes::Preset;
 use crate::model::{Artwork, BLENDS, Mark, Shadow, Shape};
 use crate::resource::ArtworkResource;
-use crate::tools::Tools;
+use crate::tools::{Erasing, Tool, Tools};
 
 /// Inks for plain layers: document colours, the same in every theme.
 const INKS: [u32; 14] = [
@@ -149,8 +150,16 @@ fn grow(control: Element) -> Element {
 fn brush_and_artwork(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
     let brush = {
         let tools = tools.clone();
-        cx.switch(&tools.layer.clone(), move |cx, layer| {
-            brush(cx, &tools, layer)
+        cx.switch(&tools.tool.clone(), move |cx, tool| {
+            let erasing = *tool == Tool::Eraser;
+            let tools = tools.clone();
+            cx.switch(&tools.layer.clone(), move |cx, layer| {
+                if erasing {
+                    eraser(cx, &tools)
+                } else {
+                    brush(cx, &tools, layer)
+                }
+            })
         })
     };
     section(vec![
@@ -176,10 +185,20 @@ fn brush(cx: &ViewCx<ArtworkResource>, tools: &Tools, layer: &str) -> Element {
             .unwrap_or_default();
         (medium, pigments, crate::tools::load_fraction(art, layer))
     });
-    let title = medium.as_ref().map_or_else(
-        || ui::i18n::I18nManager::lookup_plain("canvas-medium-plain-ink"),
-        |medium| medium.label.clone(),
-    );
+    // The medium that paints the layer, or on a plain layer the preset the
+    // brush is loaded with.
+    let title: Element = if let Some(medium) = &medium {
+        caption(&medium.label)
+    } else {
+        let preset = tools.preset.clone();
+        Box::new(
+            Text::dynamic(move || {
+                ui::i18n::I18nManager::lookup_plain(&preset.with(|preset| preset.label()))
+            })
+            .with_role(TextRole::Caption)
+            .dimmed(),
+        )
+    };
     let mut parts: Vec<Element> = vec![Box::new(
         Row::new()
             .with_gap(8.0)
@@ -187,8 +206,11 @@ fn brush(cx: &ViewCx<ArtworkResource>, tools: &Tools, layer: &str) -> Element {
             .with_align_items(ui::taffy::AlignItems::Center)
             .push(heading("canvas-brush"))
             .push(Box::new(Spacer::new()))
-            .push(caption(&title)),
+            .push(title),
     )];
+    if medium.is_none() {
+        parts.push(preset_picker(tools));
+    }
     let palette = brush_palette(tools, &pigments);
     parts.push(Box::new(palette.with_cell(SWATCH).bare()));
     if medium.is_none() {
@@ -216,6 +238,17 @@ fn brush(cx: &ViewCx<ArtworkResource>, tools: &Tools, layer: &str) -> Element {
                 .with_accessible_name(&ui::i18n::I18nManager::lookup_plain("canvas-brush-size")),
         ),
     ]));
+    if medium.is_none() {
+        parts.push(fraction(
+            "canvas-brush-opacity",
+            &tools.opacity,
+            "canvas-brush-opacity",
+        ));
+        let dynamics = tools.clone();
+        parts.push(cx.switch(&tools.preset.clone(), move |_, preset| {
+            dynamics_sliders(&dynamics, *preset)
+        }));
+    }
     if let Some(load) = load {
         tools.load.set(load);
         let load_label = {
@@ -237,6 +270,141 @@ fn brush(cx: &ViewCx<ArtworkResource>, tools: &Tools, layer: &str) -> Element {
         ]));
     }
     section(parts)
+}
+
+/// The presets the brush can lay a plain layer's strokes with, drawn in
+/// its paint.
+fn preset_picker(tools: &Tools) -> Element {
+    Box::new(super::brushes::picker(
+        &super::brushes::PAINTING,
+        tools.preset.with(|preset| *preset),
+        {
+            let tools = tools.clone();
+            move || tools.hex()
+        },
+        {
+            let tools = tools.clone();
+            move |preset| tools.choose_preset(preset)
+        },
+    ))
+}
+
+/// A labelled slider over `0..=1` of the person's own tool settings.
+fn fraction(label: &str, state: &LocalState<f64>, id: &str) -> Element {
+    let shown = {
+        let state = state.clone();
+        Text::dynamic(move || percent(state.with(|value| *value))).with_role(TextRole::Caption)
+    };
+    let name = ui::i18n::I18nManager::lookup_plain(label);
+    tight(vec![
+        labelled(&name, Box::new(shown)),
+        Box::new(
+            Slider::from_state(state)
+                .with_id(id)
+                .with_accessible_name(&name),
+        ),
+    ])
+}
+
+/// The dynamics `preset` takes from the person: flow for brushes that lay
+/// paint in touches, hardness for those with a soft edge, and for every
+/// brush smoothing and taper.
+fn dynamics_sliders(tools: &Tools, preset: Preset) -> Element {
+    let mut rows = Vec::new();
+    if matches!(
+        preset,
+        Preset::Pencil | Preset::Marker | Preset::Airbrush | Preset::Charcoal
+    ) {
+        rows.push(fraction(
+            "canvas-brush-flow",
+            &tools.flow,
+            "canvas-brush-flow",
+        ));
+    }
+    if preset.dabbed(&crate::brushes::Dynamics::of(
+        preset,
+        &std::collections::BTreeMap::new(),
+    )) {
+        rows.push(fraction(
+            "canvas-brush-hardness",
+            &tools.hardness,
+            "canvas-brush-hardness",
+        ));
+    }
+    rows.push(fraction(
+        "canvas-brush-smoothing",
+        &tools.smoothing,
+        "canvas-brush-smoothing",
+    ));
+    rows.push(fraction(
+        "canvas-brush-taper",
+        &tools.taper,
+        "canvas-brush-taper",
+    ));
+    section(rows)
+}
+
+/// The eraser: whether it takes paint or whole strokes, its size, and for
+/// paint how much it takes and how crisp its edge is.
+fn eraser(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
+    let choices = vec![
+        (
+            Erasing::Paint,
+            ui::widget::toggle_group::Segment::new(ui::i18n::I18nManager::lookup_plain(
+                "canvas-erase-paint",
+            )),
+        ),
+        (
+            Erasing::Strokes,
+            ui::widget::toggle_group::Segment::new(ui::i18n::I18nManager::lookup_plain(
+                "canvas-erase-strokes",
+            )),
+        ),
+    ];
+    let mode = ui::widget::ToggleGroup::from_state(choices, &tools.erasing)
+        .with_flexible_width()
+        .with_id("canvas-erasing");
+    let size_label = {
+        let tools = tools.clone();
+        Text::dynamic(move || format!("{:.0}", tools.brush_size())).with_role(TextRole::Caption)
+    };
+    let size = tight(vec![
+        labelled(
+            &ui::i18n::I18nManager::lookup_plain("canvas-brush-size"),
+            Box::new(size_label),
+        ),
+        Box::new(
+            Slider::from_state(&tools.size)
+                .with_id("canvas-brush-size")
+                .with_accessible_name(&ui::i18n::I18nManager::lookup_plain("canvas-brush-size")),
+        ),
+    ]);
+    let paint_only = {
+        let tools = tools.clone();
+        cx.switch(&tools.erasing.clone(), move |_, erasing| {
+            if *erasing == Erasing::Strokes {
+                return Box::new(Spacer::fixed(0.0)) as Element;
+            }
+            section(vec![
+                fraction(
+                    "canvas-eraser-strength",
+                    &tools.eraser_strength,
+                    "canvas-eraser-strength",
+                ),
+                fraction(
+                    "canvas-eraser-hardness",
+                    &tools.eraser_hardness,
+                    "canvas-eraser-hardness",
+                ),
+            ])
+        })
+    };
+    section(vec![
+        heading("canvas-eraser"),
+        Box::new(mode),
+        size,
+        paint_only,
+    ])
 }
 
 /// The paints the brush can load: the medium's pigments, or inks on a
@@ -445,11 +613,26 @@ fn marks_inspector(
         }
         parts.push(section(fill));
     }
-    parts.push(section(vec![
-        heading("canvas-stroke"),
-        paints(cx, &ids, style.stroke.as_deref(), &palette, &Paint::Stroke),
-        stroke_style(cx, &ids, first),
-    ]));
+    let strokes = marks
+        .iter()
+        .all(|mark| matches!(mark.shape, Shape::Stroke { .. }));
+    if strokes {
+        let plain = cx.read(|art| {
+            art.and_then(|art| art.layer(&first.layer))
+                .is_none_or(|layer| layer.medium.is_empty())
+        });
+        parts.push(section(vec![
+            heading("canvas-stroke"),
+            paints(cx, &ids, style.stroke.as_deref(), &palette, &Paint::Stroke),
+            stroke_brush(cx, &ids, first, plain),
+        ]));
+    } else {
+        parts.push(section(vec![
+            heading("canvas-stroke"),
+            paints(cx, &ids, style.stroke.as_deref(), &palette, &Paint::Stroke),
+            stroke_style(cx, &ids, first),
+        ]));
+    }
     parts.push(appearance(cx, &ids, first));
     if let (Shape::Text { .. }, [mark]) = (&first.shape, marks) {
         parts.push(text_style(cx, mark));
@@ -572,6 +755,128 @@ fn paints(
         )),
     };
     section(vec![Box::new(swatches), field])
+}
+
+/// Brush strokes' preset, width and dynamics, and their paths: smoothed,
+/// simplified, joined.
+fn stroke_brush(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark, plain: bool) -> Element {
+    let Shape::Stroke { size, .. } = &mark.shape else {
+        return Box::new(Spacer::fixed(0.0));
+    };
+    let mut rows: Vec<Element> = Vec::new();
+    let preset = Preset::of(&mark.style);
+    if plain && preset != Preset::Eraser {
+        let dispatch = cx.dispatcher();
+        let targets = ids.to_vec();
+        let ink = mark.style.stroke.clone().unwrap_or_default();
+        rows.push(Box::new(super::brushes::picker(
+            &super::brushes::PAINTING,
+            preset,
+            move || ink.clone(),
+            move |preset| {
+                dispatch.invoke(
+                    ArtworkResource::SET_BRUSH.with((targets.clone(), preset.name().to_owned())),
+                );
+            },
+        )));
+    }
+    let width = LocalState::new(*size);
+    let width = cx.actions().bind(
+        NumberInput::from_state(&width)
+            .with_range(0.5, 400.0)
+            .with_size(112.0, 32.0)
+            .with_step(1.0)
+            .with_precision(1)
+            .with_id("canvas-stroke-size")
+            .with_accessible_name(ui::i18n::I18nManager::lookup_plain("canvas-brush-size")),
+        ArtworkResource::SET_SIZE.map({
+            let ids = ids.to_vec();
+            move |value: f64| (ids.clone(), value)
+        }),
+    );
+    rows.push(labelled(
+        &ui::i18n::I18nManager::lookup_plain("canvas-brush-size"),
+        Box::new(width),
+    ));
+    if plain {
+        let dynamics = crate::brushes::Dynamics::of_mark(mark);
+        let mut tuned = vec![
+            ("flow", dynamics.flow),
+            ("smoothing", dynamics.smoothing),
+            ("taper", dynamics.taper),
+        ];
+        if preset.dabbed(&dynamics) {
+            tuned.insert(1, ("hardness", dynamics.hardness));
+        }
+        for (name, value) in tuned {
+            rows.push(dynamic(cx, ids, name, value));
+        }
+    }
+    rows.push(path_tools(cx, ids, *size));
+    section(rows)
+}
+
+/// A slider over one of strokes' dynamics, applied when let go.
+fn dynamic(
+    cx: &ViewCx<ArtworkResource>,
+    ids: &[String],
+    name: &'static str,
+    value: f64,
+) -> Element {
+    let state = LocalState::new(value);
+    let label = format!("canvas-brush-{name}");
+    let shown = {
+        let state = state.clone();
+        Text::dynamic(move || percent(state.with(|value| *value))).with_role(TextRole::Caption)
+    };
+    let slider = cx.actions().bind(
+        Slider::from_state(&state)
+            .with_id(&format!("canvas-stroke-{name}"))
+            .with_accessible_name(&ui::i18n::I18nManager::lookup_plain(&label))
+            .commits_on_release(),
+        ArtworkResource::SET_PARAMS.map({
+            let ids = ids.to_vec();
+            move |value: f64| {
+                (
+                    ids.clone(),
+                    std::collections::BTreeMap::from([(
+                        name.to_owned(),
+                        (value * 100.0).round() / 100.0,
+                    )]),
+                )
+            }
+        }),
+    );
+    tight(vec![
+        labelled(
+            &ui::i18n::I18nManager::lookup_plain(&label),
+            Box::new(shown),
+        ),
+        Box::new(slider),
+    ])
+}
+
+/// Smooth or simplify strokes' paths, or join them into one.
+fn path_tools(cx: &ViewCx<ArtworkResource>, ids: &[String], size: f64) -> Element {
+    let lookup = |id: &str| ui::i18n::I18nManager::lookup_plain(id);
+    let mut row = Row::new()
+        .with_gap(6.0)
+        .no_wrap()
+        .push(Box::new(cx.button(
+            &lookup("canvas-stroke-smooth"),
+            ArtworkResource::SMOOTH.with((ids.to_vec(), 0.5)),
+        )))
+        .push(Box::new(cx.button(
+            &lookup("canvas-stroke-simplify"),
+            ArtworkResource::SIMPLIFY.with((ids.to_vec(), (size * 0.15).clamp(0.5, 6.0))),
+        )));
+    if ids.len() > 1 {
+        row = row.push(Box::new(cx.button(
+            &lookup("canvas-stroke-join"),
+            ArtworkResource::MERGE.with((ids.to_vec(), true)),
+        )));
+    }
+    section(vec![heading("canvas-stroke-path"), Box::new(row)])
 }
 
 /// The outline's width, dashes, ends and corners.

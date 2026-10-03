@@ -183,7 +183,7 @@ fn images() -> Arc<dyn Images> {
 
 /// How `pkg install` builds tool images on this device.
 fn builder() -> Arc<dyn tilo_environment::ToolBuilder> {
-    Arc::new(tilo_environment::NoToolBuilder)
+    env_tools::store::device_tool_builder()
 }
 
 fn cmd_serve(args: &[String]) -> anyhow::Result<i32> {

@@ -23,6 +23,8 @@ collab-types = { path = "../../collab/collab-types" }
 tilo-environment = { path = "../environment" }
 # Atomic writes of the host-shell decisions.
 tilo-files = { path = "../../platform/tilo-files" }
+# Builds the tool images `pkg install` adds.
+env-tools = { path = "../env-tools" }
 tilo-resource = { path = "../../sdk/tilo-resource" }
 # The record is stored as Terminal stores its own records.
 tilo-app-state = { path = "../../system/app-state" }
