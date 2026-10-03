@@ -306,6 +306,18 @@ pub struct InstallScenarioArgs {
     /// Account username for a retained install. Requires --credentials-stdin.
     #[arg(long, requires = "credentials_stdin")]
     pub username: Option<String>,
+    /// Installed hostname (retained and checked when resuming).
+    #[arg(long, default_value = "scenario-tilo")]
+    pub hostname: String,
+    /// Installer keyboard display name, e.g. "German (QWERTZ)". Omitted preserves the medium's choice.
+    #[arg(long)]
+    pub keyboard_layout: Option<String>,
+    /// Installed IANA timezone, e.g. Europe/Berlin. Omitted preserves the medium's choice.
+    #[arg(long)]
+    pub timezone: Option<String>,
+    /// Installed locale from the installer's catalog, e.g. de_DE.UTF-8. Omitted preserves its choice.
+    #[arg(long)]
+    pub locale: Option<String>,
     /// Read distinct `account_password` and `disk_passphrase` from one JSON object on stdin. Requires --username; unavailable for dry runs.
     #[arg(long, requires = "username", conflicts_with = "dry_run")]
     pub credentials_stdin: bool,
