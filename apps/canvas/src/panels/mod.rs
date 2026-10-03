@@ -17,7 +17,7 @@ use ui::prelude::*;
 use crate::resource::ArtworkResource;
 
 /// The side of an icon button in a panel row.
-pub(crate) const ICON_BUTTON: f32 = 30.0;
+pub(crate) const ICON_BUTTON: f32 = 30.0; // a compact icon button's face; the toolkit keeps its pointer target
 
 /// Small dimmed text beside a value.
 pub(crate) fn caption(text: &str) -> Element {
