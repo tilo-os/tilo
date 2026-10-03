@@ -1,28 +1,30 @@
 [Unit]
-Description=Additional codecs pack: %i
-Documentation=file:///usr/share/doc/tilo/codec-pack.md
-# Settings starts exactly install, remove or refresh (see
-# /etc/polkit-1/rules.d/49-tilo-codec-pack.rules); the helper rejects anything
-# else as well.
+Description=Tilo extension %i
+Documentation=file:///usr/share/tilo/system-extensions/README.md
+# The instance is <verb>:<id>. Settings and first-login setup start exactly
+# install, remove or refresh (see /etc/polkit-1/rules.d/49-tilo-extension.rules);
+# the helper rejects anything else and any id without an image catalogue entry.
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/libexec/tilo-codec-pack %i
+ExecStart=/usr/libexec/tilo-extension %i
 TimeoutStartSec=30min
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
 
-# The helper downloads, verifies and unpacks RPMs into three fixed trees. It
-# never installs into /usr: merging is systemd-sysext's job, which the helper
-# asks PID 1 to (re)run, so the merge happens in the host's mount namespace and
-# not in this unit's private one.
+# The helper downloads pinned artifacts, verifies them and unpacks them into
+# fixed trees. It never installs into /usr: merging is systemd-sysext's job,
+# which the helper asks PID 1 to (re)run, so the merge happens in the host's
+# mount namespace and not in this unit's private one.
 ProtectSystem=strict
 ReadWritePaths=/var/lib/extensions
-StateDirectory=tilo/codec-pack
-CacheDirectory=tilo-codec-pack
+StateDirectory=tilo/extensions
+StateDirectoryMode=0755
+CacheDirectory=tilo-extension
+CacheDirectoryMode=0700
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes

@@ -1,0 +1,1491 @@
+#!/usr/bin/python3
+"""tilo-extension: downloaded, Tilo-signed system extensions.
+
+    tilo-extension install:<id>   opt in, then download, verify and merge
+    tilo-extension remove:<id>    opt out: unmerge and delete everything added
+    tilo-extension refresh:<id>   re-resolve for the booted base (no-op unless
+                                  the owner opted in)
+    tilo-extension refresh:all    refresh every extension the owner opted in to
+    tilo-extension status:<id>    print the status JSON
+    tilo-extension activate       rebuild every part from verified bytes for the
+                                  booted base and merge exactly those (at boot,
+                                  offline, and after every change)
+
+Some optional /usr content is not part of the Tilo image because Tilo does not
+distribute it (patent-encumbered media codecs are the first case). When the
+owner asks for it, this helper downloads the bytes on the device, from the
+publishers' own servers, and assembles read-only systemd-sysext directories.
+
+The image decides which bytes are acceptable. Its catalogue entry
+(/usr/share/tilo/system-extensions/sysext.d/<id>.json, part of the sealed image)
+names the parts and the hosts artifacts may come from, and where Tilo publishes
+the extension's manifest. The manifest pins every artifact by URL, length and
+SHA-256 and names the exact base it was resolved for; it is signed by the key
+this image trusts for its own updates (/usr/share/tilo/cosign.pub). The
+signature is checked over the raw bytes before anything is parsed, and any
+mismatch refuses the whole transaction. Nothing from the manifest is ever run.
+
+See /usr/share/tilo/system-extensions/README.md.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import dataclasses
+import datetime
+import fcntl
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path, PurePosixPath
+
+VERBS = ("install", "remove", "refresh", "status")
+MANIFEST_TYPE = "tilo.system-extension.sysext-manifest"
+FINGERPRINT_DOMAIN = b"tilo.base-packages.v1\n"
+
+ID_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
+SHA256_RE = re.compile(r"[0-9a-f]{64}")
+EVR_RE = re.compile(r"[0-9]+:[A-Za-z0-9._+~^]+-[A-Za-z0-9._+~^]+")
+PACKAGE_RE = re.compile(r"[A-Za-z0-9._+~^-]{1,255}")
+HOST_RE = re.compile(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+")
+
+MAX_MANIFEST_BYTES = 1024 * 1024
+MAX_SIGNATURE_BYTES = 4096
+MAX_ARTIFACT_BYTES = 1024 * 1024 * 1024
+MAX_ARTIFACTS = 512
+MAX_TEXT = 300
+HTTP_TIMEOUT = 60
+CHUNK = 1024 * 1024
+
+ARCHITECTURES = {"x86_64": "x86-64", "aarch64": "arm64"}
+STATES = ("not-installed", "waiting-for-network", "installing", "installed", "removing", "failed")
+PART_STATES = ("available", "waiting", "unsupported")
+
+
+OFFLINE_MESSAGE = ("Waiting for an internet connection. This installs automatically "
+                   "once this device is online.")
+UNPUBLISHED_MESSAGE = ("Not available for this version of Tilo yet. "
+                       "This device tries again every day and after updates.")
+
+# What an install reports while it runs, in order. The desktop shows the label
+# and "step n of N" (status `progress`).
+PROGRESS_STEPS = (
+    "Checking this device",
+    "Fetching the signed manifest",
+    "Downloading",
+    "Verifying",
+    "Building the extension",
+)
+
+
+class PackError(Exception):
+    """A failure the status file reports to the owner."""
+
+
+class Unpublished(PackError):
+    """No manifest is published for this base (yet)."""
+
+
+# ---------------------------------------------------------------------------
+# Pure logic
+# ---------------------------------------------------------------------------
+
+def parse_command(argv: list[str]) -> tuple[str, str]:
+    """("activate", "") or (verb, id); id "all" only for refresh."""
+    if len(argv) != 1:
+        raise PackError("expected exactly one argument: activate, refresh:all or <verb>:<id>")
+    argument = argv[0]
+    if argument == "activate":
+        return ("activate", "")
+    verb, separator, ident = argument.partition(":")
+    if not separator or verb not in VERBS:
+        raise PackError(f"unknown command; expected one of {', '.join(VERBS)} as <verb>:<id>")
+    if ident == "all":
+        if verb != "refresh":
+            raise PackError("only refresh applies to all extensions")
+        return (verb, ident)
+    if not ID_RE.fullmatch(ident):
+        raise PackError("invalid extension id")
+    return (verb, ident)
+
+
+def base_packages_sha256(lines: list[str]) -> str:
+    """The base package fingerprint (see the system-extensions README).
+
+    `lines` are `rpm -qa --qf '%{NAME} %{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\\n'`
+    lines; gpg-pubkey entries are not packages and are left out.
+    """
+    kept = []
+    for line in lines:
+        line = line.rstrip("\n")
+        if not line or line.startswith("gpg-pubkey "):
+            continue
+        kept.append((line + "\n").encode())
+    return hashlib.sha256(FINGERPRINT_DOMAIN + b"".join(sorted(kept))).hexdigest()
+
+
+def parse_installed(lines: list[str]) -> dict[str, str]:
+    """name -> epochnum:version-release, from the same rpm -qa lines."""
+    installed = {}
+    for line in lines:
+        fields = line.split()
+        if len(fields) != 2 or fields[0] == "gpg-pubkey":
+            continue
+        name, evra = fields
+        evr, _, _arch = evra.rpartition(".")
+        installed[name] = evr
+    return installed
+
+
+def bounded(value, field: str, limit: int = MAX_TEXT) -> str:
+    if not isinstance(value, str) or len(value) > limit or any(c < " " for c in value):
+        raise PackError(f"manifest field {field} is not a short line of text")
+    return value
+
+
+def expect_keys(value, required: set[str], optional: set[str], where: str) -> dict:
+    if not isinstance(value, dict):
+        raise PackError(f"manifest {where} is not an object")
+    keys = set(value)
+    missing = required - keys
+    unknown = keys - required - optional
+    if missing:
+        raise PackError(f"manifest {where} lacks {', '.join(sorted(missing))}")
+    if unknown:
+        raise PackError(f"manifest {where} has unknown fields {', '.join(sorted(unknown))}")
+    return value
+
+
+@dataclasses.dataclass(frozen=True)
+class Catalogue:
+    """The image-owned catalogue entry: what this image accepts for an id."""
+    id: str
+    kind: str
+    manifest: str
+    hosts: frozenset[str]
+    parts: tuple[str, ...]
+
+    @staticmethod
+    def parse(text: str, ident: str) -> "Catalogue":
+        try:
+            value = json.loads(text)
+        except ValueError as error:
+            raise PackError(f"catalogue entry {ident} is not JSON") from error
+        expect_keys(value, {"schema", "id", "kind", "manifest", "hosts", "parts"}, set(), "catalogue")
+        if value["schema"] != 1 or value["id"] != ident:
+            raise PackError(f"catalogue entry {ident} has the wrong schema or id")
+        manifest = value["manifest"]
+        if (not isinstance(manifest, str) or not manifest.startswith("https://")
+                or "{arch}" not in manifest or "{base}" not in manifest):
+            raise PackError(f"catalogue entry {ident} has an invalid manifest location")
+        hosts = value["hosts"]
+        parts = value["parts"]
+        if (not isinstance(hosts, list) or not hosts
+                or not all(isinstance(h, str) and HOST_RE.fullmatch(h) for h in hosts)):
+            raise PackError(f"catalogue entry {ident} has invalid hosts")
+        if (not isinstance(parts, list) or not parts or len(set(parts)) != len(parts)
+                or not all(isinstance(p, str) and ID_RE.fullmatch(p) for p in parts)):
+            raise PackError(f"catalogue entry {ident} has invalid parts")
+        return Catalogue(ident, bounded(value["kind"], "kind"), manifest, frozenset(hosts), tuple(parts))
+
+    def manifest_url(self, arch: str, fingerprint: str) -> str:
+        return self.manifest.replace("{arch}", arch).replace("{base}", fingerprint)
+
+
+@dataclasses.dataclass(frozen=True)
+class Artifact:
+    package: str
+    urls: tuple[str, ...]
+    size: int
+    sha256: str
+    publisher: str
+    license: str
+
+
+@dataclasses.dataclass(frozen=True)
+class Part:
+    name: str
+    state: str
+    message: str
+    requires_base: dict[str, str]
+    artifacts: tuple[Artifact, ...]
+
+
+@dataclasses.dataclass(frozen=True)
+class Manifest:
+    id: str
+    revision: int
+    base: dict[str, str]
+    parts: tuple[Part, ...]
+
+    def part(self, name: str) -> Part | None:
+        return next((p for p in self.parts if p.name == name), None)
+
+
+def check_url(url, hosts: frozenset[str]) -> str:
+    if not isinstance(url, str) or len(url) > 2048:
+        raise PackError("manifest artifact URL is not a string")
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != "https" or parsed.username or parsed.password or parsed.port not in (None, 443):
+        raise PackError(f"manifest artifact URL is not plain HTTPS: {url[:200]}")
+    if parsed.hostname not in hosts:
+        raise PackError(f"manifest artifact host {parsed.hostname} is not allowed for this extension")
+    if parsed.query or parsed.fragment or ".." in PurePosixPath(urllib.parse.unquote(parsed.path)).parts:
+        raise PackError(f"manifest artifact URL has an unexpected form: {url[:200]}")
+    return url
+
+
+def parse_manifest(data: bytes, catalogue: Catalogue, base: "Base", *, exact: bool = True) -> Manifest:
+    """Validate signed manifest bytes against the catalogue and this base.
+
+    Only call this on bytes whose signature has been verified. `exact` requires
+    the manifest to be for exactly this base; without it (a manifest kept from
+    the deployment before an update) the OS release and architecture must still
+    match, and each part is then checked on its own (`manifest_part_fits`).
+    """
+    try:
+        value = json.loads(data)
+    except ValueError as error:
+        raise PackError("the signed manifest is not JSON") from error
+    expect_keys(value, {"type", "schema", "id", "revision", "created", "base", "parts"}, set(), "")
+    if value["type"] != MANIFEST_TYPE or value["schema"] != 1:
+        raise PackError("the signed manifest has an unsupported type or schema")
+    if value["id"] != catalogue.id:
+        raise PackError("the signed manifest is for another extension")
+    revision = value["revision"]
+    if not isinstance(revision, int) or isinstance(revision, bool) or revision <= 0:
+        raise PackError("the signed manifest has an invalid revision")
+    bounded(value["created"], "created")
+    pinned = expect_keys(value["base"], {"os_id", "version_id", "architecture", "packages_sha256"},
+                         {"image"}, "base")
+    expected = {
+        "os_id": base.os_id,
+        "version_id": base.version_id,
+        "architecture": base.rpm_arch,
+        "packages_sha256": base.fingerprint,
+    }
+    for key, mine in expected.items():
+        if not exact and key == "packages_sha256":
+            continue
+        if pinned[key] != mine:
+            raise PackError(f"the signed manifest is for another base ({key} {str(pinned[key])[:80]}, "
+                            f"this device has {mine})")
+    if "image" in pinned:
+        bounded(pinned["image"], "base.image")
+    raw_parts = value["parts"]
+    if not isinstance(raw_parts, list) or not raw_parts:
+        raise PackError("the signed manifest has no parts")
+    parts = []
+    seen = set()
+    total = 0
+    for raw in raw_parts:
+        expect_keys(raw, {"name", "format", "state", "requires_base", "artifacts"}, {"message"}, "part")
+        name = raw["name"]
+        if name not in catalogue.parts:
+            raise PackError(f"the signed manifest names a part this image does not allow: {str(name)[:64]}")
+        if name in seen:
+            raise PackError(f"the signed manifest names part {name} twice")
+        seen.add(name)
+        if raw["format"] != "rpm":
+            raise PackError(f"part {name} has an unsupported format")
+        state = raw["state"]
+        if state not in PART_STATES:
+            raise PackError(f"part {name} has an unknown state")
+        requires = raw["requires_base"]
+        if (not isinstance(requires, dict)
+                or not all(isinstance(k, str) and PACKAGE_RE.fullmatch(k) and isinstance(v, str)
+                           and EVR_RE.fullmatch(v) for k, v in requires.items())):
+            raise PackError(f"part {name} has invalid base requirements")
+        artifacts = []
+        raw_artifacts = raw["artifacts"]
+        if not isinstance(raw_artifacts, list) or len(raw_artifacts) > MAX_ARTIFACTS:
+            raise PackError(f"part {name} has an invalid artifact list")
+        if (state == "available") != bool(raw_artifacts):
+            raise PackError(f"part {name}: only an available part has artifacts")
+        for item in raw_artifacts:
+            expect_keys(item, {"package", "urls", "size", "sha256", "publisher", "license"}, set(), "artifact")
+            package = item["package"]
+            if not isinstance(package, str) or not PACKAGE_RE.fullmatch(package):
+                raise PackError(f"part {name} has an invalid package name")
+            urls = item["urls"]
+            if not isinstance(urls, list) or not urls or len(urls) > 8:
+                raise PackError(f"{package} has no URLs")
+            size = item["size"]
+            if not isinstance(size, int) or isinstance(size, bool) or not 0 < size <= MAX_ARTIFACT_BYTES:
+                raise PackError(f"{package} has an invalid size")
+            total += size
+            sha256 = item["sha256"]
+            if not isinstance(sha256, str) or not SHA256_RE.fullmatch(sha256):
+                raise PackError(f"{package} has an invalid SHA-256")
+            artifacts.append(Artifact(
+                package=package,
+                urls=tuple(check_url(url, catalogue.hosts) for url in urls),
+                size=size,
+                sha256=sha256,
+                publisher=bounded(item["publisher"], "publisher"),
+                license=bounded(item["license"], "license", 2000),
+            ))
+        parts.append(Part(name, state, bounded(raw.get("message", ""), "message"),
+                          dict(sorted(requires.items())), tuple(artifacts)))
+    if total > 4 * MAX_ARTIFACT_BYTES:
+        raise PackError("the signed manifest is larger than any extension may be")
+    return Manifest(catalogue.id, revision, {k: v for k, v in pinned.items()}, tuple(parts))
+
+
+def package_name(nvra: str) -> str:
+    """The name in an RPM name-version-release.arch."""
+    stem = nvra.rsplit(".", 1)[0]
+    return stem.rsplit("-", 2)[0]
+
+
+def manifest_part_fits(manifest: "Manifest", part: "Part", base: "Base") -> bool:
+    """Whether a part resolved for another base may be used on `base`.
+
+    Offline and exact: the same OS release and architecture, every base package
+    the part was built against at the same version, and none of its own
+    packages now shipped by the base itself.
+    """
+    if part.state != "available":
+        return False
+    pinned = manifest.base
+    if (pinned.get("os_id"), pinned.get("version_id"), pinned.get("architecture")) != \
+            (base.os_id, base.version_id, base.rpm_arch):
+        return False
+    if pinned.get("packages_sha256") == base.fingerprint:
+        return True
+    if any(base.installed.get(name) != evr for name, evr in part.requires_base.items()):
+        return False
+    return not any(package_name(a.package) in base.installed for a in part.artifacts)
+
+
+def extension_release(os_id: str, version_id: str, architecture: str, extra: dict[str, str]) -> str:
+    """The contents of usr/lib/extension-release.d/extension-release.<name>."""
+    for value in (os_id, version_id, architecture, *extra.values()):
+        if not re.fullmatch(r"[A-Za-z0-9._:~^+-]+", value):
+            raise PackError(f"refusing unsafe extension-release value {value!r}")
+    lines = [
+        f"ID={os_id}",
+        f"VERSION_ID={version_id}",
+        f"ARCHITECTURE={architecture}",
+        "SYSEXT_SCOPE=system",
+    ]
+    for key in sorted(extra):
+        if not re.fullmatch(r"TILO_[A-Z0-9_]+", key):
+            raise PackError(f"refusing extension-release key {key!r}")
+        lines.append(f"{key}={extra[key]}")
+    return "\n".join(lines) + "\n"
+
+
+def parse_os_release(text: str) -> dict[str, str]:
+    values = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        values[key.strip()] = value.strip().strip("\"'")
+    return values
+
+
+def next_state(current: str, event: str, *, installed: bool = False) -> str:
+    """The user-visible state after an event.
+
+    A failed background refresh of a working extension leaves it installed
+    (the error is reported separately); a failed install or removal is
+    "failed".
+    """
+    if current not in STATES:
+        current = "not-installed"
+    table = {
+        "install-started": "installing",
+        "refresh-started": "installing" if not installed else "installed",
+        "remove-started": "removing",
+        "removed": "not-installed",
+        "succeeded": "installed",
+        "offline": "installed" if installed else "waiting-for-network",
+    }
+    if event in table:
+        return table[event]
+    if event == "failed":
+        if current == "removing":
+            return "failed"
+        return "installed" if installed else "failed"
+    raise ValueError(f"unknown event {event}")
+
+
+def is_online(connectivity: str) -> bool:
+    """Whether NetworkManager's cached connectivity allows downloading.
+
+    "limited" and "portal" have a link but no internet (or one behind a login
+    page); "unknown", an empty answer or no NetworkManager at all count as
+    online, so a system without NetworkManager's connectivity check still tries.
+    """
+    return connectivity.strip().lower() not in ("none", "limited", "portal")
+
+
+def archive_name(name: str) -> str:
+    """An rpm2archive member name ("./usr/...") as a relative path."""
+    return name.removeprefix("./").lstrip("/")
+
+
+def inside(tree: Path, target: Path) -> bool:
+    """Whether writing `target` stays in `tree`, even through earlier symlinks."""
+    try:
+        target.parent.resolve().relative_to(tree.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def safe_member(name: str) -> PurePosixPath | None:
+    """The in-tree path for an archive member, or None to drop it.
+
+    Only /usr is part of a system extension. Build-id links are debugging
+    metadata the base owns for its own files, and an rpm database would make
+    the base's look different. Anything that escapes the tree is rejected
+    outright rather than dropped.
+    """
+    path = PurePosixPath(archive_name(name))
+    if any(part == ".." for part in path.parts):
+        raise PackError(f"archive member escapes the tree: {name}")
+    if not path.parts or path.parts[0] != "usr":
+        return None
+    if path.parts[:3] == ("usr", "lib", ".build-id") or path.parts[:3] == ("usr", "lib", "sysimage"):
+        return None
+    return path
+
+
+def relocation_dirs(ld_conf_text: str) -> list[PurePosixPath]:
+    """Private library directories a package gives precedence via ld.so.conf.d.
+
+    RPM Fusion's freeworld builds put a same-soname library (libgallium,
+    libavcodec) into a private directory and list it in /etc/ld.so.conf.d so it
+    wins over the base's copy. A system extension cannot change /etc; putting
+    the library at the base's own path in /usr/lib64 has the same effect.
+    """
+    dirs = []
+    for line in ld_conf_text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        path = PurePosixPath(line)
+        if path.is_absolute() and path.parent in (PurePosixPath("/usr/lib64"), PurePosixPath("/usr/lib")):
+            dirs.append(path)
+    return dirs
+
+
+# ---------------------------------------------------------------------------
+# The machine
+# ---------------------------------------------------------------------------
+
+@dataclasses.dataclass(frozen=True)
+class Layout:
+    root: Path = Path("/")
+
+    def at(self, path: str) -> Path:
+        return self.root / path.lstrip("/")
+
+    @property
+    def state_root(self) -> Path:
+        return self.at("/var/lib/tilo/extensions")
+
+    def state(self, ident: str) -> Path:
+        return self.state_root / ident
+
+    def status(self, ident: str) -> Path:
+        return self.state_root / f"{ident}.json"
+
+    def desired(self, ident: str) -> Path:
+        return self.state(ident) / "enabled"
+
+    def accepted(self, ident: str) -> Path:
+        return self.state(ident) / "accepted.json"
+
+    def bases(self, ident: str) -> Path:
+        """Accepted signed manifests, one directory per base fingerprint."""
+        return self.state(ident) / "bases"
+
+    def objects(self, ident: str) -> Path:
+        """Verified artifacts, content-addressed, kept while the extension is on."""
+        return self.state(ident) / "objects"
+
+    def seed(self, ident: str) -> Path:
+        return self.at("/etc/tilo/extensions/opt-in") / ident
+
+    def seed_adopted(self, ident: str) -> Path:
+        return self.state(ident) / "installer-seed-adopted"
+
+    def cache(self, ident: str) -> Path:
+        return self.at("/var/cache/tilo-extension") / ident
+
+    @property
+    def extensions(self) -> Path:
+        return self.at("/var/lib/extensions")
+
+    @property
+    def sysext_dirs(self) -> tuple[Path, ...]:
+        """Every directory systemd-sysext merges from that is not sealed /usr."""
+        return tuple(self.at(p) for p in ("/etc/extensions", "/run/extensions", "/var/lib/extensions",
+                                          "/usr/local/lib/extensions"))
+
+    @property
+    def catalogue_dir(self) -> Path:
+        return self.at("/usr/share/tilo/system-extensions/sysext.d")
+
+    @property
+    def trust_key(self) -> Path:
+        return self.at("/usr/share/tilo/cosign.pub")
+
+    @property
+    def os_release(self) -> Path:
+        return self.at("/usr/lib/os-release")
+
+
+def run(argv: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(argv, capture_output=True, text=True, check=False)
+    if check and result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip().splitlines()[-5:]
+        raise PackError(f"{argv[0]} failed: {' '.join(detail)[:400]}")
+    return result
+
+
+def now() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def write_json(path: Path, value, mode: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    with os.fdopen(fd, "w") as handle:
+        json.dump(value, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(name, mode)
+    os.replace(name, path)
+
+
+def read_json(path: Path) -> dict:
+    try:
+        value = json.loads(path.read_text())
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def catalogue_ids(layout: Layout) -> list[str]:
+    if not layout.catalogue_dir.is_dir():
+        return []
+    return sorted(p.stem for p in layout.catalogue_dir.glob("*.json") if ID_RE.fullmatch(p.stem))
+
+
+def load_catalogue(layout: Layout, ident: str) -> Catalogue:
+    path = layout.catalogue_dir / f"{ident}.json"
+    try:
+        text = path.read_text()
+    except OSError as error:
+        raise PackError(f"this image has no extension {ident}") from error
+    return Catalogue.parse(text, ident)
+
+
+class Status:
+    """The world-readable status file of one extension."""
+
+    def __init__(self, layout: Layout, ident: str):
+        self.layout = layout
+        self.ident = ident
+        self.last_progress_write = 0.0
+
+    def read(self) -> dict:
+        return read_json(self.layout.status(self.ident))
+
+    def write(self, **changes) -> dict:
+        status = self.read()
+        status.update(changes)
+        if status.get("state") != "installing":
+            status.pop("progress", None)
+        status["schema"] = 1
+        status["id"] = self.ident
+        status["updated"] = now()
+        status["desired"] = self.layout.desired(self.ident).exists()
+        os.makedirs(self.layout.state_root, exist_ok=True)
+        os.chmod(self.layout.state_root, 0o755)
+        write_json(self.layout.status(self.ident), status, 0o644)
+        return status
+
+    def progress(self, label: str, **extra) -> None:
+        step = PROGRESS_STEPS.index(label) + 1
+        self.write(progress={"step": step, "steps": len(PROGRESS_STEPS), "label": label, **extra})
+
+    def download_progress(self, done: int, total: int) -> None:
+        """At most once a second: the desktop shows it, nothing depends on it."""
+        moment = time.monotonic()
+        if done < total and moment - self.last_progress_write < 1.0:
+            return
+        self.last_progress_write = moment
+        self.progress("Downloading", bytes=done, total=total)
+
+    def bump_generation(self) -> int:
+        generation = int(self.read().get("generation", 0)) + 1
+        self.write(generation=generation)
+        return generation
+
+
+@contextlib.contextmanager
+def locked(layout: Layout, ident: str):
+    state = layout.state(ident)
+    state.mkdir(parents=True, exist_ok=True)
+    os.chmod(state, 0o755)
+    with open(state / "lock", "w") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
+
+
+def connectivity() -> str:
+    """NetworkManager's cached connectivity state (no probe is sent).
+
+    Module-level so tests can replace it. An empty string means unknown.
+    """
+    if not shutil.which("nmcli"):
+        return ""
+    result = run(["nmcli", "-t", "-f", "CONNECTIVITY", "general"], check=False)
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def adopt_installer_seed(layout: Layout, ident: str) -> bool:
+    """Turn the installer's opt-in into the owner's recorded choice, once."""
+    if not layout.seed(ident).is_file() or layout.seed_adopted(ident).exists():
+        return False
+    layout.state(ident).mkdir(parents=True, exist_ok=True)
+    layout.desired(ident).write_text("owner opted in during installation\n")
+    os.chmod(layout.desired(ident), 0o644)
+    layout.seed_adopted(ident).write_text(f"{now()}\n")
+    os.chmod(layout.seed_adopted(ident), 0o644)
+    return True
+
+
+@dataclasses.dataclass(frozen=True)
+class Base:
+    os_id: str
+    version_id: str
+    rpm_arch: str
+    fingerprint: str
+    installed: dict[str, str]
+
+    @property
+    def architecture(self) -> str:
+        return ARCHITECTURES[self.rpm_arch]
+
+
+def rpm_query_all(layout: Layout) -> list[str]:
+    """Module-level so tests can give a base's package list."""
+    return run(["rpm", "--root", str(layout.root), "-qa", "--qf",
+                "%{NAME} %{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n"]).stdout.splitlines()
+
+
+def probe_base(layout: Layout) -> Base:
+    release = parse_os_release(layout.os_release.read_text())
+    os_id, version_id = release.get("ID", ""), release.get("VERSION_ID", "")
+    if not re.fullmatch(r"[a-z0-9._-]+", os_id) or not re.fullmatch(r"[A-Za-z0-9._-]+", version_id):
+        raise PackError("this system's os-release has no usable ID and VERSION_ID")
+    rpm_arch = os.uname().machine
+    if rpm_arch not in ARCHITECTURES:
+        raise PackError(f"extensions are not built for {rpm_arch}")
+    lines = rpm_query_all(layout)
+    return Base(os_id, version_id, rpm_arch, base_packages_sha256(lines), parse_installed(lines))
+
+
+class _HttpsOnlyRedirects(urllib.request.HTTPRedirectHandler):
+    """Follow a publisher's mirror redirects, but never to plain HTTP."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if urllib.parse.urlsplit(newurl).scheme != "https":
+            raise urllib.error.HTTPError(newurl, code, "redirect away from HTTPS refused", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OPENER = urllib.request.build_opener(_HttpsOnlyRedirects())
+
+
+def http_open(url: str, offset: int = 0):
+    """Module-level so tests can serve files without a network."""
+    headers = {"User-Agent": "tilo-extension/1"}
+    if offset:
+        headers["Range"] = f"bytes={offset}-"
+    return _OPENER.open(urllib.request.Request(url, headers=headers), timeout=HTTP_TIMEOUT)
+
+
+def fetch_small(url: str, limit: int) -> bytes:
+    try:
+        with http_open(url) as response:
+            data = response.read(limit + 1)
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            raise Unpublished(UNPUBLISHED_MESSAGE) from error
+        raise PackError(f"{urllib.parse.urlsplit(url).hostname} answered {error.code}") from error
+    except (urllib.error.URLError, OSError) as error:
+        raise PackError(f"could not reach {urllib.parse.urlsplit(url).hostname}: {error}") from error
+    if len(data) > limit:
+        raise PackError(f"{url.rsplit('/', 1)[-1]} is larger than allowed")
+    return data
+
+
+def verify_signature(layout: Layout, data: bytes, signature: bytes, workdir: Path) -> None:
+    """Check the manifest bytes against the key this image trusts for updates.
+
+    Module-level so tests can substitute a verifier when tilo-crypto is absent.
+    """
+    key = layout.trust_key
+    if not key.is_file():
+        raise PackError("this image has no update signing key")
+    workdir.mkdir(parents=True, exist_ok=True)
+    manifest = workdir / "manifest.json"
+    sig = workdir / "manifest.json.sig"
+    manifest.write_bytes(data)
+    sig.write_bytes(signature)
+    result = run([tilo_crypto(), "verify-p256-sha256", str(key), str(manifest), str(sig)], check=False)
+    if result.returncode != 0:
+        raise PackError("the manifest's signature is not valid for this image; nothing was changed")
+
+
+def tilo_crypto() -> str:
+    return "/usr/bin/tilo-crypto"
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(CHUNK), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+class Store:
+    """Verified artifacts, content-addressed, with resumable partial downloads."""
+
+    def __init__(self, layout: Layout, ident: str):
+        self.root = layout.cache(ident)
+        self.objects = layout.objects(ident)
+        self.partial = self.root / "partial"
+
+    def prepare(self) -> None:
+        for directory in (self.root, self.objects.parent, self.objects, self.partial):
+            directory.mkdir(parents=True, exist_ok=True)
+            os.chmod(directory, 0o755 if directory == self.objects.parent else 0o700)
+
+    def object(self, artifact: Artifact) -> Path:
+        return self.objects / artifact.sha256
+
+    def have(self, artifact: Artifact) -> bool:
+        path = self.object(artifact)
+        if not path.is_file():
+            return False
+        if path.stat().st_size == artifact.size and sha256_file(path) == artifact.sha256:
+            return True
+        path.unlink()
+        return False
+
+    def fetch(self, artifact: Artifact, report) -> Path:
+        """Download from the first URL that yields exactly the pinned bytes."""
+        if self.have(artifact):
+            return self.object(artifact)
+        part = self.partial / artifact.sha256
+        problems = []
+        for url in artifact.urls:
+            try:
+                self._download(url, part, artifact, report)
+            except (urllib.error.URLError, OSError) as error:
+                problems.append(f"{urllib.parse.urlsplit(url).hostname}: {getattr(error, 'reason', error)}")
+                continue
+            except PackError as error:
+                problems.append(str(error))
+                continue
+            if sha256_file(part) == artifact.sha256:
+                os.replace(part, self.object(artifact))
+                return self.object(artifact)
+            part.unlink()
+            problems.append(f"{artifact.package} from {urllib.parse.urlsplit(url).hostname} does not match "
+                            "the signed manifest")
+        raise PackError("; ".join(problems)[:600] or f"{artifact.package} could not be downloaded")
+
+    def _download(self, url: str, part: Path, artifact: Artifact, report) -> None:
+        offset = part.stat().st_size if part.exists() else 0
+        if offset >= artifact.size:
+            part.unlink()
+            offset = 0
+        with http_open(url, offset) as response:
+            if offset and getattr(response, "status", 200) != 206:
+                offset = 0
+            with open(part, "ab" if offset else "wb") as out:
+                done = offset
+                while True:
+                    chunk = response.read(min(CHUNK, artifact.size - done + 1))
+                    if not chunk:
+                        break
+                    done += len(chunk)
+                    if done > artifact.size:
+                        out.close()
+                        part.unlink()
+                        raise PackError(f"{artifact.package} is larger than the signed manifest says")
+                    out.write(chunk)
+                    report(len(chunk))
+                out.flush()
+                os.fsync(out.fileno())
+        if part.stat().st_size != artifact.size:
+            raise PackError(f"{artifact.package}: the download stopped early")
+
+    def keep_only(self, wanted: set[str]) -> None:
+        """Delete every verified object no kept manifest needs, and partials."""
+        if self.objects.is_dir():
+            for path in self.objects.iterdir():
+                if path.name not in wanted:
+                    path.unlink()
+        shutil.rmtree(self.partial, ignore_errors=True)
+
+
+def rpm_header(path: Path) -> dict[str, str]:
+    output = run(["rpm", "-qp", "--nosignature", "--nodigest", "--qf",
+                  "%{NAME}\t%{VERSION}\t%{RELEASE}\t%{ARCH}\n", str(path)]).stdout
+    name, version, release, arch = output.rstrip("\n").split("\t")
+    return {"name": name, "nvra": f"{name}-{version}-{release}.{arch}"}
+
+
+def extract_rpm(path: Path, tree: Path, ld_conf: list[str]) -> None:
+    with path.open("rb") as source:
+        archive = subprocess.Popen(["rpm2archive", "-n", "-"], stdin=source, stdout=subprocess.PIPE)
+    try:
+        with tarfile.open(fileobj=archive.stdout, mode="r|") as tar:
+            for member in tar:
+                raw = PurePosixPath(archive_name(member.name))
+                if raw.parts[:2] == ("etc", "ld.so.conf.d") and member.isfile():
+                    handle = tar.extractfile(member)
+                    if handle is not None:
+                        ld_conf.append(handle.read().decode("utf-8", "replace"))
+                    continue
+                relative = safe_member(member.name)
+                if relative is None:
+                    continue
+                target = tree / relative
+                if not inside(tree, target):
+                    raise PackError(f"{path.name}: {member.name} would be written outside the tree")
+                if member.isdir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    os.chmod(target, 0o755)
+                elif member.issym():
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    if target.is_symlink() or target.exists():
+                        target.unlink()
+                    os.symlink(member.linkname, target)
+                    os.utime(target, (member.mtime, member.mtime), follow_symlinks=False)
+                elif member.isfile():
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    handle = tar.extractfile(member)
+                    if handle is None:
+                        raise PackError(f"{path.name}: unreadable member {member.name}")
+                    if target.is_symlink():
+                        target.unlink()
+                    with open(target, "wb") as out:
+                        shutil.copyfileobj(handle, out)
+                    # No set-id bits and no writable-by-others files, ever.
+                    os.chmod(target, 0o755 if member.mode & 0o111 else 0o644)
+                    # The package's own times: rebuilding a part at every boot
+                    # must not look like new plugins to GStreamer's registry.
+                    os.utime(target, (member.mtime, member.mtime))
+                elif member.islnk():
+                    source = safe_member(member.linkname)
+                    if source is None:
+                        raise PackError(f"{path.name}: hard link outside /usr: {member.name}")
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(tree / source, target)
+                else:
+                    raise PackError(f"{path.name}: unsupported member type {member.name}")
+    finally:
+        if archive.stdout:
+            archive.stdout.close()
+        if archive.wait() != 0:
+            raise PackError(f"rpm2archive failed on {path.name}")
+
+
+def relocate_private_libraries(tree: Path, ld_conf: list[str]) -> list[str]:
+    moved = []
+    for text in ld_conf:
+        for directory in relocation_dirs(text):
+            source = tree / str(directory).lstrip("/")
+            if not source.is_dir():
+                continue
+            destination = source.parent
+            for entry in sorted(source.iterdir()):
+                if not entry.name.startswith("lib") or ".so" not in entry.name:
+                    continue
+                target = destination / entry.name
+                if target.is_symlink() or target.exists():
+                    target.unlink()
+                os.replace(entry, target)
+                # Whatever pointed at the private copy (the VA drivers are
+                # symlinks to libgallium) keeps resolving, to the moved file.
+                os.symlink(f"../{entry.name}", entry)
+                moved.append(f"/{target.relative_to(tree)}")
+    return moved
+
+
+def relabel(tree: Path) -> None:
+    """Label the tree as the files it overlays would be, when SELinux is on."""
+    contexts = Path("/etc/selinux/targeted/contexts/files/file_contexts")
+    if not Path("/sys/fs/selinux/enforce").exists() or not contexts.exists() or not shutil.which("setfiles"):
+        return
+    run(["setfiles", "-F", "-r", str(tree), str(contexts), str(tree)])
+
+
+
+
+RECORD_DIR = "usr/share/tilo-extension"
+
+
+def record_path(tree: Path, part: str) -> Path:
+    return tree / RECORD_DIR / f"{part}.json"
+
+
+def read_record(tree: Path, part: str) -> dict:
+    return read_json(record_path(tree, part))
+
+
+def build_part(layout: Layout, base: Base, manifest: Manifest, part: Part, files: list[tuple[Artifact, Path]]) -> dict:
+    """Assemble a directory sysext next to the live one, then swap it in."""
+    layout.extensions.mkdir(parents=True, exist_ok=True)
+    staging = layout.extensions / f".{part.name}.new"
+    shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(mode=0o755)
+    try:
+        ld_conf: list[str] = []
+        packages = []
+        for artifact, path in files:
+            header = rpm_header(path)
+            if header["nvra"] != artifact.package:
+                raise PackError(f"{artifact.package}: the file is {header['nvra']}")
+            if header["name"] in base.installed:
+                raise PackError(f"{header['nvra']} would replace a package of this system")
+            packages.append(header["name"])
+            extract_rpm(path, staging, ld_conf)
+        relocated = relocate_private_libraries(staging, ld_conf)
+        release = staging / "usr/lib/extension-release.d" / f"extension-release.{part.name}"
+        release.parent.mkdir(parents=True, exist_ok=True)
+        release.write_text(extension_release(base.os_id, base.version_id, base.architecture, {
+            "TILO_EXTENSION": manifest.id,
+            "TILO_EXTENSION_REVISION": str(manifest.revision),
+            "TILO_BASE_PACKAGES": manifest.base["packages_sha256"],
+        }))
+        os.chmod(release, 0o644)
+        # Media processes rescan plugins when extension-release.d changes
+        # (names and times); the time changes only with what was built.
+        built_from = hashlib.sha256("".join(sorted(a.sha256 for a, _ in files)).encode()).hexdigest()
+        stamp = 1_000_000_000 + int(built_from[:7], 16)
+        os.utime(release, (stamp, stamp))
+        record = {
+            "schema": 1,
+            "id": manifest.id,
+            "part": part.name,
+            "revision": manifest.revision,
+            "base": {k: manifest.base[k] for k in ("os_id", "version_id", "architecture", "packages_sha256")},
+            "requires_base": part.requires_base,
+            "packages": sorted(packages),
+            "artifacts": [{"package": a.package, "sha256": a.sha256, "publisher": a.publisher,
+                           "license": a.license} for a, _ in files],
+            "relocated": relocated,
+        }
+        write_json(record_path(staging, part.name), record, 0o644)
+        os.utime(record_path(staging, part.name), (stamp, stamp))
+        for directory in (staging / RECORD_DIR, staging / "usr/share", staging / "usr"):
+            os.chmod(directory, 0o755)
+        relabel(staging)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    live = layout.extensions / part.name
+    old = layout.extensions / f".{part.name}.old"
+    shutil.rmtree(old, ignore_errors=True)
+    if live.exists():
+        os.replace(live, old)
+    os.replace(staging, live)
+    shutil.rmtree(old, ignore_errors=True)
+    return record
+
+
+def selection_of(record: dict) -> tuple[int, tuple[str, ...]] | None:
+    """What a live part was assembled from: revision and artifact digests."""
+    if not record:
+        return None
+    artifacts = record.get("artifacts", [])
+    return (record.get("revision", 0),
+            tuple(sorted(a.get("sha256", "") for a in artifacts if isinstance(a, dict))))
+
+
+def accept_revision(layout: Layout, ident: str, base: Base, revision: int) -> None:
+    """Refuse a manifest older than one already accepted for this base."""
+    accepted = read_json(layout.accepted(ident))
+    floor = accepted.get(base.fingerprint, 0)
+    if isinstance(floor, int) and revision < floor:
+        raise PackError(f"the published manifest (revision {revision}) is older than the one this "
+                        f"device already accepted ({floor}); refusing a downgrade")
+    accepted[base.fingerprint] = revision
+    write_json(layout.accepted(ident), accepted, 0o644)
+
+
+def waiting_for_network(status: Status, installed: bool) -> dict:
+    """Offline: remember the choice and wait; this is not a failure."""
+    if installed:
+        return status.write(state="installed")
+    return status.write(state=next_state("", "offline", installed=False),
+                        message=OFFLINE_MESSAGE, last_error="")
+
+
+def installed_parts(layout: Layout, catalogue: Catalogue) -> list[str]:
+    return [name for name in catalogue.parts if (layout.extensions / name).exists()]
+
+
+def fetch_manifest(layout: Layout, catalogue: Catalogue, base: Base, status: Status) -> tuple[Manifest, bytes, bytes]:
+    """Fetch, authenticate and validate the manifest for this base."""
+    status.progress("Fetching the signed manifest")
+    url = catalogue.manifest_url(base.rpm_arch, base.fingerprint)
+    data = fetch_small(url, MAX_MANIFEST_BYTES)
+    signature = fetch_small(url + ".sig", MAX_SIGNATURE_BYTES)
+    verify_signature(layout, data, signature, layout.cache(catalogue.id) / "verify")
+    manifest = parse_manifest(data, catalogue, base)
+    accept_revision(layout, catalogue.id, base, manifest.revision)
+    return manifest, data, signature
+
+
+def keep_manifest(layout: Layout, ident: str, base: Base, data: bytes, signature: bytes) -> None:
+    """Keep the signed bytes: every activation verifies them again."""
+    directory = layout.bases(ident) / base.fingerprint
+    directory.mkdir(parents=True, exist_ok=True)
+    for path in (layout.bases(ident), directory):
+        os.chmod(path, 0o755)
+    for name, content in (("manifest.json.sig", signature), ("manifest.json", data)):
+        fd, temporary = tempfile.mkstemp(dir=directory, prefix=f".{name}.")
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, directory / name)
+
+
+def kept_manifests(layout: Layout, catalogue: Catalogue, base: Base) -> list[Manifest]:
+    """Every kept manifest that still verifies, newest first.
+
+    A manifest for exactly this base comes first. Others (kept from the
+    deployments before an update, or after a rollback) follow by revision.
+    """
+    found = []
+    directory = layout.bases(catalogue.id)
+    if not directory.is_dir():
+        return []
+    for entry in sorted(directory.iterdir()):
+        if not SHA256_RE.fullmatch(entry.name):
+            continue
+        try:
+            data = (entry / "manifest.json").read_bytes()
+            signature = (entry / "manifest.json.sig").read_bytes()
+            verify_signature(layout, data, signature, layout.cache(catalogue.id) / "verify")
+            manifest = parse_manifest(data, catalogue, base, exact=False)
+        except (PackError, OSError) as error:
+            print(f"tilo-extension: {catalogue.id}: ignoring the kept manifest for {entry.name[:16]}: {error}",
+                  file=sys.stderr)
+            continue
+        if manifest.base["packages_sha256"] != entry.name:
+            continue
+        found.append(manifest)
+    found.sort(key=lambda m: (m.base["packages_sha256"] == base.fingerprint, m.revision), reverse=True)
+    return found
+
+
+def prune(layout: Layout, catalogue: Catalogue, base: Base, keep: int = 3) -> None:
+    """Keep the manifests of the last few bases (rollback) and their objects."""
+    manifests = kept_manifests(layout, catalogue, base)
+    kept = manifests[:keep]
+    names = {m.base["packages_sha256"] for m in kept}
+    directory = layout.bases(catalogue.id)
+    if directory.is_dir():
+        for entry in directory.iterdir():
+            if entry.name not in names:
+                shutil.rmtree(entry, ignore_errors=True)
+    wanted = {a.sha256 for m in kept for p in m.parts if p.state == "available" for a in p.artifacts}
+    Store(layout, catalogue.id).keep_only(wanted)
+
+
+@dataclasses.dataclass(frozen=True)
+class Choice:
+    """The part to merge on this base, or why there is none."""
+    name: str
+    state: str
+    message: str = ""
+    manifest: Manifest | None = None
+    part: Part | None = None
+
+
+def choose_parts(catalogue: Catalogue, base: Base, manifests: list[Manifest]) -> list[Choice]:
+    """For each part: the manifest for exactly this base decides; failing
+    that, the newest kept manifest whose part still fits this base."""
+    exact = next((m for m in manifests if m.base["packages_sha256"] == base.fingerprint), None)
+    choices = []
+    for name in catalogue.parts:
+        if exact is not None:
+            part = exact.part(name)
+            if part is None:
+                choices.append(Choice(name, "unsupported"))
+            elif part.state == "available":
+                choices.append(Choice(name, "enabled", "", exact, part))
+            else:
+                choices.append(Choice(name, part.state, part.message))
+            continue
+        fitting = next(((m, m.part(name)) for m in manifests
+                        if m.part(name) is not None and manifest_part_fits(m, m.part(name), base)), None)
+        if fitting is None:
+            choices.append(Choice(name, "waiting", UPDATE_MESSAGE))
+        else:
+            choices.append(Choice(name, "enabled", "", *fitting))
+    return choices
+
+
+UPDATE_MESSAGE = "Waiting to be downloaded again for this version of Tilo."
+
+
+def sysext_masked() -> bool:
+    """Whether the image keeps systemd-sysext from merging anything by itself.
+
+    The sealed image masks it (docs/security/boot-chain.md); the unsealed
+    development image unmasks it for its own layers. Module-level for tests.
+    """
+    result = run(["systemctl", "is-enabled", "systemd-sysext.service"], check=False)
+    return result.stdout.strip().startswith("masked")
+
+
+def foreign_extensions(layout: Layout, ours: set[str]) -> list[str]:
+    """Anything systemd-sysext would merge that this helper did not build."""
+    found = []
+    for directory in layout.sysext_dirs:
+        if not directory.is_dir():
+            continue
+        for entry in sorted(directory.iterdir()):
+            if entry.name.startswith("."):
+                continue
+            if directory == layout.extensions and entry.name in ours and entry.is_dir() \
+                    and not entry.is_symlink():
+                continue
+            found.append(str(entry))
+    return found
+
+
+def sysext_refresh(layout: Layout) -> None:
+    """Merge exactly what is in the search path now (or unmerge if empty).
+
+    Runs systemd-sysext directly: its boot-time service stays masked on the
+    sealed image, so only this activation, right after rebuilding every part
+    from verified bytes, ever merges. Module-level for tests.
+    """
+    if layout.root != Path("/") or not Path("/run/systemd/system").is_dir():
+        return
+    run(["systemd-sysext", "refresh"])
+
+
+@dataclasses.dataclass
+class Activation:
+    states: dict[str, str]
+    changed: bool
+    messages: list[str]
+    errors: list[str]
+
+
+def activate_one(layout: Layout, catalogue: Catalogue, base: Base) -> Activation:
+    """Rebuild the parts of one extension for the booted base."""
+    ident = catalogue.id
+    previous = {name: selection_of(read_record(layout.extensions / name, name)) for name in catalogue.parts}
+    if not layout.desired(ident).exists():
+        for name in catalogue.parts:
+            shutil.rmtree(layout.extensions / name, ignore_errors=True)
+        return Activation({name: "off" for name in catalogue.parts}, any(previous.values()), [], [])
+    states: dict[str, str] = {}
+    messages: list[str] = []
+    errors: list[str] = []
+    store = Store(layout, ident)
+    for choice in choose_parts(catalogue, base, kept_manifests(layout, catalogue, base)):
+        live = layout.extensions / choice.name
+        if choice.part is None or choice.manifest is None:
+            shutil.rmtree(live, ignore_errors=True)
+            states[choice.name] = choice.state
+            if choice.message:
+                messages.append(choice.message)
+            continue
+        missing = [a for a in choice.part.artifacts if not store.have(a)]
+        if missing:
+            shutil.rmtree(live, ignore_errors=True)
+            states[choice.name] = "waiting"
+            messages.append(UPDATE_MESSAGE)
+            continue
+        try:
+            build_part(layout, base, choice.manifest, choice.part,
+                       [(a, store.object(a)) for a in choice.part.artifacts])
+            states[choice.name] = "enabled"
+        except (PackError, OSError) as error:
+            shutil.rmtree(live, ignore_errors=True)
+            states[choice.name] = "waiting"
+            errors.append(f"{choice.name}: {error}")
+    current = {name: selection_of(read_record(layout.extensions / name, name)) for name in catalogue.parts}
+    return Activation(states, current != previous, list(dict.fromkeys(messages)), errors)
+
+
+def activate(layout: Layout) -> int:
+    """Rebuild every part from verified bytes, then merge exactly those.
+
+    Runs at every boot before the desktop starts, and after every install,
+    refresh and removal. Nothing assembled earlier is trusted: what was written
+    to /var since then is replaced by what the kept signed manifests pin.
+    """
+    ids = catalogue_ids(layout)
+    catalogues = []
+    for ident in ids:
+        try:
+            catalogues.append(load_catalogue(layout, ident))
+        except PackError as error:
+            print(f"tilo-extension: {error}", file=sys.stderr)
+    ours = {name for c in catalogues for name in c.parts}
+    if not any(layout.desired(c.id).exists() for c in catalogues) \
+            and not any((layout.extensions / name).exists() for name in ours):
+        return 0
+    try:
+        base = probe_base(layout)
+    except (PackError, OSError, ValueError):
+        # Without knowing the base nothing can be shown to fit it: merge none.
+        for name in ours:
+            shutil.rmtree(layout.extensions / name, ignore_errors=True)
+        sysext_refresh(layout)
+        raise
+    failed = False
+    outcome = {}
+    for catalogue in catalogues:
+        with locked(layout, catalogue.id):
+            outcome[catalogue.id] = activate_one(layout, catalogue, base)
+    if any(result.changed for result in outcome.values()) or any(
+            (layout.extensions / name).exists() for name in ours):
+        foreign = foreign_extensions(layout, ours) if sysext_masked() else []
+        if foreign:
+            # The sealed image merges only what this helper verified; something
+            # else in the search path means /var or /etc was written behind it.
+            for name in ours:
+                shutil.rmtree(layout.extensions / name, ignore_errors=True)
+            for catalogue in catalogues:
+                Status(layout, catalogue.id).write(
+                    parts={p: "off" for p in catalogue.parts},
+                    last_error="Not merged: unexpected system extensions are present "
+                               f"({', '.join(foreign)[:200]}).")
+            sysext_refresh(layout)
+            return 1
+        sysext_refresh(layout)
+    for catalogue in catalogues:
+        result = outcome[catalogue.id]
+        status = Status(layout, catalogue.id)
+        if not status.read() and not layout.desired(catalogue.id).exists():
+            continue
+        changes: dict = {"parts": result.states, "message": " ".join(result.messages)}
+        if result.changed:
+            changes["generation"] = int(status.read().get("generation", 0)) + 1
+        if result.errors:
+            changes["last_error"] = "; ".join(result.errors)[:MAX_TEXT]
+        status.write(**changes)
+        failed = failed or bool(result.errors)
+    return 1 if failed else 0
+
+
+def request_activation(layout: Layout) -> None:
+    """Have PID 1 run the activation unit: it merges in the host's mount
+    namespace, which this sandboxed unit does not share. Module-level for tests."""
+    if layout.root != Path("/") or not Path("/run/systemd/system").is_dir():
+        if activate(layout) != 0:
+            raise PackError("activation failed")
+        return
+    run(["systemctl", "start", "tilo-extension-activate.service"])
+
+
+def refresh(layout: Layout, ident: str, *, explicit: bool) -> bool:
+    """Fetch what this base needs. Returns whether activation should run."""
+    status = Status(layout, ident)
+    catalogue = load_catalogue(layout, ident)
+    if not layout.desired(ident).exists():
+        status.write(state="not-installed", parts={p: "off" for p in catalogue.parts},
+                     message="", last_error="")
+        return False
+    previous = status.read()
+    installed = bool(installed_parts(layout, catalogue))
+    if not is_online(connectivity()):
+        waiting_for_network(status, installed)
+        return False
+    status.write(state=next_state(previous.get("state", "not-installed"),
+                                  "install-started" if explicit else "refresh-started",
+                                  installed=installed), last_error="")
+    if not installed:
+        status.write(message="")
+    store = Store(layout, ident)
+    try:
+        status.progress("Checking this device")
+        base = probe_base(layout)
+        store.prepare()
+        manifest, data, signature = fetch_manifest(layout, catalogue, base, status)
+        wanted = [p for p in manifest.parts if p.state == "available"]
+        total = sum(a.size for p in wanted for a in p.artifacts if not store.have(a))
+        done = 0
+
+        def report(count: int) -> None:
+            nonlocal done
+            done += count
+            status.download_progress(done, total)
+
+        status.progress("Downloading", bytes=0, total=total)
+        for part in wanted:
+            for artifact in part.artifacts:
+                store.fetch(artifact, report)
+        status.progress("Verifying")
+        for part in wanted:
+            for artifact in part.artifacts:
+                if not store.have(artifact):
+                    raise PackError(f"{artifact.package} changed after it was verified")
+                header = rpm_header(store.object(artifact))
+                if header["nvra"] != artifact.package:
+                    raise PackError(f"{artifact.package}: the file is {header['nvra']}")
+                if header["name"] in base.installed:
+                    raise PackError(f"{header['nvra']} would replace a package of this system")
+        keep_manifest(layout, ident, base, data, signature)
+        prune(layout, catalogue, base)
+        current = {name: selection_of(read_record(layout.extensions / name, name)) for name in catalogue.parts}
+        target = {name: None for name in catalogue.parts}
+        for part in wanted:
+            target[part.name] = (manifest.revision, tuple(sorted(a.sha256 for a in part.artifacts)))
+        unchanged = all((current[n] or (0, ()))[1] == (target[n] or (0, ()))[1] for n in catalogue.parts)
+        status.write(revision=manifest.revision,
+                     base={k: manifest.base[k] for k in ("os_id", "version_id", "architecture",
+                                                         "packages_sha256")},
+                     packages={p.name: [a.package for a in p.artifacts] for p in wanted})
+        return not unchanged or not status.read().get("parts")
+    except (PackError, OSError, ValueError) as error:
+        still_installed = bool(installed_parts(layout, catalogue))
+        # A download that failed because the connection went away is the same
+        # situation as starting offline, not an error to show the owner.
+        if not isinstance(error, Unpublished) and not is_online(connectivity()):
+            waiting_for_network(status, still_installed)
+            return False
+        state = next_state(status.read().get("state", ""), "failed", installed=still_installed)
+        status.write(state=state, last_error=str(error)[:MAX_TEXT])
+        raise
+
+
+def finish(layout: Layout, ident: str) -> None:
+    """After activation: the state the owner sees."""
+    status = Status(layout, ident)
+    current = status.read()
+    if not layout.desired(ident).exists() or current.get("state") not in ("installing", "installed"):
+        return
+    if any(v == "enabled" for v in (current.get("parts") or {}).values()):
+        status.write(state="installed")
+    else:
+        status.write(state="failed", last_error=current.get("last_error") or current.get("message")
+                     or "Nothing could be installed for this version of Tilo.")
+
+
+def remove(layout: Layout, ident: str) -> None:
+    status = Status(layout, ident)
+    catalogue = load_catalogue(layout, ident)
+    status.write(state="removing")
+    with contextlib.suppress(FileNotFoundError):
+        layout.desired(ident).unlink()
+    for path in (layout.bases(ident), layout.objects(ident), layout.cache(ident)):
+        shutil.rmtree(path, ignore_errors=True)
+    for name in catalogue.parts:
+        for path in (f".{name}.new", f".{name}.old"):
+            shutil.rmtree(layout.extensions / path, ignore_errors=True)
+    status.write(packages={}, message="", last_error="", revision=None, base=None)
+
+
+def main(argv: list[str]) -> int:
+    try:
+        verb, ident = parse_command(argv)
+    except PackError as error:
+        print(f"tilo-extension: {error}", file=sys.stderr)
+        return 2
+    layout = Layout()
+    if verb == "status":
+        if not (layout.catalogue_dir / f"{ident}.json").is_file():
+            print(f"tilo-extension: this image has no extension {ident}", file=sys.stderr)
+            return 2
+        print(json.dumps(Status(layout, ident).read() or {"schema": 1, "id": ident, "state": "not-installed"},
+                         indent=2, sort_keys=True))
+        return 0
+    if os.geteuid() != 0:
+        print("tilo-extension: must run as root (start tilo-extension@<verb>:<id>.service)", file=sys.stderr)
+        return 2
+    os.umask(0o022)
+    try:
+        if verb == "activate":
+            return activate(layout)
+        if ident == "all":
+            ids = [i for i in catalogue_ids(layout)
+                   if layout.desired(i).exists() or layout.seed(i).is_file()]
+        else:
+            load_catalogue(layout, ident)
+            ids = [ident]
+    except (PackError, OSError, ValueError) as error:
+        print(f"tilo-extension: {error}", file=sys.stderr)
+        return 1
+    failed = False
+    needs_activation = False
+    touched = []
+    for one in ids:
+        try:
+            with locked(layout, one):
+                if verb == "install":
+                    # The installer's seed is consumed by an explicit opt-in
+                    # too, so it cannot re-enable the extension after a later
+                    # Remove.
+                    adopt_installer_seed(layout, one)
+                    layout.desired(one).write_text("owner opted in\n")
+                    os.chmod(layout.desired(one), 0o644)
+                    needs_activation |= refresh(layout, one, explicit=True)
+                elif verb == "refresh":
+                    adopt_installer_seed(layout, one)
+                    needs_activation |= refresh(layout, one, explicit=False)
+                elif verb == "remove":
+                    remove(layout, one)
+                    needs_activation = True
+            touched.append(one)
+        except (PackError, OSError, ValueError) as error:
+            print(f"tilo-extension: {one}: {error}", file=sys.stderr)
+            failed = True
+    if needs_activation:
+        for one in touched:
+            status = Status(layout, one)
+            if status.read().get("state") == "installing":
+                status.progress("Building the extension")
+        try:
+            request_activation(layout)
+        except (PackError, OSError, ValueError) as error:
+            print(f"tilo-extension: {error}", file=sys.stderr)
+            failed = True
+    for one in touched:
+        with locked(layout, one):
+            if verb == "remove":
+                Status(layout, one).write(state="not-installed")
+            else:
+                finish(layout, one)
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

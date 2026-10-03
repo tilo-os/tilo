@@ -759,10 +759,6 @@ suite = "os/containers/tilo-relay/test-base-retry.sh"
 by = "os/containers/tilo-relay/test-contract.sh"
 
 [[covered]]
-suite = "os/tests/codec-pack-e2e.sh"
-by = "tools/tests/test_codec_pack_e2e.py"
-
-[[covered]]
 suite = "os/tests/test_require_cosign_authority.py"
 by = "os/tests/workflow_dependency_invariants.sh"
 
