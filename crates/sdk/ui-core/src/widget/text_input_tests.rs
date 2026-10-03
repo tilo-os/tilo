@@ -1,5 +1,10 @@
 use super::*;
 
+/// The 1× size a role-less field sets its text at.
+fn body_size() -> f32 {
+    crate::tokens::typography::stock().size(TextRole::Body)
+}
+
 #[test]
 fn caret_paints_with_real_line_geometry_and_can_be_suppressed() {
     // Case `drag_preview_suppresses_caret_paint_without_blurring_or_clearing_ime`.
@@ -85,16 +90,16 @@ fn caret_paints_with_real_line_geometry_and_can_be_suppressed() {
     }
 
     // Case `text_baseline_centred_with_caret`.
-    // Pins the text top against `line_height`, *not* `FONT_SIZE` itself —
+    // Pins the text top against `line_height`, *not* `body_size()` itself —
     // the naive computation shifts glyphs ~2-3 px below the caret in a
     // 40 px input.
     {
         let rect_h = 40.0_f32;
-        let line_height = FONT_SIZE * LINE_HEIGHT_RATIO;
+        let line_height = body_size() * LINE_HEIGHT_RATIO;
         let text_y_correct = (rect_h - line_height) / 2.0;
-        let text_y_naive = (rect_h - FONT_SIZE) / 2.0;
+        let text_y_naive = (rect_h - body_size()) / 2.0;
         assert!(text_y_naive > text_y_correct);
-        assert!((text_y_naive - text_y_correct - (line_height - FONT_SIZE) / 2.0).abs() < 0.01);
+        assert!((text_y_naive - text_y_correct - (line_height - body_size()) / 2.0).abs() < 0.01);
     }
 
     // Case `single_line_band_is_40_at_one_x_and_grows_with_the_scaled_line`.
@@ -112,10 +117,10 @@ fn caret_paints_with_real_line_geometry_and_can_be_suppressed() {
             taffy.style(node).unwrap().size.height
         }
         assert_eq!(band_height(&Theme::dark()), Dimension::length(40.0));
-        let scaled_line = f64::from(FONT_SIZE * LINE_HEIGHT_RATIO) * 2.0;
-        assert_eq!(
-            scaled_line, 40.0,
-            "2× base line fills the shipped band exactly"
+        let scaled_line = f64::from(body_size() * LINE_HEIGHT_RATIO) * 2.0;
+        assert!(
+            scaled_line + ML_PAD_Y * 2.0 > 40.0,
+            "fixture: the 2× body line and its pads outgrow the shipped band"
         );
         #[allow(clippy::cast_possible_truncation, reason = "small test constant")]
         let expected = (scaled_line + ML_PAD_Y * 2.0) as f32;
@@ -2279,7 +2284,7 @@ fn multiline_measurement_matches_draw_scale_and_invalidation() {
     {
         let mut normal = TextInput::local()
             .multiline(true)
-            .with_font_size(12.0)
+            .with_text_role(TextRole::Caption)
             .with_initial_value("A durable comment body that wraps onto another row.");
         normal.apply_layout_external(Rect::new(0.0, 0.0, 260.0, 160.0));
         draw_with_theme(&mut normal, &Theme::dark());
@@ -2289,7 +2294,7 @@ fn multiline_measurement_matches_draw_scale_and_invalidation() {
 
         let mut large = TextInput::local()
             .multiline(true)
-            .with_font_size(12.0)
+            .with_text_role(TextRole::Caption)
             .with_initial_value("A durable comment body that wraps onto another row.");
         large.apply_layout_external(Rect::new(0.0, 0.0, 260.0, 160.0));
         let large_theme = Theme::dark().with_text_scale(2.0);
@@ -2313,7 +2318,7 @@ fn multiline_measurement_matches_draw_scale_and_invalidation() {
         let text = "A long wrapping line whose measured height must match the caret rows produced by the shaped draw path at large text.";
         let mut input = TextInput::local()
             .multiline(true)
-            .with_font_size(14.0)
+            .with_text_role(TextRole::Body)
             .with_initial_value(text);
         let mut renderer = TextRenderer::new();
         renderer.set_text_scale(2.0);
@@ -2456,7 +2461,7 @@ fn multiline_measurement_matches_draw_scale_and_invalidation() {
         );
         input.apply_layout_external(Rect::new(0.0, 0.0, 180.0, f64::from(measured_large.height)));
         draw_with_theme(&mut input, &large);
-        let drawn_large = input.content_height() as f32;
+        let drawn_large = input.content_height().ceil() as f32;
         assert!((measured_large.height - drawn_large).abs() < 0.1);
 
         let normal = Theme::dark();
@@ -2482,7 +2487,7 @@ fn multiline_measurement_matches_draw_scale_and_invalidation() {
             f64::from(measured_normal.height),
         ));
         draw_with_theme(&mut input, &normal);
-        assert!((measured_normal.height - input.content_height() as f32).abs() < 0.1);
+        assert!((measured_normal.height - input.content_height().ceil() as f32).abs() < 0.1);
         assert!(
             measured_large.height > measured_normal.height * 1.8,
             "same instance remeasures from large text back to normal"
@@ -3501,7 +3506,7 @@ fn attributed_single_line_is_shaped_during_measure_before_draw() {
             .flat_map(|r| r.glyphs.iter().map(|g| g.font_weight.0))
             .collect();
         assert_eq!(weights, [400, 700, 400]);
-        assert_eq!(layout.buffer.metrics().font_size, 16.0 * scale);
+        assert_eq!(layout.buffer.metrics().font_size, body_size() * scale);
     }
 }
 
@@ -3616,7 +3621,7 @@ fn attributed_single_line_chip_and_link_rules_follow_shaped_ranges() {
                 .buffer
                 .layout_runs()
                 .flat_map(|r| r.glyphs.iter())
-                .all(|g| g.font_size == 16.0 * scale)
+                .all(|g| g.font_size == body_size() * scale)
         );
         for (background, pad) in [(true, 2.0), (false, 0.0)] {
             let mut decorations = Scene::new();

@@ -22,7 +22,7 @@ crates/session/shell/src/shell/hdr_surface.rs pixel_const 1
 crates/session/shell/src/shell/input_policy.rs pixel_const 1
 crates/session/shell/src/shell/notes_app.rs pixel_const 3
 crates/session/shell/src/shell/osd.rs pixel_const 2
-crates/session/shell/src/shell/overlay_host/mod.rs pixel_const 9
+crates/session/shell/src/shell/overlay_host/mod.rs pixel_const 8
 crates/session/shell/src/shell/quick_settings/root.rs pixel_const 2
 crates/session/shell/src/shell/remote_cursors.rs pixel_const 4
 crates/session/shell/src/shell/search/mod.rs pixel_const 1

@@ -263,7 +263,7 @@ fn scrollable_editor_routes_wheel_and_keeps_focus() {
                 TextInput::local()
                     .with_id("fractional-editor")
                     .multiline(true)
-                    .with_font_size(18.1)
+                    .with_text_role(tilo_ui::TextRole::Reading)
                     .with_initial_value(&("A line of text.\n".repeat(46) + "Final line")),
             ));
         let mut driver = Driver::new(State::new(), Box::new(root), (416, 300));

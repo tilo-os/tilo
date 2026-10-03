@@ -13,6 +13,7 @@ use crate::search::system::{
     self, Provider, Query, ResourceKind, SearchBudget, SearchCursor, SearchPage, SearchRow,
     SearchScope,
 };
+use crate::tokens::TextRole;
 use tilo_actions::ActionAddress;
 
 const UNAVAILABLE_DOMAINS: &str = "Files and host apps are unavailable in this browser.";
@@ -187,13 +188,13 @@ impl Widget for Overlay {
             self.hover,
         );
         let rect = self.palette.get_rect();
-        text.draw_text(
+        text.draw_style(
             scene,
             UNAVAILABLE_DOMAINS,
-            theme.tokens.typography.scale.xs,
             theme.tokens.colors.text_dim,
             transform * Affine::translate((rect.x0 + 12.0, rect.y1 + 8.0)),
             Some((rect.width() - 24.0).max(1.0) as f32),
+            &theme.text(TextRole::Caption),
         );
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {

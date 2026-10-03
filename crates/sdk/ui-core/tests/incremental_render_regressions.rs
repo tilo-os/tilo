@@ -54,9 +54,9 @@ fn leak(s: &str) -> &'static str {
 }
 
 fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
-    let mut col = Column::new()
-        .with_intrinsic_height()
-        .push(Box::new(Text::new(title_key).with_size(18.0)));
+    let mut col = Column::new().with_intrinsic_height().push(Box::new(
+        Text::new(title_key).with_role(tilo_ui::TextRole::Heading),
+    ));
     for i in 0..ROWS_PER_PANEL {
         let row_idx = idx.saturating_mul(ROWS_PER_PANEL).saturating_add(i);
         let label_key = leak(&format!("dash_lbl_{row_idx}"));
@@ -98,7 +98,9 @@ fn build_dashboard_root() -> Box<Scrollable> {
     // mirror the change here so the regression coverage stays
     // honest.
     let header = Row::new()
-        .push(Box::new(Text::new("dash_title").with_size(24.0)))
+        .push(Box::new(
+            Text::new("dash_title").with_role(tilo_ui::TextRole::LargeTitle),
+        ))
         .push(Box::new(ToggleGroup::new(
             vec![
                 Segment::new("Day"),

@@ -25,9 +25,9 @@ use collab_types::ChannelId;
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
-use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
@@ -422,7 +422,6 @@ impl ChannelBrowser {
         } else {
             crate::surface::card(scene, transform, row, radius, field);
         }
-        let text_size = theme.tokens.typography.scale.sm;
         self.query_composition.draw(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),
             QueryView {
@@ -432,7 +431,7 @@ impl ChannelBrowser {
                 show_caret: self.is_focused,
             },
             Rect::new(row.x0 + 12.0, row.y0, row.x1 - 12.0, row.y1),
-            &TextStyle::new(text_size),
+            &theme.text(TextRole::Body),
             QueryInk::of(&theme.tokens.colors),
         );
     }
@@ -445,10 +444,7 @@ impl ChannelBrowser {
         theme: &Theme,
     ) {
         let strip = self.filter_strip_rect();
-        let pill_text_size = renderer_type_size(
-            text_renderer,
-            (theme.tokens.typography.scale.sm - 1.0).max(10.0),
-        );
+        let pill_text_style = theme.text(TextRole::Caption);
         // Chip quiet (HIG §9.5): raised rest fill under an edge derived from
         // it; selected: solid accent with ink chosen against it, no edge.
         let (active_fill, _) = crate::surface::chip_colors(theme, true);
@@ -468,18 +464,17 @@ impl ChannelBrowser {
                               text_renderer: &mut TextRenderer,
                               x: &mut f64,
                               rects: &mut Vec<(String, Rect)>| {
-            let (lw, _) = text_renderer.measure(label, pill_text_size, None);
+            let (lw, _) = text_renderer.measure_style(label, None, &pill_text_style);
             let pill_w = f64::from(lw) + 20.0;
             let rect = Rect::new(*x, cy - pill_h / 2.0, *x + pill_w, cy + pill_h / 2.0);
             let body = if active { active_fill } else { idle_fill };
             let color = if active { active_text } else { idle_text };
             let edge = if active { None } else { idle_edge };
             crate::surface::pill(scene, transform, rect, body, edge, None);
-            let (lw2, lh2) = text_renderer.measure(label, pill_text_size, None);
-            text_renderer.draw_text(
+            let (lw2, lh2) = text_renderer.measure_style(label, None, &pill_text_style);
+            text_renderer.draw_style(
                 scene,
                 label,
-                pill_text_size,
                 color,
                 translated(
                     transform,
@@ -487,6 +482,7 @@ impl ChannelBrowser {
                     rect.y0 + (rect.height() - f64::from(lh2)) / 2.0,
                 ),
                 None,
+                &pill_text_style,
             );
             rects.push((label.to_string(), rect));
             *x += pill_w + PILL_GAP;
@@ -578,35 +574,35 @@ impl ChannelBrowser {
             &band,
         );
 
-        let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
+        let text_style = theme.text(TextRole::Caption);
         let cy = f64::midpoint(row.y0, row.y1);
         let mut x_cursor = band.x1 + 8.0;
         // One measured line box for everything on the row's centre line:
         // the pin, the name and (below) the time share it.
-        let line_top = text_top(text_renderer, text_size, cy);
+        let line_top = text_top(text_renderer, &text_style, cy);
 
         if entry.is_pinned {
-            let (gw, _) = text_renderer.measure(PIN_GLYPH, text_size, None);
-            text_renderer.draw_text(
+            let (gw, _) = text_renderer.measure_style(PIN_GLYPH, None, &text_style);
+            text_renderer.draw_style(
                 scene,
                 PIN_GLYPH,
-                text_size,
                 theme.tokens.colors.text_dim,
                 translated(transform, x_cursor, line_top),
                 None,
+                &text_style,
             );
             x_cursor += f64::from(gw) + 4.0;
         }
 
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             entry.name.as_str(),
-            text_size,
             theme.tokens.colors.text_primary,
             translated(transform, x_cursor, line_top),
             None,
+            &text_style,
         );
-        let (nw, _) = text_renderer.measure(entry.name.as_str(), text_size, None);
+        let (nw, _) = text_renderer.measure_style(entry.name.as_str(), None, &text_style);
         x_cursor += f64::from(nw) + 8.0;
 
         if let Some(role) = &entry.role_label {
@@ -627,15 +623,14 @@ impl ChannelBrowser {
         role: &str,
         x_cursor: f64,
     ) {
-        let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         let cy = f64::midpoint(row.y0, row.y1);
-        let chip_text_size = (text_size - 2.0).max(10.0);
+        let chip_text_style = theme.text(TextRole::Caption);
         // The chip is capped at `ROLE_CHIP_W`; the label is fitted to the
         // room inside it rather than painted past the cap, which is what a
         // role name at 2× type did.
-        let role = text_renderer.elide_to_width(role, chip_text_size, ROLE_LABEL_BUDGET);
+        let role = text_renderer.elide_to_width_style(role, ROLE_LABEL_BUDGET, &chip_text_style);
         let role = role.as_str();
-        let (lw, _) = text_renderer.measure(role, chip_text_size, None);
+        let (lw, _) = text_renderer.measure_style(role, None, &chip_text_style);
         let chip_w = (f64::from(lw) + 12.0).min(ROLE_CHIP_W);
         let chip_h = (row.height() - 16.0).max(16.0);
         let chip = Rect::new(
@@ -647,11 +642,10 @@ impl ChannelBrowser {
         // Chip quiet: raised fill under an edge derived from it.
         let (chip_fill, chip_edge) = crate::surface::chip_colors(theme, false);
         crate::surface::pill(scene, transform, chip, chip_fill, chip_edge, None);
-        let (lw2, lh2) = text_renderer.measure(role, chip_text_size, None);
-        text_renderer.draw_text(
+        let (lw2, lh2) = text_renderer.measure_style(role, None, &chip_text_style);
+        text_renderer.draw_style(
             scene,
             role,
-            chip_text_size,
             theme.tokens.colors.text_dim,
             translated(
                 transform,
@@ -659,6 +653,7 @@ impl ChannelBrowser {
                 chip.y0 + (chip.height() - f64::from(lh2)) / 2.0,
             ),
             None,
+            &chip_text_style,
         );
     }
 
@@ -674,20 +669,20 @@ impl ChannelBrowser {
         entry: &ChannelEntry,
         now: SystemTime,
     ) {
-        let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
+        let text_style = theme.text(TextRole::Caption);
         let cy = f64::midpoint(row.y0, row.y1);
 
         // Right-aligned before the unread badge slot.
         let rel = crate::widget::history::format_relative_time(entry.last_activity, now);
-        let (tw, th) = text_renderer.measure(&rel, text_size, None);
+        let (tw, th) = text_renderer.measure_style(&rel, None, &text_style);
         let time_x = row.x1 - UNREAD_SLOT_W - 4.0 - f64::from(tw);
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &rel,
-            text_size,
             theme.tokens.colors.text_dim,
             translated(transform, time_x, cy - f64::from(th) / 2.0),
             None,
+            &text_style,
         );
 
         if entry.unread_count > 0 {
@@ -696,8 +691,8 @@ impl ChannelBrowser {
             } else {
                 entry.unread_count.to_string()
             };
-            let badge_text_size = (text_size - 2.0).max(10.0);
-            let (bw, _) = text_renderer.measure(&badge_text, badge_text_size, None);
+            let badge_text_style = theme.text(TextRole::Caption).numeric();
+            let (bw, _) = text_renderer.measure_style(&badge_text, None, &badge_text_style);
             let badge_w = (f64::from(bw) + 12.0).max(20.0);
             let badge_h = (row.height() - 18.0).max(16.0);
             let badge = Rect::new(
@@ -717,11 +712,10 @@ impl ChannelBrowser {
                 None,
                 &shape,
             );
-            let (lw, lh) = text_renderer.measure(&badge_text, badge_text_size, None);
-            text_renderer.draw_text(
+            let (lw, lh) = text_renderer.measure_style(&badge_text, None, &badge_text_style);
+            text_renderer.draw_style(
                 scene,
                 &badge_text,
-                badge_text_size,
                 theme.tokens.colors.text_primary,
                 translated(
                     transform,
@@ -729,6 +723,7 @@ impl ChannelBrowser {
                     badge.y0 + (badge.height() - f64::from(lh)) / 2.0,
                 ),
                 None,
+                &badge_text_style,
             );
             // Silences an unused-constant warning; TIME_SLOT_W is
             // kept for a future layout that reserves the slot.
@@ -761,19 +756,16 @@ impl ChannelBrowser {
             None,
             &band,
         );
-        let text_size = renderer_type_size(
-            text_renderer,
-            (theme.tokens.typography.scale.sm - 1.0).max(10.0),
-        );
+        let text_style = theme.text(TextRole::Subheading);
         let cy = f64::midpoint(header_rect.y0, header_rect.y1);
-        let header_top = text_top(text_renderer, text_size, cy);
-        text_renderer.draw_text(
+        let header_top = text_top(text_renderer, &text_style, cy);
+        text_renderer.draw_style(
             scene,
             space_name,
-            text_size,
             theme.tokens.colors.text_dim,
             translated(transform, band.x1 + 6.0, header_top),
             None,
+            &text_style,
         );
     }
 
@@ -808,10 +800,7 @@ impl ChannelBrowser {
             sheet_surface(theme),
         );
 
-        let chip_text_size = renderer_type_size(
-            text_renderer,
-            (theme.tokens.typography.scale.sm - 2.0).max(9.0),
-        );
+        let chip_text_style = theme.text(TextRole::Caption);
         // Key caps are quiet chips: raised fill under an edge derived from it.
         let (chip_body, chip_border) = crate::surface::chip_colors(theme, false);
         let dim = theme.tokens.colors.text_dim;
@@ -825,7 +814,7 @@ impl ChannelBrowser {
             ("Esc", crate::i18n!("palette-hint-close")),
         ];
         for (key, label) in &hints {
-            let (kw, kh) = text_renderer.measure(key, chip_text_size, None);
+            let (kw, kh) = text_renderer.measure_style(key, None, &chip_text_style);
             let chip_w = f64::from(kw) + 10.0;
             let chip_rect = Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
             crate::surface::pill(
@@ -836,10 +825,9 @@ impl ChannelBrowser {
                 chip_border,
                 Some(f64::from(theme.tokens.radii.detail)),
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 key,
-                chip_text_size,
                 dim,
                 translated(
                     transform,
@@ -847,16 +835,17 @@ impl ChannelBrowser {
                     chip_rect.y0 + (chip_rect.height() - f64::from(kh)) / 2.0,
                 ),
                 None,
+                &chip_text_style,
             );
             x = chip_rect.x1 + 4.0;
-            let (lw, lh) = text_renderer.measure(label, chip_text_size, None);
-            text_renderer.draw_text(
+            let (lw, lh) = text_renderer.measure_style(label, None, &chip_text_style);
+            text_renderer.draw_style(
                 scene,
                 label,
-                chip_text_size,
                 dim,
                 translated(transform, x, cy - f64::from(lh) / 2.0),
                 None,
+                &chip_text_style,
             );
             x += f64::from(lw) + 12.0;
         }
@@ -1044,8 +1033,8 @@ impl ChannelBrowser {
 /// Top edge that centres one line of `size`-px text on `center_y`, using the
 /// line box the renderer will actually paint (1.25 × size by default, and
 /// carrying the accessibility text scale) rather than the bare font size.
-fn text_top(tr: &mut TextRenderer, size: f32, center_y: f64) -> f64 {
-    center_y - f64::from(tr.measure("Ag", size, None).1) / 2.0
+fn text_top(tr: &mut TextRenderer, style: &TextStyle, center_y: f64) -> f64 {
+    center_y - f64::from(tr.measure_style("Ag", None, style).1) / 2.0
 }
 
 /// Composes a paint transform with a translation. `Affine`'s `Mul` impl is
@@ -1155,18 +1144,18 @@ impl Widget for ChannelBrowser {
 
         if self.visible.is_empty() {
             let label = "No channels";
-            let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
-            let (w, h) = text_renderer.measure(label, size, None);
+            let style = theme.text(TextRole::Caption);
+            let (w, h) = text_renderer.measure_style(label, None, &style);
             let top = self.list_top_y();
             let cx = f64::midpoint(self.rect.x0, self.rect.x1);
             let cy = f64::midpoint(top, self.footer_rect().y0);
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 label,
-                size,
                 theme.tokens.colors.text_dim,
                 translated(transform, cx - f64::from(w) / 2.0, cy - f64::from(h) / 2.0),
                 None,
+                &style,
             );
             self.draw_footer(scene, transform, text_renderer, theme);
             self.dirty = false;

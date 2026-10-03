@@ -9,8 +9,8 @@ use taffy::{AvailableSpace, LengthPercentage, NodeId, Size, TaffyTree};
 use super::Widget;
 use crate::Theme;
 use crate::bound_dispatch::{BoundNodeMap, mutate_bound_node};
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::tokens::Typography;
+use crate::text_render::TextRenderer;
+use crate::tokens::TextRole;
 
 /// What sizes an extent handed to a responsive shell (HIG §9.6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,15 +93,19 @@ impl AuthoredExtent {
 /// logical px.
 ///
 /// It grows with `ui_scale` like every metric, and once the theme's body line
-/// (`typography.scale.base` at the current text scale) outgrows the room the
+/// (`typography.size(TextRole::Body)` at the current text scale) outgrows the room the
 /// authored height left for it, by exactly that difference: the authored
 /// padding around the line is kept and the label never overflows the control.
 /// Unchanged on a stock theme, so 1× geometry is exactly what was authored.
 #[must_use]
 pub fn text_control_height(authored: f64, theme: &Theme) -> f64 {
     let ui = f64::from(theme.ui_scale);
-    let line_at_1x = f64::from(TextStyle::new(Typography::default().scale.base).line_height_px());
-    let line_now = f64::from(TextStyle::new(theme.tokens.typography.scale.base).line_height_px());
+    let line_at_1x = f64::from(
+        crate::tokens::typography::stock()
+            .style(TextRole::Body)
+            .line_height_px(),
+    );
+    let line_now = f64::from(theme.text(TextRole::Body).line_height_px());
     let padding = (authored - line_at_1x).max(0.0) * ui;
     (authored * ui).max(line_now + padding)
 }
@@ -891,11 +895,9 @@ mod tests {
             assert_eq!(text_control_height(34.0, &stock), 34.0);
             assert_eq!(text_control_height(36.0, &stock), 36.0);
 
-            let line_1x =
-                f64::from(TextStyle::new(stock.tokens.typography.scale.base).line_height_px());
+            let line_1x = f64::from(stock.text(TextRole::Body).line_height_px());
             let two = Theme::dark().with_text_scale(2.0);
-            let line_2x =
-                f64::from(TextStyle::new(two.tokens.typography.scale.base).line_height_px());
+            let line_2x = f64::from(two.text(TextRole::Body).line_height_px());
             assert!(
                 (line_2x - 2.0 * line_1x).abs() < 1e-3,
                 "the theme's body line doubles"

@@ -26,6 +26,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect};
 use vello::peniko::{Blob, Extend, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
 
+use ui::TextRole;
 use ui::color_compat::ColorCompat;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -123,8 +124,8 @@ fn draw_chip(
     // Control label scale (HIG §9.6), measured with the style it is drawn
     // in so the label is centred on its real line box rather than on a
     // `size * 1.3` guess. The caller has reset the renderer for this pass.
-    let size = theme.tokens.typography.scale.sm;
-    let (tw, th) = text.measure(label, size, None);
+    let style = theme.text(TextRole::Caption);
+    let (tw, th) = text.measure_style(label, None, &style);
     let w = f64::from(tw) + CHIP_PAD * 2.0;
     let x = cursor.x + CHIP_DX;
     let y = cursor.y + CHIP_DY;
@@ -149,13 +150,13 @@ fn draw_chip(
         None,
         &rect,
     );
-    text.draw_text(
+    text.draw_style(
         scene,
         label,
-        size,
         theme.text_primary,
         Affine::translate((x + CHIP_PAD, y + (CHIP_H - f64::from(th)) / 2.0)),
         None,
+        &style,
     );
 }
 
@@ -255,8 +256,8 @@ fn draw_text_preview(
     theme: &Theme,
     text: &mut TextRenderer,
 ) {
-    let size = theme.tokens.typography.scale.sm;
-    let line_h = f64::from(size) * 1.45;
+    let style = theme.text(TextRole::Caption);
+    let line_h = f64::from(style.line_height_px());
     let mut y = rect.y0 + f64::from(theme.tokens.spacing.s3);
     for source_line in value.lines().filter(|line| !line.trim().is_empty()).take(5) {
         let line: String = source_line.chars().take(34).collect();
@@ -265,13 +266,13 @@ fn draw_text_preview(
             reason = "text layout accepts f32 widths and the bounded preview is at most 560 px"
         )]
         let max_width = (rect.width() - 2.0 * f64::from(theme.tokens.spacing.s3)) as f32;
-        text.draw_text(
+        text.draw_style(
             scene,
             &line,
-            size,
             theme.tokens.colors.text_primary,
             Affine::translate((rect.x0 + f64::from(theme.tokens.spacing.s3), y)),
             Some(max_width),
+            &style,
         );
         y += line_h;
         if y + line_h > rect.y1 {

@@ -18,6 +18,7 @@ use vello::peniko::Fill;
 use super::NotificationHost;
 use super::model::{Notification, NotificationSeverity, lock_suppressed_label};
 use crate::i18n::{t, t_args};
+use ui::TextRole;
 
 /// In/out animation duration; matches the desktop's modal entry timing.
 const ANIM_MS: u64 = 220;
@@ -146,7 +147,7 @@ impl NotificationStack {
         radius: f64,
         count: usize,
     ) -> Rect {
-        let title_size = ctx.theme.tokens.typography.scale.sm;
+        let title_style = ctx.theme.text(TextRole::Caption);
         let card_rect = Rect::new(x0, y, x0 + width, y + TOAST_HEIGHT);
         // A Panel-role floater like the toasts it stands in for (HIG §9.5),
         // so one column is one material.
@@ -156,11 +157,10 @@ impl NotificationStack {
         let max_width = f64_to_f32_lossy(width - CARD_PADDING_X * 2.0);
         let (_, label_h) = ctx
             .text_renderer
-            .measure(&label, title_size, Some(max_width));
-        ctx.text_renderer.draw_text(
+            .measure_style(&label, Some(max_width), &title_style);
+        ctx.text_renderer.draw_style(
             ctx.scene,
             &label,
-            title_size,
             ctx.theme.tokens.colors.text_dim,
             ctx.transform.pre_translate(
                 (
@@ -170,6 +170,7 @@ impl NotificationStack {
                     .into(),
             ),
             Some(max_width),
+            &title_style,
         );
         card_rect
     }
@@ -187,7 +188,7 @@ impl NotificationStack {
         status: &str,
         history_count: usize,
     ) -> Rect {
-        let body_size = ctx.theme.tokens.typography.scale.xs;
+        let body_style = ctx.theme.text(TextRole::Caption);
         let label = if history_count > 0 {
             t_args(
                 "notification-dnd-held",
@@ -200,7 +201,7 @@ impl NotificationStack {
         let max_width = f64_to_f32_lossy(width - (text_x - x0) - CARD_PADDING_X);
         let (_, label_h) = ctx
             .text_renderer
-            .measure(&label, body_size, Some(max_width));
+            .measure_style(&label, Some(max_width), &body_style);
         // A Selector-height surface (HIG §9.6: 28) that grows with its
         // measured label plus `s2`, so 200 % type has a pill around it.
         let pill_h =
@@ -218,14 +219,14 @@ impl NotificationStack {
             None,
             &Circle::new(dot_center, DOT_RADIUS),
         );
-        ctx.text_renderer.draw_text(
+        ctx.text_renderer.draw_style(
             ctx.scene,
             &label,
-            body_size,
             ctx.theme.tokens.colors.text_dim,
             ctx.transform
                 .pre_translate((text_x, pill_rect.y0 + (pill_h - f64::from(label_h)) / 2.0).into()),
             Some(max_width),
+            &body_style,
         );
         pill_rect
     }

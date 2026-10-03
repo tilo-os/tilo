@@ -21,9 +21,9 @@ use vello::peniko::{BlendMode, Fill};
 
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::drag::{DragController, ListMetrics};
@@ -197,8 +197,8 @@ impl Default for RailMetrics {
 /// numbers, add button, menu rows): `scale.sm`, with the theme's text scale
 /// divided once by the renderer's text scale because the renderer applies
 /// it again.
-fn label_size(theme: &Theme, tr: &TextRenderer) -> f32 {
-    renderer_type_size(tr, theme.tokens.typography.scale.sm)
+fn label_style(theme: &Theme) -> TextStyle {
+    theme.text(TextRole::Caption)
 }
 
 /// Widens a row/action count to `f64` for layout math, through `u32` (exact
@@ -674,17 +674,20 @@ impl PageSidebar {
             // The header is a section label: `scale.sm`, semibold, on the
             // rail's padding and centred on its own measured line in the
             // header band rather than nine pixels down.
-            let size = label_size(theme, tr);
-            let (_, lh) = tr.measure_weighted(&self.header, size, None, TextWeight::Semibold);
+            let style = label_style(theme);
+            let (_, lh) = tr.measure_style(
+                &self.header,
+                None,
+                &style.clone().with_weight(TextWeight::Semibold),
+            );
             let hy = self.rect.y0 + (self.m.header_h - f64::from(lh)) / 2.0;
-            tr.draw_text_weighted(
+            tr.draw_style(
                 scene,
                 &self.header,
-                size,
                 c.text_dim,
                 translated(base, self.rect.x0 + self.m.pad, hy),
                 None,
-                TextWeight::Semibold,
+                &style.clone().with_weight(TextWeight::Semibold),
             );
         }
 
@@ -828,13 +831,13 @@ impl PageSidebar {
         // Right-aligned in the left gutter, one `s2` short of the
         // thumbnail, vertically centred on the measured line.
         let label = format!("{}", i.saturating_add(1));
-        let size = label_size(theme, tr);
+        let style = label_style(theme);
         let weight = if is_current {
             TextWeight::Semibold
         } else {
             TextWeight::Regular
         };
-        let (lw, lh) = tr.measure_weighted(&label, size, None, weight);
+        let (lw, lh) = tr.measure_style(&label, None, &style.clone().with_weight(weight));
         let lx = rect.x0 - f64::from(theme.tokens.spacing.s2) - f64::from(lw);
         let ly = rect.y0 + (rect.height() - f64::from(lh)) / 2.0;
         let col = if is_current {
@@ -842,14 +845,13 @@ impl PageSidebar {
         } else {
             c.text_dim
         };
-        tr.draw_text_weighted(
+        tr.draw_style(
             scene,
             &label,
-            size,
             col,
             translated(base, lx.max(self.list_vp.x0 + SCROLLBAR_INSET), ly),
             None,
-            weight,
+            &style.clone().with_weight(weight),
         );
     }
 
@@ -872,18 +874,21 @@ impl PageSidebar {
         };
         crate::surface::card(scene, base, r, f64::from(theme.tokens.radii.control), bg);
         let label = format!("+  {}", self.add_label);
-        let size = label_size(theme, tr);
-        let (tw, th) = tr.measure_weighted(&label, size, None, TextWeight::Semibold);
+        let style = label_style(theme);
+        let (tw, th) = tr.measure_style(
+            &label,
+            None,
+            &style.clone().with_weight(TextWeight::Semibold),
+        );
         let tx = r.x0 + (r.width() - f64::from(tw)) / 2.0;
         let ty = r.y0 + (r.height() - f64::from(th)) / 2.0;
-        tr.draw_text_weighted(
+        tr.draw_style(
             scene,
             &label,
-            size,
             c.text_primary,
             translated(base, tx.max(r.x0 + f64::from(theme.tokens.spacing.s2)), ty),
             None,
-            TextWeight::Semibold,
+            &style.clone().with_weight(TextWeight::Semibold),
         );
     }
 
@@ -920,7 +925,7 @@ impl PageSidebar {
             None,
             &crate::surface::edge_outline(menu.rect, radius),
         );
-        let size = label_size(theme, tr);
+        let style = label_style(theme);
         for (idx, (act, row)) in menu.items.iter().enumerate() {
             if menu.hover == Some(idx) {
                 let tier = crate::chrome::selection_tier(
@@ -941,15 +946,15 @@ impl PageSidebar {
                 MenuAction::MoveDown => ("Move down", c.text_primary),
                 MenuAction::Delete => ("Delete", c.semantic.danger),
             };
-            let (_, th) = tr.measure(label, size, None);
+            let (_, th) = tr.measure_style(label, None, &style);
             let ty = row.y0 + (row.height() - f64::from(th)) / 2.0;
-            tr.draw_text(
+            tr.draw_style(
                 scene,
                 label,
-                size,
                 col,
                 translated(base, row.x0 + f64::from(theme.padding_standard), ty),
                 None,
+                &style,
             );
         }
     }

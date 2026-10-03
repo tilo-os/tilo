@@ -14,7 +14,6 @@ use crate::time::{Duration, Instant};
 use crate::widget::{AppModel, ModelPath};
 use std::sync::Arc;
 
-use crate::text_metrics::renderer_type_size;
 use crate::widget::TaffyTreeExt;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -28,8 +27,9 @@ use winit::keyboard::{Key, NamedKey};
 use crate::color_compat::ColorCompat;
 use crate::icons::Icon;
 use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::{FullscreenProvider, Widget};
 
 const CONTROLS_AUTO_HIDE: Duration = Duration::from_secs(3);
@@ -353,7 +353,7 @@ struct TimeLabel<'a> {
     /// Measured line-box height; the label is centred on this, not on
     /// `size`, so it holds the bar's centre line at every text scale.
     height: f32,
-    size: f32,
+    style: TextStyle,
 }
 
 impl VideoPlayer {
@@ -1138,14 +1138,15 @@ impl VideoPlayer {
             format_ms(self.position_ms),
             format_ms(self.duration_ms)
         );
-        let time_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
-        let (tw, th) = text_renderer.measure(&time_text, time_size, None);
+        let time_style = theme.text(TextRole::Caption);
+        let (tw, th) = text_renderer.measure_style(&time_text, None, &time_style);
         // The cluster reserves room for the label's *shortest* useful form
         // (the position alone): controls outrank the full "m:ss / m:ss",
         // which yields to them, so folding a setting icon into the gear to
         // protect a label that is then not painted would hide a reachable
         // control for nothing.
-        let (position_w, _) = text_renderer.measure(&format_ms(self.position_ms), time_size, None);
+        let (position_w, _) =
+            text_renderer.measure_style(&format_ms(self.position_ms), None, &time_style);
 
         let mut layout = ControlsLayout {
             bar,
@@ -1166,7 +1167,7 @@ impl VideoPlayer {
             text: &time_text,
             width: tw,
             height: th,
-            size: time_size,
+            style: time_style,
         };
         self.paint_volume_time_track(scene, transform, text_renderer, theme, &layout, &time);
 
@@ -1580,20 +1581,20 @@ impl VideoPlayer {
             Some((time.text.to_string(), time.width))
         } else {
             let position = format_ms(self.position_ms);
-            let (pw, _) = text_renderer.measure(&position, time.size, None);
+            let (pw, _) = text_renderer.measure_style(&position, None, &time.style);
             (f64::from(pw) <= room).then_some((position, pw))
         };
         let track_x1 = if let Some((text, width)) = shown {
             let time_x0 = time_x1 - f64::from(width);
             let top = mid_y - f64::from(time.height) * 0.5;
             self.time_label_rect = Rect::new(time_x0, top, time_x1, top + f64::from(time.height));
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &text,
-                time.size,
                 ink_dim,
                 translated(transform, time_x0, top),
                 None,
+                &time.style,
             );
             time_x0 - pad
         } else {
@@ -1885,15 +1886,15 @@ impl VideoPlayer {
 
         let mut y = y0 + pad * 0.5;
         if let Some(t) = &panel.title {
-            let title_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
-            let (_, th) = text_renderer.measure(t, title_size, None);
-            text_renderer.draw_text(
+            let title_style = theme.text(TextRole::Caption);
+            let (_, th) = text_renderer.measure_style(t, None, &title_style);
+            text_renderer.draw_style(
                 scene,
                 t,
-                title_size,
                 colors.text_dim,
                 translated(transform, x0 + pad, y + (row_h - f64::from(th)) * 0.5),
                 None,
+                &title_style,
             );
             y += row_h;
         }
@@ -1984,16 +1985,16 @@ impl VideoPlayer {
         s.icon.draw(scene, transform, icon_r, colors.text_primary);
         // Control label and value are both `scale.sm` (HIG §9.6), centred on
         // the row from their measured line box.
-        let label_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
-        let (_, lh) = text_renderer.measure(&s.name, label_size, None);
+        let label_style = theme.text(TextRole::Caption);
+        let (_, lh) = text_renderer.measure_style(&s.name, None, &label_style);
         let label_top = y + (row_h - f64::from(lh)) * 0.5;
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &s.name,
-            label_size,
             colors.text_primary,
             translated(transform, icon_r.x1 + 8.0, label_top),
             None,
+            &label_style,
         );
         let value: String = match &s.control {
             PlayerSettingControl::Toggle { on } => {
@@ -2009,14 +2010,13 @@ impl VideoPlayer {
             PlayerSettingControl::Button => String::new(),
         };
         if !value.is_empty() {
-            let (vw, vh) = text_renderer.measure(&value, label_size, None);
+            let (vw, vh) = text_renderer.measure_style(&value, None, &label_style);
             let tint = matches!(s.control, PlayerSettingControl::Toggle { on: true })
                 .then_some(accent)
                 .unwrap_or(colors.text_dim);
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &value,
-                label_size,
                 tint,
                 translated(
                     transform,
@@ -2024,6 +2024,7 @@ impl VideoPlayer {
                     y + (row_h - f64::from(vh)) * 0.5,
                 ),
                 None,
+                &label_style,
             );
         }
         self.menu_hit_rects.push((MenuHit::Setting(idx), row_rect));
@@ -2146,23 +2147,22 @@ impl VideoPlayer {
         } else {
             colors.text_primary
         };
-        let label_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
-        let (_, lh) = text_renderer.measure(&label, label_size, None);
+        let label_style = theme.text(TextRole::Caption);
+        let (_, lh) = text_renderer.measure_style(&label, None, &label_style);
         let label_top = y + (row_h - f64::from(lh)) * 0.5;
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &label,
-            label_size,
             tint,
             translated(transform, x0 + indent, label_top),
             None,
+            &label_style,
         );
         if selected {
-            let (cw, ch) = text_renderer.measure("✓", label_size, None);
-            text_renderer.draw_text(
+            let (cw, ch) = text_renderer.measure_style("✓", None, &label_style);
+            text_renderer.draw_style(
                 scene,
                 "✓",
-                label_size,
                 accent,
                 translated(
                     transform,
@@ -2170,6 +2170,7 @@ impl VideoPlayer {
                     y + (row_h - f64::from(ch)) * 0.5,
                 ),
                 None,
+                &label_style,
             );
         }
         self.menu_hit_rects
@@ -3811,7 +3812,7 @@ mod tests {
                 format_ms(vp.position_ms),
                 format_ms(vp.duration_ms)
             );
-            let (tw, _) = tr.measure(&full, theme.tokens.typography.scale.sm, None);
+            let (tw, _) = tr.measure_style(&full, None, &theme.text(TextRole::Caption));
             assert!(
                 (vp.time_label_rect.width() - f64::from(tw)).abs() < 1e-6,
                 "label rect {:?} is not the measured full label ({tw})",

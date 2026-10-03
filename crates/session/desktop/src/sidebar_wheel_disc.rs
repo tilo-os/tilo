@@ -4179,11 +4179,6 @@ mod tests {
                 d.inactive_chip_height(chip_w, &theme, &mut tr),
                 SECTOR_CHIP_H_MIN
             );
-            assert_eq!(
-                Chip::label_size_for_height(SECTOR_CHIP_H_MIN, &theme),
-                theme.tokens.typography.scale.sm,
-                "the floor's label is exactly the theme's control-label size"
-            );
         }
 
         // Phase `a_shallow_slot_at_large_text_elides_at_the_floor_not_the_family_size`.

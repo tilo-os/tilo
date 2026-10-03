@@ -12,6 +12,7 @@ use std::sync::Arc;
 use automerge::AutoCommit;
 use chrono::NaiveDate;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use tilo_ui::TextRole;
 use tilo_ui::i18n::I18nManager;
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
@@ -114,13 +115,13 @@ impl Widget for LabelTile {
             None,
             &self.rect,
         );
-        tr.draw_text(
+        tr.draw_style(
             scene,
             &self.text,
-            theme.tokens.typography.scale.sm,
             theme.tokens.colors.text_primary,
             translated(transform, self.rect.x0 + 8.0, self.rect.y0 + 6.0),
             None,
+            &theme.text(TextRole::Caption),
         );
     }
     fn name(&self) -> &'static str {
