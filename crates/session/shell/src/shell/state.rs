@@ -567,6 +567,12 @@ pub struct WorkspaceTree {
     pub native_authority: super::native_workspace_owner::NativeAuthorityStorage,
     #[serde(skip)]
     pub native_runtime: super::native_workspace_owner::NativeStateRuntime,
+    /// Enrolled rooms whose governor stewards their channels: a node (a
+    /// host its person's root let own workspaces). Their records are sealed channels
+    /// every member opens itself, never documents the governor commits.
+    /// Projected from the owner, so not persisted.
+    #[serde(skip)]
+    pub stewarded_rooms: BTreeSet<RoomId>,
     /// The host-independent desktop: workspaces, focus pointers and the
     /// schema version. Flattened, so `state.json` keeps its shape.
     #[serde(flatten)]
@@ -658,6 +664,7 @@ impl Default for WorkspaceTree {
             desktop: DesktopTree::default(),
             native_authority: super::native_workspace_owner::NativeAuthorityStorage::default(),
             native_runtime: super::native_workspace_owner::NativeStateRuntime::default(),
+            stewarded_rooms: BTreeSet::new(),
             doc: AutoCommit::new(),
             room_docs: HashMap::new(),
             room_authority: HashMap::new(),
@@ -735,6 +742,13 @@ impl WorkspaceTree {
         self.native_authority.requires(room) || self.native_runtime.requires_uncertain(room)
     }
 
+    /// Whether `room`'s app records are documents its native owner commits.
+    /// In a room whose governor stewards channels they are sealed instead:
+    /// each app seals and opens its record's channel itself.
+    pub(crate) fn commits_native_documents(&self, room: RoomId) -> bool {
+        self.requires_native_owner(room) && !self.stewarded_rooms.contains(&room)
+    }
+
     /// Presentation projection from the actual admitted owner, never a second admission.
     pub(crate) fn project_native_room(&mut self, room: RoomId, peer: &tilo_peer_state::StatePeer) {
         let Some(document) = peer.admitted_room() else {
@@ -743,6 +757,14 @@ impl WorkspaceTree {
         if let Ok(endpoint) = iroh::EndpointId::from_bytes(&peer.authority().device_public_key) {
             self.room_authority
                 .insert(room, RoomAuthority::Peer(PeerOrigin::peer(&endpoint)));
+        }
+        // A node: an always-on host its person's root let own workspaces.
+        // The relay it runs stewards the channels of the rooms it governs.
+        let governor = &peer.authority().capabilities;
+        if governor.can_own_workspaces && governor.can_act_as_host && !governor.foreign {
+            self.stewarded_rooms.insert(room);
+        } else {
+            self.stewarded_rooms.remove(&room);
         }
         let (name, owner, caps) = Self::extract_governed_fields(document);
         let tasks = projection::workspace_tasks_of(document);
