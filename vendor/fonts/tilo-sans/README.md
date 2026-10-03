@@ -198,6 +198,39 @@ only to override. Spacing accents (`acute`, `tonos`, …) get none. `mark`, `mkm
 `kern` and GDEF are generated from anchors, categories and kerning; never write
 them by hand.
 
+## Vietnamese
+
+Every precomposed Vietnamese letter (all 134 with `Đ đ`), upright and italic, in
+every master. Upstream already had the letters shared with other languages (`à á
+â ã è é ê ì í ò ó ô õ ù ú ý ỳ ă đ`); the rest are composites built on these marks:
+
+- New combining marks: `hookabovecomb` (a small question-mark hook with
+  Instrument's flat-cut terminal), `dotbelowcomb` (the square dot of `i`, with a
+  round `dotbelowcomb.ss01` for "Round dots"), `horncomb` (for decomposed text).
+- `ơ ư Ơ Ư` are single outlines: the horn grows out of the bowl or stem, leaves it
+  heading right and ends in a vertical stroke cut flat, as the `r` arm and `f`
+  terminal do. The horn widens the advance (`ohorn` 612 vs `o` 584 in Regular).
+- Stacked marks are ligature marks named as in Glyphs (`circumflexcomb_acutecomb`,
+  `brevecomb_tildecomb`, …): acute, grave and hook sit to the right of the
+  circumflex (the acute and grave drawn a little steeper so they do not hang far
+  over the next letter); every tone sits on top of the breve; the tilde sits on top
+  of the circumflex. Offsets keep a fixed clearance between the two marks.
+- Capitals use compressed `.case` marks for the stacks (`circumflexcomb.case`,
+  `brevecomb.case`, `acutecomb.case`, `gravecomb.case`, `hookabovecomb.case`,
+  `tildecomb.case` and the `….case` stack ligatures) so that every capital stays
+  inside the 970 ascender; single marks on capitals stay upstream's size.
+- `ỵ` puts its dot beside the descender (the anchor would put it on the tail);
+  `features/vietnamese.fea` maps `y` + U+0323 to it.
+- `features/vietnamese.fea` (included after `ccmp.fea`) also ligates decomposed
+  circumflex/breve + tone into the stacked marks (`.case` after `A E O`), drops the
+  dot of `i j` under the hook, and adds the Vietnamese letters to ss01 (round dot
+  below), ss02 (single-storey a) and ss03 (alternate y).
+- Kerning: each letter joins the groups of its closest upstream relative (`ấ` →
+  `â`); the horned letters have their own right-side groups (`KO_ohorn`,
+  `KO_uhorn`, `KO_Ohorn`, `KO_Uhorn`), and pairs where a stacked mark, horn or dot
+  would come closer to a neighbour (quotes, brackets, `T V Y` after `Ơ`, …) than
+  its relative does carry exceptions.
+
 ## Adding a glyph
 
 1. Draw it in **all four masters of its designspace** (upright and italic are

@@ -65,10 +65,139 @@
       <key>lslash</key>
       <integer>-6</integer>
     </dict>
+    <key>Acircumflexacute</key>
+    <dict>
+      <key>public.kern2.KO_Y</key>
+      <integer>-58</integer>
+    </dict>
+    <key>Acircumflexgrave</key>
+    <dict>
+      <key>public.kern2.KO_Y</key>
+      <integer>-58</integer>
+    </dict>
+    <key>Acircumflexhookabove</key>
+    <dict>
+      <key>public.kern2.KO_Y</key>
+      <integer>-58</integer>
+    </dict>
+    <key>Acircumflextilde</key>
+    <dict>
+      <key>public.kern2.KO_Y</key>
+      <integer>-58</integer>
+    </dict>
     <key>Adieresis</key>
     <dict>
       <key>Germandbls</key>
       <integer>-5</integer>
+    </dict>
+    <key>Adotbelow</key>
+    <dict>
+      <key>Germandbls</key>
+      <integer>-5</integer>
+      <key>Icircumflex</key>
+      <integer>-5</integer>
+      <key>Idieresis</key>
+      <integer>-5</integer>
+      <key>ampersand</key>
+      <integer>-8</integer>
+      <key>asciicircum</key>
+      <integer>-88</integer>
+      <key>asciitilde</key>
+      <integer>-66</integer>
+      <key>backslash</key>
+      <integer>-53</integer>
+      <key>colon.case</key>
+      <integer>-26</integer>
+      <key>dollar</key>
+      <integer>-14</integer>
+      <key>eight</key>
+      <integer>-7</integer>
+      <key>equal</key>
+      <integer>-38</integer>
+      <key>eth</key>
+      <integer>-10</integer>
+      <key>five</key>
+      <integer>-13</integer>
+      <key>four</key>
+      <integer>0</integer>
+      <key>hbar</key>
+      <integer>-3</integer>
+      <key>less</key>
+      <integer>-58</integer>
+      <key>less_hyphen.liga</key>
+      <integer>-68</integer>
+      <key>lslash</key>
+      <integer>-6</integer>
+      <key>multiply</key>
+      <integer>-44</integer>
+      <key>nine</key>
+      <integer>-20</integer>
+      <key>question.case</key>
+      <integer>-47</integer>
+      <key>seven</key>
+      <integer>-36</integer>
+      <key>three</key>
+      <integer>-9</integer>
+      <key>trademark</key>
+      <integer>-72</integer>
+    </dict>
+    <key>Adotbelow.ss01</key>
+    <dict>
+      <key>Germandbls</key>
+      <integer>-5</integer>
+      <key>Icircumflex</key>
+      <integer>-5</integer>
+      <key>Idieresis</key>
+      <integer>-5</integer>
+      <key>ampersand</key>
+      <integer>-8</integer>
+      <key>asciicircum</key>
+      <integer>-88</integer>
+      <key>asciitilde</key>
+      <integer>-66</integer>
+      <key>backslash</key>
+      <integer>-53</integer>
+      <key>colon.case</key>
+      <integer>-26</integer>
+      <key>dollar</key>
+      <integer>-14</integer>
+      <key>eight</key>
+      <integer>-7</integer>
+      <key>equal</key>
+      <integer>-38</integer>
+      <key>eth</key>
+      <integer>-10</integer>
+      <key>five</key>
+      <integer>-13</integer>
+      <key>four</key>
+      <integer>0</integer>
+      <key>hbar</key>
+      <integer>-3</integer>
+      <key>less</key>
+      <integer>-58</integer>
+      <key>less_hyphen.liga</key>
+      <integer>-68</integer>
+      <key>lslash</key>
+      <integer>-6</integer>
+      <key>multiply</key>
+      <integer>-44</integer>
+      <key>nine</key>
+      <integer>-20</integer>
+      <key>question.case</key>
+      <integer>-47</integer>
+      <key>seven</key>
+      <integer>-36</integer>
+      <key>three</key>
+      <integer>-9</integer>
+      <key>trademark</key>
+      <integer>-72</integer>
+    </dict>
+    <key>Ahookabove</key>
+    <dict>
+      <key>eth</key>
+      <integer>-10</integer>
+      <key>lslash</key>
+      <integer>-6</integer>
     </dict>
     <key>Aring</key>
     <dict>
@@ -171,6 +300,124 @@
       <key>two.ss10</key>
       <integer>-12</integer>
     </dict>
+    <key>Ecircumflexacute</key>
+    <dict>
+      <key>public.kern2.KO_A</key>
+      <integer>46</integer>
+      <key>public.kern2.KO_B</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_Y</key>
+      <integer>-8</integer>
+      <key>public.kern2.KO_parenright</key>
+      <integer>-26</integer>
+    </dict>
+    <key>Ecircumflexgrave</key>
+    <dict>
+      <key>public.kern2.KO_B</key>
+      <integer>-6</integer>
+      <key>public.kern2.KO_Y</key>
+      <integer>-8</integer>
+      <key>public.kern2.KO_parenright</key>
+      <integer>-26</integer>
+    </dict>
+    <key>Ecircumflexhookabove</key>
+    <dict>
+      <key>public.kern2.KO_B</key>
+      <integer>-6</integer>
+      <key>public.kern2.KO_Y</key>
+      <integer>-8</integer>
+      <key>public.kern2.KO_parenright</key>
+      <integer>-26</integer>
+    </dict>
+    <key>Ecircumflextilde</key>
+    <dict>
+      <key>public.kern2.KO_Y</key>
+      <integer>-8</integer>
+      <key>public.kern2.KO_parenright</key>
+      <integer>-26</integer>
+    </dict>
+    <key>Edotbelow</key>
+    <dict>
+      <key>Germandbls</key>
+      <integer>-19</integer>
+      <key>Idieresis</key>
+      <integer>-13</integer>
+      <key>M.ss06</key>
+      <integer>-15</integer>
+      <key>Oslash</key>
+      <integer>0</integer>
+      <key>ampersand</key>
+      <integer>-19</integer>
+      <key>asciicircum</key>
+      <integer>-78</integer>
+      <key>asciitilde</key>
+      <integer>-60</integer>
+      <key>at</key>
+      <integer>-27</integer>
+      <key>colon.case</key>
+      <integer>-42</integer>
+      <key>eight</key>
+      <integer>-17</integer>
+      <key>equal</key>
+      <integer>-60</integer>
+      <key>eth</key>
+      <integer>-22</integer>
+      <key>five</key>
+      <integer>-16</integer>
+      <key>four</key>
+      <integer>-21</integer>
+      <key>multiply</key>
+      <integer>-71</integer>
+      <key>nine</key>
+      <integer>-21</integer>
+      <key>semicolon.case</key>
+      <integer>-29</integer>
+      <key>three</key>
+      <integer>-17</integer>
+      <key>two.ss10</key>
+      <integer>-12</integer>
+    </dict>
+    <key>Edotbelow.ss01</key>
+    <dict>
+      <key>Germandbls</key>
+      <integer>-19</integer>
+      <key>Idieresis</key>
+      <integer>-13</integer>
+      <key>M.ss06</key>
+      <integer>-15</integer>
+      <key>Oslash</key>
+      <integer>0</integer>
+      <key>ampersand</key>
+      <integer>-19</integer>
+      <key>asciicircum</key>
+      <integer>-78</integer>
+      <key>asciitilde</key>
+      <integer>-60</integer>
+      <key>at</key>
+      <integer>-27</integer>
+      <key>colon.case</key>
+      <integer>-42</integer>
+      <key>eight</key>
+      <integer>-17</integer>
+      <key>equal</key>
+      <integer>-60</integer>
+      <key>eth</key>
+      <integer>-22</integer>
+      <key>five</key>
+      <integer>-16</integer>
+      <key>four</key>
+      <integer>-21</integer>
+      <key>multiply</key>
+      <integer>-71</integer>
+      <key>nine</key>
+      <integer>-21</integer>
+      <key>semicolon.case</key>
+      <integer>-29</integer>
+      <key>three</key>
+      <integer>-17</integer>
+      <key>two.ss10</key>
+      <integer>-12</integer>
+    </dict>
     <key>F</key>
     <dict>
       <key>M.ss06</key>
@@ -228,13 +475,35 @@
     <dict>
       <key>A</key>
       <integer>-13</integer>
+      <key>Adotbelow</key>
+      <integer>-13</integer>
+      <key>Adotbelow.ss01</key>
+      <integer>-13</integer>
       <key>Hbar</key>
       <integer>9</integer>
       <key>a</key>
       <integer>-18</integer>
+      <key>adotbelow</key>
+      <integer>-18</integer>
+      <key>adotbelow.ss01</key>
+      <integer>-18</integer>
       <key>e</key>
       <integer>-10</integer>
+      <key>edotbelow</key>
+      <integer>-10</integer>
+      <key>edotbelow.ss01</key>
+      <integer>-10</integer>
       <key>o</key>
+      <integer>-10</integer>
+      <key>odotbelow</key>
+      <integer>-10</integer>
+      <key>odotbelow.ss01</key>
+      <integer>-10</integer>
+      <key>ohorn</key>
+      <integer>-10</integer>
+      <key>ohorndotbelow</key>
+      <integer>-10</integer>
+      <key>ohorndotbelow.ss01</key>
       <integer>-10</integer>
     </dict>
     <key>IJ</key>
@@ -273,6 +542,23 @@
       <integer>-31</integer>
       <key>hyphen_greater.liga</key>
       <integer>-36</integer>
+    </dict>
+    <key>Idotbelow</key>
+    <dict>
+      <key>public.kern2.KO_j</key>
+      <integer>12</integer>
+    </dict>
+    <key>Idotbelow.ss01</key>
+    <dict>
+      <key>public.kern2.KO_j</key>
+      <integer>25</integer>
+      <key>public.kern2.KO_underscore</key>
+      <integer>5</integer>
+    </dict>
+    <key>Ihookabove</key>
+    <dict>
+      <key>Igrave</key>
+      <integer>13</integer>
     </dict>
     <key>Imacron</key>
     <dict>
@@ -428,15 +714,49 @@
     <dict>
       <key>O</key>
       <integer>-12</integer>
+      <key>Odotbelow</key>
+      <integer>-12</integer>
+      <key>Odotbelow.ss01</key>
+      <integer>-12</integer>
+      <key>Ohorn</key>
+      <integer>-12</integer>
+      <key>Ohorndotbelow</key>
+      <integer>-12</integer>
+      <key>Ohorndotbelow.ss01</key>
+      <integer>-12</integer>
       <key>S</key>
       <integer>-4</integer>
       <key>U</key>
       <integer>0</integer>
       <key>Uacute</key>
       <integer>0</integer>
+      <key>Udotbelow</key>
+      <integer>0</integer>
+      <key>Udotbelow.ss01</key>
+      <integer>0</integer>
+      <key>Uhookabove</key>
+      <integer>0</integer>
+      <key>Uhorn</key>
+      <integer>0</integer>
+      <key>Uhornacute</key>
+      <integer>0</integer>
+      <key>Uhorndotbelow</key>
+      <integer>0</integer>
+      <key>Uhorndotbelow.ss01</key>
+      <integer>0</integer>
+      <key>Uhornhookabove</key>
+      <integer>0</integer>
       <key>a</key>
       <integer>-20</integer>
       <key>a.ss02</key>
+      <integer>-25</integer>
+      <key>adotbelow</key>
+      <integer>-20</integer>
+      <key>adotbelow.ss01</key>
+      <integer>-20</integer>
+      <key>adotbelow.ss01.ss02</key>
+      <integer>-25</integer>
+      <key>adotbelow.ss02</key>
       <integer>-25</integer>
       <key>hyphen</key>
       <integer>-127</integer>
@@ -452,10 +772,56 @@
       <integer>-17</integer>
       <key>uacute</key>
       <integer>-17</integer>
+      <key>udotbelow</key>
+      <integer>-17</integer>
+      <key>udotbelow.ss01</key>
+      <integer>-17</integer>
+      <key>uhookabove</key>
+      <integer>-17</integer>
+      <key>uhorn</key>
+      <integer>-17</integer>
+      <key>uhornacute</key>
+      <integer>-17</integer>
+      <key>uhorndotbelow</key>
+      <integer>-17</integer>
+      <key>uhorndotbelow.ss01</key>
+      <integer>-17</integer>
+      <key>uhornhookabove</key>
+      <integer>-17</integer>
       <key>v</key>
       <integer>-22</integer>
     </dict>
     <key>O</key>
+    <dict>
+      <key>M.ss06</key>
+      <integer>-6</integer>
+      <key>asciicircum</key>
+      <integer>-51</integer>
+      <key>braceright</key>
+      <integer>-46</integer>
+      <key>bracketright.case</key>
+      <integer>-52</integer>
+      <key>seven</key>
+      <integer>-32</integer>
+      <key>trademark</key>
+      <integer>-39</integer>
+    </dict>
+    <key>Odotbelow</key>
+    <dict>
+      <key>M.ss06</key>
+      <integer>-6</integer>
+      <key>asciicircum</key>
+      <integer>-51</integer>
+      <key>braceright</key>
+      <integer>-46</integer>
+      <key>bracketright.case</key>
+      <integer>-52</integer>
+      <key>seven</key>
+      <integer>-32</integer>
+      <key>trademark</key>
+      <integer>-39</integer>
+    </dict>
+    <key>Odotbelow.ss01</key>
     <dict>
       <key>M.ss06</key>
       <integer>-6</integer>
@@ -482,6 +848,8 @@
       <integer>-31</integer>
       <key>i</key>
       <integer>10</integer>
+      <key>idotbelow</key>
+      <integer>10</integer>
       <key>parenright</key>
       <integer>-30</integer>
       <key>period.ss01</key>
@@ -491,6 +859,10 @@
       <key>v</key>
       <integer>-4</integer>
       <key>y</key>
+      <integer>-6</integer>
+      <key>ydotbelow</key>
+      <integer>-6</integer>
+      <key>ydotbelow.ss01</key>
       <integer>-6</integer>
     </dict>
     <key>P</key>
@@ -583,16 +955,48 @@
       <integer>-60</integer>
       <key>abreve.ss02</key>
       <integer>-33</integer>
+      <key>abreveacute.ss02</key>
+      <integer>-33</integer>
+      <key>abrevedotbelow.ss01.ss02</key>
+      <integer>-33</integer>
+      <key>abrevedotbelow.ss02</key>
+      <integer>-33</integer>
+      <key>abrevegrave.ss02</key>
+      <integer>-33</integer>
+      <key>abrevehookabove.ss02</key>
+      <integer>-33</integer>
+      <key>abrevetilde.ss02</key>
+      <integer>-33</integer>
       <key>acaron.ss02</key>
       <integer>-31</integer>
       <key>acircumflex.ss02</key>
+      <integer>-33</integer>
+      <key>acircumflexacute.ss02</key>
+      <integer>-33</integer>
+      <key>acircumflexdotbelow.ss01.ss02</key>
+      <integer>-33</integer>
+      <key>acircumflexdotbelow.ss02</key>
+      <integer>-33</integer>
+      <key>acircumflexgrave.ss02</key>
+      <integer>-33</integer>
+      <key>acircumflexhookabove.ss02</key>
+      <integer>-33</integer>
+      <key>acircumflextilde.ss02</key>
       <integer>-33</integer>
       <key>adieresis</key>
       <integer>0</integer>
       <key>adieresis.ss02</key>
       <integer>-17</integer>
+      <key>adotbelow.ss01.ss02</key>
+      <integer>-61</integer>
+      <key>adotbelow.ss02</key>
+      <integer>-61</integer>
       <key>agrave.ss02</key>
       <integer>-40</integer>
+      <key>ahookabove</key>
+      <integer>-53</integer>
+      <key>ahookabove.ss02</key>
+      <integer>-60</integer>
       <key>amacron.ss02</key>
       <integer>-33</integer>
       <key>ampersand</key>
@@ -623,6 +1027,8 @@
       <integer>-59</integer>
       <key>egrave</key>
       <integer>-39</integer>
+      <key>ehookabove</key>
+      <integer>-40</integer>
       <key>eight</key>
       <integer>-21</integer>
       <key>equal</key>
@@ -639,6 +1045,8 @@
       <integer>-69</integer>
       <key>igrave</key>
       <integer>0</integer>
+      <key>ihookabove</key>
+      <integer>-13</integer>
       <key>imacron</key>
       <integer>9</integer>
       <key>less</key>
@@ -681,8 +1089,26 @@
       <integer>-14</integer>
       <key>udieresis.ss01</key>
       <integer>-3</integer>
+      <key>udotbelow</key>
+      <integer>-67</integer>
+      <key>udotbelow.ss01</key>
+      <integer>-67</integer>
       <key>ugrave</key>
       <integer>-36</integer>
+      <key>uhookabove</key>
+      <integer>-63</integer>
+      <key>uhorn</key>
+      <integer>-67</integer>
+      <key>uhornacute</key>
+      <integer>-63</integer>
+      <key>uhorndotbelow</key>
+      <integer>-67</integer>
+      <key>uhorndotbelow.ss01</key>
+      <integer>-67</integer>
+      <key>uhorngrave</key>
+      <integer>-36</integer>
+      <key>uhornhookabove</key>
+      <integer>-63</integer>
       <key>uhungarumlaut</key>
       <integer>-33</integer>
       <key>umacron</key>
@@ -701,8 +1127,16 @@
       <integer>-28</integer>
       <key>ycircumflex.ss03</key>
       <integer>-28</integer>
+      <key>ydotbelow.ss01.ss03</key>
+      <integer>-75</integer>
+      <key>ydotbelow.ss03</key>
+      <integer>-75</integer>
       <key>ygrave</key>
       <integer>-34</integer>
+      <key>yhookabove</key>
+      <integer>-59</integer>
+      <key>yhookabove.ss03</key>
+      <integer>-59</integer>
       <key>z</key>
       <integer>-64</integer>
     </dict>
@@ -710,7 +1144,21 @@
     <dict>
       <key>a.ss02</key>
       <integer>-61</integer>
+      <key>adotbelow.ss01.ss02</key>
+      <integer>-61</integer>
+      <key>adotbelow.ss02</key>
+      <integer>-61</integer>
       <key>u</key>
+      <integer>-67</integer>
+      <key>udotbelow</key>
+      <integer>-67</integer>
+      <key>udotbelow.ss01</key>
+      <integer>-67</integer>
+      <key>uhorn</key>
+      <integer>-67</integer>
+      <key>uhorndotbelow</key>
+      <integer>-67</integer>
+      <key>uhorndotbelow.ss01</key>
       <integer>-67</integer>
     </dict>
     <key>Tcommaaccent</key>
@@ -719,7 +1167,33 @@
       <integer>-61</integer>
       <key>abreve.ss02</key>
       <integer>-33</integer>
+      <key>abreveacute.ss02</key>
+      <integer>-33</integer>
+      <key>abrevedotbelow.ss01.ss02</key>
+      <integer>-33</integer>
+      <key>abrevedotbelow.ss02</key>
+      <integer>-33</integer>
+      <key>abrevegrave.ss02</key>
+      <integer>-33</integer>
+      <key>abrevehookabove.ss02</key>
+      <integer>-33</integer>
+      <key>abrevetilde.ss02</key>
+      <integer>-33</integer>
+      <key>adotbelow.ss01.ss02</key>
+      <integer>-61</integer>
+      <key>adotbelow.ss02</key>
+      <integer>-61</integer>
       <key>u</key>
+      <integer>-67</integer>
+      <key>udotbelow</key>
+      <integer>-67</integer>
+      <key>udotbelow.ss01</key>
+      <integer>-67</integer>
+      <key>uhorn</key>
+      <integer>-67</integer>
+      <key>uhorndotbelow</key>
+      <integer>-67</integer>
+      <key>uhorndotbelow.ss01</key>
       <integer>-67</integer>
     </dict>
     <key>Tcommaaccent.ss01</key>
@@ -728,7 +1202,33 @@
       <integer>-61</integer>
       <key>abreve.ss02</key>
       <integer>-33</integer>
+      <key>abreveacute.ss02</key>
+      <integer>-33</integer>
+      <key>abrevedotbelow.ss01.ss02</key>
+      <integer>-33</integer>
+      <key>abrevedotbelow.ss02</key>
+      <integer>-33</integer>
+      <key>abrevegrave.ss02</key>
+      <integer>-33</integer>
+      <key>abrevehookabove.ss02</key>
+      <integer>-33</integer>
+      <key>abrevetilde.ss02</key>
+      <integer>-33</integer>
+      <key>adotbelow.ss01.ss02</key>
+      <integer>-61</integer>
+      <key>adotbelow.ss02</key>
+      <integer>-61</integer>
       <key>u</key>
+      <integer>-67</integer>
+      <key>udotbelow</key>
+      <integer>-67</integer>
+      <key>udotbelow.ss01</key>
+      <integer>-67</integer>
+      <key>uhorn</key>
+      <integer>-67</integer>
+      <key>uhorndotbelow</key>
+      <integer>-67</integer>
+      <key>uhorndotbelow.ss01</key>
       <integer>-67</integer>
     </dict>
     <key>Thorn</key>
@@ -739,6 +1239,12 @@
       <integer>-28</integer>
       <key>Aacute</key>
       <integer>-28</integer>
+      <key>Adotbelow</key>
+      <integer>-28</integer>
+      <key>Adotbelow.ss01</key>
+      <integer>-28</integer>
+      <key>Ahookabove</key>
+      <integer>-28</integer>
       <key>J</key>
       <integer>-40</integer>
       <key>V</key>
@@ -747,25 +1253,59 @@
       <integer>-51</integer>
       <key>Yacute</key>
       <integer>-51</integer>
+      <key>Ydotbelow</key>
+      <integer>-51</integer>
+      <key>Ydotbelow.ss01</key>
+      <integer>-51</integer>
+      <key>Yhookabove</key>
+      <integer>-51</integer>
       <key>a</key>
       <integer>-12</integer>
       <key>aacute</key>
       <integer>-12</integer>
+      <key>adotbelow</key>
+      <integer>-12</integer>
+      <key>adotbelow.ss01</key>
+      <integer>-12</integer>
       <key>ae</key>
       <integer>-14</integer>
+      <key>ahookabove</key>
+      <integer>-12</integer>
       <key>amacron</key>
       <integer>-12</integer>
       <key>comma.ss01</key>
       <integer>-110</integer>
       <key>e</key>
       <integer>-3</integer>
+      <key>edotbelow</key>
+      <integer>-3</integer>
+      <key>edotbelow.ss01</key>
+      <integer>-3</integer>
       <key>i</key>
+      <integer>-8</integer>
+      <key>idotbelow</key>
       <integer>-8</integer>
       <key>j</key>
       <integer>-8</integer>
       <key>o</key>
       <integer>-3</integer>
       <key>oacute</key>
+      <integer>-3</integer>
+      <key>odotbelow</key>
+      <integer>-3</integer>
+      <key>odotbelow.ss01</key>
+      <integer>-3</integer>
+      <key>ohookabove</key>
+      <integer>-3</integer>
+      <key>ohorn</key>
+      <integer>-3</integer>
+      <key>ohornacute</key>
+      <integer>-3</integer>
+      <key>ohorndotbelow</key>
+      <integer>-3</integer>
+      <key>ohorndotbelow.ss01</key>
+      <integer>-3</integer>
+      <key>ohornhookabove</key>
       <integer>-3</integer>
       <key>parenright</key>
       <integer>-83</integer>
@@ -775,12 +1315,46 @@
       <integer>-110</integer>
       <key>u</key>
       <integer>-5</integer>
+      <key>udotbelow</key>
+      <integer>-5</integer>
+      <key>udotbelow.ss01</key>
+      <integer>-5</integer>
+      <key>uhorn</key>
+      <integer>-5</integer>
+      <key>uhorndotbelow</key>
+      <integer>-5</integer>
+      <key>uhorndotbelow.ss01</key>
+      <integer>-5</integer>
       <key>v</key>
       <integer>-6</integer>
       <key>yacute</key>
       <integer>-9</integer>
+      <key>yhookabove</key>
+      <integer>-9</integer>
     </dict>
     <key>U</key>
+    <dict>
+      <key>Germandbls</key>
+      <integer>-2</integer>
+      <key>M.ss06</key>
+      <integer>-9</integer>
+      <key>asciitilde</key>
+      <integer>-43</integer>
+      <key>colon.case</key>
+      <integer>-12</integer>
+    </dict>
+    <key>Udotbelow</key>
+    <dict>
+      <key>Germandbls</key>
+      <integer>-2</integer>
+      <key>M.ss06</key>
+      <integer>-9</integer>
+      <key>asciitilde</key>
+      <integer>-43</integer>
+      <key>colon.case</key>
+      <integer>-12</integer>
+    </dict>
+    <key>Udotbelow.ss01</key>
     <dict>
       <key>Germandbls</key>
       <integer>-2</integer>
@@ -801,7 +1375,31 @@
       <integer>-14</integer>
       <key>abreve</key>
       <integer>-14</integer>
+      <key>abreveacute</key>
+      <integer>-14</integer>
+      <key>abrevedotbelow</key>
+      <integer>-14</integer>
+      <key>abrevedotbelow.ss01</key>
+      <integer>-14</integer>
+      <key>abrevegrave</key>
+      <integer>-14</integer>
+      <key>abrevehookabove</key>
+      <integer>-14</integer>
+      <key>abrevetilde</key>
+      <integer>-14</integer>
       <key>acircumflex</key>
+      <integer>-20</integer>
+      <key>acircumflexacute</key>
+      <integer>-20</integer>
+      <key>acircumflexdotbelow</key>
+      <integer>-20</integer>
+      <key>acircumflexdotbelow.ss01</key>
+      <integer>-20</integer>
+      <key>acircumflexgrave</key>
+      <integer>-20</integer>
+      <key>acircumflexhookabove</key>
+      <integer>-20</integer>
+      <key>acircumflextilde</key>
       <integer>-20</integer>
       <key>adieresis</key>
       <integer>-3</integer>
@@ -829,6 +1427,8 @@
       <integer>-6</integer>
       <key>igrave</key>
       <integer>7</integer>
+      <key>ihookabove</key>
+      <integer>-6</integer>
       <key>imacron</key>
       <integer>11</integer>
       <key>less</key>
@@ -950,8 +1550,26 @@
       <integer>-16</integer>
       <key>udieresis.ss01</key>
       <integer>-7</integer>
+      <key>udotbelow</key>
+      <integer>-54</integer>
+      <key>udotbelow.ss01</key>
+      <integer>-54</integer>
       <key>ugrave</key>
       <integer>-33</integer>
+      <key>uhookabove</key>
+      <integer>-54</integer>
+      <key>uhorn</key>
+      <integer>-54</integer>
+      <key>uhornacute</key>
+      <integer>-54</integer>
+      <key>uhorndotbelow</key>
+      <integer>-54</integer>
+      <key>uhorndotbelow.ss01</key>
+      <integer>-54</integer>
+      <key>uhorngrave</key>
+      <integer>-33</integer>
+      <key>uhornhookabove</key>
+      <integer>-54</integer>
       <key>umacron</key>
       <integer>-30</integer>
     </dict>
@@ -961,10 +1579,215 @@
       <integer>-54</integer>
       <key>udieresis</key>
       <integer>-16</integer>
+      <key>udotbelow</key>
+      <integer>-54</integer>
+      <key>udotbelow.ss01</key>
+      <integer>-54</integer>
+      <key>uhorn</key>
+      <integer>-54</integer>
+      <key>uhorndotbelow</key>
+      <integer>-54</integer>
+      <key>uhorndotbelow.ss01</key>
+      <integer>-54</integer>
     </dict>
     <key>Ycircumflex</key>
     <dict>
       <key>u</key>
+      <integer>-54</integer>
+      <key>udotbelow</key>
+      <integer>-54</integer>
+      <key>udotbelow.ss01</key>
+      <integer>-54</integer>
+      <key>uhorn</key>
+      <integer>-54</integer>
+      <key>uhorndotbelow</key>
+      <integer>-54</integer>
+      <key>uhorndotbelow.ss01</key>
+      <integer>-54</integer>
+    </dict>
+    <key>Ydotbelow</key>
+    <dict>
+      <key>M.ss06</key>
+      <integer>-29</integer>
+      <key>ampersand</key>
+      <integer>-54</integer>
+      <key>asciicircum</key>
+      <integer>-50</integer>
+      <key>asciitilde</key>
+      <integer>-108</integer>
+      <key>at</key>
+      <integer>-55</integer>
+      <key>egrave</key>
+      <integer>-46</integer>
+      <key>eight</key>
+      <integer>-29</integer>
+      <key>equal</key>
+      <integer>-68</integer>
+      <key>five</key>
+      <integer>-20</integer>
+      <key>four</key>
+      <integer>-79</integer>
+      <key>less</key>
+      <integer>-95</integer>
+      <key>less_hyphen.liga</key>
+      <integer>-105</integer>
+      <key>nine</key>
+      <integer>-26</integer>
+      <key>numbersign</key>
+      <integer>-44</integer>
+      <key>public.kern2.KO_A</key>
+      <integer>-63</integer>
+      <key>public.kern2.KO_J</key>
+      <integer>-45</integer>
+      <key>public.kern2.KO_ellipsis</key>
+      <integer>-117</integer>
+      <key>public.kern2.KO_g</key>
+      <integer>-72</integer>
+      <key>public.kern2.KO_period</key>
+      <integer>-113</integer>
+      <key>public.kern2.KO_period.ss01</key>
+      <integer>-97</integer>
+      <key>public.kern2.KO_slash</key>
+      <integer>-66</integer>
+      <key>public.kern2.KO_underscore</key>
+      <integer>-116</integer>
+      <key>registered</key>
+      <integer>-51</integer>
+      <key>three</key>
+      <integer>-26</integer>
+      <key>two.ss10</key>
+      <integer>-21</integer>
+      <key>u</key>
+      <integer>-54</integer>
+      <key>uacute</key>
+      <integer>-54</integer>
+      <key>ucircumflex</key>
+      <integer>-41</integer>
+      <key>udieresis</key>
+      <integer>-16</integer>
+      <key>udieresis.ss01</key>
+      <integer>-7</integer>
+      <key>udotbelow</key>
+      <integer>-54</integer>
+      <key>udotbelow.ss01</key>
+      <integer>-54</integer>
+      <key>ugrave</key>
+      <integer>-33</integer>
+      <key>uhookabove</key>
+      <integer>-54</integer>
+      <key>uhorn</key>
+      <integer>-54</integer>
+      <key>uhornacute</key>
+      <integer>-54</integer>
+      <key>uhorndotbelow</key>
+      <integer>-54</integer>
+      <key>uhorndotbelow.ss01</key>
+      <integer>-54</integer>
+      <key>uhorngrave</key>
+      <integer>-33</integer>
+      <key>uhornhookabove</key>
+      <integer>-54</integer>
+      <key>umacron</key>
+      <integer>-30</integer>
+    </dict>
+    <key>Ydotbelow.ss01</key>
+    <dict>
+      <key>M.ss06</key>
+      <integer>-29</integer>
+      <key>ampersand</key>
+      <integer>-54</integer>
+      <key>asciicircum</key>
+      <integer>-50</integer>
+      <key>asciitilde</key>
+      <integer>-108</integer>
+      <key>at</key>
+      <integer>-55</integer>
+      <key>egrave</key>
+      <integer>-46</integer>
+      <key>eight</key>
+      <integer>-29</integer>
+      <key>equal</key>
+      <integer>-68</integer>
+      <key>five</key>
+      <integer>-20</integer>
+      <key>four</key>
+      <integer>-79</integer>
+      <key>less</key>
+      <integer>-95</integer>
+      <key>less_hyphen.liga</key>
+      <integer>-105</integer>
+      <key>nine</key>
+      <integer>-26</integer>
+      <key>numbersign</key>
+      <integer>-44</integer>
+      <key>public.kern2.KO_A</key>
+      <integer>-63</integer>
+      <key>public.kern2.KO_g</key>
+      <integer>-72</integer>
+      <key>public.kern2.KO_j</key>
+      <integer>-5</integer>
+      <key>public.kern2.KO_period</key>
+      <integer>-113</integer>
+      <key>public.kern2.KO_period.ss01</key>
+      <integer>-97</integer>
+      <key>public.kern2.KO_slash</key>
+      <integer>-66</integer>
+      <key>public.kern2.KO_underscore</key>
+      <integer>-116</integer>
+      <key>registered</key>
+      <integer>-51</integer>
+      <key>three</key>
+      <integer>-26</integer>
+      <key>two.ss10</key>
+      <integer>-21</integer>
+      <key>u</key>
+      <integer>-54</integer>
+      <key>uacute</key>
+      <integer>-54</integer>
+      <key>ucircumflex</key>
+      <integer>-41</integer>
+      <key>udieresis</key>
+      <integer>-16</integer>
+      <key>udieresis.ss01</key>
+      <integer>-7</integer>
+      <key>udotbelow</key>
+      <integer>-54</integer>
+      <key>udotbelow.ss01</key>
+      <integer>-54</integer>
+      <key>ugrave</key>
+      <integer>-33</integer>
+      <key>uhookabove</key>
+      <integer>-54</integer>
+      <key>uhorn</key>
+      <integer>-54</integer>
+      <key>uhornacute</key>
+      <integer>-54</integer>
+      <key>uhorndotbelow</key>
+      <integer>-54</integer>
+      <key>uhorndotbelow.ss01</key>
+      <integer>-54</integer>
+      <key>uhorngrave</key>
+      <integer>-33</integer>
+      <key>uhornhookabove</key>
+      <integer>-54</integer>
+      <key>umacron</key>
+      <integer>-30</integer>
+    </dict>
+    <key>Yhookabove</key>
+    <dict>
+      <key>u</key>
+      <integer>-54</integer>
+      <key>udieresis</key>
+      <integer>-16</integer>
+      <key>udotbelow</key>
+      <integer>-54</integer>
+      <key>udotbelow.ss01</key>
+      <integer>-54</integer>
+      <key>uhorn</key>
+      <integer>-54</integer>
+      <key>uhorndotbelow</key>
+      <integer>-54</integer>
+      <key>uhorndotbelow.ss01</key>
       <integer>-54</integer>
     </dict>
     <key>Z</key>
@@ -1048,12 +1871,401 @@
       <key>eth</key>
       <integer>-2</integer>
     </dict>
+    <key>acircumflexacute</key>
+    <dict>
+      <key>b</key>
+      <integer>56</integer>
+      <key>braceright</key>
+      <integer>85</integer>
+      <key>braceright.case</key>
+      <integer>87</integer>
+      <key>bracketleft</key>
+      <integer>56</integer>
+      <key>bracketleft.case</key>
+      <integer>56</integer>
+      <key>bracketright.case</key>
+      <integer>87</integer>
+      <key>h</key>
+      <integer>56</integer>
+      <key>k</key>
+      <integer>56</integer>
+      <key>l</key>
+      <integer>56</integer>
+      <key>public.kern2.KO_agrave</key>
+      <integer>59</integer>
+      <key>public.kern2.KO_asterisk</key>
+      <integer>-17</integer>
+      <key>public.kern2.KO_bracketright</key>
+      <integer>75</integer>
+      <key>public.kern2.KO_d</key>
+      <integer>28</integer>
+      <key>public.kern2.KO_exclam</key>
+      <integer>60</integer>
+      <key>public.kern2.KO_exclam.ss01</key>
+      <integer>62</integer>
+      <key>public.kern2.KO_i</key>
+      <integer>62</integer>
+      <key>public.kern2.KO_j</key>
+      <integer>62</integer>
+      <key>public.kern2.KO_parenright</key>
+      <integer>96</integer>
+      <key>public.kern2.KO_parenright.case</key>
+      <integer>97</integer>
+      <key>public.kern2.KO_question</key>
+      <integer>16</integer>
+      <key>public.kern2.KO_question.ss01</key>
+      <integer>16</integer>
+      <key>public.kern2.KO_quotedbl</key>
+      <integer>60</integer>
+      <key>public.kern2.KO_quotedblleft</key>
+      <integer>-3</integer>
+      <key>public.kern2.KO_quotedblleft.ss01</key>
+      <integer>9</integer>
+      <key>public.kern2.KO_quotedblright</key>
+      <integer>70</integer>
+      <key>public.kern2.KO_quotedblright.ss01</key>
+      <integer>70</integer>
+      <key>public.kern2.KO_slash</key>
+      <integer>-11</integer>
+      <key>question.case</key>
+      <integer>18</integer>
+    </dict>
+    <key>acircumflexacute.ss02</key>
+    <dict>
+      <key>b</key>
+      <integer>26</integer>
+      <key>braceright</key>
+      <integer>55</integer>
+      <key>braceright.case</key>
+      <integer>57</integer>
+      <key>bracketleft</key>
+      <integer>26</integer>
+      <key>bracketleft.case</key>
+      <integer>26</integer>
+      <key>bracketright.case</key>
+      <integer>57</integer>
+      <key>h</key>
+      <integer>26</integer>
+      <key>k</key>
+      <integer>26</integer>
+      <key>l</key>
+      <integer>26</integer>
+      <key>public.kern2.KO_agrave</key>
+      <integer>29</integer>
+      <key>public.kern2.KO_asterisk</key>
+      <integer>-7</integer>
+      <key>public.kern2.KO_bracketright</key>
+      <integer>54</integer>
+      <key>public.kern2.KO_exclam</key>
+      <integer>30</integer>
+      <key>public.kern2.KO_exclam.ss01</key>
+      <integer>32</integer>
+      <key>public.kern2.KO_i</key>
+      <integer>32</integer>
+      <key>public.kern2.KO_j</key>
+      <integer>32</integer>
+      <key>public.kern2.KO_parenright</key>
+      <integer>66</integer>
+      <key>public.kern2.KO_parenright.case</key>
+      <integer>67</integer>
+      <key>public.kern2.KO_question</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_question.ss01</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_quotedbl</key>
+      <integer>30</integer>
+      <key>public.kern2.KO_quotedblleft</key>
+      <integer>-30</integer>
+      <key>public.kern2.KO_quotedblleft.ss01</key>
+      <integer>-20</integer>
+      <key>public.kern2.KO_quotedblright</key>
+      <integer>40</integer>
+      <key>public.kern2.KO_quotedblright.ss01</key>
+      <integer>40</integer>
+    </dict>
+    <key>acircumflexgrave</key>
+    <dict>
+      <key>b</key>
+      <integer>20</integer>
+      <key>braceright</key>
+      <integer>26</integer>
+      <key>braceright.case</key>
+      <integer>26</integer>
+      <key>bracketright.case</key>
+      <integer>26</integer>
+      <key>h</key>
+      <integer>20</integer>
+      <key>k</key>
+      <integer>20</integer>
+      <key>l</key>
+      <integer>20</integer>
+      <key>public.kern2.KO_agrave</key>
+      <integer>8</integer>
+      <key>public.kern2.KO_asterisk</key>
+      <integer>-17</integer>
+      <key>public.kern2.KO_bracketright</key>
+      <integer>16</integer>
+      <key>public.kern2.KO_exclam</key>
+      <integer>9</integer>
+      <key>public.kern2.KO_exclam.ss01</key>
+      <integer>11</integer>
+      <key>public.kern2.KO_i</key>
+      <integer>26</integer>
+      <key>public.kern2.KO_j</key>
+      <integer>26</integer>
+      <key>public.kern2.KO_parenright</key>
+      <integer>25</integer>
+      <key>public.kern2.KO_parenright.case</key>
+      <integer>26</integer>
+      <key>public.kern2.KO_question</key>
+      <integer>6</integer>
+      <key>public.kern2.KO_question.ss01</key>
+      <integer>6</integer>
+      <key>public.kern2.KO_quotedbl</key>
+      <integer>29</integer>
+      <key>public.kern2.KO_quotedblleft</key>
+      <integer>-4</integer>
+      <key>public.kern2.KO_quotedblleft.ss01</key>
+      <integer>3</integer>
+      <key>public.kern2.KO_quotedblright</key>
+      <integer>32</integer>
+      <key>public.kern2.KO_quotedblright.ss01</key>
+      <integer>25</integer>
+      <key>question.case</key>
+      <integer>14</integer>
+    </dict>
+    <key>acircumflexgrave.ss02</key>
+    <dict>
+      <key>public.kern2.KO_asterisk</key>
+      <integer>-7</integer>
+      <key>public.kern2.KO_bracketright</key>
+      <integer>-5</integer>
+      <key>public.kern2.KO_j</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_parenright</key>
+      <integer>-5</integer>
+      <key>public.kern2.KO_question</key>
+      <integer>-10</integer>
+      <key>public.kern2.KO_question.ss01</key>
+      <integer>-10</integer>
+      <key>public.kern2.KO_quotedbl</key>
+      <integer>-1</integer>
+      <key>public.kern2.KO_quotedblleft</key>
+      <integer>-31</integer>
+      <key>public.kern2.KO_quotedblleft.ss01</key>
+      <integer>-26</integer>
+      <key>public.kern2.KO_quotedblright</key>
+      <integer>2</integer>
+      <key>public.kern2.KO_quotedblright.ss01</key>
+      <integer>-5</integer>
+    </dict>
+    <key>acircumflexhookabove</key>
+    <dict>
+      <key>b</key>
+      <integer>53</integer>
+      <key>braceright</key>
+      <integer>58</integer>
+      <key>braceright.case</key>
+      <integer>60</integer>
+      <key>bracketleft</key>
+      <integer>29</integer>
+      <key>bracketleft.case</key>
+      <integer>29</integer>
+      <key>bracketright.case</key>
+      <integer>60</integer>
+      <key>h</key>
+      <integer>53</integer>
+      <key>k</key>
+      <integer>53</integer>
+      <key>l</key>
+      <integer>53</integer>
+      <key>public.kern2.KO_agrave</key>
+      <integer>44</integer>
+      <key>public.kern2.KO_asterisk</key>
+      <integer>-23</integer>
+      <key>public.kern2.KO_bracketright</key>
+      <integer>48</integer>
+      <key>public.kern2.KO_d</key>
+      <integer>13</integer>
+      <key>public.kern2.KO_exclam</key>
+      <integer>45</integer>
+      <key>public.kern2.KO_exclam.ss01</key>
+      <integer>47</integer>
+      <key>public.kern2.KO_i</key>
+      <integer>59</integer>
+      <key>public.kern2.KO_j</key>
+      <integer>59</integer>
+      <key>public.kern2.KO_parenright</key>
+      <integer>69</integer>
+      <key>public.kern2.KO_parenright.case</key>
+      <integer>70</integer>
+      <key>public.kern2.KO_question</key>
+      <integer>10</integer>
+      <key>public.kern2.KO_question.ss01</key>
+      <integer>10</integer>
+      <key>public.kern2.KO_quotedbl</key>
+      <integer>53</integer>
+      <key>public.kern2.KO_quotedblleft</key>
+      <integer>-7</integer>
+      <key>public.kern2.KO_quotedblleft.ss01</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_quotedblright</key>
+      <integer>58</integer>
+      <key>public.kern2.KO_quotedblright.ss01</key>
+      <integer>55</integer>
+      <key>question.case</key>
+      <integer>9</integer>
+    </dict>
+    <key>acircumflexhookabove.ss02</key>
+    <dict>
+      <key>b</key>
+      <integer>23</integer>
+      <key>braceright</key>
+      <integer>28</integer>
+      <key>braceright.case</key>
+      <integer>30</integer>
+      <key>bracketright.case</key>
+      <integer>30</integer>
+      <key>h</key>
+      <integer>23</integer>
+      <key>k</key>
+      <integer>23</integer>
+      <key>l</key>
+      <integer>23</integer>
+      <key>public.kern2.KO_agrave</key>
+      <integer>14</integer>
+      <key>public.kern2.KO_asterisk</key>
+      <integer>-13</integer>
+      <key>public.kern2.KO_bracketright</key>
+      <integer>27</integer>
+      <key>public.kern2.KO_exclam</key>
+      <integer>15</integer>
+      <key>public.kern2.KO_exclam.ss01</key>
+      <integer>17</integer>
+      <key>public.kern2.KO_i</key>
+      <integer>29</integer>
+      <key>public.kern2.KO_j</key>
+      <integer>29</integer>
+      <key>public.kern2.KO_parenright</key>
+      <integer>39</integer>
+      <key>public.kern2.KO_parenright.case</key>
+      <integer>40</integer>
+      <key>public.kern2.KO_question</key>
+      <integer>-6</integer>
+      <key>public.kern2.KO_question.ss01</key>
+      <integer>-6</integer>
+      <key>public.kern2.KO_quotedbl</key>
+      <integer>23</integer>
+      <key>public.kern2.KO_quotedblleft</key>
+      <integer>-33</integer>
+      <key>public.kern2.KO_quotedblleft.ss01</key>
+      <integer>-29</integer>
+      <key>public.kern2.KO_quotedblright</key>
+      <integer>28</integer>
+      <key>public.kern2.KO_quotedblright.ss01</key>
+      <integer>25</integer>
+    </dict>
+    <key>adotbelow</key>
+    <dict>
+      <key>T</key>
+      <integer>-68</integer>
+      <key>asciicircum</key>
+      <integer>-77</integer>
+      <key>asciitilde</key>
+      <integer>-40</integer>
+      <key>backslash</key>
+      <integer>-40</integer>
+      <key>braceright</key>
+      <integer>-38</integer>
+      <key>equal</key>
+      <integer>-29</integer>
+      <key>eth</key>
+      <integer>-2</integer>
+      <key>hbar</key>
+      <integer>2</integer>
+      <key>idieresis.ss01</key>
+      <integer>2</integer>
+      <key>imacron</key>
+      <integer>2</integer>
+      <key>lslash</key>
+      <integer>0</integer>
+      <key>parenright</key>
+      <integer>-53</integer>
+      <key>quotedbl</key>
+      <integer>-79</integer>
+      <key>quotedblright.ss01</key>
+      <integer>-60</integer>
+      <key>quoteright.ss01</key>
+      <integer>-60</integer>
+      <key>quotesingle</key>
+      <integer>-79</integer>
+      <key>seven</key>
+      <integer>-46</integer>
+      <key>three</key>
+      <integer>-8</integer>
+      <key>trademark</key>
+      <integer>-73</integer>
+      <key>two.ss10</key>
+      <integer>-5</integer>
+      <key>v</key>
+      <integer>-16</integer>
+    </dict>
+    <key>adotbelow.ss01</key>
+    <dict>
+      <key>T</key>
+      <integer>-68</integer>
+      <key>asciicircum</key>
+      <integer>-77</integer>
+      <key>asciitilde</key>
+      <integer>-40</integer>
+      <key>backslash</key>
+      <integer>-40</integer>
+      <key>braceright</key>
+      <integer>-38</integer>
+      <key>equal</key>
+      <integer>-29</integer>
+      <key>eth</key>
+      <integer>-2</integer>
+      <key>hbar</key>
+      <integer>2</integer>
+      <key>idieresis.ss01</key>
+      <integer>2</integer>
+      <key>imacron</key>
+      <integer>2</integer>
+      <key>lslash</key>
+      <integer>0</integer>
+      <key>parenright</key>
+      <integer>-53</integer>
+      <key>quotedbl</key>
+      <integer>-79</integer>
+      <key>quotedblright.ss01</key>
+      <integer>-60</integer>
+      <key>quoteright.ss01</key>
+      <integer>-60</integer>
+      <key>quotesingle</key>
+      <integer>-79</integer>
+      <key>seven</key>
+      <integer>-46</integer>
+      <key>three</key>
+      <integer>-8</integer>
+      <key>trademark</key>
+      <integer>-73</integer>
+      <key>two.ss10</key>
+      <integer>-5</integer>
+      <key>v</key>
+      <integer>-16</integer>
+    </dict>
     <key>agrave</key>
     <dict>
       <key>quotedbl</key>
       <integer>-66</integer>
       <key>quotesingle</key>
       <integer>-66</integer>
+    </dict>
+    <key>ahookabove</key>
+    <dict>
+      <key>eth</key>
+      <integer>-2</integer>
     </dict>
     <key>ampersand</key>
     <dict>
@@ -1065,6 +2277,16 @@
       <integer>-11</integer>
       <key>O</key>
       <integer>-11</integer>
+      <key>Odotbelow</key>
+      <integer>-11</integer>
+      <key>Odotbelow.ss01</key>
+      <integer>-11</integer>
+      <key>Ohorn</key>
+      <integer>-11</integer>
+      <key>Ohorndotbelow</key>
+      <integer>-11</integer>
+      <key>Ohorndotbelow.ss01</key>
+      <integer>-11</integer>
       <key>S</key>
       <integer>-23</integer>
       <key>T</key>
@@ -1075,7 +2297,15 @@
       <integer>-26</integer>
       <key>Y</key>
       <integer>-76</integer>
+      <key>Ydotbelow</key>
+      <integer>-76</integer>
+      <key>Ydotbelow.ss01</key>
+      <integer>-76</integer>
       <key>a</key>
+      <integer>-15</integer>
+      <key>adotbelow</key>
+      <integer>-15</integer>
+      <key>adotbelow.ss01</key>
       <integer>-15</integer>
       <key>one</key>
       <integer>-54</integer>
@@ -1085,6 +2315,10 @@
     <key>ampersand.ss11</key>
     <dict>
       <key>A</key>
+      <integer>-15</integer>
+      <key>Adotbelow</key>
+      <integer>-15</integer>
+      <key>Adotbelow.ss01</key>
       <integer>-15</integer>
       <key>T</key>
       <integer>-46</integer>
@@ -1136,6 +2370,10 @@
     <dict>
       <key>A</key>
       <integer>-36</integer>
+      <key>Adotbelow</key>
+      <integer>-36</integer>
+      <key>Adotbelow.ss01</key>
+      <integer>-36</integer>
       <key>J</key>
       <integer>-48</integer>
       <key>T</key>
@@ -1145,6 +2383,10 @@
       <key>Z</key>
       <integer>-46</integer>
       <key>a</key>
+      <integer>-22</integer>
+      <key>adotbelow</key>
+      <integer>-22</integer>
+      <key>adotbelow.ss01</key>
       <integer>-22</integer>
       <key>d</key>
       <integer>-15</integer>
@@ -1181,6 +2423,10 @@
       <key>W</key>
       <integer>-53</integer>
       <key>Y</key>
+      <integer>-66</integer>
+      <key>Ydotbelow</key>
+      <integer>-66</integer>
+      <key>Ydotbelow.ss01</key>
       <integer>-66</integer>
       <key>asterisk</key>
       <integer>-63</integer>
@@ -1285,6 +2531,8 @@
     <dict>
       <key>i</key>
       <integer>0</integer>
+      <key>idotbelow</key>
+      <integer>0</integer>
       <key>quotedbl</key>
       <integer>-31</integer>
     </dict>
@@ -1302,6 +2550,10 @@
       <key>V</key>
       <integer>-27</integer>
       <key>Y</key>
+      <integer>-55</integer>
+      <key>Ydotbelow</key>
+      <integer>-55</integer>
+      <key>Ydotbelow.ss01</key>
       <integer>-55</integer>
       <key>five</key>
       <integer>-9</integer>
@@ -1325,6 +2577,10 @@
     <key>colon.case</key>
     <dict>
       <key>A</key>
+      <integer>-26</integer>
+      <key>Adotbelow</key>
+      <integer>-26</integer>
+      <key>Adotbelow.ss01</key>
       <integer>-26</integer>
       <key>T</key>
       <integer>-35</integer>
@@ -1365,6 +2621,10 @@
     <dict>
       <key>A</key>
       <integer>-67</integer>
+      <key>Adotbelow</key>
+      <integer>-67</integer>
+      <key>Adotbelow.ss01</key>
+      <integer>-67</integer>
       <key>C</key>
       <integer>-32</integer>
       <key>S</key>
@@ -1373,6 +2633,10 @@
       <integer>-20</integer>
       <key>a</key>
       <integer>-90</integer>
+      <key>adotbelow</key>
+      <integer>-90</integer>
+      <key>adotbelow.ss01</key>
+      <integer>-90</integer>
       <key>c</key>
       <integer>-94</integer>
       <key>d</key>
@@ -1380,6 +2644,16 @@
       <key>g</key>
       <integer>-91</integer>
       <key>o</key>
+      <integer>-95</integer>
+      <key>odotbelow</key>
+      <integer>-95</integer>
+      <key>odotbelow.ss01</key>
+      <integer>-95</integer>
+      <key>ohorn</key>
+      <integer>-95</integer>
+      <key>ohorndotbelow</key>
+      <integer>-95</integer>
+      <key>ohorndotbelow.ss01</key>
       <integer>-95</integer>
     </dict>
     <key>e</key>
@@ -1406,6 +2680,10 @@
       <integer>-12</integer>
       <key>y</key>
       <integer>-19</integer>
+      <key>ydotbelow</key>
+      <integer>-19</integer>
+      <key>ydotbelow.ss01</key>
+      <integer>-19</integer>
     </dict>
     <key>eacute</key>
     <dict>
@@ -1417,14 +2695,265 @@
       <key>parenright</key>
       <integer>-65</integer>
     </dict>
+    <key>ecircumflexacute</key>
+    <dict>
+      <key>b</key>
+      <integer>46</integer>
+      <key>braceright</key>
+      <integer>75</integer>
+      <key>braceright.case</key>
+      <integer>77</integer>
+      <key>bracketleft</key>
+      <integer>46</integer>
+      <key>bracketleft.case</key>
+      <integer>46</integer>
+      <key>bracketright.case</key>
+      <integer>77</integer>
+      <key>h</key>
+      <integer>46</integer>
+      <key>k</key>
+      <integer>46</integer>
+      <key>l</key>
+      <integer>46</integer>
+      <key>parenright</key>
+      <integer>-65</integer>
+      <key>public.kern2.KO_agrave</key>
+      <integer>49</integer>
+      <key>public.kern2.KO_asterisk</key>
+      <integer>13</integer>
+      <key>public.kern2.KO_bracketright</key>
+      <integer>76</integer>
+      <key>public.kern2.KO_d</key>
+      <integer>18</integer>
+      <key>public.kern2.KO_exclam</key>
+      <integer>50</integer>
+      <key>public.kern2.KO_exclam.ss01</key>
+      <integer>52</integer>
+      <key>public.kern2.KO_i</key>
+      <integer>52</integer>
+      <key>public.kern2.KO_j</key>
+      <integer>52</integer>
+      <key>public.kern2.KO_parenright</key>
+      <integer>86</integer>
+      <key>public.kern2.KO_parenright.case</key>
+      <integer>87</integer>
+      <key>public.kern2.KO_question</key>
+      <integer>20</integer>
+      <key>public.kern2.KO_question.ss01</key>
+      <integer>20</integer>
+      <key>public.kern2.KO_quotedbl</key>
+      <integer>50</integer>
+      <key>public.kern2.KO_quotedblleft</key>
+      <integer>-10</integer>
+      <key>public.kern2.KO_quotedblleft.ss01</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_quotedblright</key>
+      <integer>60</integer>
+      <key>public.kern2.KO_quotedblright.ss01</key>
+      <integer>60</integer>
+      <key>question.case</key>
+      <integer>8</integer>
+    </dict>
+    <key>ecircumflexdotbelow</key>
+    <dict>
+      <key>parenright</key>
+      <integer>-65</integer>
+    </dict>
+    <key>ecircumflexdotbelow.ss01</key>
+    <dict>
+      <key>parenright</key>
+      <integer>-65</integer>
+    </dict>
+    <key>ecircumflexgrave</key>
+    <dict>
+      <key>b</key>
+      <integer>10</integer>
+      <key>braceright</key>
+      <integer>16</integer>
+      <key>braceright.case</key>
+      <integer>16</integer>
+      <key>bracketright.case</key>
+      <integer>16</integer>
+      <key>h</key>
+      <integer>10</integer>
+      <key>k</key>
+      <integer>10</integer>
+      <key>l</key>
+      <integer>10</integer>
+      <key>parenright</key>
+      <integer>-65</integer>
+      <key>public.kern2.KO_agrave</key>
+      <integer>-2</integer>
+      <key>public.kern2.KO_asterisk</key>
+      <integer>13</integer>
+      <key>public.kern2.KO_bracketright</key>
+      <integer>17</integer>
+      <key>public.kern2.KO_exclam</key>
+      <integer>-1</integer>
+      <key>public.kern2.KO_exclam.ss01</key>
+      <integer>1</integer>
+      <key>public.kern2.KO_i</key>
+      <integer>16</integer>
+      <key>public.kern2.KO_j</key>
+      <integer>16</integer>
+      <key>public.kern2.KO_parenright</key>
+      <integer>15</integer>
+      <key>public.kern2.KO_parenright.case</key>
+      <integer>16</integer>
+      <key>public.kern2.KO_question</key>
+      <integer>10</integer>
+      <key>public.kern2.KO_question.ss01</key>
+      <integer>10</integer>
+      <key>public.kern2.KO_quotedbl</key>
+      <integer>19</integer>
+      <key>public.kern2.KO_quotedblleft</key>
+      <integer>-11</integer>
+      <key>public.kern2.KO_quotedblleft.ss01</key>
+      <integer>-6</integer>
+      <key>public.kern2.KO_quotedblright</key>
+      <integer>22</integer>
+      <key>public.kern2.KO_quotedblright.ss01</key>
+      <integer>15</integer>
+      <key>question.case</key>
+      <integer>4</integer>
+    </dict>
+    <key>ecircumflexhookabove</key>
+    <dict>
+      <key>b</key>
+      <integer>43</integer>
+      <key>braceright</key>
+      <integer>48</integer>
+      <key>braceright.case</key>
+      <integer>50</integer>
+      <key>bracketleft</key>
+      <integer>19</integer>
+      <key>bracketleft.case</key>
+      <integer>19</integer>
+      <key>bracketright.case</key>
+      <integer>50</integer>
+      <key>h</key>
+      <integer>43</integer>
+      <key>k</key>
+      <integer>43</integer>
+      <key>l</key>
+      <integer>43</integer>
+      <key>parenright</key>
+      <integer>-65</integer>
+      <key>public.kern2.KO_agrave</key>
+      <integer>34</integer>
+      <key>public.kern2.KO_asterisk</key>
+      <integer>7</integer>
+      <key>public.kern2.KO_bracketright</key>
+      <integer>49</integer>
+      <key>public.kern2.KO_exclam</key>
+      <integer>35</integer>
+      <key>public.kern2.KO_exclam.ss01</key>
+      <integer>37</integer>
+      <key>public.kern2.KO_i</key>
+      <integer>49</integer>
+      <key>public.kern2.KO_j</key>
+      <integer>49</integer>
+      <key>public.kern2.KO_parenright</key>
+      <integer>59</integer>
+      <key>public.kern2.KO_parenright.case</key>
+      <integer>60</integer>
+      <key>public.kern2.KO_question</key>
+      <integer>14</integer>
+      <key>public.kern2.KO_question.ss01</key>
+      <integer>14</integer>
+      <key>public.kern2.KO_quotedbl</key>
+      <integer>43</integer>
+      <key>public.kern2.KO_quotedblleft</key>
+      <integer>-13</integer>
+      <key>public.kern2.KO_quotedblleft.ss01</key>
+      <integer>-9</integer>
+      <key>public.kern2.KO_quotedblright</key>
+      <integer>48</integer>
+      <key>public.kern2.KO_quotedblright.ss01</key>
+      <integer>45</integer>
+    </dict>
+    <key>ecircumflextilde</key>
+    <dict>
+      <key>parenright</key>
+      <integer>-65</integer>
+    </dict>
     <key>edieresis</key>
     <dict>
       <key>quotedbl</key>
       <integer>-7</integer>
     </dict>
+    <key>edotbelow</key>
+    <dict>
+      <key>asciicircum</key>
+      <integer>-81</integer>
+      <key>asciitilde</key>
+      <integer>-31</integer>
+      <key>braceright</key>
+      <integer>-54</integer>
+      <key>ellipsis</key>
+      <integer>-19</integer>
+      <key>equal</key>
+      <integer>-20</integer>
+      <key>lslash</key>
+      <integer>2</integer>
+      <key>oslash</key>
+      <integer>7</integer>
+      <key>seven</key>
+      <integer>-50</integer>
+      <key>trademark</key>
+      <integer>-72</integer>
+      <key>two.ss10</key>
+      <integer>-12</integer>
+      <key>y</key>
+      <integer>-19</integer>
+      <key>ydotbelow</key>
+      <integer>-19</integer>
+      <key>ydotbelow.ss01</key>
+      <integer>-19</integer>
+    </dict>
+    <key>edotbelow.ss01</key>
+    <dict>
+      <key>asciicircum</key>
+      <integer>-81</integer>
+      <key>asciitilde</key>
+      <integer>-31</integer>
+      <key>braceright</key>
+      <integer>-54</integer>
+      <key>ellipsis</key>
+      <integer>-19</integer>
+      <key>equal</key>
+      <integer>-20</integer>
+      <key>lslash</key>
+      <integer>2</integer>
+      <key>oslash</key>
+      <integer>7</integer>
+      <key>public.kern2.KO_underscore</key>
+      <integer>-97</integer>
+      <key>seven</key>
+      <integer>-50</integer>
+      <key>trademark</key>
+      <integer>-72</integer>
+      <key>two.ss10</key>
+      <integer>-12</integer>
+      <key>y</key>
+      <integer>-19</integer>
+      <key>ydotbelow</key>
+      <integer>-19</integer>
+      <key>ydotbelow.ss01</key>
+      <integer>-19</integer>
+    </dict>
+    <key>ehookabove</key>
+    <dict>
+      <key>parenright</key>
+      <integer>-62</integer>
+    </dict>
     <key>eight</key>
     <dict>
       <key>A</key>
+      <integer>-7</integer>
+      <key>Adotbelow</key>
+      <integer>-7</integer>
+      <key>Adotbelow.ss01</key>
       <integer>-7</integer>
       <key>T</key>
       <integer>-21</integer>
@@ -1509,6 +3038,10 @@
     <dict>
       <key>A</key>
       <integer>-30</integer>
+      <key>Adotbelow</key>
+      <integer>-30</integer>
+      <key>Adotbelow.ss01</key>
+      <integer>-30</integer>
       <key>B</key>
       <integer>-13</integer>
       <key>J</key>
@@ -1525,9 +3058,17 @@
       <integer>-44</integer>
       <key>Y</key>
       <integer>-55</integer>
+      <key>Ydotbelow</key>
+      <integer>-55</integer>
+      <key>Ydotbelow.ss01</key>
+      <integer>-55</integer>
       <key>Z</key>
       <integer>-62</integer>
       <key>a</key>
+      <integer>-30</integer>
+      <key>adotbelow</key>
+      <integer>-30</integer>
+      <key>adotbelow.ss01</key>
       <integer>-30</integer>
       <key>bracketright</key>
       <integer>-85</integer>
@@ -1570,6 +3111,10 @@
     <dict>
       <key>a</key>
       <integer>-5</integer>
+      <key>adotbelow</key>
+      <integer>-5</integer>
+      <key>adotbelow.ss01</key>
+      <integer>-5</integer>
       <key>bracketright</key>
       <integer>-40</integer>
       <key>colon.ss01</key>
@@ -1581,6 +3126,10 @@
       <key>d</key>
       <integer>2</integer>
       <key>e</key>
+      <integer>4</integer>
+      <key>edotbelow</key>
+      <integer>4</integer>
+      <key>edotbelow.ss01</key>
       <integer>4</integer>
       <key>g</key>
       <integer>0</integer>
@@ -1647,10 +3196,18 @@
       <integer>-33</integer>
       <key>Y</key>
       <integer>-61</integer>
+      <key>Ydotbelow</key>
+      <integer>-61</integer>
+      <key>Ydotbelow.ss01</key>
+      <integer>-61</integer>
     </dict>
     <key>exclamdown.ss01</key>
     <dict>
       <key>A</key>
+      <integer>-18</integer>
+      <key>Adotbelow</key>
+      <integer>-18</integer>
+      <key>Adotbelow.ss01</key>
       <integer>-18</integer>
       <key>B</key>
       <integer>-19</integer>
@@ -1660,6 +3217,16 @@
       <integer>-14</integer>
       <key>O</key>
       <integer>-14</integer>
+      <key>Odotbelow</key>
+      <integer>-14</integer>
+      <key>Odotbelow.ss01</key>
+      <integer>-14</integer>
+      <key>Ohorn</key>
+      <integer>-14</integer>
+      <key>Ohorndotbelow</key>
+      <integer>-14</integer>
+      <key>Ohorndotbelow.ss01</key>
+      <integer>-14</integer>
       <key>Q</key>
       <integer>-14</integer>
       <key>S</key>
@@ -1668,9 +3235,23 @@
       <integer>-76</integer>
       <key>U</key>
       <integer>-21</integer>
+      <key>Udotbelow</key>
+      <integer>-21</integer>
+      <key>Udotbelow.ss01</key>
+      <integer>-21</integer>
+      <key>Uhorn</key>
+      <integer>-21</integer>
+      <key>Uhorndotbelow</key>
+      <integer>-21</integer>
+      <key>Uhorndotbelow.ss01</key>
+      <integer>-21</integer>
       <key>V</key>
       <integer>-38</integer>
       <key>Y</key>
+      <integer>-71</integer>
+      <key>Ydotbelow</key>
+      <integer>-71</integer>
+      <key>Ydotbelow.ss01</key>
       <integer>-71</integer>
       <key>exclamdown.ss01</key>
       <integer>-17</integer>
@@ -1782,6 +3363,10 @@
     <dict>
       <key>A</key>
       <integer>-6</integer>
+      <key>Adotbelow</key>
+      <integer>-6</integer>
+      <key>Adotbelow.ss01</key>
+      <integer>-6</integer>
       <key>asciicircum</key>
       <integer>-85</integer>
       <key>braceright</key>
@@ -1811,6 +3396,10 @@
     <dict>
       <key>A</key>
       <integer>0</integer>
+      <key>Adotbelow</key>
+      <integer>0</integer>
+      <key>Adotbelow.ss01</key>
+      <integer>0</integer>
       <key>T</key>
       <integer>-20</integer>
       <key>V</key>
@@ -1820,6 +3409,10 @@
       <key>X</key>
       <integer>-8</integer>
       <key>Y</key>
+      <integer>-23</integer>
+      <key>Ydotbelow</key>
+      <integer>-23</integer>
+      <key>Ydotbelow.ss01</key>
       <integer>-23</integer>
       <key>braceright</key>
       <integer>-35</integer>
@@ -1841,6 +3434,10 @@
       <integer>-20</integer>
       <key>y</key>
       <integer>-19</integer>
+      <key>ydotbelow</key>
+      <integer>-19</integer>
+      <key>ydotbelow.ss01</key>
+      <integer>-19</integer>
     </dict>
     <key>gcommaaccent</key>
     <dict>
@@ -1856,6 +3453,10 @@
     <dict>
       <key>a</key>
       <integer>-10</integer>
+      <key>adotbelow</key>
+      <integer>-10</integer>
+      <key>adotbelow.ss01</key>
+      <integer>-10</integer>
       <key>colon.ss01</key>
       <integer>-22</integer>
       <key>comma</key>
@@ -1863,6 +3464,10 @@
       <key>comma.ss01</key>
       <integer>-33</integer>
       <key>e</key>
+      <integer>-3</integer>
+      <key>edotbelow</key>
+      <integer>-3</integer>
+      <key>edotbelow.ss01</key>
       <integer>-3</integer>
       <key>f</key>
       <integer>-3</integer>
@@ -1886,6 +3491,8 @@
       <integer>-58</integer>
       <key>i</key>
       <integer>-6</integer>
+      <key>idotbelow</key>
+      <integer>-6</integer>
       <key>parenright</key>
       <integer>-66</integer>
       <key>period</key>
@@ -1904,6 +3511,16 @@
       <integer>-7</integer>
       <key>u</key>
       <integer>-3</integer>
+      <key>udotbelow</key>
+      <integer>-3</integer>
+      <key>udotbelow.ss01</key>
+      <integer>-3</integer>
+      <key>uhorn</key>
+      <integer>-3</integer>
+      <key>uhorndotbelow</key>
+      <integer>-3</integer>
+      <key>uhorndotbelow.ss01</key>
+      <integer>-3</integer>
       <key>v</key>
       <integer>-13</integer>
       <key>w</key>
@@ -1916,6 +3533,10 @@
     <key>greater</key>
     <dict>
       <key>A</key>
+      <integer>-58</integer>
+      <key>Adotbelow</key>
+      <integer>-58</integer>
+      <key>Adotbelow.ss01</key>
       <integer>-58</integer>
       <key>J</key>
       <integer>-77</integer>
@@ -1930,6 +3551,10 @@
       <key>X</key>
       <integer>-95</integer>
       <key>Y</key>
+      <integer>-95</integer>
+      <key>Ydotbelow</key>
+      <integer>-95</integer>
+      <key>Ydotbelow.ss01</key>
       <integer>-95</integer>
       <key>Z</key>
       <integer>-91</integer>
@@ -2061,6 +3686,10 @@
     <dict>
       <key>A</key>
       <integer>-43</integer>
+      <key>Adotbelow</key>
+      <integer>-43</integer>
+      <key>Adotbelow.ss01</key>
+      <integer>-43</integer>
       <key>J</key>
       <integer>-61</integer>
       <key>T</key>
@@ -2070,6 +3699,10 @@
       <key>X</key>
       <integer>-81</integer>
       <key>Y</key>
+      <integer>-80</integer>
+      <key>Ydotbelow</key>
+      <integer>-80</integer>
+      <key>Ydotbelow.ss01</key>
       <integer>-80</integer>
       <key>Z</key>
       <integer>-73</integer>
@@ -2110,6 +3743,10 @@
     <dict>
       <key>a</key>
       <integer>-8</integer>
+      <key>adotbelow</key>
+      <integer>-8</integer>
+      <key>adotbelow.ss01</key>
+      <integer>-8</integer>
       <key>colon.ss01</key>
       <integer>-11</integer>
       <key>comma</key>
@@ -2138,12 +3775,20 @@
       <integer>-4</integer>
       <key>y</key>
       <integer>-7</integer>
+      <key>ydotbelow</key>
+      <integer>-7</integer>
+      <key>ydotbelow.ss01</key>
+      <integer>-7</integer>
       <key>z</key>
       <integer>-10</integer>
     </dict>
     <key>idieresis</key>
     <dict>
       <key>a</key>
+      <integer>-6</integer>
+      <key>adotbelow</key>
+      <integer>-6</integer>
+      <key>adotbelow.ss01</key>
       <integer>-6</integer>
       <key>comma.ss01</key>
       <integer>-25</integer>
@@ -2177,10 +3822,135 @@
       <key>oslash</key>
       <integer>2</integer>
     </dict>
+    <key>idotbelow</key>
+    <dict>
+      <key>asciicircum</key>
+      <integer>-51</integer>
+      <key>asciitilde</key>
+      <integer>-41</integer>
+      <key>b</key>
+      <integer>0</integer>
+      <key>braceright</key>
+      <integer>-10</integer>
+      <key>braceright.case</key>
+      <integer>0</integer>
+      <key>bracketleft</key>
+      <integer>0</integer>
+      <key>bracketleft.case</key>
+      <integer>0</integer>
+      <key>bracketright.case</key>
+      <integer>0</integer>
+      <key>ellipsis</key>
+      <integer>0</integer>
+      <key>equal</key>
+      <integer>-21</integer>
+      <key>eth</key>
+      <integer>-5</integer>
+      <key>h</key>
+      <integer>0</integer>
+      <key>k</key>
+      <integer>0</integer>
+      <key>l</key>
+      <integer>0</integer>
+      <key>m</key>
+      <integer>0</integer>
+      <key>n</key>
+      <integer>0</integer>
+      <key>oslash</key>
+      <integer>0</integer>
+      <key>p</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_bracketright</key>
+      <integer>-10</integer>
+      <key>public.kern2.KO_colon</key>
+      <integer>-11</integer>
+      <key>public.kern2.KO_colon.ss01</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_ellipsis</key>
+      <integer>-25</integer>
+      <key>public.kern2.KO_exclam</key>
+      <integer>-8</integer>
+      <key>public.kern2.KO_exclam.ss01</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_f</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_g</key>
+      <integer>-4</integer>
+      <key>public.kern2.KO_i</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_j</key>
+      <integer>51</integer>
+      <key>public.kern2.KO_parenright</key>
+      <integer>-5</integer>
+      <key>public.kern2.KO_parenright.case</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_period</key>
+      <integer>-22</integer>
+      <key>public.kern2.KO_period.ss01</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_slash</key>
+      <integer>-6</integer>
+      <key>public.kern2.KO_underscore</key>
+      <integer>-38</integer>
+      <key>public.kern2.KO_v</key>
+      <integer>-5</integer>
+      <key>public.kern2.KO_x</key>
+      <integer>-4</integer>
+      <key>public.kern2.KO_y.ss03</key>
+      <integer>-13</integer>
+      <key>public.kern2.KO_z</key>
+      <integer>-10</integer>
+      <key>r</key>
+      <integer>0</integer>
+      <key>semicolon.case</key>
+      <integer>0</integer>
+    </dict>
+    <key>idotbelow.ss01</key>
+    <dict>
+      <key>braceright</key>
+      <integer>0</integer>
+      <key>p</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_bracketright</key>
+      <integer>-14</integer>
+      <key>public.kern2.KO_colon</key>
+      <integer>-11</integer>
+      <key>public.kern2.KO_colon.ss01</key>
+      <integer>3</integer>
+      <key>public.kern2.KO_g</key>
+      <integer>-4</integer>
+      <key>public.kern2.KO_j</key>
+      <integer>64</integer>
+      <key>public.kern2.KO_parenright</key>
+      <integer>8</integer>
+      <key>public.kern2.KO_period</key>
+      <integer>-8</integer>
+      <key>public.kern2.KO_period.ss01</key>
+      <integer>3</integer>
+      <key>public.kern2.KO_slash</key>
+      <integer>-7</integer>
+      <key>public.kern2.KO_underscore</key>
+      <integer>35</integer>
+      <key>public.kern2.KO_x</key>
+      <integer>-4</integer>
+      <key>public.kern2.KO_y.ss03</key>
+      <integer>-12</integer>
+    </dict>
     <key>igrave</key>
     <dict>
       <key>parenright</key>
       <integer>-39</integer>
+    </dict>
+    <key>ihookabove</key>
+    <dict>
+      <key>eth</key>
+      <integer>0</integer>
+      <key>lslash</key>
+      <integer>0</integer>
+      <key>scaron</key>
+      <integer>0</integer>
+      <key>zcaron</key>
+      <integer>0</integer>
     </dict>
     <key>imacron</key>
     <dict>
@@ -2205,6 +3975,10 @@
       <key>c</key>
       <integer>-26</integer>
       <key>e</key>
+      <integer>-29</integer>
+      <key>edotbelow</key>
+      <integer>-29</integer>
+      <key>edotbelow.ss01</key>
       <integer>-29</integer>
       <key>four</key>
       <integer>-23</integer>
@@ -2240,6 +4014,10 @@
       <key>X</key>
       <integer>-43</integer>
       <key>Y</key>
+      <integer>-51</integer>
+      <key>Ydotbelow</key>
+      <integer>-51</integer>
+      <key>Ydotbelow.ss01</key>
       <integer>-51</integer>
       <key>Z</key>
       <integer>-51</integer>
@@ -2285,6 +4063,10 @@
     <dict>
       <key>a</key>
       <integer>-2</integer>
+      <key>adotbelow</key>
+      <integer>-2</integer>
+      <key>adotbelow.ss01</key>
+      <integer>-2</integer>
       <key>aogonek</key>
       <integer>-2</integer>
       <key>c</key>
@@ -2296,6 +4078,10 @@
       <key>d</key>
       <integer>0</integer>
       <key>e</key>
+      <integer>0</integer>
+      <key>edotbelow</key>
+      <integer>0</integer>
+      <key>edotbelow.ss01</key>
       <integer>0</integer>
       <key>eogonek</key>
       <integer>0</integer>
@@ -2311,6 +4097,22 @@
       <integer>0</integer>
       <key>oacute</key>
       <integer>0</integer>
+      <key>odotbelow</key>
+      <integer>0</integer>
+      <key>odotbelow.ss01</key>
+      <integer>0</integer>
+      <key>ohookabove</key>
+      <integer>0</integer>
+      <key>ohorn</key>
+      <integer>0</integer>
+      <key>ohornacute</key>
+      <integer>0</integer>
+      <key>ohorndotbelow</key>
+      <integer>0</integer>
+      <key>ohorndotbelow.ss01</key>
+      <integer>0</integer>
+      <key>ohornhookabove</key>
+      <integer>0</integer>
       <key>parenright</key>
       <integer>-42</integer>
       <key>period</key>
@@ -2322,6 +4124,10 @@
       <key>t</key>
       <integer>0</integer>
       <key>y</key>
+      <integer>0</integer>
+      <key>ydotbelow</key>
+      <integer>0</integer>
+      <key>ydotbelow.ss01</key>
       <integer>0</integer>
     </dict>
     <key>m</key>
@@ -2356,6 +4162,10 @@
     <key>multiply</key>
     <dict>
       <key>A</key>
+      <integer>-44</integer>
+      <key>Adotbelow</key>
+      <integer>-44</integer>
+      <key>Adotbelow.ss01</key>
       <integer>-44</integer>
       <key>T</key>
       <integer>-67</integer>
@@ -2396,6 +4206,16 @@
       <integer>-32</integer>
       <key>o</key>
       <integer>0</integer>
+      <key>odotbelow</key>
+      <integer>0</integer>
+      <key>odotbelow.ss01</key>
+      <integer>0</integer>
+      <key>ohorn</key>
+      <integer>0</integer>
+      <key>ohorndotbelow</key>
+      <integer>0</integer>
+      <key>ohorndotbelow.ss01</key>
+      <integer>0</integer>
       <key>ordmasculine</key>
       <integer>-59</integer>
       <key>oslash</key>
@@ -2435,11 +4255,19 @@
     <dict>
       <key>A</key>
       <integer>-21</integer>
+      <key>Adotbelow</key>
+      <integer>-21</integer>
+      <key>Adotbelow.ss01</key>
+      <integer>-21</integer>
       <key>J</key>
       <integer>-35</integer>
       <key>T</key>
       <integer>-2</integer>
       <key>a</key>
+      <integer>-10</integer>
+      <key>adotbelow</key>
+      <integer>-10</integer>
+      <key>adotbelow.ss01</key>
       <integer>-10</integer>
       <key>comma.ss01</key>
       <integer>-62</integer>
@@ -2474,6 +4302,16 @@
       <integer>2</integer>
       <key>o</key>
       <integer>0</integer>
+      <key>odotbelow</key>
+      <integer>0</integer>
+      <key>odotbelow.ss01</key>
+      <integer>0</integer>
+      <key>ohorn</key>
+      <integer>0</integer>
+      <key>ohorndotbelow</key>
+      <integer>0</integer>
+      <key>ohorndotbelow.ss01</key>
+      <integer>0</integer>
       <key>parenright</key>
       <integer>-78</integer>
       <key>quotedbl</key>
@@ -2490,6 +4328,10 @@
       <integer>-76</integer>
       <key>y</key>
       <integer>-21</integer>
+      <key>ydotbelow</key>
+      <integer>-21</integer>
+      <key>ydotbelow.ss01</key>
+      <integer>-21</integer>
     </dict>
     <key>oacute</key>
     <dict>
@@ -2498,12 +4340,266 @@
       <key>lslash</key>
       <integer>2</integer>
     </dict>
+    <key>ocircumflexacute</key>
+    <dict>
+      <key>b</key>
+      <integer>33</integer>
+      <key>braceright</key>
+      <integer>62</integer>
+      <key>braceright.case</key>
+      <integer>64</integer>
+      <key>bracketleft</key>
+      <integer>33</integer>
+      <key>bracketleft.case</key>
+      <integer>33</integer>
+      <key>bracketright.case</key>
+      <integer>64</integer>
+      <key>h</key>
+      <integer>33</integer>
+      <key>k</key>
+      <integer>33</integer>
+      <key>l</key>
+      <integer>33</integer>
+      <key>public.kern2.KO_agrave</key>
+      <integer>36</integer>
+      <key>public.kern2.KO_asterisk</key>
+      <integer>-12</integer>
+      <key>public.kern2.KO_bracketright</key>
+      <integer>63</integer>
+      <key>public.kern2.KO_exclam</key>
+      <integer>37</integer>
+      <key>public.kern2.KO_exclam.ss01</key>
+      <integer>39</integer>
+      <key>public.kern2.KO_i</key>
+      <integer>39</integer>
+      <key>public.kern2.KO_j</key>
+      <integer>39</integer>
+      <key>public.kern2.KO_parenright</key>
+      <integer>73</integer>
+      <key>public.kern2.KO_parenright.case</key>
+      <integer>74</integer>
+      <key>public.kern2.KO_question</key>
+      <integer>7</integer>
+      <key>public.kern2.KO_question.ss01</key>
+      <integer>7</integer>
+      <key>public.kern2.KO_quotedbl</key>
+      <integer>37</integer>
+      <key>public.kern2.KO_quotedblleft</key>
+      <integer>-23</integer>
+      <key>public.kern2.KO_quotedblleft.ss01</key>
+      <integer>-13</integer>
+      <key>public.kern2.KO_quotedblright</key>
+      <integer>47</integer>
+      <key>public.kern2.KO_quotedblright.ss01</key>
+      <integer>47</integer>
+    </dict>
+    <key>ocircumflexgrave</key>
+    <dict>
+      <key>braceright</key>
+      <integer>3</integer>
+      <key>braceright.case</key>
+      <integer>3</integer>
+      <key>bracketright.case</key>
+      <integer>3</integer>
+      <key>public.kern2.KO_asterisk</key>
+      <integer>-12</integer>
+      <key>public.kern2.KO_bracketright</key>
+      <integer>4</integer>
+      <key>public.kern2.KO_exclam</key>
+      <integer>-14</integer>
+      <key>public.kern2.KO_exclam.ss01</key>
+      <integer>-12</integer>
+      <key>public.kern2.KO_i</key>
+      <integer>3</integer>
+      <key>public.kern2.KO_j</key>
+      <integer>3</integer>
+      <key>public.kern2.KO_parenright</key>
+      <integer>2</integer>
+      <key>public.kern2.KO_parenright.case</key>
+      <integer>3</integer>
+      <key>public.kern2.KO_question</key>
+      <integer>-3</integer>
+      <key>public.kern2.KO_question.ss01</key>
+      <integer>-3</integer>
+      <key>public.kern2.KO_quotedbl</key>
+      <integer>6</integer>
+      <key>public.kern2.KO_quotedblleft</key>
+      <integer>-24</integer>
+      <key>public.kern2.KO_quotedblleft.ss01</key>
+      <integer>-19</integer>
+      <key>public.kern2.KO_quotedblright</key>
+      <integer>9</integer>
+      <key>public.kern2.KO_quotedblright.ss01</key>
+      <integer>2</integer>
+    </dict>
+    <key>ocircumflexhookabove</key>
+    <dict>
+      <key>b</key>
+      <integer>30</integer>
+      <key>braceright</key>
+      <integer>35</integer>
+      <key>braceright.case</key>
+      <integer>37</integer>
+      <key>bracketleft</key>
+      <integer>6</integer>
+      <key>bracketleft.case</key>
+      <integer>6</integer>
+      <key>bracketright.case</key>
+      <integer>37</integer>
+      <key>h</key>
+      <integer>30</integer>
+      <key>k</key>
+      <integer>30</integer>
+      <key>l</key>
+      <integer>30</integer>
+      <key>public.kern2.KO_agrave</key>
+      <integer>21</integer>
+      <key>public.kern2.KO_asterisk</key>
+      <integer>-18</integer>
+      <key>public.kern2.KO_bracketright</key>
+      <integer>36</integer>
+      <key>public.kern2.KO_exclam</key>
+      <integer>22</integer>
+      <key>public.kern2.KO_exclam.ss01</key>
+      <integer>24</integer>
+      <key>public.kern2.KO_i</key>
+      <integer>36</integer>
+      <key>public.kern2.KO_j</key>
+      <integer>36</integer>
+      <key>public.kern2.KO_parenright</key>
+      <integer>46</integer>
+      <key>public.kern2.KO_parenright.case</key>
+      <integer>47</integer>
+      <key>public.kern2.KO_question</key>
+      <integer>1</integer>
+      <key>public.kern2.KO_question.ss01</key>
+      <integer>1</integer>
+      <key>public.kern2.KO_quotedbl</key>
+      <integer>30</integer>
+      <key>public.kern2.KO_quotedblleft</key>
+      <integer>-26</integer>
+      <key>public.kern2.KO_quotedblleft.ss01</key>
+      <integer>-22</integer>
+      <key>public.kern2.KO_quotedblright</key>
+      <integer>35</integer>
+      <key>public.kern2.KO_quotedblright.ss01</key>
+      <integer>32</integer>
+    </dict>
     <key>odieresis</key>
     <dict>
       <key>eth</key>
       <integer>0</integer>
       <key>odieresis</key>
       <integer>5</integer>
+    </dict>
+    <key>odotbelow</key>
+    <dict>
+      <key>T</key>
+      <integer>-59</integer>
+      <key>asciicircum</key>
+      <integer>-87</integer>
+      <key>asciitilde</key>
+      <integer>-32</integer>
+      <key>braceright</key>
+      <integer>-57</integer>
+      <key>bracketright</key>
+      <integer>-67</integer>
+      <key>equal</key>
+      <integer>-20</integer>
+      <key>eth</key>
+      <integer>-2</integer>
+      <key>lslash</key>
+      <integer>2</integer>
+      <key>o</key>
+      <integer>0</integer>
+      <key>odotbelow</key>
+      <integer>0</integer>
+      <key>odotbelow.ss01</key>
+      <integer>0</integer>
+      <key>ohorn</key>
+      <integer>0</integer>
+      <key>ohorndotbelow</key>
+      <integer>0</integer>
+      <key>ohorndotbelow.ss01</key>
+      <integer>0</integer>
+      <key>parenright</key>
+      <integer>-78</integer>
+      <key>quotedbl</key>
+      <integer>-90</integer>
+      <key>quotedblright.ss01</key>
+      <integer>-67</integer>
+      <key>quoteright.ss01</key>
+      <integer>-67</integer>
+      <key>quotesingle</key>
+      <integer>-90</integer>
+      <key>seven</key>
+      <integer>-51</integer>
+      <key>trademark</key>
+      <integer>-76</integer>
+      <key>y</key>
+      <integer>-21</integer>
+      <key>ydotbelow</key>
+      <integer>-21</integer>
+      <key>ydotbelow.ss01</key>
+      <integer>-21</integer>
+    </dict>
+    <key>odotbelow.ss01</key>
+    <dict>
+      <key>T</key>
+      <integer>-59</integer>
+      <key>asciicircum</key>
+      <integer>-87</integer>
+      <key>asciitilde</key>
+      <integer>-32</integer>
+      <key>braceright</key>
+      <integer>-57</integer>
+      <key>bracketright</key>
+      <integer>-67</integer>
+      <key>equal</key>
+      <integer>-20</integer>
+      <key>eth</key>
+      <integer>-2</integer>
+      <key>lslash</key>
+      <integer>2</integer>
+      <key>o</key>
+      <integer>0</integer>
+      <key>odotbelow</key>
+      <integer>0</integer>
+      <key>odotbelow.ss01</key>
+      <integer>0</integer>
+      <key>ohorn</key>
+      <integer>0</integer>
+      <key>ohorndotbelow</key>
+      <integer>0</integer>
+      <key>ohorndotbelow.ss01</key>
+      <integer>0</integer>
+      <key>parenright</key>
+      <integer>-78</integer>
+      <key>quotedbl</key>
+      <integer>-90</integer>
+      <key>quotedblright.ss01</key>
+      <integer>-67</integer>
+      <key>quoteright.ss01</key>
+      <integer>-67</integer>
+      <key>quotesingle</key>
+      <integer>-90</integer>
+      <key>seven</key>
+      <integer>-51</integer>
+      <key>trademark</key>
+      <integer>-76</integer>
+      <key>y</key>
+      <integer>-21</integer>
+      <key>ydotbelow</key>
+      <integer>-21</integer>
+      <key>ydotbelow.ss01</key>
+      <integer>-21</integer>
+    </dict>
+    <key>ohookabove</key>
+    <dict>
+      <key>eth</key>
+      <integer>-2</integer>
+      <key>lslash</key>
+      <integer>2</integer>
     </dict>
     <key>ohungarumlaut</key>
     <dict>
@@ -2514,9 +4610,17 @@
     <dict>
       <key>A</key>
       <integer>-5</integer>
+      <key>Adotbelow</key>
+      <integer>-5</integer>
+      <key>Adotbelow.ss01</key>
+      <integer>-5</integer>
       <key>B</key>
       <integer>-5</integer>
       <key>a</key>
+      <integer>-11</integer>
+      <key>adotbelow</key>
+      <integer>-11</integer>
+      <key>adotbelow.ss01</key>
       <integer>-11</integer>
       <key>braceright</key>
       <integer>-29</integer>
@@ -2527,6 +4631,10 @@
       <key>degree</key>
       <integer>-28</integer>
       <key>e</key>
+      <integer>-5</integer>
+      <key>edotbelow</key>
+      <integer>-5</integer>
+      <key>edotbelow.ss01</key>
       <integer>-5</integer>
       <key>exclam.ss01</key>
       <integer>-17</integer>
@@ -2571,6 +4679,10 @@
       <integer>4</integer>
       <key>e</key>
       <integer>6</integer>
+      <key>edotbelow</key>
+      <integer>6</integer>
+      <key>edotbelow.ss01</key>
+      <integer>6</integer>
       <key>g</key>
       <integer>3</integer>
       <key>hyphen</key>
@@ -2578,6 +4690,8 @@
       <key>hyphen_greater.liga</key>
       <integer>-33</integer>
       <key>i</key>
+      <integer>0</integer>
+      <key>idotbelow</key>
       <integer>0</integer>
       <key>j</key>
       <integer>0</integer>
@@ -2822,6 +4936,10 @@
     <dict>
       <key>A</key>
       <integer>-27</integer>
+      <key>Adotbelow</key>
+      <integer>-27</integer>
+      <key>Adotbelow.ss01</key>
+      <integer>-27</integer>
       <key>J</key>
       <integer>-47</integer>
       <key>T</key>
@@ -2829,6 +4947,10 @@
       <key>X</key>
       <integer>-53</integer>
       <key>Y</key>
+      <integer>-68</integer>
+      <key>Ydotbelow</key>
+      <integer>-68</integer>
+      <key>Ydotbelow.ss01</key>
       <integer>-68</integer>
       <key>Z</key>
       <integer>-67</integer>
@@ -2842,6 +4964,10 @@
     <key>periodcentered.loclCAT.case.ss01</key>
     <dict>
       <key>A</key>
+      <integer>-35</integer>
+      <key>Adotbelow</key>
+      <integer>-35</integer>
+      <key>Adotbelow.ss01</key>
       <integer>-35</integer>
       <key>J</key>
       <integer>-47</integer>
@@ -2884,6 +5010,8 @@
     </dict>
     <key>public.kern1.KO_A</key>
     <dict>
+      <key>idotbelow</key>
+      <integer>-4</integer>
       <key>public.kern2.KO_A</key>
       <integer>4</integer>
       <key>public.kern2.KO_B</key>
@@ -4168,6 +6296,8 @@
     </dict>
     <key>public.kern1.KO_K</key>
     <dict>
+      <key>idotbelow</key>
+      <integer>-5</integer>
       <key>public.kern2.KO_B</key>
       <integer>-7</integer>
       <key>public.kern2.KO_J</key>
@@ -4295,6 +6425,8 @@
     </dict>
     <key>public.kern1.KO_K.ss08</key>
     <dict>
+      <key>idotbelow</key>
+      <integer>-4</integer>
       <key>public.kern2.KO_B</key>
       <integer>-5</integer>
       <key>public.kern2.KO_J</key>
@@ -4422,6 +6554,8 @@
     </dict>
     <key>public.kern1.KO_L</key>
     <dict>
+      <key>idotbelow</key>
+      <integer>-24</integer>
       <key>public.kern2.KO_A</key>
       <integer>-13</integer>
       <key>public.kern2.KO_B</key>
@@ -4912,6 +7046,139 @@
       <key>public.kern2.KO_zero</key>
       <integer>4</integer>
     </dict>
+    <key>public.kern1.KO_Ohorn</key>
+    <dict>
+      <key>Itilde</key>
+      <integer>74</integer>
+      <key>Ytilde</key>
+      <integer>12</integer>
+      <key>itilde</key>
+      <integer>59</integer>
+      <key>public.kern2.KO_A</key>
+      <integer>-15</integer>
+      <key>public.kern2.KO_B</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_J</key>
+      <integer>-24</integer>
+      <key>public.kern2.KO_J.ss09</key>
+      <integer>-35</integer>
+      <key>public.kern2.KO_O</key>
+      <integer>4</integer>
+      <key>public.kern2.KO_S</key>
+      <integer>-4</integer>
+      <key>public.kern2.KO_T</key>
+      <integer>10</integer>
+      <key>public.kern2.KO_U</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_V</key>
+      <integer>8</integer>
+      <key>public.kern2.KO_W</key>
+      <integer>-2</integer>
+      <key>public.kern2.KO_X</key>
+      <integer>-1</integer>
+      <key>public.kern2.KO_Y</key>
+      <integer>12</integer>
+      <key>public.kern2.KO_Z</key>
+      <integer>-31</integer>
+      <key>public.kern2.KO_a</key>
+      <integer>-10</integer>
+      <key>public.kern2.KO_agrave</key>
+      <integer>-7</integer>
+      <key>public.kern2.KO_asterisk</key>
+      <integer>-24</integer>
+      <key>public.kern2.KO_bracketright</key>
+      <integer>-18</integer>
+      <key>public.kern2.KO_colon</key>
+      <integer>-10</integer>
+      <key>public.kern2.KO_colon.ss01</key>
+      <integer>-7</integer>
+      <key>public.kern2.KO_d</key>
+      <integer>-2</integer>
+      <key>public.kern2.KO_e</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_ellipsis</key>
+      <integer>-37</integer>
+      <key>public.kern2.KO_endash</key>
+      <integer>-30</integer>
+      <key>public.kern2.KO_endash.case</key>
+      <integer>-28</integer>
+      <key>public.kern2.KO_exclam</key>
+      <integer>-18</integer>
+      <key>public.kern2.KO_exclam.ss01</key>
+      <integer>-15</integer>
+      <key>public.kern2.KO_g</key>
+      <integer>-2</integer>
+      <key>public.kern2.KO_guillemetleft</key>
+      <integer>-18</integer>
+      <key>public.kern2.KO_guillemetright</key>
+      <integer>-22</integer>
+      <key>public.kern2.KO_hyphen</key>
+      <integer>-27</integer>
+      <key>public.kern2.KO_hyphen.case</key>
+      <integer>-22</integer>
+      <key>public.kern2.KO_hyphen_greater.dlig</key>
+      <integer>-31</integer>
+      <key>public.kern2.KO_i</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_icircumflex</key>
+      <integer>16</integer>
+      <key>public.kern2.KO_idieresis</key>
+      <integer>11</integer>
+      <key>public.kern2.KO_idotless</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_j</key>
+      <integer>53</integer>
+      <key>public.kern2.KO_odieresis</key>
+      <integer>-2</integer>
+      <key>public.kern2.KO_one</key>
+      <integer>-3</integer>
+      <key>public.kern2.KO_parenleft</key>
+      <integer>-19</integer>
+      <key>public.kern2.KO_parenright</key>
+      <integer>-8</integer>
+      <key>public.kern2.KO_parenright.case</key>
+      <integer>-7</integer>
+      <key>public.kern2.KO_period</key>
+      <integer>-53</integer>
+      <key>public.kern2.KO_period.ss01</key>
+      <integer>-50</integer>
+      <key>public.kern2.KO_plus</key>
+      <integer>-34</integer>
+      <key>public.kern2.KO_question</key>
+      <integer>-29</integer>
+      <key>public.kern2.KO_question.ss01</key>
+      <integer>-28</integer>
+      <key>public.kern2.KO_quotedbl</key>
+      <integer>-21</integer>
+      <key>public.kern2.KO_quotedblleft</key>
+      <integer>-24</integer>
+      <key>public.kern2.KO_quotedblleft.ss01</key>
+      <integer>-14</integer>
+      <key>public.kern2.KO_quotedblright</key>
+      <integer>-17</integer>
+      <key>public.kern2.KO_quotedblright.ss01</key>
+      <integer>-16</integer>
+      <key>public.kern2.KO_s</key>
+      <integer>-5</integer>
+      <key>public.kern2.KO_slash</key>
+      <integer>-32</integer>
+      <key>public.kern2.KO_u</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_underscore</key>
+      <integer>-114</integer>
+      <key>public.kern2.KO_v</key>
+      <integer>-4</integer>
+      <key>public.kern2.KO_w</key>
+      <integer>-8</integer>
+      <key>public.kern2.KO_x</key>
+      <integer>-14</integer>
+      <key>public.kern2.KO_y.ss03</key>
+      <integer>-11</integer>
+      <key>public.kern2.KO_z</key>
+      <integer>-13</integer>
+      <key>public.kern2.KO_zero</key>
+      <integer>4</integer>
+    </dict>
     <key>public.kern1.KO_P</key>
     <dict>
       <key>public.kern2.KO_A</key>
@@ -5305,6 +7572,8 @@
     </dict>
     <key>public.kern1.KO_R.ss05</key>
     <dict>
+      <key>idotbelow</key>
+      <integer>0</integer>
       <key>public.kern2.KO_A</key>
       <integer>0</integer>
       <key>public.kern2.KO_B</key>
@@ -5563,6 +7832,8 @@
     </dict>
     <key>public.kern1.KO_T</key>
     <dict>
+      <key>ihookabove</key>
+      <integer>0</integer>
       <key>m</key>
       <integer>-54</integer>
       <key>n</key>
@@ -5815,8 +8086,147 @@
       <key>public.kern2.KO_zero</key>
       <integer>0</integer>
     </dict>
+    <key>public.kern1.KO_Uhorn</key>
+    <dict>
+      <key>Itilde</key>
+      <integer>74</integer>
+      <key>Ytilde</key>
+      <integer>8</integer>
+      <key>itilde</key>
+      <integer>3</integer>
+      <key>public.kern2.KO_A</key>
+      <integer>-19</integer>
+      <key>public.kern2.KO_B</key>
+      <integer>-2</integer>
+      <key>public.kern2.KO_J</key>
+      <integer>-17</integer>
+      <key>public.kern2.KO_J.ss09</key>
+      <integer>-29</integer>
+      <key>public.kern2.KO_O</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_S</key>
+      <integer>-2</integer>
+      <key>public.kern2.KO_T</key>
+      <integer>6</integer>
+      <key>public.kern2.KO_U</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_V</key>
+      <integer>4</integer>
+      <key>public.kern2.KO_W</key>
+      <integer>-2</integer>
+      <key>public.kern2.KO_X</key>
+      <integer>-5</integer>
+      <key>public.kern2.KO_Y</key>
+      <integer>8</integer>
+      <key>public.kern2.KO_Z</key>
+      <integer>-16</integer>
+      <key>public.kern2.KO_a</key>
+      <integer>-12</integer>
+      <key>public.kern2.KO_agrave</key>
+      <integer>-10</integer>
+      <key>public.kern2.KO_asterisk</key>
+      <integer>-19</integer>
+      <key>public.kern2.KO_bracketright</key>
+      <integer>-20</integer>
+      <key>public.kern2.KO_colon</key>
+      <integer>-18</integer>
+      <key>public.kern2.KO_colon.ss01</key>
+      <integer>-11</integer>
+      <key>public.kern2.KO_d</key>
+      <integer>-6</integer>
+      <key>public.kern2.KO_e</key>
+      <integer>-3</integer>
+      <key>public.kern2.KO_ellipsis</key>
+      <integer>-45</integer>
+      <key>public.kern2.KO_endash</key>
+      <integer>-37</integer>
+      <key>public.kern2.KO_endash.case</key>
+      <integer>-37</integer>
+      <key>public.kern2.KO_exclam</key>
+      <integer>-17</integer>
+      <key>public.kern2.KO_exclam.ss01</key>
+      <integer>-16</integer>
+      <key>public.kern2.KO_f</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_g</key>
+      <integer>-6</integer>
+      <key>public.kern2.KO_guillemetleft</key>
+      <integer>-25</integer>
+      <key>public.kern2.KO_guillemetright</key>
+      <integer>-28</integer>
+      <key>public.kern2.KO_hyphen</key>
+      <integer>-30</integer>
+      <key>public.kern2.KO_hyphen.case</key>
+      <integer>-29</integer>
+      <key>public.kern2.KO_hyphen_greater.dlig</key>
+      <integer>-34</integer>
+      <key>public.kern2.KO_i</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_icircumflex</key>
+      <integer>22</integer>
+      <key>public.kern2.KO_idieresis</key>
+      <integer>24</integer>
+      <key>public.kern2.KO_idotless</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_j</key>
+      <integer>36</integer>
+      <key>public.kern2.KO_odieresis</key>
+      <integer>-2</integer>
+      <key>public.kern2.KO_one</key>
+      <integer>-3</integer>
+      <key>public.kern2.KO_parenleft</key>
+      <integer>-25</integer>
+      <key>public.kern2.KO_parenright</key>
+      <integer>-10</integer>
+      <key>public.kern2.KO_parenright.case</key>
+      <integer>-9</integer>
+      <key>public.kern2.KO_period</key>
+      <integer>-45</integer>
+      <key>public.kern2.KO_period.ss01</key>
+      <integer>-41</integer>
+      <key>public.kern2.KO_plus</key>
+      <integer>-43</integer>
+      <key>public.kern2.KO_question</key>
+      <integer>-21</integer>
+      <key>public.kern2.KO_question.ss01</key>
+      <integer>-21</integer>
+      <key>public.kern2.KO_quotedbl</key>
+      <integer>-20</integer>
+      <key>public.kern2.KO_quotedblleft</key>
+      <integer>-23</integer>
+      <key>public.kern2.KO_quotedblleft.ss01</key>
+      <integer>-16</integer>
+      <key>public.kern2.KO_quotedblright</key>
+      <integer>-19</integer>
+      <key>public.kern2.KO_quotedblright.ss01</key>
+      <integer>-14</integer>
+      <key>public.kern2.KO_s</key>
+      <integer>-6</integer>
+      <key>public.kern2.KO_slash</key>
+      <integer>-34</integer>
+      <key>public.kern2.KO_t</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_u</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_underscore</key>
+      <integer>-105</integer>
+      <key>public.kern2.KO_v</key>
+      <integer>-6</integer>
+      <key>public.kern2.KO_w</key>
+      <integer>-11</integer>
+      <key>public.kern2.KO_x</key>
+      <integer>-16</integer>
+      <key>public.kern2.KO_y.ss03</key>
+      <integer>-15</integer>
+      <key>public.kern2.KO_z</key>
+      <integer>-18</integer>
+      <key>public.kern2.KO_zero</key>
+      <integer>0</integer>
+    </dict>
     <key>public.kern1.KO_V</key>
     <dict>
+      <key>ihookabove</key>
+      <integer>1</integer>
       <key>m</key>
       <integer>-18</integer>
       <key>n</key>
@@ -6085,6 +8495,10 @@
     </dict>
     <key>public.kern1.KO_X</key>
     <dict>
+      <key>idotbelow</key>
+      <integer>2</integer>
+      <key>ihookabove</key>
+      <integer>7</integer>
       <key>public.kern2.KO_A</key>
       <integer>0</integer>
       <key>public.kern2.KO_B</key>
@@ -6212,6 +8626,24 @@
     </dict>
     <key>public.kern1.KO_Y</key>
     <dict>
+      <key>Acircumflexacute</key>
+      <integer>-56</integer>
+      <key>Acircumflexgrave</key>
+      <integer>-56</integer>
+      <key>Acircumflexhookabove</key>
+      <integer>-56</integer>
+      <key>Acircumflextilde</key>
+      <integer>-56</integer>
+      <key>abrevetilde</key>
+      <integer>-25</integer>
+      <key>abrevetilde.ss02</key>
+      <integer>-72</integer>
+      <key>acircumflextilde</key>
+      <integer>-25</integer>
+      <key>acircumflextilde.ss02</key>
+      <integer>-67</integer>
+      <key>ihookabove</key>
+      <integer>5</integer>
       <key>m</key>
       <integer>-58</integer>
       <key>n</key>
@@ -6910,6 +9342,10 @@
     </dict>
     <key>public.kern1.KO_braceleft</key>
     <dict>
+      <key>idotbelow</key>
+      <integer>-19</integer>
+      <key>idotbelow.ss01</key>
+      <integer>-19</integer>
       <key>public.kern2.KO_A</key>
       <integer>-33</integer>
       <key>public.kern2.KO_B</key>
@@ -6971,6 +9407,10 @@
     </dict>
     <key>public.kern1.KO_bracketleft</key>
     <dict>
+      <key>idotbelow</key>
+      <integer>-21</integer>
+      <key>idotbelow.ss01</key>
+      <integer>-21</integer>
       <key>public.kern2.KO_A</key>
       <integer>-36</integer>
       <key>public.kern2.KO_B</key>
@@ -8358,6 +10798,8 @@
     </dict>
     <key>public.kern1.KO_f</key>
     <dict>
+      <key>ihookabove</key>
+      <integer>4</integer>
       <key>public.kern2.KO_A</key>
       <integer>-30</integer>
       <key>public.kern2.KO_B</key>
@@ -9661,6 +12103,8 @@
     </dict>
     <key>public.kern1.KO_j</key>
     <dict>
+      <key>ihookabove</key>
+      <integer>8</integer>
       <key>public.kern2.KO_A</key>
       <integer>-4</integer>
       <key>public.kern2.KO_B</key>
@@ -9786,6 +12230,8 @@
     </dict>
     <key>public.kern1.KO_k</key>
     <dict>
+      <key>idotbelow</key>
+      <integer>-3</integer>
       <key>public.kern2.KO_B</key>
       <integer>-6</integer>
       <key>public.kern2.KO_J</key>
@@ -9909,6 +12355,8 @@
     </dict>
     <key>public.kern1.KO_k.ss04</key>
     <dict>
+      <key>idotbelow</key>
+      <integer>0</integer>
       <key>public.kern2.KO_B</key>
       <integer>-2</integer>
       <key>public.kern2.KO_J.ss09</key>
@@ -10391,6 +12839,131 @@
       <key>public.kern2.KO_zero</key>
       <integer>0</integer>
     </dict>
+    <key>public.kern1.KO_ohorn</key>
+    <dict>
+      <key>itilde</key>
+      <integer>87</integer>
+      <key>public.kern2.KO_A</key>
+      <integer>-8</integer>
+      <key>public.kern2.KO_B</key>
+      <integer>-5</integer>
+      <key>public.kern2.KO_J</key>
+      <integer>-12</integer>
+      <key>public.kern2.KO_J.ss09</key>
+      <integer>-15</integer>
+      <key>public.kern2.KO_O</key>
+      <integer>-2</integer>
+      <key>public.kern2.KO_S</key>
+      <integer>-2</integer>
+      <key>public.kern2.KO_T</key>
+      <integer>-29</integer>
+      <key>public.kern2.KO_U</key>
+      <integer>-4</integer>
+      <key>public.kern2.KO_V</key>
+      <integer>-34</integer>
+      <key>public.kern2.KO_W</key>
+      <integer>-22</integer>
+      <key>public.kern2.KO_X</key>
+      <integer>-29</integer>
+      <key>public.kern2.KO_Y</key>
+      <integer>-74</integer>
+      <key>public.kern2.KO_Z</key>
+      <integer>-26</integer>
+      <key>public.kern2.KO_a</key>
+      <integer>-7</integer>
+      <key>public.kern2.KO_agrave</key>
+      <integer>-7</integer>
+      <key>public.kern2.KO_asterisk</key>
+      <integer>-5</integer>
+      <key>public.kern2.KO_bracketright</key>
+      <integer>-28</integer>
+      <key>public.kern2.KO_colon</key>
+      <integer>-14</integer>
+      <key>public.kern2.KO_colon.ss01</key>
+      <integer>-7</integer>
+      <key>public.kern2.KO_d</key>
+      <integer>3</integer>
+      <key>public.kern2.KO_ellipsis</key>
+      <integer>-37</integer>
+      <key>public.kern2.KO_endash</key>
+      <integer>-20</integer>
+      <key>public.kern2.KO_exclam</key>
+      <integer>-20</integer>
+      <key>public.kern2.KO_exclam.ss01</key>
+      <integer>-18</integer>
+      <key>public.kern2.KO_f</key>
+      <integer>14</integer>
+      <key>public.kern2.KO_g</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_guillemetleft</key>
+      <integer>-10</integer>
+      <key>public.kern2.KO_guillemetright</key>
+      <integer>-30</integer>
+      <key>public.kern2.KO_hyphen</key>
+      <integer>-20</integer>
+      <key>public.kern2.KO_hyphen_greater.dlig</key>
+      <integer>-39</integer>
+      <key>public.kern2.KO_i</key>
+      <integer>-2</integer>
+      <key>public.kern2.KO_icircumflex</key>
+      <integer>-2</integer>
+      <key>public.kern2.KO_idieresis</key>
+      <integer>-2</integer>
+      <key>public.kern2.KO_idotless</key>
+      <integer>-2</integer>
+      <key>public.kern2.KO_j</key>
+      <integer>-2</integer>
+      <key>public.kern2.KO_one</key>
+      <integer>-40</integer>
+      <key>public.kern2.KO_parenleft</key>
+      <integer>-18</integer>
+      <key>public.kern2.KO_parenright</key>
+      <integer>-54</integer>
+      <key>public.kern2.KO_period</key>
+      <integer>-37</integer>
+      <key>public.kern2.KO_period.ss01</key>
+      <integer>-34</integer>
+      <key>public.kern2.KO_plus</key>
+      <integer>-39</integer>
+      <key>public.kern2.KO_question</key>
+      <integer>-4</integer>
+      <key>public.kern2.KO_question.ss01</key>
+      <integer>-4</integer>
+      <key>public.kern2.KO_quotedbl</key>
+      <integer>-17</integer>
+      <key>public.kern2.KO_quotedblleft</key>
+      <integer>-18</integer>
+      <key>public.kern2.KO_quotedblleft.ss01</key>
+      <integer>-15</integer>
+      <key>public.kern2.KO_quotedblright</key>
+      <integer>-16</integer>
+      <key>public.kern2.KO_quotedblright.ss01</key>
+      <integer>-16</integer>
+      <key>public.kern2.KO_s</key>
+      <integer>-2</integer>
+      <key>public.kern2.KO_slash</key>
+      <integer>-24</integer>
+      <key>public.kern2.KO_t</key>
+      <integer>14</integer>
+      <key>public.kern2.KO_underscore</key>
+      <integer>-102</integer>
+      <key>public.kern2.KO_v</key>
+      <integer>10</integer>
+      <key>public.kern2.KO_w</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_x</key>
+      <integer>-3</integer>
+      <key>public.kern2.KO_y.ss03</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_z</key>
+      <integer>-18</integer>
+      <key>public.kern2.KO_zero</key>
+      <integer>0</integer>
+      <key>ytilde</key>
+      <integer>10</integer>
+      <key>ytilde.ss03</key>
+      <integer>0</integer>
+    </dict>
     <key>public.kern1.KO_one</key>
     <dict>
       <key>public.kern2.KO_asterisk</key>
@@ -10601,6 +13174,20 @@
     </dict>
     <key>public.kern1.KO_parenleft</key>
     <dict>
+      <key>abrevetilde</key>
+      <integer>-40</integer>
+      <key>abrevetilde.ss02</key>
+      <integer>-74</integer>
+      <key>acircumflextilde</key>
+      <integer>-40</integer>
+      <key>acircumflextilde.ss02</key>
+      <integer>-74</integer>
+      <key>idotbelow</key>
+      <integer>-28</integer>
+      <key>idotbelow.ss01</key>
+      <integer>-29</integer>
+      <key>ihookabove</key>
+      <integer>-24</integer>
       <key>public.kern2.KO_A</key>
       <integer>-48</integer>
       <key>public.kern2.KO_B</key>
@@ -12858,6 +15445,8 @@
     </dict>
     <key>public.kern1.KO_slash</key>
     <dict>
+      <key>ecircumflextilde</key>
+      <integer>-34</integer>
       <key>public.kern2.KO_A</key>
       <integer>-53</integer>
       <key>public.kern2.KO_B</key>
@@ -13527,8 +16116,149 @@
       <key>public.kern2.KO_zero</key>
       <integer>0</integer>
     </dict>
+    <key>public.kern1.KO_uhorn</key>
+    <dict>
+      <key>itilde</key>
+      <integer>88</integer>
+      <key>public.kern2.KO_A</key>
+      <integer>-4</integer>
+      <key>public.kern2.KO_B</key>
+      <integer>-2</integer>
+      <key>public.kern2.KO_J</key>
+      <integer>-2</integer>
+      <key>public.kern2.KO_J.ss09</key>
+      <integer>-21</integer>
+      <key>public.kern2.KO_O</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_S</key>
+      <integer>-8</integer>
+      <key>public.kern2.KO_T</key>
+      <integer>-42</integer>
+      <key>public.kern2.KO_U</key>
+      <integer>-3</integer>
+      <key>public.kern2.KO_V</key>
+      <integer>-27</integer>
+      <key>public.kern2.KO_W</key>
+      <integer>-20</integer>
+      <key>public.kern2.KO_X</key>
+      <integer>-4</integer>
+      <key>public.kern2.KO_Y</key>
+      <integer>-57</integer>
+      <key>public.kern2.KO_Z</key>
+      <integer>-23</integer>
+      <key>public.kern2.KO_a</key>
+      <integer>-8</integer>
+      <key>public.kern2.KO_agrave</key>
+      <integer>-8</integer>
+      <key>public.kern2.KO_asterisk</key>
+      <integer>-4</integer>
+      <key>public.kern2.KO_bracketright</key>
+      <integer>-27</integer>
+      <key>public.kern2.KO_colon</key>
+      <integer>-11</integer>
+      <key>public.kern2.KO_colon.ss01</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_d</key>
+      <integer>-4</integer>
+      <key>public.kern2.KO_e</key>
+      <integer>-2</integer>
+      <key>public.kern2.KO_ellipsis</key>
+      <integer>-25</integer>
+      <key>public.kern2.KO_endash</key>
+      <integer>-36</integer>
+      <key>public.kern2.KO_exclam</key>
+      <integer>-16</integer>
+      <key>public.kern2.KO_exclam.ss01</key>
+      <integer>-14</integer>
+      <key>public.kern2.KO_f</key>
+      <integer>13</integer>
+      <key>public.kern2.KO_g</key>
+      <integer>-4</integer>
+      <key>public.kern2.KO_guillemetleft</key>
+      <integer>-23</integer>
+      <key>public.kern2.KO_guillemetright</key>
+      <integer>-27</integer>
+      <key>public.kern2.KO_hyphen</key>
+      <integer>-29</integer>
+      <key>public.kern2.KO_hyphen_greater.dlig</key>
+      <integer>-34</integer>
+      <key>public.kern2.KO_i</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_icircumflex</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_idieresis</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_idotless</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_j</key>
+      <integer>0</integer>
+      <key>public.kern2.KO_odieresis</key>
+      <integer>-2</integer>
+      <key>public.kern2.KO_one</key>
+      <integer>-28</integer>
+      <key>public.kern2.KO_parenleft</key>
+      <integer>-23</integer>
+      <key>public.kern2.KO_parenright</key>
+      <integer>-48</integer>
+      <key>public.kern2.KO_period</key>
+      <integer>-27</integer>
+      <key>public.kern2.KO_period.ss01</key>
+      <integer>-18</integer>
+      <key>public.kern2.KO_plus</key>
+      <integer>-42</integer>
+      <key>public.kern2.KO_question</key>
+      <integer>-4</integer>
+      <key>public.kern2.KO_question.ss01</key>
+      <integer>-4</integer>
+      <key>public.kern2.KO_quotedbl</key>
+      <integer>-16</integer>
+      <key>public.kern2.KO_quotedblleft</key>
+      <integer>-16</integer>
+      <key>public.kern2.KO_quotedblleft.ss01</key>
+      <integer>-13</integer>
+      <key>public.kern2.KO_quotedblright</key>
+      <integer>-15</integer>
+      <key>public.kern2.KO_quotedblright.ss01</key>
+      <integer>-15</integer>
+      <key>public.kern2.KO_s</key>
+      <integer>-2</integer>
+      <key>public.kern2.KO_slash</key>
+      <integer>-22</integer>
+      <key>public.kern2.KO_t</key>
+      <integer>13</integer>
+      <key>public.kern2.KO_u</key>
+      <integer>4</integer>
+      <key>public.kern2.KO_underscore</key>
+      <integer>-77</integer>
+      <key>public.kern2.KO_v</key>
+      <integer>9</integer>
+      <key>public.kern2.KO_w</key>
+      <integer>-1</integer>
+      <key>public.kern2.KO_x</key>
+      <integer>-4</integer>
+      <key>public.kern2.KO_y.ss03</key>
+      <integer>-1</integer>
+      <key>public.kern2.KO_z</key>
+      <integer>-10</integer>
+      <key>public.kern2.KO_zero</key>
+      <integer>0</integer>
+      <key>ytilde</key>
+      <integer>9</integer>
+      <key>ytilde.ss03</key>
+      <integer>0</integer>
+    </dict>
     <key>public.kern1.KO_underscore</key>
     <dict>
+      <key>Idotbelow.ss01</key>
+      <integer>6</integer>
+      <key>ecircumflexdotbelow.ss01</key>
+      <integer>-93</integer>
+      <key>edotbelow.ss01</key>
+      <integer>-93</integer>
+      <key>idotbelow</key>
+      <integer>-77</integer>
+      <key>idotbelow.ss01</key>
+      <integer>0</integer>
       <key>public.kern2.KO_A</key>
       <integer>-77</integer>
       <key>public.kern2.KO_B</key>
@@ -13808,6 +16538,8 @@
     </dict>
     <key>public.kern1.KO_x</key>
     <dict>
+      <key>idotbelow</key>
+      <integer>-4</integer>
       <key>public.kern2.KO_A</key>
       <integer>-2</integer>
       <key>public.kern2.KO_B</key>
@@ -14321,6 +17053,16 @@
       <integer>-53</integer>
       <key>O</key>
       <integer>-53</integer>
+      <key>Odotbelow</key>
+      <integer>-53</integer>
+      <key>Odotbelow.ss01</key>
+      <integer>-53</integer>
+      <key>Ohorn</key>
+      <integer>-53</integer>
+      <key>Ohorndotbelow</key>
+      <integer>-53</integer>
+      <key>Ohorndotbelow.ss01</key>
+      <integer>-53</integer>
       <key>Q</key>
       <integer>-53</integer>
       <key>Q.ss09</key>
@@ -14333,9 +17075,17 @@
       <integer>-73</integer>
       <key>Y</key>
       <integer>-105</integer>
+      <key>Ydotbelow</key>
+      <integer>-105</integer>
+      <key>Ydotbelow.ss01</key>
+      <integer>-105</integer>
       <key>c</key>
       <integer>-54</integer>
       <key>e</key>
+      <integer>-55</integer>
+      <key>edotbelow</key>
+      <integer>-55</integer>
+      <key>edotbelow.ss01</key>
       <integer>-55</integer>
       <key>q</key>
       <integer>-55</integer>
@@ -14349,6 +17099,10 @@
       <key>T</key>
       <integer>-49</integer>
       <key>Y</key>
+      <integer>-61</integer>
+      <key>Ydotbelow</key>
+      <integer>-61</integer>
+      <key>Ydotbelow.ss01</key>
       <integer>-61</integer>
     </dict>
     <key>questiondown.ss01</key>
@@ -14582,6 +17336,8 @@
       <integer>-63</integer>
       <key>egrave</key>
       <integer>-74</integer>
+      <key>ehookabove</key>
+      <integer>-63</integer>
       <key>ellipsis.ss01</key>
       <integer>-121</integer>
       <key>hyphen</key>
@@ -14602,6 +17358,10 @@
       <key>V</key>
       <integer>-97</integer>
       <key>Y</key>
+      <integer>-121</integer>
+      <key>Ydotbelow</key>
+      <integer>-121</integer>
+      <key>Ydotbelow.ss01</key>
       <integer>-121</integer>
       <key>j</key>
       <integer>0</integer>
@@ -14624,6 +17384,8 @@
       <integer>-59</integer>
       <key>egrave</key>
       <integer>-68</integer>
+      <key>ehookabove</key>
+      <integer>-59</integer>
       <key>ellipsis.ss01</key>
       <integer>-107</integer>
       <key>exclamdown.ss01</key>
@@ -14643,6 +17405,16 @@
       <key>scaron</key>
       <integer>-23</integer>
       <key>u</key>
+      <integer>-61</integer>
+      <key>udotbelow</key>
+      <integer>-61</integer>
+      <key>udotbelow.ss01</key>
+      <integer>-61</integer>
+      <key>uhorn</key>
+      <integer>-61</integer>
+      <key>uhorndotbelow</key>
+      <integer>-61</integer>
+      <key>uhorndotbelow.ss01</key>
       <integer>-61</integer>
       <key>underscore</key>
       <integer>-107</integer>
@@ -14664,6 +17436,16 @@
       <key>imacron</key>
       <integer>-2</integer>
       <key>o</key>
+      <integer>-8</integer>
+      <key>odotbelow</key>
+      <integer>-8</integer>
+      <key>odotbelow.ss01</key>
+      <integer>-8</integer>
+      <key>ohorn</key>
+      <integer>-8</integer>
+      <key>ohorndotbelow</key>
+      <integer>-8</integer>
+      <key>ohorndotbelow.ss01</key>
       <integer>-8</integer>
       <key>oslash</key>
       <integer>-8</integer>
@@ -14703,6 +17485,18 @@
       <integer>-11</integer>
       <key>aacute.ss02</key>
       <integer>-6</integer>
+      <key>adotbelow</key>
+      <integer>-11</integer>
+      <key>adotbelow.ss01</key>
+      <integer>-11</integer>
+      <key>adotbelow.ss01.ss02</key>
+      <integer>-6</integer>
+      <key>adotbelow.ss02</key>
+      <integer>-6</integer>
+      <key>ahookabove</key>
+      <integer>-11</integer>
+      <key>ahookabove.ss02</key>
+      <integer>-6</integer>
       <key>c</key>
       <integer>-7</integer>
       <key>comma</key>
@@ -14711,13 +17505,29 @@
       <integer>-81</integer>
       <key>e</key>
       <integer>-8</integer>
+      <key>edotbelow</key>
+      <integer>-8</integer>
+      <key>edotbelow.ss01</key>
+      <integer>-8</integer>
       <key>hyphen</key>
       <integer>-64</integer>
       <key>hyphen_greater.liga</key>
       <integer>-40</integer>
       <key>iacute</key>
       <integer>-2</integer>
+      <key>ihookabove</key>
+      <integer>-2</integer>
       <key>o</key>
+      <integer>-8</integer>
+      <key>odotbelow</key>
+      <integer>-8</integer>
+      <key>odotbelow.ss01</key>
+      <integer>-8</integer>
+      <key>ohorn</key>
+      <integer>-8</integer>
+      <key>ohorndotbelow</key>
+      <integer>-8</integer>
+      <key>ohorndotbelow.ss01</key>
       <integer>-8</integer>
       <key>period</key>
       <integer>-62</integer>
@@ -14726,6 +17536,16 @@
       <key>s</key>
       <integer>-6</integer>
       <key>u</key>
+      <integer>0</integer>
+      <key>udotbelow</key>
+      <integer>0</integer>
+      <key>udotbelow.ss01</key>
+      <integer>0</integer>
+      <key>uhorn</key>
+      <integer>0</integer>
+      <key>uhorndotbelow</key>
+      <integer>0</integer>
+      <key>uhorndotbelow.ss01</key>
       <integer>0</integer>
       <key>uring</key>
       <integer>0</integer>
@@ -14753,6 +17573,10 @@
       <integer>3</integer>
       <key>e</key>
       <integer>2</integer>
+      <key>edotbelow</key>
+      <integer>2</integer>
+      <key>edotbelow.ss01</key>
+      <integer>2</integer>
       <key>equal</key>
       <integer>-29</integer>
       <key>j</key>
@@ -14770,6 +17594,10 @@
     <dict>
       <key>a</key>
       <integer>0</integer>
+      <key>adotbelow</key>
+      <integer>0</integer>
+      <key>adotbelow.ss01</key>
+      <integer>0</integer>
       <key>c</key>
       <integer>3</integer>
       <key>cacute</key>
@@ -14780,21 +17608,47 @@
       <integer>2</integer>
       <key>ecaron</key>
       <integer>2</integer>
+      <key>edotbelow</key>
+      <integer>2</integer>
+      <key>edotbelow.ss01</key>
+      <integer>2</integer>
       <key>hyphen</key>
       <integer>-41</integer>
       <key>hyphen_greater.liga</key>
       <integer>-46</integer>
       <key>i</key>
       <integer>0</integer>
+      <key>idotbelow</key>
+      <integer>0</integer>
       <key>nacute</key>
       <integer>0</integer>
       <key>o</key>
+      <integer>2</integer>
+      <key>odotbelow</key>
+      <integer>2</integer>
+      <key>odotbelow.ss01</key>
+      <integer>2</integer>
+      <key>ohorn</key>
+      <integer>2</integer>
+      <key>ohorndotbelow</key>
+      <integer>2</integer>
+      <key>ohorndotbelow.ss01</key>
       <integer>2</integer>
       <key>parenright</key>
       <integer>-42</integer>
       <key>period.ss01</key>
       <integer>-17</integer>
       <key>u</key>
+      <integer>4</integer>
+      <key>udotbelow</key>
+      <integer>4</integer>
+      <key>udotbelow.ss01</key>
+      <integer>4</integer>
+      <key>uhorn</key>
+      <integer>4</integer>
+      <key>uhorndotbelow</key>
+      <integer>4</integer>
+      <key>uhorndotbelow.ss01</key>
       <integer>4</integer>
       <key>uring</key>
       <integer>4</integer>
@@ -14857,6 +17711,10 @@
     <dict>
       <key>A</key>
       <integer>-8</integer>
+      <key>Adotbelow</key>
+      <integer>-8</integer>
+      <key>Adotbelow.ss01</key>
+      <integer>-8</integer>
       <key>T</key>
       <integer>-20</integer>
       <key>bracketright.case</key>
@@ -14908,6 +17766,10 @@
       <integer>-5</integer>
       <key>e</key>
       <integer>-6</integer>
+      <key>edotbelow</key>
+      <integer>-6</integer>
+      <key>edotbelow.ss01</key>
+      <integer>-6</integer>
       <key>equal</key>
       <integer>-17</integer>
       <key>four</key>
@@ -14925,6 +17787,10 @@
     <key>three</key>
     <dict>
       <key>A</key>
+      <integer>-5</integer>
+      <key>Adotbelow</key>
+      <integer>-5</integer>
+      <key>Adotbelow.ss01</key>
       <integer>-5</integer>
       <key>C</key>
       <integer>0</integer>
@@ -14968,6 +17834,10 @@
       <integer>-16</integer>
       <key>e</key>
       <integer>-13</integer>
+      <key>edotbelow</key>
+      <integer>-13</integer>
+      <key>edotbelow.ss01</key>
+      <integer>-13</integer>
       <key>g</key>
       <integer>-13</integer>
       <key>multiply</key>
@@ -14999,6 +17869,57 @@
       <integer>-47</integer>
     </dict>
     <key>uacute</key>
+    <dict>
+      <key>eth</key>
+      <integer>-5</integer>
+    </dict>
+    <key>udotbelow</key>
+    <dict>
+      <key>T</key>
+      <integer>-69</integer>
+      <key>asciicircum</key>
+      <integer>-59</integer>
+      <key>asciitilde</key>
+      <integer>-41</integer>
+      <key>braceright</key>
+      <integer>-43</integer>
+      <key>eth</key>
+      <integer>-5</integer>
+      <key>hbar</key>
+      <integer>0</integer>
+      <key>imacron</key>
+      <integer>0</integer>
+      <key>quotesingle</key>
+      <integer>-64</integer>
+      <key>seven</key>
+      <integer>-49</integer>
+      <key>trademark</key>
+      <integer>-47</integer>
+    </dict>
+    <key>udotbelow.ss01</key>
+    <dict>
+      <key>T</key>
+      <integer>-69</integer>
+      <key>asciicircum</key>
+      <integer>-59</integer>
+      <key>asciitilde</key>
+      <integer>-41</integer>
+      <key>braceright</key>
+      <integer>-43</integer>
+      <key>eth</key>
+      <integer>-5</integer>
+      <key>hbar</key>
+      <integer>0</integer>
+      <key>imacron</key>
+      <integer>0</integer>
+      <key>quotesingle</key>
+      <integer>-64</integer>
+      <key>seven</key>
+      <integer>-49</integer>
+      <key>trademark</key>
+      <integer>-47</integer>
+    </dict>
+    <key>uhookabove</key>
     <dict>
       <key>eth</key>
       <integer>-5</integer>
@@ -15051,6 +17972,10 @@
       <integer>-64</integer>
       <key>e</key>
       <integer>-17</integer>
+      <key>edotbelow</key>
+      <integer>-17</integer>
+      <key>edotbelow.ss01</key>
+      <integer>-17</integer>
       <key>eth</key>
       <integer>-20</integer>
       <key>four</key>
@@ -15058,6 +17983,16 @@
       <key>imacron</key>
       <integer>-5</integer>
       <key>o</key>
+      <integer>-17</integer>
+      <key>odotbelow</key>
+      <integer>-17</integer>
+      <key>odotbelow.ss01</key>
+      <integer>-17</integer>
+      <key>ohorn</key>
+      <integer>-17</integer>
+      <key>ohorndotbelow</key>
+      <integer>-17</integer>
+      <key>ohorndotbelow.ss01</key>
       <integer>-17</integer>
       <key>oslash</key>
       <integer>-17</integer>
@@ -15090,6 +18025,10 @@
       <key>X</key>
       <integer>-43</integer>
       <key>Y</key>
+      <integer>-54</integer>
+      <key>Ydotbelow</key>
+      <integer>-54</integer>
+      <key>Ydotbelow.ss01</key>
       <integer>-54</integer>
       <key>braceright</key>
       <integer>-69</integer>
@@ -15164,6 +18103,276 @@
       <key>quotesingle</key>
       <integer>-26</integer>
     </dict>
+    <key>ydotbelow</key>
+    <dict>
+      <key>ampersand</key>
+      <integer>-26</integer>
+      <key>asciitilde</key>
+      <integer>-45</integer>
+      <key>b</key>
+      <integer>5</integer>
+      <key>braceright</key>
+      <integer>35</integer>
+      <key>braceright.case</key>
+      <integer>30</integer>
+      <key>bracketleft</key>
+      <integer>3</integer>
+      <key>bracketright.case</key>
+      <integer>30</integer>
+      <key>ellipsis</key>
+      <integer>6</integer>
+      <key>eth</key>
+      <integer>-21</integer>
+      <key>h</key>
+      <integer>5</integer>
+      <key>k</key>
+      <integer>5</integer>
+      <key>l</key>
+      <integer>5</integer>
+      <key>lslash</key>
+      <integer>-8</integer>
+      <key>m</key>
+      <integer>4</integer>
+      <key>n</key>
+      <integer>4</integer>
+      <key>p</key>
+      <integer>30</integer>
+      <key>public.kern2.KO_a</key>
+      <integer>-24</integer>
+      <key>public.kern2.KO_agrave</key>
+      <integer>-24</integer>
+      <key>public.kern2.KO_bracketright</key>
+      <integer>35</integer>
+      <key>public.kern2.KO_colon</key>
+      <integer>15</integer>
+      <key>public.kern2.KO_colon.ss01</key>
+      <integer>34</integer>
+      <key>public.kern2.KO_ellipsis</key>
+      <integer>-21</integer>
+      <key>public.kern2.KO_exclam</key>
+      <integer>-20</integer>
+      <key>public.kern2.KO_exclam.ss01</key>
+      <integer>-2</integer>
+      <key>public.kern2.KO_g</key>
+      <integer>25</integer>
+      <key>public.kern2.KO_i</key>
+      <integer>4</integer>
+      <key>public.kern2.KO_j</key>
+      <integer>96</integer>
+      <key>public.kern2.KO_parenright</key>
+      <integer>40</integer>
+      <key>public.kern2.KO_parenright.case</key>
+      <integer>37</integer>
+      <key>public.kern2.KO_period</key>
+      <integer>23</integer>
+      <key>public.kern2.KO_period.ss01</key>
+      <integer>34</integer>
+      <key>public.kern2.KO_slash</key>
+      <integer>39</integer>
+      <key>public.kern2.KO_underscore</key>
+      <integer>76</integer>
+      <key>public.kern2.KO_x</key>
+      <integer>31</integer>
+      <key>public.kern2.KO_y.ss03</key>
+      <integer>17</integer>
+      <key>public.kern2.KO_z</key>
+      <integer>14</integer>
+      <key>r</key>
+      <integer>5</integer>
+      <key>semicolon.case</key>
+      <integer>22</integer>
+      <key>seven</key>
+      <integer>-82</integer>
+      <key>trademark</key>
+      <integer>-45</integer>
+    </dict>
+    <key>ydotbelow.ss01</key>
+    <dict>
+      <key>ampersand</key>
+      <integer>-26</integer>
+      <key>asciitilde</key>
+      <integer>-45</integer>
+      <key>braceright</key>
+      <integer>46</integer>
+      <key>braceright.case</key>
+      <integer>12</integer>
+      <key>bracketleft</key>
+      <integer>16</integer>
+      <key>bracketright.case</key>
+      <integer>12</integer>
+      <key>ellipsis</key>
+      <integer>-19</integer>
+      <key>eth</key>
+      <integer>-21</integer>
+      <key>lslash</key>
+      <integer>-8</integer>
+      <key>p</key>
+      <integer>41</integer>
+      <key>public.kern2.KO_bracketright</key>
+      <integer>46</integer>
+      <key>public.kern2.KO_colon</key>
+      <integer>29</integer>
+      <key>public.kern2.KO_colon.ss01</key>
+      <integer>48</integer>
+      <key>public.kern2.KO_ellipsis</key>
+      <integer>-54</integer>
+      <key>public.kern2.KO_exclam.ss01</key>
+      <integer>-20</integer>
+      <key>public.kern2.KO_g</key>
+      <integer>21</integer>
+      <key>public.kern2.KO_i</key>
+      <integer>-5</integer>
+      <key>public.kern2.KO_j</key>
+      <integer>109</integer>
+      <key>public.kern2.KO_parenright</key>
+      <integer>53</integer>
+      <key>public.kern2.KO_parenright.case</key>
+      <integer>19</integer>
+      <key>public.kern2.KO_period</key>
+      <integer>37</integer>
+      <key>public.kern2.KO_period.ss01</key>
+      <integer>48</integer>
+      <key>public.kern2.KO_slash</key>
+      <integer>38</integer>
+      <key>public.kern2.KO_underscore</key>
+      <integer>89</integer>
+      <key>public.kern2.KO_x</key>
+      <integer>6</integer>
+      <key>public.kern2.KO_y.ss03</key>
+      <integer>30</integer>
+      <key>public.kern2.KO_z</key>
+      <integer>-8</integer>
+      <key>semicolon.case</key>
+      <integer>4</integer>
+      <key>seven</key>
+      <integer>-82</integer>
+      <key>trademark</key>
+      <integer>-45</integer>
+    </dict>
+    <key>ydotbelow.ss01.ss03</key>
+    <dict>
+      <key>braceright</key>
+      <integer>46</integer>
+      <key>braceright.case</key>
+      <integer>12</integer>
+      <key>bracketleft</key>
+      <integer>16</integer>
+      <key>bracketright.case</key>
+      <integer>12</integer>
+      <key>eth</key>
+      <integer>-21</integer>
+      <key>p</key>
+      <integer>41</integer>
+      <key>public.kern2.KO_bracketright</key>
+      <integer>46</integer>
+      <key>public.kern2.KO_colon</key>
+      <integer>29</integer>
+      <key>public.kern2.KO_colon.ss01</key>
+      <integer>48</integer>
+      <key>public.kern2.KO_ellipsis</key>
+      <integer>-54</integer>
+      <key>public.kern2.KO_exclam.ss01</key>
+      <integer>-20</integer>
+      <key>public.kern2.KO_g</key>
+      <integer>21</integer>
+      <key>public.kern2.KO_i</key>
+      <integer>-5</integer>
+      <key>public.kern2.KO_j</key>
+      <integer>109</integer>
+      <key>public.kern2.KO_parenright</key>
+      <integer>53</integer>
+      <key>public.kern2.KO_parenright.case</key>
+      <integer>19</integer>
+      <key>public.kern2.KO_period</key>
+      <integer>37</integer>
+      <key>public.kern2.KO_period.ss01</key>
+      <integer>48</integer>
+      <key>public.kern2.KO_slash</key>
+      <integer>38</integer>
+      <key>public.kern2.KO_underscore</key>
+      <integer>89</integer>
+      <key>public.kern2.KO_x</key>
+      <integer>6</integer>
+      <key>public.kern2.KO_y.ss03</key>
+      <integer>30</integer>
+      <key>public.kern2.KO_z</key>
+      <integer>-8</integer>
+      <key>semicolon.case</key>
+      <integer>4</integer>
+    </dict>
+    <key>ydotbelow.ss03</key>
+    <dict>
+      <key>b</key>
+      <integer>5</integer>
+      <key>braceright</key>
+      <integer>35</integer>
+      <key>braceright.case</key>
+      <integer>30</integer>
+      <key>bracketleft</key>
+      <integer>3</integer>
+      <key>bracketright.case</key>
+      <integer>30</integer>
+      <key>ellipsis</key>
+      <integer>6</integer>
+      <key>eth</key>
+      <integer>-21</integer>
+      <key>h</key>
+      <integer>5</integer>
+      <key>k</key>
+      <integer>5</integer>
+      <key>l</key>
+      <integer>5</integer>
+      <key>m</key>
+      <integer>4</integer>
+      <key>n</key>
+      <integer>4</integer>
+      <key>p</key>
+      <integer>30</integer>
+      <key>public.kern2.KO_a</key>
+      <integer>-24</integer>
+      <key>public.kern2.KO_agrave</key>
+      <integer>-24</integer>
+      <key>public.kern2.KO_bracketright</key>
+      <integer>35</integer>
+      <key>public.kern2.KO_colon</key>
+      <integer>15</integer>
+      <key>public.kern2.KO_colon.ss01</key>
+      <integer>34</integer>
+      <key>public.kern2.KO_ellipsis</key>
+      <integer>-21</integer>
+      <key>public.kern2.KO_exclam</key>
+      <integer>-20</integer>
+      <key>public.kern2.KO_exclam.ss01</key>
+      <integer>-2</integer>
+      <key>public.kern2.KO_g</key>
+      <integer>25</integer>
+      <key>public.kern2.KO_i</key>
+      <integer>4</integer>
+      <key>public.kern2.KO_j</key>
+      <integer>96</integer>
+      <key>public.kern2.KO_parenright</key>
+      <integer>40</integer>
+      <key>public.kern2.KO_parenright.case</key>
+      <integer>37</integer>
+      <key>public.kern2.KO_period</key>
+      <integer>23</integer>
+      <key>public.kern2.KO_period.ss01</key>
+      <integer>34</integer>
+      <key>public.kern2.KO_slash</key>
+      <integer>39</integer>
+      <key>public.kern2.KO_underscore</key>
+      <integer>76</integer>
+      <key>public.kern2.KO_x</key>
+      <integer>31</integer>
+      <key>public.kern2.KO_y.ss03</key>
+      <integer>17</integer>
+      <key>public.kern2.KO_z</key>
+      <integer>14</integer>
+      <key>r</key>
+      <integer>5</integer>
+      <key>semicolon.case</key>
+      <integer>22</integer>
+    </dict>
     <key>yen</key>
     <dict>
       <key>comma.ss01</key>
@@ -15172,6 +18381,18 @@
       <integer>-86</integer>
       <key>slash</key>
       <integer>-34</integer>
+    </dict>
+    <key>yhookabove</key>
+    <dict>
+      <key>eth</key>
+      <integer>-21</integer>
+      <key>parenright</key>
+      <integer>-47</integer>
+    </dict>
+    <key>yhookabove.ss03</key>
+    <dict>
+      <key>eth</key>
+      <integer>-21</integer>
     </dict>
     <key>z</key>
     <dict>

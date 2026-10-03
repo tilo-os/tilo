@@ -1,0 +1,47 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<glyph name="Ohorn" format="2">
+  <advance width="629"/>
+  <unicode hex="01A0"/>
+  <anchor x="268" y="0" name="bottom"/>
+  <anchor x="268" y="720" name="top"/>
+  <outline>
+    <contour>
+      <point x="268" y="-10" type="curve" smooth="yes"/>
+      <point x="423" y="-10"/>
+      <point x="506" y="119"/>
+      <point x="506" y="362" type="curve" smooth="yes"/>
+      <point x="506" y="420"/>
+      <point x="501" y="471"/>
+      <point x="492" y="515" type="curve"/>
+      <point x="553" y="537"/>
+      <point x="611" y="653"/>
+      <point x="611" y="822" type="curve"/>
+      <point x="487" y="822" type="line"/>
+      <point x="487" y="728"/>
+      <point x="458" y="656"/>
+      <point x="435" y="652" type="curve"/>
+      <point x="395" y="704"/>
+      <point x="339" y="730"/>
+      <point x="267" y="730" type="curve" smooth="yes"/>
+      <point x="112" y="730"/>
+      <point x="30" y="603"/>
+      <point x="30" y="363" type="curve" smooth="yes"/>
+      <point x="30" y="120"/>
+      <point x="113" y="-10"/>
+    </contour>
+    <contour>
+      <point x="267" y="102" type="curve" smooth="yes"/>
+      <point x="203" y="102"/>
+      <point x="174" y="181"/>
+      <point x="174" y="364" type="curve" smooth="yes"/>
+      <point x="174" y="545"/>
+      <point x="202" y="618"/>
+      <point x="267" y="618" type="curve" smooth="yes"/>
+      <point x="333" y="618"/>
+      <point x="362" y="543"/>
+      <point x="362" y="364" type="curve" smooth="yes"/>
+      <point x="362" y="182"/>
+      <point x="332" y="102"/>
+    </contour>
+  </outline>
+</glyph>
