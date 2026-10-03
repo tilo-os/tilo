@@ -1623,9 +1623,15 @@ pub(crate) fn sparse_coarse_adaptive_selection(
 #[cfg(feature = "wgpu")]
 impl Renderer {
     /// Creates a new renderer for the specified device.
-    pub fn new(device: &Device, options: RendererOptions) -> Result<Self> {
+    pub fn new(device: &Device, mut options: RendererOptions) -> Result<Self> {
         let mut engine = WgpuEngine::new(options.use_cpu, options.pipeline_cache.clone());
         engine.initialize_gpu_timestamps(device);
+        // The GL backend has one context, and every pipeline compile holds
+        // its lock. Worker threads only queue on that lock, and a slow driver
+        // keeps one waiting past wgpu-hal's lock timeout, which panics.
+        if device.adapter_info().backend == wgpu::Backend::Gl {
+            options.num_init_threads = NonZeroUsize::new(1);
+        }
         // If we are running in parallel (i.e. the number of threads is not 1)
         if options.num_init_threads != NonZeroUsize::new(1) {
             #[cfg(not(target_arch = "wasm32"))]
