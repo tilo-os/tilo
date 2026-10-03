@@ -104,6 +104,18 @@ def checked_proof(path, board_ci=None):
     require(type(doc) is dict and type(doc.get('guest_proof')) is dict
             and type(doc.get('source_check')) is dict, 'incomplete development VM proof')
     guest, source = doc['guest_proof'], doc['source_check']
+    runtime = doc.get('installer_code_runtime')
+    require(type(runtime) is dict and runtime.get('schema') == 'tilo.installer-code-runtime.v1'
+            and type(runtime.get('channel')) is dict
+            and set(runtime['channel']) == {'schema', 'enabled', 'port', 'source'}
+            and runtime['channel'].get('schema') == 'tilo.installer-code-runtime.v1'
+            and runtime['channel'].get('enabled') is False
+            and runtime['channel'].get('port') is None and runtime['channel'].get('source') is None
+            and runtime.get('history') == [],
+            'physical install requires fresh host evidence without a local installer code channel')
+    require(guest.get('installer_code_override_sha256') is None
+            and doc.get('installer_code_override_sha256') is None,
+            'local installer code refresh cannot authorize a physical install')
     require(guest.get('architecture') == 'arm64'
             and ci.SHA.fullmatch(guest.get('booted_image_digest', ''))
             and ci.SHA.fullmatch(guest.get('installed_image_digest', ''))
