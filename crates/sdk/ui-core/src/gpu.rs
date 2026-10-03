@@ -72,7 +72,52 @@ impl DeviceHandle {
     pub fn adapter(&self) -> &Adapter {
         &self.adapter
     }
+
+    /// The same driver's device on a fresh instance of this adapter's backend, with this
+    /// device's features and limits. Blocks while the device opens.
+    ///
+    /// Not a second device on this adapter: Mesa's CPU Vulkan driver compiles shaders for every
+    /// device of one physical device one at a time, so work meant to run beside this device's
+    /// needs a physical device of its own.
+    pub fn open_peer(&self) -> Option<(Device, Queue)> {
+        let info = self.adapter.get_info();
+        let backends = wgpu::Backends::from(info.backend);
+        let instance = Instance::new(wgpu::InstanceDescriptor {
+            display: None,
+            backends,
+            flags: wgpu::InstanceFlags::from_build_config().with_env(),
+            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+            backend_options: wgpu::BackendOptions::from_env_or_default(),
+        });
+        let adapter = pollster::block_on(instance.enumerate_adapters(backends))
+            .into_iter()
+            .find(|adapter| {
+                let peer = adapter.get_info();
+                (peer.name.as_str(), peer.driver.as_str(), peer.device_type)
+                    == (info.name.as_str(), info.driver.as_str(), info.device_type)
+            })?;
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: None,
+            required_features: self.device.features(),
+            required_limits: self.device.limits(),
+            memory_hints: MEMORY_HINTS,
+            ..Default::default()
+        }))
+        .ok()
+    }
 }
+
+/// See the module header for the default's cost. `MemoryUsage` (8 MB first block, 64 MB
+/// largest) is still not enough, because the block size doubles with every block a process opens
+/// (`min << active_general_blocks`, capped at the maximum): one idle app held
+/// 4+8+16+32+64 = 124 MB of blocks to suballocate ~50 MB of buffers out of.
+///
+/// Fixed 4 MB blocks stop the doubling. Anything larger gets a dedicated allocation of its own
+/// exact size instead (`gpu_allocator`'s `requires_personal_block`), so big buffers cost what
+/// they are. 4 MB is the floor wgpu clamps to.
+const MEMORY_HINTS: wgpu::MemoryHints = wgpu::MemoryHints::Manual {
+    suballocated_device_memory_block_size: (4 << 20)..(4 << 20),
+};
 
 /// wgpu state for one process, with a memory hint that fits a shared GPU.
 pub struct RenderContext {
@@ -261,20 +306,7 @@ impl RenderContext {
                 label: None,
                 required_features: (features & maybe_features) | timestamp_features,
                 required_limits: required_limits(&adapter.limits()),
-                // See the module header for the default's cost. `MemoryUsage`
-                // (8 MB first block, 64 MB largest) is still not enough,
-                // because the block size doubles with every block a process
-                // opens (`min << active_general_blocks`, capped at the
-                // maximum): one idle app held 4+8+16+32+64 = 124 MB of blocks
-                // to suballocate ~50 MB of buffers out of.
-                //
-                // Fixed 4 MB blocks stop the doubling. Anything larger gets a
-                // dedicated allocation of its own exact size instead
-                // (`gpu_allocator`'s `requires_personal_block`), so big
-                // buffers cost what they are. 4 MB is the floor wgpu clamps to.
-                memory_hints: wgpu::MemoryHints::Manual {
-                    suballocated_device_memory_block_size: (4 << 20)..(4 << 20),
-                },
+                memory_hints: MEMORY_HINTS,
                 ..Default::default()
             })
             .await
