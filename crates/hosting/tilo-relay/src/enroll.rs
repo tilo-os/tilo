@@ -354,7 +354,12 @@ fn fleet_revokes_device(
 }
 
 /// Keep enrollment output owned by the already-validated identity directory
-/// when the polkit broker launches this process as root.
+/// when this process runs as another account than the one owning it.
+///
+/// Output this process already wrote as the directory's owner keeps its
+/// group: under `/var/lib/tilo` that is the device-trust group the setgid
+/// key directories hand down, which the session and relay need to read the
+/// device key.
 fn restore_owner_from_directory(
     path: &std::path::Path,
     directory: &std::path::Path,
@@ -365,6 +370,9 @@ fn restore_owner_from_directory(
         use std::os::unix::fs::MetadataExt as _;
 
         let owner = std::fs::metadata(directory)?;
+        if std::fs::metadata(path)?.uid() == owner.uid() {
+            return Ok(());
+        }
         let path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
         // SAFETY: `path` is NUL-terminated and originates from a validated
         // identity/status path. The uid/gid come from its trusted directory.
