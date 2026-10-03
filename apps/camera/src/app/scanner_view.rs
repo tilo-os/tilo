@@ -140,9 +140,9 @@ impl CameraApp {
                 None => layout.card.or(layout.recent).map(|rect| rect.y0),
             };
             let area = Rect::new(
-                full.x0,
+                full.x0 + m.edge,
                 full.y0 + m.edge + m.bar(),
-                layout.side.map_or(full.x1, |side| side.x0),
+                layout.side.map_or(full.x1, |side| side.x0) - m.edge,
                 below.unwrap_or_else(|| full.y1 - m.edge - m.bar()),
             );
             self.draw_scanner_offline(scene, t, tr, theme, area);
