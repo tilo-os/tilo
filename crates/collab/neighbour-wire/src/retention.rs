@@ -373,6 +373,7 @@ mod tests {
                     key: vec![4],
                     payload: collab_types::PeerPresencePayload::Arrived,
                 },
+                colour: None,
             },
         ] {
             assert!(retention(&live, false).is_none());
