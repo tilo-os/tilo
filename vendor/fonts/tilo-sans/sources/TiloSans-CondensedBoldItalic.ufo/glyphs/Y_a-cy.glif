@@ -2,8 +2,8 @@
 <glyph name="Ya-cy" format="2">
   <advance width="468"/>
   <unicode hex="042F"/>
-  <anchor x="152" y="0" name="bottom"/>
-  <anchor x="318" y="720" name="top"/>
+  <anchor x="166" y="0" name="bottom"/>
+  <anchor x="332" y="720" name="top"/>
   <outline>
     <contour>
       <point x="360" y="0" type="line"/>
@@ -28,10 +28,10 @@
       <point x="218" y="0" type="line"/>
     </contour>
     <contour>
-      <point x="98" y="0" type="line"/>
+      <point x="184" y="0" type="line"/>
       <point x="324" y="374" type="line"/>
       <point x="189" y="374" type="line"/>
-      <point x="-56" y="0" type="line"/>
+      <point x="30" y="0" type="line"/>
     </contour>
   </outline>
 </glyph>
