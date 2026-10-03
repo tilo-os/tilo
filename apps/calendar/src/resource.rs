@@ -6,14 +6,18 @@ use std::rc::Rc;
 
 use automerge::{AutoCommit, ChangeHash};
 use tilo_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, RetryPolicy};
+use tilo_document::{RichText, RichTextAction};
 use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource, SearchEntry};
+use ui::tilo_resource::{
+    ActionDecl, Doc, ModelError, Resource, SearchEntry, child_resource_id, publish_child,
+};
 use ui::widget::Element;
 use uuid::Uuid;
 
 use crate::actions::{
     CALENDAR_ACTION_TYPE, CALENDAR_OPERATION_TYPE, CalendarAction, CalendarOperation, EventData,
-    ProjectData, TaskData, delete_event_action, delete_task_action, encode, set_task_done_action,
+    NoteOwner, ProjectData, TaskData, delete_event_action, delete_task_action, encode,
+    set_task_done_action,
 };
 use crate::app::CalendarApp;
 use crate::doc::CalDoc;
@@ -45,6 +49,57 @@ fn default_local_event() -> EventData {
 
 /// The calendar resource — events, tasks and projects in one document.
 pub struct Calendar;
+
+/// The id an event's or a task's notes are published under, as a rich-text
+/// child of the calendar.
+pub(crate) fn notes_resource_id(owner: &NoteOwner) -> String {
+    let (kind, id) = match owner {
+        NoteOwner::Event { id } => ("event", id),
+        NoteOwner::Task { id } => ("task", id),
+    };
+    child_resource_id::<Calendar>(&format!("{kind}:{id}/notes"))
+}
+
+/// Each edit of `owner`'s notes as the calendar's own action.
+fn notes_edit(owner: NoteOwner) -> impl Fn(RichTextAction) -> CalendarAction + Send + Sync {
+    move |edit| CalendarAction::EditNotes {
+        owner: owner.clone(),
+        edit,
+    }
+}
+
+/// The dispatcher of `owner`'s notes: a rich-text child of the calendar
+/// whose every edit is [`CalendarAction::EditNotes`] on that owner.
+pub(crate) fn notes_dispatcher(
+    calendar: &Dispatcher<Calendar>,
+    owner: &NoteOwner,
+) -> Dispatcher<RichText> {
+    calendar.child::<RichText>(&notes_resource_id(owner), notes_edit(owner.clone()))
+}
+
+/// Every event's and task's notes, published as rich-text children.
+fn publish_notes(state: &Model) -> impl Iterator<Item = tilo_actions::Resource> + '_ {
+    let events = state.events.iter().map(|event| {
+        let owner = NoteOwner::Event {
+            id: event.id.to_string(),
+        };
+        (owner, event.display_title())
+    });
+    let tasks = state.tasks.iter().map(|task| {
+        let owner = NoteOwner::Task {
+            id: task.id.to_string(),
+        };
+        (owner, task.title.as_str())
+    });
+    events.chain(tasks).map(|(owner, of)| {
+        publish_child::<RichText, Calendar>(
+            &notes_resource_id(&owner),
+            &format!("Notes of {of}"),
+            None,
+            notes_edit(owner),
+        )
+    })
+}
 
 /// Framework app: the calendar widget is the surface over [`Calendar`].
 pub struct CalendarShell;
@@ -292,6 +347,7 @@ impl Resource for Calendar {
                 ),
             );
         }
+        children.extend(publish_notes(state));
         for project in &state.projects {
             let id = project.id.to_string();
             children.push(
@@ -361,6 +417,11 @@ pub(crate) struct ActionSink {
 impl ActionSink {
     pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Calendar>) {
         self.framework = Some(dispatcher);
+    }
+
+    /// The framework's dispatcher, once the calendar is hosted.
+    pub(crate) fn framework(&self) -> Option<&Dispatcher<Calendar>> {
+        self.framework.as_ref()
     }
 
     pub(crate) fn is_hosted(&self) -> bool {
@@ -444,6 +505,80 @@ mod host_undo_tests {
     use crate::model::Id;
     use ui::framework::testing::TestApp;
     use ui::tilo_resource::Invoke;
+
+    fn notes_of(app: &TestApp<CalendarShell>, event: Id) -> String {
+        app.read_document(|doc| CalDoc::note_text(doc, true, event))
+    }
+
+    /// Typing in an open event's notes edits them as the calendar's
+    /// `EditNotes`, named in history after the notes, a word per undo step,
+    /// and kept when the calendar is opened again.
+    #[test]
+    fn typing_in_an_events_notes_edits_them_through_the_calendar() {
+        let mut app = TestApp::<CalendarShell>::new().expect("test app");
+        app.harness().key("n");
+        let event = app.state().events.first().expect("n creates an event").id;
+        // The new event opens with its title focused: Tab moves on to the
+        // location, the invite field, then the notes.
+        for _ in 0..3 {
+            app.harness().key("Tab");
+        }
+        app.harness().type_text("Agenda items");
+        assert_eq!(notes_of(&app, event), "Agenda items");
+
+        let notes = notes_resource_id(&NoteOwner::Event {
+            id: event.to_string(),
+        });
+        assert!(
+            app.versions()
+                .into_iter()
+                .filter_map(|version| version.context)
+                .any(|context| context
+                    .resource
+                    .is_some_and(|resource| resource.id == notes)),
+            "history names the event's notes as the resource edited"
+        );
+        assert!(app.undo());
+        assert_eq!(notes_of(&app, event), "Agenda ");
+        assert!(app.redo());
+
+        let app = app.reopen().expect("reopen");
+        assert_eq!(notes_of(&app, event), "Agenda items");
+    }
+
+    /// The palette, agents and scripts reach an event's notes as a rich-text
+    /// resource of their own, and what they do is the calendar's edit.
+    #[test]
+    fn an_agent_edits_an_events_notes_as_a_rich_text_child() {
+        let mut app = TestApp::<CalendarShell>::new().expect("test app");
+        let mut data = default_local_event();
+        data.id = Uuid::new_v4().to_string();
+        data.title = "Review".into();
+        let event = data.id.parse::<Id>().expect("id");
+        app.invoke(Invoke::apply(&CalendarAction::UpsertEvent(data)).expect("encode"))
+            .expect("create");
+        let notes = notes_resource_id(&NoteOwner::Event {
+            id: event.to_string(),
+        });
+        let surface = app.agent_surface();
+        assert!(
+            surface.as_array().expect("rows").iter().any(|row| {
+                row["resource"] == notes.as_str() && row["resource_kind"] == RichText::KIND
+            }),
+            "the notes are published as rich text: {surface}"
+        );
+        app.invoke_child::<RichText>(
+            &notes,
+            Invoke::<RichText>::apply(&RichTextAction::AppendParagraph {
+                text: "Bring the mockups".into(),
+            })
+            .expect("encode"),
+        )
+        .expect("append");
+        assert_eq!(notes_of(&app, event), "Bring the mockups");
+        assert!(app.undo());
+        assert_eq!(notes_of(&app, event), "");
+    }
 
     /// Creating a remote-calendar event, then undoing through the host, must
     /// queue a `CalDAV` delete via the inverse document action — not Automerge

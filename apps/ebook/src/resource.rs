@@ -219,6 +219,41 @@ impl ActionSink {
     }
 }
 
+/// The library's dispatcher as the framework hands it to the reader, for
+/// tests that drive the reader (or one of its editors) on a document of
+/// their own: its edits go through the same permission check and executor.
+/// The headless app it came from is returned too, to outlive the test.
+#[cfg(test)]
+pub(crate) fn library_dispatcher_for_test() -> (
+    ui::framework::testing::TestApp<impl ResourceApp<Resource = Ebook>>,
+    Dispatcher<Ebook>,
+) {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static ATTACHED: RefCell<Option<Dispatcher<Ebook>>> = const { RefCell::new(None) };
+    }
+
+    struct Probe;
+
+    impl ResourceApp for Probe {
+        type Resource = Ebook;
+        const ID: &'static str = EbookShell::ID;
+        const TITLE: &'static str = EbookShell::TITLE;
+
+        fn view(cx: &mut ViewCx<Ebook>) -> Element {
+            ATTACHED.with(|attached| *attached.borrow_mut() = Some(cx.dispatcher()));
+            Box::new(ui::widget::Column::new())
+        }
+    }
+
+    let app = ui::framework::testing::TestApp::<Probe>::new().expect("the library opens");
+    let dispatcher = ATTACHED
+        .with(|attached| attached.borrow_mut().take())
+        .expect("the library's view was built");
+    (app, dispatcher)
+}
+
 pub fn launch_spec() -> ui::launch::LaunchSpec {
     ui::framework::launch_spec::<EbookShell>()
 }
@@ -437,6 +472,79 @@ mod tests {
             before,
             "adopting an empty projection must not clear unpublished books"
         );
+    }
+
+    /// A note's text is a rich-text resource beneath the note: the palette,
+    /// agents and scripts edit it there, and each edit is the library's
+    /// action, undone as one.
+    #[test]
+    fn a_notes_text_is_published_beneath_it_and_edits_as_the_librarys_action() {
+        use tilo_document::{RichText, RichTextAction};
+        use ui::tilo_resource::Invoke;
+
+        let (mut app, _) = library_dispatcher_for_test();
+        let entry = LibraryEntry {
+            id: "book:0123456789abcdef0123456789abcdef".into(),
+            shared: false,
+            title: "Annotated".into(),
+            author: "Tester".into(),
+            subject: String::new(),
+            added: 1,
+            content: None,
+        };
+        let id = uuid::Uuid::from_u128(0xE800_0001_0002_0003_0004_0005_0006_0008);
+        let note = crate::actions::NoteDraft {
+            book_id: entry.id.clone(),
+            id,
+            anchor: crate::model::AnnotationAnchor {
+                chapter: 0,
+                block: 0,
+                start: 0,
+                end: 4,
+                excerpt: "door".into(),
+            },
+            color: crate::model::HiColor::Yellow,
+            text: "first".into(),
+        };
+        app.invoke(Invoke::apply(&crate::actions::restore_library_book_action(&entry)).unwrap())
+            .unwrap();
+        app.invoke(Invoke::apply(&note.into_action()).unwrap())
+            .unwrap();
+        let text = |state: EbookState| {
+            state
+                .annotations
+                .into_iter()
+                .find(|annotation| annotation.id == id)
+                .map(|annotation| annotation.note)
+        };
+        assert_eq!(text(app.state()).as_deref(), Some("first"));
+
+        let state = app.state();
+        let published = ui::tilo_resource::publish::<Ebook>(LIBRARY_RESOURCE_ID, "Books", &state);
+        let note_row = published
+            .children
+            .iter()
+            .flat_map(|book| &book.children)
+            .find(|child| child.id.as_str() == format!("ebook.note:{id}"))
+            .expect("the note is published under its book");
+        let body = note_row
+            .children
+            .iter()
+            .find(|child| child.id.as_str() == crate::actions::note_text_resource_id(id))
+            .expect("the note's text is published beneath it");
+        assert_eq!(body.kind, RichText::KIND);
+
+        app.invoke_child::<RichText>(
+            &crate::actions::note_text_resource_id(id),
+            Invoke::<RichText>::apply(&RichTextAction::ReplaceBody {
+                markdown: "from an agent".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(text(app.state()).as_deref(), Some("from an agent"));
+        assert!(app.undo());
+        assert_eq!(text(app.state()).as_deref(), Some("first"));
     }
 
     fn restore_and_annotate(doc: &mut AutoCommit, entry: &LibraryEntry) {

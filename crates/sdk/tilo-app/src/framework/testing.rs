@@ -342,6 +342,29 @@ impl<A: ResourceApp> HeadlessApp<A> {
         self.invoke_as(invoke, false)
     }
 
+    /// Invoke an action of the resource nested in this one at `resource` —
+    /// a child resource a view edits through [`Dispatcher::child`](super::Dispatcher::child)
+    /// — through the host door, as the palette, an agent or a script
+    /// addresses it.
+    ///
+    /// # Errors
+    /// As [`Self::invoke`].
+    pub fn invoke_child<C: Resource>(
+        &mut self,
+        resource: &str,
+        invoke: Invoke<C>,
+    ) -> Result<(), tilo_actions::DoorError> {
+        let Invoke { id, arguments, .. } = invoke;
+        let address = BoundActionAddress {
+            instance_id: self.instance,
+            address: tilo_actions::ActionAddress::new(resource, id),
+        };
+        let harness = self.harness();
+        harness.invoke_bound_action(&address, &arguments)?;
+        harness.relayout();
+        Ok(())
+    }
+
     /// [`Self::invoke`] after the caller confirmed it, as the host's
     /// confirmation prompt does for a destructive action.
     ///
