@@ -103,6 +103,29 @@ pub struct Button {
     cache_rect: Rect,
     /// Snapshot the cache was emitted from; any change invalidates it.
     last_state: (bool, bool, bool, bool), // (hovered, pressed, focused, enabled)
+    /// The theme roles the cached face was painted from, so a theme change
+    /// that keeps the layout (dark to light, a new emphasis) repaints it.
+    last_theme: Option<ThemeKey>,
+}
+
+/// The theme roles a button face reads.
+type ThemeKey = (
+    vello::peniko::Color,
+    vello::peniko::Color,
+    vello::peniko::Color,
+    vello::peniko::Color,
+    u32,
+);
+
+fn theme_key(theme: &Theme) -> ThemeKey {
+    let colors = &theme.tokens.colors;
+    (
+        colors.surfaces.raised,
+        colors.intent.inverted,
+        colors.intent.on_inverted,
+        colors.text_primary,
+        theme.tokens.radii.control.to_bits(),
+    )
 }
 
 impl Button {
@@ -148,6 +171,7 @@ impl Button {
             interaction: crate::interaction::InteractionEnvironment::default(),
             cache_rect: Rect::ZERO,
             last_state: (false, false, false, true),
+            last_theme: None,
         }
     }
 
@@ -617,15 +641,15 @@ pub fn face_colors(
             } else {
                 rest
             };
-            // White is the label this style wants and, on a dark enough
-            // accent, what comes back; on a bright one it walks out far
-            // enough to be read — resolved once over both fills so it
-            // doesn't change under the pointer.
-            let fg =
-                theme
-                    .tokens
-                    .colors
-                    .ink_on_any(&[rest, active], Color::WHITE, ON_FILL_MIN_CONTRAST);
+            // The label of the emphasis fill is the theme's own
+            // (`intent.on_inverted`, the window ground), which the contrast
+            // floors hold on both fills; resolved once over both so it does
+            // not change under the pointer.
+            let fg = theme.tokens.colors.ink_on_any(
+                &[rest, active],
+                theme.tokens.colors.intent.on_inverted,
+                ON_FILL_MIN_CONTRAST,
+            );
             (bg, None, fg)
         }
         ButtonStyle::Danger => danger_face_colors(theme, interact),
@@ -1367,6 +1391,11 @@ impl Widget for Button {
         if current_state != self.last_state {
             self.dirty = true;
             self.last_state = current_state;
+        }
+        let key = theme_key(theme);
+        if self.last_theme != Some(key) {
+            self.dirty = true;
+            self.last_theme = Some(key);
         }
         let needs_emit = self.dirty || self.cache_rect == Rect::ZERO;
         if !needs_emit {

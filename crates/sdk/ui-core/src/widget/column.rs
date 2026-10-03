@@ -729,24 +729,14 @@ mod tests {
     fn intrinsic_column_gap_applies_between_children_and_to_content_height() {
         /// The default inset is the `s6` token — 24 on the stock scale and still
         /// exactly twice `padding_standard` once `ui_scale` or a custom theme's
-        /// `spacing_px` has rescaled the whole spacing scale.
+        /// a theme's density has rescaled the whole spacing scale.
         fn default_inset_is_the_s6_token_on_every_scale() {
             for theme in [
                 Theme::dark(),
                 Theme::dark().with_ui_scale(1.5),
-                Theme::from_custom_spec(&crate::theme::CustomThemeSpec {
-                    schema_version: crate::theme::CUSTOM_THEME_SCHEMA_VERSION,
-                    id: "dense".into(),
-                    name: "Dense".into(),
-                    dark_base: true,
-                    neutral_hue: 220.0,
-                    spacing_px: 9.0,
-                    font: "Inter".into(),
-                    motion_scale: 1.0,
-                    material_scale: 1.0,
-                    icon_scale: 1.0,
-                    chrome_weight: 1.0,
-                    motion_character: 1.0,
+                Theme::from_document(&crate::theme::ThemeDocument {
+                    density: crate::theme::ThemeDensity { spacing: 0.75 },
+                    ..crate::theme::Preset::Dark.document()
                 })
                 .unwrap(),
             ] {

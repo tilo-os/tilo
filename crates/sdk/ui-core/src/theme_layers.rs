@@ -1,15 +1,18 @@
 //! Theme layer stack.
 //!
-//! Precedence, lowest to highest, is fixed in [`resolve_theme_layers`].
-//! Accessibility always wins. Distribution defaults (`distribution` /
-//! `distribution_defaults`) set a palette and may pin it and the authored
-//! scales; a pin beats the user theme only for the pinned field.
+//! Precedence, lowest to highest, is fixed in [`resolve_theme_layers`]:
+//! built-in defaults, distribution defaults, the user's theme, the workspace
+//! temperature, accessibility. Every layer below the workspace is a
+//! [`ThemeDocument`]; a distribution may pin any of its roles, and a pin
+//! beats the user's theme only for that role. Accessibility always wins.
 //! See `docs/architecture/theming.md`.
 
 use serde::{Deserialize, Serialize};
 use vello::peniko::Color;
 
-use crate::theme::{CustomThemeSpec, Theme};
+use crate::theme::Theme;
+use crate::theme_document::{Preset, ThemeDensity, ThemeDocument};
+use crate::tokens::PresenceHue;
 
 /// JSON id of the distribution-defaults layer. The same layer is also read
 /// from [`DISTRIBUTION_DEFAULTS_KEY`].
@@ -18,33 +21,44 @@ pub const DISTRIBUTION_LAYER_ID: &str = "distribution";
 /// JSON key of the distribution-defaults object inside `appearance`.
 pub const DISTRIBUTION_DEFAULTS_KEY: &str = "distribution_defaults";
 
-/// Pin id for the colour palette (preset or custom spec).
+/// Pin id for the palette (hue, chroma, ladder, ink, status).
 pub const PIN_PALETTE: &str = "palette";
+
+/// Pin id for the emphasis (inverted or tinted).
+pub const PIN_EMPHASIS: &str = "emphasis";
+
+/// Pin id for the presence tone.
+pub const PIN_PRESENCE: &str = "presence";
+
+/// Pin id for the window radius.
+pub const PIN_SHAPE: &str = "shape";
 
 /// Pin id for the spacing scale.
 pub const PIN_DENSITY: &str = "density";
 
-/// Pin id for the font family.
+/// Pin id for the UI face and base size.
 pub const PIN_TYPE: &str = "type";
 
-/// Pin id for the duration scale.
+/// Pin id for the motion character.
 pub const PIN_MOTION: &str = "motion";
 
-/// Pin id for elevation and glass.
+/// Pin id for the floating material.
 pub const PIN_MATERIAL: &str = "material";
 
-/// Pin id for icon size.
-pub const PIN_ICONS: &str = "icons";
+/// Every role a distribution may pin.
+pub const PINNABLE: [&str; 8] = [
+    PIN_PALETTE,
+    PIN_EMPHASIS,
+    PIN_PRESENCE,
+    PIN_SHAPE,
+    PIN_DENSITY,
+    PIN_TYPE,
+    PIN_MOTION,
+    PIN_MATERIAL,
+];
 
-/// Pin id for the chrome rule.
-pub const PIN_CHROME: &str = "chrome";
-
-/// Oldest distribution-defaults schema this build still opens.
-pub const DISTRIBUTION_DEFAULTS_SCHEMA_MIN: u32 = 1;
-
-/// Schema this build writes. Readers admit
-/// [`DISTRIBUTION_DEFAULTS_SCHEMA_MIN`]..=this value and clamp on materialize.
-pub const DISTRIBUTION_DEFAULTS_SCHEMA_VERSION: u32 = 1;
+/// The one distribution-defaults schema this build reads and writes.
+pub const DISTRIBUTION_DEFAULTS_SCHEMA_VERSION: u32 = 2;
 
 /// Oldest accessibility schema this build still opens.
 pub const ACCESSIBILITY_SCHEMA_MIN: u32 = 1;
@@ -53,10 +67,24 @@ pub const ACCESSIBILITY_SCHEMA_MIN: u32 = 1;
 pub const ACCESSIBILITY_SCHEMA_VERSION: u32 = 1;
 
 /// Versioned accessibility object inside `appearance`. Absent on files that
-/// still store the same fields as flat flags; those open as schema 1.
+/// store the same fields as flat flags; those open as schema 1.
 const ACCESSIBILITY_LAYER_KEY: &str = "accessibility";
 
-fn schema_one() -> u32 {
+/// `appearance` key: `"dark"`, `"light"` or `"automatic"`.
+pub const MODE_KEY: &str = settings_store::day_schedule::MODE_KEY;
+/// `appearance` key: the theme dark mode shows, a preset id or `custom:<id>`.
+pub const DARK_THEME_KEY: &str = "dark_theme";
+/// `appearance` key: the theme light mode shows, a preset id or `custom:<id>`.
+pub const LIGHT_THEME_KEY: &str = "light_theme";
+/// `appearance` key: the custom theme documents a `custom:<id>` names.
+pub const CUSTOM_THEMES_KEY: &str = "custom_themes";
+/// `appearance` key: the person's density, over whichever theme is shown.
+pub const DENSITY_KEY: &str = "density";
+/// `appearance` key: per-workspace temperature overrides, OKLCH degrees by
+/// workspace id.
+pub const WORKSPACE_TEMPERATURES_KEY: &str = "workspace_temperatures";
+
+fn distribution_schema() -> u32 {
     DISTRIBUTION_DEFAULTS_SCHEMA_VERSION
 }
 
@@ -74,98 +102,39 @@ fn schema_admitted(version: u32, min: u32, max: u32) -> bool {
 
 /// Policy pins on a distribution-defaults document.
 ///
-/// Pins name fields of the shared theme document: palette, density, type,
-/// motion, material, icons, and chrome. Accessibility fields
-/// (`high_contrast`, `forced_colors`, `text_scale`, `ui_scale`,
-/// `reduce_motion`) are not pinnable: a document may name them and they are
-/// ignored.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Pins name roles of the theme document ([`PINNABLE`]). Accessibility
+/// fields (`high_contrast`, `forced_colors`, `text_scale`, `ui_scale`,
+/// `reduce_motion`, `reduce_transparency`) are not pinnable: a document may
+/// name them and they are ignored.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DistributionPolicy {
-    #[serde(default = "schema_one")]
-    pub schema_version: u32,
-    /// Field names this distribution pins.
+    /// Role names this distribution pins.
     #[serde(default)]
     pub pins: Vec<String>,
 }
 
-impl Default for DistributionPolicy {
-    fn default() -> Self {
-        Self {
-            schema_version: DISTRIBUTION_DEFAULTS_SCHEMA_VERSION,
-            pins: Vec::new(),
-        }
-    }
-}
-
 impl DistributionPolicy {
-    /// Whether the palette pin is set on a schema this build admits.
+    /// Whether `role` (one of [`PINNABLE`]) is pinned.
     #[must_use]
-    pub fn pins_palette(&self) -> bool {
-        self.admits_schema() && self.pins.iter().any(|pin| pin == PIN_PALETTE)
-    }
-
-    /// Whether spacing is pinned.
-    #[must_use]
-    pub fn pins_density(&self) -> bool {
-        self.pins_named(PIN_DENSITY)
-    }
-
-    /// Whether the font is pinned.
-    #[must_use]
-    pub fn pins_type(&self) -> bool {
-        self.pins_named(PIN_TYPE)
-    }
-
-    /// Whether the duration scale is pinned.
-    #[must_use]
-    pub fn pins_motion(&self) -> bool {
-        self.pins_named(PIN_MOTION)
-    }
-
-    /// Whether elevation and glass are pinned.
-    #[must_use]
-    pub fn pins_material(&self) -> bool {
-        self.pins_named(PIN_MATERIAL)
-    }
-
-    /// Whether icon size is pinned.
-    #[must_use]
-    pub fn pins_icons(&self) -> bool {
-        self.pins_named(PIN_ICONS)
-    }
-
-    /// Whether the chrome rule is pinned.
-    #[must_use]
-    pub fn pins_chrome(&self) -> bool {
-        self.pins_named(PIN_CHROME)
-    }
-
-    fn pins_named(&self, name: &str) -> bool {
-        self.admits_schema() && self.pins.iter().any(|pin| pin == name)
-    }
-
-    fn admits_schema(&self) -> bool {
-        schema_admitted(
-            self.schema_version,
-            DISTRIBUTION_DEFAULTS_SCHEMA_MIN,
-            DISTRIBUTION_DEFAULTS_SCHEMA_VERSION,
-        )
+    pub fn pins(&self, role: &str) -> bool {
+        self.pins.iter().any(|pin| pin == role)
     }
 }
 
-/// Defaults a distribution ships with the OS image: a palette (preset name
-/// or [`CustomThemeSpec`]) and the pins in [`Self::policy`].
+/// Defaults a distribution ships with the OS image: a theme (a preset id or
+/// a whole document) and the pins in [`Self::policy`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DistributionDefaults {
-    #[serde(default = "schema_one")]
+    #[serde(default = "distribution_schema")]
     pub schema_version: u32,
-    /// Preset name ([`Theme::named`]). Ignored when [`Self::custom`] is set.
+    /// A preset id ([`Preset::find`]). Ignored when [`Self::document`] is set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub palette: Option<String>,
-    /// Authored palette. Takes the same structural check and spacing clamp
-    /// as a user custom theme.
+    pub theme: Option<String>,
+    /// A whole theme document, admitted like a user's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub custom: Option<CustomThemeSpec>,
+    pub document: Option<ThemeDocument>,
     #[serde(default)]
     pub policy: DistributionPolicy,
 }
@@ -174,8 +143,8 @@ impl Default for DistributionDefaults {
     fn default() -> Self {
         Self {
             schema_version: DISTRIBUTION_DEFAULTS_SCHEMA_VERSION,
-            palette: None,
-            custom: None,
+            theme: None,
+            document: None,
             policy: DistributionPolicy::default(),
         }
     }
@@ -184,37 +153,57 @@ impl Default for DistributionDefaults {
 impl DistributionDefaults {
     /// Structural check. A failure means this layer is not applied.
     ///
-    /// Schema versions outside
-    /// [`DISTRIBUTION_DEFAULTS_SCHEMA_MIN`]..=[`DISTRIBUTION_DEFAULTS_SCHEMA_VERSION`]
-    /// are rejected. Values inside an admitted file range that are outside
-    /// the usable band — a custom spec's `spacing_px` — are clamped when the
-    /// layer is materialized, the same way [`Theme::from_custom_spec`] clamps.
-    ///
     /// # Errors
     ///
-    /// Returns a static message when the schema is outside the admitted
-    /// range, the custom spec fails its own structural check, or the palette
-    /// name is not a shipped preset.
+    /// Returns a static message when the schema is not this build's, the
+    /// document fails its own check, the preset is unknown, or a pin names
+    /// no role.
     pub fn validate(&self) -> Result<(), &'static str> {
-        if !schema_admitted(
-            self.schema_version,
-            DISTRIBUTION_DEFAULTS_SCHEMA_MIN,
-            DISTRIBUTION_DEFAULTS_SCHEMA_VERSION,
-        ) {
+        if self.schema_version != DISTRIBUTION_DEFAULTS_SCHEMA_VERSION {
             return Err("unsupported distribution defaults schema");
         }
-        if !self.policy.admits_schema() {
-            return Err("unsupported distribution policy schema");
-        }
-        if let Some(custom) = &self.custom {
-            custom.validate()?;
-        } else if let Some(name) = &self.palette
-            && Theme::named(name).is_none()
+        if let Some(document) = &self.document {
+            document.validate()?;
+        } else if let Some(id) = &self.theme
+            && Preset::find(id).is_none()
         {
-            return Err("unknown distribution palette");
+            return Err("unknown distribution theme");
+        }
+        if !self
+            .policy
+            .pins
+            .iter()
+            .all(|pin| PINNABLE.contains(&pin.as_str()) || is_accessibility_field(pin))
+        {
+            return Err("a distribution pin names no theme role");
         }
         Ok(())
     }
+
+    /// The document this layer contributes, if it is admitted.
+    #[must_use]
+    pub fn admitted_document(&self) -> Option<ThemeDocument> {
+        self.validate().ok()?;
+        match (&self.document, &self.theme) {
+            (Some(document), _) => Some(document.clone()),
+            (None, Some(id)) => Preset::find(id).map(Preset::document),
+            (None, None) => Some(Preset::Dark.document()),
+        }
+    }
+}
+
+/// Accessibility fields a distribution may name in its pins without effect.
+fn is_accessibility_field(name: &str) -> bool {
+    matches!(
+        name,
+        "high_contrast"
+            | "forced_colors"
+            | "text_scale"
+            | "ui_scale"
+            | "reduce_motion"
+            | "reduce_transparency"
+            | "thick_caret"
+    )
 }
 
 /// Accessibility layer. Nothing below it can lower contrast, shrink text,
@@ -324,20 +313,25 @@ impl Default for AccessibilityLayer {
 #[derive(Clone, Debug, Default)]
 pub struct ThemeLayerStack {
     pub distribution_defaults: Option<DistributionDefaults>,
-    /// Colour theme only. Scale, motion and contrast live on
-    /// [`Self::accessibility`]. `None` means the person has not chosen a theme.
-    pub user_theme: Option<Theme>,
-    /// The active workspace's temperature (OKLCH hue), derived from its
-    /// wallpaper by [`crate::theme::workspace_hue`]. Set by the host that
-    /// knows which workspace is active; settings never carry it.
+    /// The theme the person chose for the current mode. `None` means they
+    /// have not chosen one, or chose one this build does not admit.
+    pub user_theme: Option<ThemeDocument>,
+    /// The active workspace's temperature (OKLCH hue): the person's override
+    /// for that workspace ([`workspace_temperature_override`]) or the hue of
+    /// its wallpaper ([`crate::theme::workspace_hue`]). Set by the host that
+    /// knows which workspace is active; it never adds chroma.
     pub workspace_hue: Option<f32>,
+    /// The person's own colour. Identity, not theme: it rides the stack
+    /// only so every layer above paints it.
+    pub your_colour: Option<PresenceHue>,
     pub accessibility: AccessibilityLayer,
 }
 
 impl ThemeLayerStack {
-    /// Read a settings document. A missing `appearance.theme` is "no user
-    /// theme", not the dark preset, so distribution defaults still show.
-    /// An unreadable document is an empty stack (built-in defaults only).
+    /// Read a settings document. An appearance section that names no theme
+    /// is "no user theme", not the dark preset, so distribution defaults
+    /// still show. An unreadable document is an empty stack (built-in
+    /// defaults only).
     #[must_use]
     pub fn from_settings_json(
         text: &str,
@@ -353,11 +347,92 @@ impl ThemeLayerStack {
         });
         Self {
             distribution_defaults,
-            user_theme: Theme::from_settings_json_at(text, moment),
+            user_theme: document
+                .as_ref()
+                .and_then(|value| user_document(value, moment)),
             workspace_hue: None,
+            your_colour: document.as_ref().and_then(PresenceHue::chosen_in),
             accessibility: accessibility_layer(document.as_ref(), appearance),
         }
     }
+}
+
+/// Which theme the mode and schedule in `settings` show, and with the
+/// person's density over it. `None` when the appearance section names no
+/// theme, or names one this build does not admit (an unknown preset, a
+/// missing custom document, another schema).
+#[must_use]
+pub fn user_document(
+    settings: &serde_json::Value,
+    moment: settings_store::day_schedule::LocalMoment,
+) -> Option<ThemeDocument> {
+    let appearance = settings.get("appearance")?;
+    let mode = appearance.get(MODE_KEY).and_then(serde_json::Value::as_str);
+    let dark_theme = appearance
+        .get(DARK_THEME_KEY)
+        .and_then(serde_json::Value::as_str);
+    let light_theme = appearance
+        .get(LIGHT_THEME_KEY)
+        .and_then(serde_json::Value::as_str);
+    if mode.is_none() && dark_theme.is_none() && light_theme.is_none() {
+        return None;
+    }
+    let dark = match mode {
+        Some(mode) if settings_store::day_schedule::is_automatic(mode) => {
+            let schedule =
+                settings_store::day_schedule::Scheduled::from_settings(settings.as_object()?);
+            schedule.is_night(moment)
+        }
+        Some("light") => false,
+        Some("dark") | None => true,
+        Some(_) => return None,
+    };
+    let id = if dark {
+        dark_theme.unwrap_or(Preset::Dark.id())
+    } else {
+        light_theme.unwrap_or(Preset::Light.id())
+    };
+    let mut document = match id.strip_prefix("custom:") {
+        Some(custom) => appearance
+            .get(CUSTOM_THEMES_KEY)?
+            .as_array()?
+            .iter()
+            .filter_map(|value| serde_json::from_value::<ThemeDocument>(value.clone()).ok())
+            .find(|document| document.id == custom)?,
+        None => Preset::find(id)?.document(),
+    };
+    document.validate().ok()?;
+    if let Some(density) = appearance
+        .get(DENSITY_KEY)
+        .and_then(serde_json::Value::as_f64)
+    {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a density is a small multiplier; f32 holds it exactly enough"
+        )]
+        let density = density as f32;
+        if density.is_finite() && ThemeDensity::ADMITTED.contains(&density) {
+            document.density.spacing = density;
+        }
+    }
+    Some(document)
+}
+
+/// The person's temperature for workspace `id`, in OKLCH degrees, when they
+/// set one over its wallpaper's (`appearance.workspace_temperatures`).
+#[must_use]
+pub fn workspace_temperature_override(settings: &serde_json::Value, id: &str) -> Option<f32> {
+    let hue = settings
+        .get("appearance")?
+        .get(WORKSPACE_TEMPERATURES_KEY)?
+        .get(id)?
+        .as_f64()?;
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a hue in degrees fits f32 exactly enough"
+    )]
+    let hue = hue as f32;
+    hue.is_finite().then(|| hue.rem_euclid(360.0))
 }
 
 fn accessibility_layer(
@@ -398,9 +473,9 @@ fn bool_field(section: Option<&serde_json::Value>, key: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Flat legacy flags. Missing or non-finite stays at 1 so an older file
-/// still opens. [`AccessibilityLayer::materialize`] clamps a finite value
-/// that sits outside the usable band before resolution applies it.
+/// Flat flags beside the theme. Missing or non-finite stays at 1.
+/// [`AccessibilityLayer::materialize`] clamps a finite value that sits
+/// outside the usable band before resolution applies it.
 fn scale_field(section: Option<&serde_json::Value>, key: &str) -> f32 {
     section
         .and_then(|value| value.get(key)?.as_f64())
@@ -409,63 +484,75 @@ fn scale_field(section: Option<&serde_json::Value>, key: &str) -> f32 {
         .unwrap_or(1.0)
 }
 
-struct PreparedDistribution {
-    theme: Theme,
-    pins_palette: bool,
-    policy: DistributionPolicy,
-}
-
-fn prepare_distribution(defaults: &DistributionDefaults) -> Option<PreparedDistribution> {
-    defaults.validate().ok()?;
-    let theme = if let Some(custom) = &defaults.custom {
-        Theme::from_custom_spec(custom)?
-    } else if let Some(name) = &defaults.palette {
-        Theme::named(name)?
-    } else {
-        Theme::dark()
-    };
-    Some(PreparedDistribution {
-        pins_palette: defaults.policy.pins_palette(),
-        policy: defaults.policy.clone(),
-        theme,
-    })
+/// The user's document with every role the distribution pins taken from
+/// the distribution's.
+fn merge_pins(
+    user: &ThemeDocument,
+    distribution: &ThemeDocument,
+    policy: &DistributionPolicy,
+) -> ThemeDocument {
+    let mut merged = user.clone();
+    if policy.pins(PIN_PALETTE) {
+        merged.palette = distribution.palette;
+        merged.id.clone_from(&distribution.id);
+        merged.name.clone_from(&distribution.name);
+    }
+    if policy.pins(PIN_EMPHASIS) {
+        merged.emphasis = distribution.emphasis;
+    }
+    if policy.pins(PIN_PRESENCE) {
+        merged.presence = distribution.presence;
+    }
+    if policy.pins(PIN_SHAPE) {
+        merged.shape = distribution.shape;
+    }
+    if policy.pins(PIN_DENSITY) {
+        merged.density = distribution.density;
+    }
+    if policy.pins(PIN_TYPE) {
+        merged.type_.clone_from(&distribution.type_);
+    }
+    if policy.pins(PIN_MOTION) {
+        merged.motion = distribution.motion;
+    }
+    if policy.pins(PIN_MATERIAL) {
+        merged.material = distribution.material;
+    }
+    merged
 }
 
 /// Resolve the stack. Order, lowest first:
 ///
-/// 1. built-in defaults ([`Theme::dark`])
+/// 1. built-in defaults ([`Preset::Dark`])
 /// 2. distribution defaults, when [`DistributionDefaults::validate`] accepts them
-/// 3. user theme, except fields named by [`DistributionPolicy::pins`]
-/// 4. the workspace temperature ([`ThemeLayerStack::workspace_hue`])
-/// 5. accessibility, when [`AccessibilityLayer::materialize`] accepts it
-///    (high contrast / forced colours, clamped text and UI scale, reduced
-///    motion, thick caret). A rejected payload leaves the theme unchanged
-///    by this layer
+/// 3. the user's theme, except the roles the distribution pins
+/// 4. the workspace temperature ([`ThemeLayerStack::workspace_hue`]), which
+///    moves the neutral hue only and shows nothing on a palette with chroma 0
+/// 5. accessibility, when [`AccessibilityLayer::materialize`] accepts it:
+///    the high-contrast palette of the theme's polarity (high contrast or
+///    forced colours), clamped text and UI scale, reduced motion, reduced
+///    transparency, thick caret. A rejected payload leaves the theme
+///    unchanged by this layer
+///
+/// The person's own colour is painted through whatever results.
 #[must_use]
 pub fn resolve_theme_layers(stack: &ThemeLayerStack) -> Theme {
     let distribution = stack
         .distribution_defaults
         .as_ref()
-        .and_then(prepare_distribution);
-    let mut theme = distribution
-        .as_ref()
-        .map(|layer| layer.theme.clone())
-        .unwrap_or_else(Theme::dark);
-
-    if let Some(user) = &stack.user_theme {
-        let pin_palette = distribution
-            .as_ref()
-            .is_some_and(|layer| layer.pins_palette);
-        if !pin_palette {
-            theme = user.clone();
-        }
-        if let Some(layer) = &distribution {
-            merge_shared_roles(&mut theme, user, &layer.theme, &layer.policy, pin_palette);
-        }
-    }
-
+        .and_then(|layer| Some((layer.admitted_document()?, layer.policy.clone())));
+    let document = match (&stack.user_theme, &distribution) {
+        (Some(user), Some((dist, policy))) => merge_pins(user, dist, policy),
+        (Some(user), None) => user.clone(),
+        (None, Some((dist, _))) => dist.clone(),
+        (None, None) => Preset::Dark.document(),
+    };
+    let mut theme = Theme::from_document(&document).unwrap_or_else(Theme::dark);
     if let Some(hue) = stack.workspace_hue {
         theme = theme.with_neutral_hue(hue);
+    }
+    if let Some(you) = stack.your_colour {
+        theme = theme.with_your_colour(you);
     }
 
     // A rejected accessibility payload — bad schema, or a non-finite scale —
@@ -474,8 +561,7 @@ pub fn resolve_theme_layers(stack: &ThemeLayerStack) -> Theme {
         return theme;
     };
     if access.high_contrast || access.forced_colors {
-        let you = crate::color::to_rgb8(theme.tokens.colors.intent.you);
-        theme = Theme::high_contrast().with_your_colour(you);
+        theme = theme.with_high_contrast();
     }
     theme.caret_width = if access.thick_caret { 4.0 } else { 2.0 };
     theme
@@ -483,92 +569,6 @@ pub fn resolve_theme_layers(stack: &ThemeLayerStack) -> Theme {
         .with_text_scale(access.text_scale)
         .with_reduce_motion(access.reduce_motion)
         .with_reduce_transparency(access.reduce_transparency)
-}
-
-/// Built-in defaults, distribution defaults, and the user theme carry the
-/// same roles. A pin keeps the distribution value for that role; every
-/// other role stays with whichever layer is on top.
-fn merge_shared_roles(
-    theme: &mut Theme,
-    user: &Theme,
-    distribution: &Theme,
-    policy: &DistributionPolicy,
-    palette_pinned: bool,
-) {
-    // Palette pin already selected `distribution` as the colour track.
-    // Copy the user's unpinned roles onto it. Otherwise `theme` is the
-    // user theme; copy pinned roles back from the distribution.
-    let from_distribution = !palette_pinned;
-    let take = |pinned: bool| {
-        if from_distribution { pinned } else { !pinned }
-    };
-    if take(policy.pins_density()) {
-        let src = if from_distribution {
-            distribution
-        } else {
-            user
-        };
-        theme.tokens.spacing = src.tokens.spacing;
-        theme.padding_standard = src.padding_standard;
-        theme.gap_standard = src.gap_standard;
-    }
-    if take(policy.pins_type()) {
-        let src = if from_distribution {
-            distribution
-        } else {
-            user
-        };
-        theme
-            .tokens
-            .typography
-            .sans_family
-            .clone_from(&src.tokens.typography.sans_family);
-    }
-    if take(policy.pins_motion()) {
-        let src = if from_distribution {
-            distribution
-        } else {
-            user
-        };
-        theme.tokens.motion = src.tokens.motion;
-        theme.tokens.motion_character = src.tokens.motion_character;
-    }
-    if take(policy.pins_material()) {
-        let src = if from_distribution {
-            distribution
-        } else {
-            user
-        };
-        copy_material(theme, src);
-    }
-    if take(policy.pins_icons()) {
-        let src = if from_distribution {
-            distribution
-        } else {
-            user
-        };
-        copy_icons(theme, src);
-    }
-    if take(policy.pins_chrome()) {
-        let src = if from_distribution {
-            distribution
-        } else {
-            user
-        };
-        theme.tokens.metrics.chrome_rule_px = src.tokens.metrics.chrome_rule_px;
-    }
-}
-
-fn copy_material(dst: &mut Theme, src: &Theme) {
-    dst.tokens.elevation = src.tokens.elevation;
-    dst.tokens.colors.surfaces.material_blur_px = src.tokens.colors.surfaces.material_blur_px;
-}
-
-fn copy_icons(dst: &mut Theme, src: &Theme) {
-    dst.tokens.metrics.icon_sm = src.tokens.metrics.icon_sm;
-    dst.tokens.metrics.icon_md = src.tokens.metrics.icon_md;
-    dst.tokens.metrics.icon_lg = src.tokens.metrics.icon_lg;
-    dst.tokens.metrics.icon_label_gap = src.tokens.metrics.icon_label_gap;
 }
 
 /// Tokens a content surface paints with when [`ContentSurface::forced`] is
@@ -618,33 +618,26 @@ mod tests {
 
     fn light_stack() -> ThemeLayerStack {
         ThemeLayerStack {
-            user_theme: Some(Theme::light()),
+            user_theme: Some(Preset::Light.document()),
             ..ThemeLayerStack::default()
         }
     }
 
-    fn spec(id: &str, name: &str) -> CustomThemeSpec {
-        CustomThemeSpec {
-            schema_version: crate::theme::CUSTOM_THEME_SCHEMA_VERSION,
-            id: id.into(),
-            name: name.into(),
-            dark_base: true,
-            neutral_hue: 220.0,
-            spacing_px: 12.0,
-            font: "Inter".into(),
-            motion_scale: 1.0,
-            material_scale: 1.0,
-            icon_scale: 1.0,
-            chrome_weight: 1.0,
-            motion_character: 1.0,
-        }
+    fn house() -> ThemeDocument {
+        let mut doc = Preset::DarkGraphite.document();
+        doc.id = "house".into();
+        doc.name = "House".into();
+        doc.shape.window_radius = 4.0;
+        doc.motion.character = 0.0;
+        doc.density.spacing = 1.25;
+        doc
     }
 
     #[test]
     fn distribution_defaults_replace_the_builtin_theme_and_the_user_wins_unpinned() {
         let theme = resolve_theme_layers(&ThemeLayerStack {
             distribution_defaults: Some(DistributionDefaults {
-                palette: Some("Light".into()),
+                theme: Some("light".into()),
                 ..DistributionDefaults::default()
             }),
             ..ThemeLayerStack::default()
@@ -654,47 +647,76 @@ mod tests {
 
         let user_wins = resolve_theme_layers(&ThemeLayerStack {
             distribution_defaults: Some(DistributionDefaults {
-                palette: Some("Dark".into()),
+                document: Some(house()),
                 ..DistributionDefaults::default()
             }),
             ..light_stack()
         });
         assert_eq!(user_wins.name, Theme::light().name);
+        assert!((user_wins.tokens.radii.tile - 14.0).abs() < 1e-4);
     }
 
     #[test]
-    fn a_palette_pin_keeps_the_distribution_palette() {
+    fn a_pin_keeps_the_distribution_role_and_only_that_role() {
         let pinned = resolve_theme_layers(&ThemeLayerStack {
             distribution_defaults: Some(DistributionDefaults {
-                custom: Some(spec("house", "House")),
+                document: Some(house()),
                 policy: DistributionPolicy {
-                    pins: vec![PIN_PALETTE.into(), "high_contrast".into()],
-                    ..DistributionPolicy::default()
+                    pins: vec![PIN_SHAPE.into(), PIN_MOTION.into(), "high_contrast".into()],
                 },
                 ..DistributionDefaults::default()
             }),
             ..light_stack()
         });
-        assert_eq!(pinned.name, "House");
+        assert_eq!(
+            pinned.bg_app,
+            Theme::light().bg_app,
+            "colour stays the user's"
+        );
+        assert!((pinned.tokens.radii.tile - 4.0).abs() < 1e-4);
+        assert!(pinned.tokens.motion_character.abs() < f32::EPSILON);
+        assert!(
+            (pinned.tokens.spacing.s3 - 12.0).abs() < 1e-4,
+            "density unpinned"
+        );
         assert!(!pinned.colors_are_forced(), "accessibility is not pinnable");
+
+        let palette = resolve_theme_layers(&ThemeLayerStack {
+            distribution_defaults: Some(DistributionDefaults {
+                document: Some(house()),
+                policy: DistributionPolicy {
+                    pins: vec![PIN_PALETTE.into()],
+                },
+                ..DistributionDefaults::default()
+            }),
+            ..light_stack()
+        });
+        assert_eq!(palette.name, "House");
+        assert!(palette.document.palette.dark);
 
         // Alias key `distribution` is the same layer.
         let from_json = Theme::resolved_from_settings(
-            r#"{"appearance":{"theme":"Dark","distribution":{"schema_version":1,"palette":"Light","policy":{"pins":["palette"]}}}}"#,
+            r#"{"appearance":{"mode":"dark","distribution":{"schema_version":2,"theme":"light","policy":{"pins":["palette"]}}}}"#,
         );
         assert_eq!(from_json.name, Theme::light().name);
     }
 
     #[test]
-    fn the_workspace_temperature_tints_the_neutrals_until_accessibility() {
+    fn the_workspace_temperature_tints_a_chromatic_palette_until_accessibility() {
         let warm = resolve_theme_layers(&ThemeLayerStack {
             workspace_hue: Some(40.0),
             ..light_stack()
         });
         assert_eq!(warm.name, Theme::light().name);
-        assert!((warm.tokens.colors.neutral_hue - 40.0).abs() < f32::EPSILON);
+        assert!((warm.document.palette.hue - 40.0).abs() < f32::EPSILON);
         assert_ne!(warm.bg_app, Theme::light().bg_app);
         assert!(audit(&warm.tokens.colors).is_empty());
+
+        let neutral = resolve_theme_layers(&ThemeLayerStack {
+            workspace_hue: Some(40.0),
+            ..ThemeLayerStack::default()
+        });
+        assert_eq!(neutral.bg_app, Theme::dark().bg_app, "chroma 0 shows none");
 
         let forced = resolve_theme_layers(&ThemeLayerStack {
             workspace_hue: Some(40.0),
@@ -704,22 +726,43 @@ mod tests {
             },
             ..light_stack()
         });
-        assert_eq!(forced.name, Theme::high_contrast().name);
-        assert_eq!(forced.bg_app, Theme::high_contrast().bg_app);
+        assert_eq!(forced.name, "High contrast light");
+        assert_eq!(
+            forced.bg_app,
+            Theme::preset(Preset::HighContrastLight).bg_app
+        );
+    }
+
+    #[test]
+    fn the_person_s_colour_rides_every_layer() {
+        let mine = resolve_theme_layers(&ThemeLayerStack {
+            your_colour: Some(PresenceHue::Violet),
+            accessibility: AccessibilityLayer {
+                high_contrast: true,
+                ..AccessibilityLayer::default()
+            },
+            ..light_stack()
+        });
+        assert_eq!(mine.tokens.colors.you, PresenceHue::Violet);
+        assert_eq!(
+            mine.border_focus,
+            mine.tokens.colors.presence.hue(PresenceHue::Violet)
+        );
+        let json = Theme::resolved_from_settings(r#"{"identity":{"colour":"amber"}}"#);
+        assert_eq!(json.tokens.colors.you, PresenceHue::Amber);
     }
 
     #[test]
     fn accessibility_wins_over_pins_and_the_user_theme() {
         let theme = resolve_theme_layers(&ThemeLayerStack {
             distribution_defaults: Some(DistributionDefaults {
-                palette: Some("Light".into()),
+                theme: Some("light".into()),
                 policy: DistributionPolicy {
                     pins: vec![
                         PIN_PALETTE.into(),
                         "text_scale".into(),
                         "high_contrast".into(),
                     ],
-                    ..DistributionPolicy::default()
                 },
                 ..DistributionDefaults::default()
             }),
@@ -728,16 +771,18 @@ mod tests {
                 text_scale: 1.5,
                 ui_scale: 1.25,
                 reduce_motion: true,
+                reduce_transparency: true,
                 thick_caret: true,
                 ..AccessibilityLayer::default()
             },
             ..light_stack()
         });
-        assert_eq!(theme.name, Theme::high_contrast().name);
+        assert_eq!(theme.name, "High contrast light");
         assert!(theme.colors_are_forced());
         assert_eq!(theme.text_scale, 1.5);
         assert_eq!(theme.ui_scale, 1.25);
         assert!(theme.reduce_motion);
+        assert!(theme.reduce_transparency);
         assert_eq!(theme.caret_width, 4.0);
         let surface = theme.content_surface();
         assert!(surface.forced);
@@ -770,7 +815,7 @@ mod tests {
         assert_eq!(theme.caret_width, 2.0);
 
         let from_json = Theme::resolved_from_settings(
-            r#"{"appearance":{"theme":"Light","high_contrast":true,"text_scale":2.0,"accessibility":{"schema_version":99,"high_contrast":true,"forced_colors":true,"text_scale":2.0,"ui_scale":1.5,"reduce_motion":true,"thick_caret":true}}}"#,
+            r#"{"appearance":{"mode":"light","high_contrast":true,"text_scale":2.0,"accessibility":{"schema_version":99,"high_contrast":true,"forced_colors":true,"text_scale":2.0,"ui_scale":1.5,"reduce_motion":true,"thick_caret":true}}}"#,
         );
         assert_eq!(from_json.name, Theme::light().name);
         assert!(!from_json.colors_are_forced());
@@ -807,93 +852,69 @@ mod tests {
     }
 
     #[test]
-    fn distribution_and_the_user_share_the_motion_and_chrome_roles() {
-        let mut slow = spec("slow", "Slow");
-        slow.motion_scale = 0.5;
-        slow.icon_scale = 1.5;
-        slow.chrome_weight = 3.0;
-        let stock = Theme::light().tokens.motion.durations.base_ms;
-        let only = resolve_theme_layers(&ThemeLayerStack {
-            distribution_defaults: Some(DistributionDefaults {
-                custom: Some(slow.clone()),
+    fn rejected_distribution_documents_apply_nothing() {
+        for rejected in [
+            DistributionDefaults {
+                schema_version: 1,
+                theme: Some("light".into()),
                 ..DistributionDefaults::default()
-            }),
-            ..ThemeLayerStack::default()
-        });
-        assert_eq!(only.name, "Slow");
-        assert_eq!(only.tokens.motion.durations.base_ms, stock / 2);
-        assert!((only.tokens.metrics.icon_md - 30.0).abs() < 0.01);
-        assert!((only.tokens.metrics.chrome_rule_px - 3.0).abs() < 0.01);
-
-        let user_wins = resolve_theme_layers(&ThemeLayerStack {
-            distribution_defaults: Some(DistributionDefaults {
-                custom: Some(slow.clone()),
+            },
+            DistributionDefaults {
+                theme: Some("nord".into()),
                 ..DistributionDefaults::default()
-            }),
-            ..light_stack()
-        });
-        assert_eq!(user_wins.bg_app, Theme::light().bg_app);
-        assert_eq!(user_wins.tokens.motion.durations.base_ms, stock);
-        assert!((user_wins.tokens.metrics.chrome_rule_px - 1.0).abs() < 0.01);
-
-        let pinned = resolve_theme_layers(&ThemeLayerStack {
-            distribution_defaults: Some(DistributionDefaults {
-                custom: Some(slow),
+            },
+            DistributionDefaults {
+                theme: Some("light".into()),
                 policy: DistributionPolicy {
-                    pins: vec![PIN_MOTION.into(), PIN_CHROME.into()],
-                    ..DistributionPolicy::default()
+                    pins: vec!["accent".into()],
                 },
                 ..DistributionDefaults::default()
-            }),
-            ..light_stack()
-        });
-        assert_eq!(
-            pinned.bg_app,
-            Theme::light().bg_app,
-            "colour stays the user's"
-        );
-        assert_eq!(pinned.tokens.motion.durations.base_ms, stock / 2);
-        assert!((pinned.tokens.metrics.chrome_rule_px - 3.0).abs() < 0.01);
+            },
+        ] {
+            assert!(rejected.validate().is_err(), "{rejected:?}");
+            let theme = resolve_theme_layers(&ThemeLayerStack {
+                distribution_defaults: Some(rejected),
+                ..ThemeLayerStack::default()
+            });
+            assert_eq!(theme.name, Theme::dark().name);
+        }
     }
 
     #[test]
-    fn rejected_or_out_of_band_distribution_documents() {
-        let mut dense = spec("quiet-ocean", "Quiet Ocean");
-        dense.spacing_px = 2.0;
-        assert!(
-            dense.validate().is_ok(),
-            "2 px is inside the admitted range"
-        );
-        let clamped = resolve_theme_layers(&ThemeLayerStack {
-            distribution_defaults: Some(DistributionDefaults {
-                custom: Some(dense),
-                ..DistributionDefaults::default()
-            }),
-            ..ThemeLayerStack::default()
-        });
-        assert_eq!(clamped.name, "Quiet Ocean");
-        assert_eq!(clamped.tokens.spacing.s3, CustomThemeSpec::SPACING_PX_MIN);
-
-        let future = DistributionDefaults {
-            schema_version: 99,
-            palette: Some("Light".into()),
-            ..DistributionDefaults::default()
+    fn the_user_layer_reads_mode_theme_density_and_overrides() {
+        use settings_store::day_schedule::LocalMoment;
+        let noon = LocalMoment {
+            day_of_year: 100,
+            minute_of_day: 12 * 60,
+            utc_offset_minutes: 0,
         };
-        assert!(future.validate().is_err());
-        let theme = resolve_theme_layers(&ThemeLayerStack {
-            distribution_defaults: Some(future),
-            ..ThemeLayerStack::default()
-        });
-        assert_eq!(theme.name, Theme::dark().name);
+        let read = |json: serde_json::Value| user_document(&json, noon);
+        assert_eq!(read(serde_json::json!({"appearance": {}})), None);
+        assert_eq!(
+            read(serde_json::json!({"appearance": {"mode": "dark"}})).map(|d| d.id),
+            Some("dark".into())
+        );
+        assert_eq!(
+            read(serde_json::json!({"appearance": {"mode": "light", "dark_theme": "dark-soft"}}))
+                .map(|d| d.id),
+            Some("light".into())
+        );
+        assert_eq!(
+            read(serde_json::json!({"appearance": {"mode": "dark", "dark_theme": "nord"}})),
+            None
+        );
+        let dense =
+            read(serde_json::json!({"appearance": {"dark_theme": "dark-cool", "density": 0.85}}))
+                .expect("a dark theme alone means dark mode");
+        assert_eq!(dense.id, "dark-cool");
+        assert!((dense.density.spacing - 0.85).abs() < 1e-6);
+        let ignored = read(serde_json::json!({"appearance": {"mode": "dark", "density": 9.0}}))
+            .expect("dark");
+        assert!((ignored.density.spacing - 1.0).abs() < f32::EPSILON);
 
-        let unknown = resolve_theme_layers(&ThemeLayerStack {
-            distribution_defaults: Some(DistributionDefaults {
-                palette: Some("Nord".into()),
-                ..DistributionDefaults::default()
-            }),
-            ..ThemeLayerStack::default()
-        });
-        assert_eq!(unknown.name, Theme::dark().name);
+        let settings = serde_json::json!({"appearance": {"workspace_temperatures": {"w1": 400.0}}});
+        assert_eq!(workspace_temperature_override(&settings, "w1"), Some(40.0));
+        assert_eq!(workspace_temperature_override(&settings, "w2"), None);
     }
 
     #[test]
@@ -904,9 +925,8 @@ mod tests {
         assert_eq!(open.page, dark.tokens.colors.surfaces.content);
         assert_eq!(open.ink, dark.text_primary);
 
-        let forced = Theme::resolved_from_settings(
-            r#"{"appearance":{"theme":"Light","forced_colors":true}}"#,
-        );
+        let forced =
+            Theme::resolved_from_settings(r#"{"appearance":{"mode":"dark","forced_colors":true}}"#);
         assert!(forced.colors_are_forced());
         assert_eq!(forced.name, Theme::high_contrast().name);
         let surface = forced.content_surface();
@@ -920,7 +940,7 @@ mod tests {
         let settings = dir.path().join("settings.json");
         std::fs::write(
             &settings,
-            r#"{"appearance":{"distribution_defaults":{"palette":"Light"}}}"#,
+            r#"{"appearance":{"distribution_defaults":{"theme":"light"}}}"#,
         )
         .expect("write settings");
         assert_eq!(

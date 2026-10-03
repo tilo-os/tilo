@@ -362,10 +362,10 @@ may never carry more than its shard under `tests/baselines/spacing/` records.
 Every ratchet runs on one engine (`tests/support/ratchet.rs`), so all audits
 see exactly the same production lines; §9.13 lists them.
 
-A custom theme's `spacing_px` is built inside `CustomThemeSpec::SPACING_PX_MIN
-..= SPACING_PX_MAX` (6–22, the Themes app's range) even though the schema
-admits 2–64: the whole scale is proportional to it, and 2 px would put `s1`
-under a pixel.
+A theme's density (`ThemeDocument::density.spacing`) is built inside
+`ThemeDensity::USABLE` (0.75–1.5) even though the schema admits 0.5–2: the
+whole scale is proportional to it, and half the scale would put `s1` at two
+pixels.
 
 ---
 
@@ -649,9 +649,18 @@ these intents (`colors.intent`):
 Links are primary ink with an underline. An "active" icon is primary ink, an
 inactive one secondary ink.
 
-**Your colour** is the local person's presence colour — the colour their
-cursor has for collaborators (`Theme::with_your_colour`; the shell sets it
-from the person's identity, a standalone app from the host accent).
+**Your colour** is the local person's presence colour — one of the twelve
+presence hues (`PresenceHue`), the colour their cursor has for
+collaborators. It is identity, not theme: stored as `identity.colour` or
+derived from the identity, applied with `Theme::with_your_colour(hue)` (the
+shell from the person's identity, a standalone app from the hue nearest the
+host accent). The theme sets only its lightness and chroma.
+
+**Emphasis** is the one theme role that may colour controls: under
+`Emphasis::Tinted { hue }` the `intent.inverted` fill (primary actions, on
+switches, filled tracks) and the selection lift take that hue. Widgets read
+the intents and never ask which emphasis is active; the label of the fill is
+always `intent.on_inverted`.
 
 **The presence palette** is twelve hues at one OKLCH lightness and chroma
 (dark L 0.74 C 0.14, light L 0.58 C 0.15), so no participant looks more
