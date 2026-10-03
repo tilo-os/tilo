@@ -1,0 +1,44 @@
+# Greek: the question mark (a semicolon in form) and the dialogue dash follow
+# the capitals under `case`.
+feature case {
+sub questiongreek by semicolon.case;
+sub horizontalbar by horizontalbar.case;
+} case;
+
+# Round dots for the Greek dotted letters and punctuation, like the Latin ones.
+feature ss01 {
+sub iotadieresis by iotadieresis.ss01;
+sub upsilondieresis by upsilondieresis.ss01;
+sub Iotadieresis by Iotadieresis.ss01;
+sub Upsilondieresis by Upsilondieresis.ss01;
+sub iotadieresistonos by iotadieresistonos.ss01;
+sub upsilondieresistonos by upsilondieresistonos.ss01;
+sub dieresistonos by dieresistonos.ss01;
+sub anoteleia by anoteleia.ss01;
+sub questiongreek by questiongreek.ss01;
+} ss01;
+
+# Ano teleia. Greek text carries U+00B7 MIDDLE DOT: U+0387 normalizes to it
+# (NFC) and Greek keyboards type it. The ano teleia is punctuation: it stands
+# against the end of a word, like a period. A middle dot with a space before
+# it is a separator (`Αρχεία · Ρυθμίσεις`, `12 MB · 3 λεπτά`) and keeps its
+# centred form, so only a middle dot right after a Greek letter takes the
+# ano teleia's form, at the x-height and spaced like a period. These lookups
+# come after ss01's, so its round-dot middle dot is caught too.
+@GreekLetters = [
+	Alpha Beta Gamma Delta Epsilon Zeta Eta Theta Iota Kappa Lambda Mu Nu Xi Omicron Pi Rho Sigma Tau Upsilon Phi Chi Psi Omega
+	Alphatonos Epsilontonos Etatonos Iotatonos Omicrontonos Upsilontonos Omegatonos
+	Iotadieresis Iotadieresis.ss01 Upsilondieresis Upsilondieresis.ss01
+	alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma sigmafinal tau upsilon phi chi psi omega
+	alphatonos epsilontonos etatonos iotatonos omicrontonos upsilontonos omegatonos
+	iotadieresis iotadieresis.ss01 upsilondieresis upsilondieresis.ss01
+	iotadieresistonos iotadieresistonos.ss01 upsilondieresistonos upsilondieresistonos.ss01
+];
+
+feature locl {
+script grek;
+lookup locl_grek_anoteleia {
+	sub @GreekLetters periodcentered' by anoteleia;
+	sub @GreekLetters periodcentered.ss01' by anoteleia.ss01;
+} locl_grek_anoteleia;
+} locl;

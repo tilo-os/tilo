@@ -74,6 +74,92 @@
       <key>Germandbls</key>
       <integer>-13</integer>
     </dict>
+    <key>Alpha</key>
+    <dict>
+      <key>Omega</key>
+      <integer>-44</integer>
+      <key>ampersand</key>
+      <integer>-28</integer>
+      <key>asciicircum</key>
+      <integer>-128</integer>
+      <key>asciitilde</key>
+      <integer>-80</integer>
+      <key>backslash</key>
+      <integer>-124</integer>
+      <key>colon.case</key>
+      <integer>-57</integer>
+      <key>dollar</key>
+      <integer>-41</integer>
+      <key>eight</key>
+      <integer>-24</integer>
+      <key>equal</key>
+      <integer>-68</integer>
+      <key>five</key>
+      <integer>-29</integer>
+      <key>four</key>
+      <integer>-24</integer>
+      <key>less</key>
+      <integer>-88</integer>
+      <key>less_hyphen.liga</key>
+      <integer>-105</integer>
+      <key>multiply</key>
+      <integer>-69</integer>
+      <key>nine</key>
+      <integer>-31</integer>
+      <key>question.case</key>
+      <integer>-108</integer>
+      <key>rho</key>
+      <integer>-28</integer>
+      <key>seven</key>
+      <integer>-75</integer>
+      <key>three</key>
+      <integer>-32</integer>
+      <key>trademark</key>
+      <integer>-144</integer>
+    </dict>
+    <key>Alphatonos</key>
+    <dict>
+      <key>Omega</key>
+      <integer>-44</integer>
+      <key>ampersand</key>
+      <integer>-28</integer>
+      <key>asciicircum</key>
+      <integer>-128</integer>
+      <key>asciitilde</key>
+      <integer>-80</integer>
+      <key>backslash</key>
+      <integer>-124</integer>
+      <key>colon.case</key>
+      <integer>-57</integer>
+      <key>dollar</key>
+      <integer>-41</integer>
+      <key>eight</key>
+      <integer>-24</integer>
+      <key>equal</key>
+      <integer>-68</integer>
+      <key>five</key>
+      <integer>-29</integer>
+      <key>four</key>
+      <integer>-24</integer>
+      <key>less</key>
+      <integer>-88</integer>
+      <key>less_hyphen.liga</key>
+      <integer>-105</integer>
+      <key>multiply</key>
+      <integer>-69</integer>
+      <key>nine</key>
+      <integer>-31</integer>
+      <key>question.case</key>
+      <integer>-108</integer>
+      <key>rho</key>
+      <integer>-28</integer>
+      <key>seven</key>
+      <integer>-75</integer>
+      <key>three</key>
+      <integer>-32</integer>
+      <key>trademark</key>
+      <integer>-144</integer>
+    </dict>
     <key>Aring</key>
     <dict>
       <key>d</key>
@@ -106,6 +192,19 @@
       <key>two.ss10</key>
       <integer>6</integer>
     </dict>
+    <key>Beta</key>
+    <dict>
+      <key>braceright</key>
+      <integer>-49</integer>
+      <key>eight</key>
+      <integer>5</integer>
+      <key>nine</key>
+      <integer>0</integer>
+      <key>seven</key>
+      <integer>-23</integer>
+      <key>two.ss10</key>
+      <integer>6</integer>
+    </dict>
     <key>C</key>
     <dict>
       <key>M.ss06</key>
@@ -118,6 +217,53 @@
       <integer>-14</integer>
       <key>seven</key>
       <integer>-40</integer>
+    </dict>
+    <key>Chi</key>
+    <dict>
+      <key>Omega</key>
+      <integer>-40</integer>
+      <key>asciicircum</key>
+      <integer>-85</integer>
+      <key>at</key>
+      <integer>-67</integer>
+      <key>eight</key>
+      <integer>-34</integer>
+      <key>equal</key>
+      <integer>-93</integer>
+      <key>five</key>
+      <integer>-30</integer>
+      <key>four</key>
+      <integer>-46</integer>
+      <key>greater</key>
+      <integer>-70</integer>
+      <key>iotadieresis</key>
+      <integer>33</integer>
+      <key>iotadieresis.ss01</key>
+      <integer>22</integer>
+      <key>iotadieresistonos</key>
+      <integer>33</integer>
+      <key>iotadieresistonos.ss01</key>
+      <integer>17</integer>
+      <key>less</key>
+      <integer>-128</integer>
+      <key>less_hyphen.liga</key>
+      <integer>-143</integer>
+      <key>multiply</key>
+      <integer>-86</integer>
+      <key>registered</key>
+      <integer>-74</integer>
+      <key>rho</key>
+      <integer>-24</integer>
+      <key>three</key>
+      <integer>-38</integer>
+      <key>trademark</key>
+      <integer>-25</integer>
+      <key>upsilondieresistonos</key>
+      <integer>-52</integer>
+      <key>xi</key>
+      <integer>-54</integer>
+      <key>zeta</key>
+      <integer>-54</integer>
     </dict>
     <key>D</key>
     <dict>
@@ -135,6 +281,49 @@
       <integer>-9</integer>
       <key>trademark</key>
       <integer>-77</integer>
+    </dict>
+    <key>Delta</key>
+    <dict>
+      <key>Omega</key>
+      <integer>-44</integer>
+      <key>ampersand</key>
+      <integer>-28</integer>
+      <key>asciicircum</key>
+      <integer>-128</integer>
+      <key>asciitilde</key>
+      <integer>-80</integer>
+      <key>backslash</key>
+      <integer>-124</integer>
+      <key>colon.case</key>
+      <integer>-57</integer>
+      <key>dollar</key>
+      <integer>-41</integer>
+      <key>eight</key>
+      <integer>-24</integer>
+      <key>equal</key>
+      <integer>-68</integer>
+      <key>five</key>
+      <integer>-29</integer>
+      <key>four</key>
+      <integer>-24</integer>
+      <key>less</key>
+      <integer>-88</integer>
+      <key>less_hyphen.liga</key>
+      <integer>-105</integer>
+      <key>multiply</key>
+      <integer>-69</integer>
+      <key>nine</key>
+      <integer>-31</integer>
+      <key>question.case</key>
+      <integer>-108</integer>
+      <key>rho</key>
+      <integer>-28</integer>
+      <key>seven</key>
+      <integer>-75</integer>
+      <key>three</key>
+      <integer>-32</integer>
+      <key>trademark</key>
+      <integer>-144</integer>
     </dict>
     <key>E</key>
     <dict>
@@ -176,6 +365,90 @@
       <integer>-19</integer>
       <key>two.ss10</key>
       <integer>0</integer>
+    </dict>
+    <key>Epsilon</key>
+    <dict>
+      <key>ampersand</key>
+      <integer>-21</integer>
+      <key>asciicircum</key>
+      <integer>-73</integer>
+      <key>asciitilde</key>
+      <integer>-56</integer>
+      <key>at</key>
+      <integer>-33</integer>
+      <key>colon.case</key>
+      <integer>-48</integer>
+      <key>eight</key>
+      <integer>-17</integer>
+      <key>equal</key>
+      <integer>-53</integer>
+      <key>five</key>
+      <integer>-19</integer>
+      <key>four</key>
+      <integer>-7</integer>
+      <key>multiply</key>
+      <integer>-69</integer>
+      <key>nine</key>
+      <integer>-15</integer>
+      <key>semicolon.case</key>
+      <integer>-41</integer>
+      <key>three</key>
+      <integer>-19</integer>
+      <key>two.ss10</key>
+      <integer>0</integer>
+    </dict>
+    <key>Epsilontonos</key>
+    <dict>
+      <key>ampersand</key>
+      <integer>-21</integer>
+      <key>asciicircum</key>
+      <integer>-73</integer>
+      <key>asciitilde</key>
+      <integer>-56</integer>
+      <key>at</key>
+      <integer>-33</integer>
+      <key>colon.case</key>
+      <integer>-48</integer>
+      <key>eight</key>
+      <integer>-17</integer>
+      <key>equal</key>
+      <integer>-53</integer>
+      <key>five</key>
+      <integer>-19</integer>
+      <key>four</key>
+      <integer>-7</integer>
+      <key>multiply</key>
+      <integer>-69</integer>
+      <key>nine</key>
+      <integer>-15</integer>
+      <key>semicolon.case</key>
+      <integer>-41</integer>
+      <key>three</key>
+      <integer>-19</integer>
+      <key>two.ss10</key>
+      <integer>0</integer>
+    </dict>
+    <key>Eta</key>
+    <dict>
+      <key>iotadieresis</key>
+      <integer>3</integer>
+      <key>iotadieresis.ss01</key>
+      <integer>3</integer>
+      <key>iotadieresistonos</key>
+      <integer>3</integer>
+      <key>iotadieresistonos.ss01</key>
+      <integer>3</integer>
+    </dict>
+    <key>Etatonos</key>
+    <dict>
+      <key>iotadieresis</key>
+      <integer>3</integer>
+      <key>iotadieresis.ss01</key>
+      <integer>3</integer>
+      <key>iotadieresistonos</key>
+      <integer>3</integer>
+      <key>iotadieresistonos.ss01</key>
+      <integer>3</integer>
     </dict>
     <key>F</key>
     <dict>
@@ -224,6 +497,149 @@
       <integer>-43</integer>
       <key>trademark</key>
       <integer>-68</integer>
+    </dict>
+    <key>Gamma</key>
+    <dict>
+      <key>Alphatonos</key>
+      <integer>41</integer>
+      <key>Epsilontonos</key>
+      <integer>41</integer>
+      <key>Etatonos</key>
+      <integer>41</integer>
+      <key>Iotatonos</key>
+      <integer>41</integer>
+      <key>Omegatonos</key>
+      <integer>41</integer>
+      <key>Omicrontonos</key>
+      <integer>41</integer>
+      <key>Upsilontonos</key>
+      <integer>41</integer>
+      <key>alpha</key>
+      <integer>-123</integer>
+      <key>alphatonos</key>
+      <integer>-123</integer>
+      <key>ampersand</key>
+      <integer>-69</integer>
+      <key>ampersand.ss11</key>
+      <integer>-40</integer>
+      <key>asciicircum</key>
+      <integer>-57</integer>
+      <key>asciitilde</key>
+      <integer>-161</integer>
+      <key>at</key>
+      <integer>-67</integer>
+      <key>beta</key>
+      <integer>-2</integer>
+      <key>chi</key>
+      <integer>-101</integer>
+      <key>colon.case</key>
+      <integer>-46</integer>
+      <key>delta</key>
+      <integer>47</integer>
+      <key>dollar</key>
+      <integer>-44</integer>
+      <key>eight</key>
+      <integer>-23</integer>
+      <key>epsilon</key>
+      <integer>-131</integer>
+      <key>epsilontonos</key>
+      <integer>-89</integer>
+      <key>equal</key>
+      <integer>-84</integer>
+      <key>eta</key>
+      <integer>-110</integer>
+      <key>etatonos</key>
+      <integer>-71</integer>
+      <key>five</key>
+      <integer>-35</integer>
+      <key>four</key>
+      <integer>-120</integer>
+      <key>gamma</key>
+      <integer>-92</integer>
+      <key>greater</key>
+      <integer>-38</integer>
+      <key>horizontalbar</key>
+      <integer>-155</integer>
+      <key>horizontalbar.case</key>
+      <integer>-155</integer>
+      <key>iota</key>
+      <integer>-93</integer>
+      <key>iotadieresis</key>
+      <integer>27</integer>
+      <key>iotadieresis.ss01</key>
+      <integer>27</integer>
+      <key>iotadieresistonos</key>
+      <integer>27</integer>
+      <key>iotadieresistonos.ss01</key>
+      <integer>27</integer>
+      <key>iotatonos</key>
+      <integer>-21</integer>
+      <key>kappa</key>
+      <integer>-110</integer>
+      <key>lambda</key>
+      <integer>18</integer>
+      <key>less</key>
+      <integer>-136</integer>
+      <key>less_hyphen.liga</key>
+      <integer>-146</integer>
+      <key>micro</key>
+      <integer>-90</integer>
+      <key>mu</key>
+      <integer>-92</integer>
+      <key>multiply</key>
+      <integer>-67</integer>
+      <key>nu</key>
+      <integer>-92</integer>
+      <key>numbersign</key>
+      <integer>-64</integer>
+      <key>omega</key>
+      <integer>-64</integer>
+      <key>omegatonos</key>
+      <integer>-52</integer>
+      <key>omicron</key>
+      <integer>-119</integer>
+      <key>omicrontonos</key>
+      <integer>-119</integer>
+      <key>periodcentered.loclCAT</key>
+      <integer>-92</integer>
+      <key>phi</key>
+      <integer>-119</integer>
+      <key>pi</key>
+      <integer>-73</integer>
+      <key>psi</key>
+      <integer>-78</integer>
+      <key>registered</key>
+      <integer>-60</integer>
+      <key>rho</key>
+      <integer>-119</integer>
+      <key>sigma</key>
+      <integer>-119</integer>
+      <key>sigmafinal</key>
+      <integer>-119</integer>
+      <key>tau</key>
+      <integer>-67</integer>
+      <key>theta</key>
+      <integer>41</integer>
+      <key>three</key>
+      <integer>-14</integer>
+      <key>two.ss10</key>
+      <integer>-5</integer>
+      <key>upsilon</key>
+      <integer>-78</integer>
+      <key>upsilondieresis</key>
+      <integer>-37</integer>
+      <key>upsilondieresis.ss01</key>
+      <integer>-37</integer>
+      <key>upsilondieresistonos</key>
+      <integer>1</integer>
+      <key>upsilondieresistonos.ss01</key>
+      <integer>1</integer>
+      <key>upsilontonos</key>
+      <integer>-66</integer>
+      <key>xi</key>
+      <integer>57</integer>
+      <key>zeta</key>
+      <integer>58</integer>
     </dict>
     <key>Germandbls</key>
     <dict>
@@ -365,6 +781,42 @@
       <key>Imacron.ss13</key>
       <integer>14</integer>
     </dict>
+    <key>Iota</key>
+    <dict>
+      <key>iotadieresis</key>
+      <integer>3</integer>
+      <key>iotadieresis.ss01</key>
+      <integer>3</integer>
+      <key>iotadieresistonos</key>
+      <integer>3</integer>
+      <key>iotadieresistonos.ss01</key>
+      <integer>3</integer>
+    </dict>
+    <key>Iotadieresis</key>
+    <dict>
+      <key>Iotadieresis</key>
+      <integer>90</integer>
+      <key>Iotadieresis.ss01</key>
+      <integer>90</integer>
+    </dict>
+    <key>Iotadieresis.ss01</key>
+    <dict>
+      <key>Iotadieresis</key>
+      <integer>100</integer>
+      <key>Iotadieresis.ss01</key>
+      <integer>100</integer>
+    </dict>
+    <key>Iotatonos</key>
+    <dict>
+      <key>iotadieresis</key>
+      <integer>3</integer>
+      <key>iotadieresis.ss01</key>
+      <integer>3</integer>
+      <key>iotadieresistonos</key>
+      <integer>3</integer>
+      <key>iotadieresistonos.ss01</key>
+      <integer>3</integer>
+    </dict>
     <key>K</key>
     <dict>
       <key>adieresis</key>
@@ -424,6 +876,57 @@
     <dict>
       <key>ygrave</key>
       <integer>-47</integer>
+    </dict>
+    <key>Kappa</key>
+    <dict>
+      <key>Omega</key>
+      <integer>-38</integer>
+      <key>ampersand</key>
+      <integer>-55</integer>
+      <key>asciicircum</key>
+      <integer>-107</integer>
+      <key>asciitilde</key>
+      <integer>-151</integer>
+      <key>at</key>
+      <integer>-88</integer>
+      <key>colon.case</key>
+      <integer>-90</integer>
+      <key>dollar</key>
+      <integer>-64</integer>
+      <key>eight</key>
+      <integer>-44</integer>
+      <key>equal</key>
+      <integer>-122</integer>
+      <key>five</key>
+      <integer>-45</integer>
+      <key>four</key>
+      <integer>-63</integer>
+      <key>greater</key>
+      <integer>-92</integer>
+      <key>iotadieresis</key>
+      <integer>15</integer>
+      <key>iotadieresis.ss01</key>
+      <integer>4</integer>
+      <key>iotadieresistonos</key>
+      <integer>15</integer>
+      <key>iotadieresistonos.ss01</key>
+      <integer>0</integer>
+      <key>less</key>
+      <integer>-167</integer>
+      <key>less_hyphen.liga</key>
+      <integer>-164</integer>
+      <key>nine</key>
+      <integer>-45</integer>
+      <key>periodcentered.loclCAT</key>
+      <integer>-92</integer>
+      <key>periodcentered.loclCAT.case.ss01</key>
+      <integer>-92</integer>
+      <key>registered</key>
+      <integer>-91</integer>
+      <key>rho</key>
+      <integer>-22</integer>
+      <key>three</key>
+      <integer>-44</integer>
     </dict>
     <key>Kcommaaccent</key>
     <dict>
@@ -512,6 +1015,49 @@
       <key>Idieresis</key>
       <integer>-12</integer>
     </dict>
+    <key>Lambda</key>
+    <dict>
+      <key>Omega</key>
+      <integer>-44</integer>
+      <key>ampersand</key>
+      <integer>-28</integer>
+      <key>asciicircum</key>
+      <integer>-128</integer>
+      <key>asciitilde</key>
+      <integer>-80</integer>
+      <key>backslash</key>
+      <integer>-124</integer>
+      <key>colon.case</key>
+      <integer>-57</integer>
+      <key>dollar</key>
+      <integer>-41</integer>
+      <key>eight</key>
+      <integer>-24</integer>
+      <key>equal</key>
+      <integer>-68</integer>
+      <key>five</key>
+      <integer>-29</integer>
+      <key>four</key>
+      <integer>-24</integer>
+      <key>less</key>
+      <integer>-88</integer>
+      <key>less_hyphen.liga</key>
+      <integer>-105</integer>
+      <key>multiply</key>
+      <integer>-69</integer>
+      <key>nine</key>
+      <integer>-31</integer>
+      <key>question.case</key>
+      <integer>-108</integer>
+      <key>rho</key>
+      <integer>-28</integer>
+      <key>seven</key>
+      <integer>-75</integer>
+      <key>three</key>
+      <integer>-32</integer>
+      <key>trademark</key>
+      <integer>-144</integer>
+    </dict>
     <key>Lcaron</key>
     <dict>
       <key>O</key>
@@ -550,6 +1096,17 @@
       <key>public.kern2.KO_j__top</key>
       <integer>35</integer>
     </dict>
+    <key>Mu</key>
+    <dict>
+      <key>iotadieresis</key>
+      <integer>3</integer>
+      <key>iotadieresis.ss01</key>
+      <integer>3</integer>
+      <key>iotadieresistonos</key>
+      <integer>3</integer>
+      <key>iotadieresistonos.ss01</key>
+      <integer>3</integer>
+    </dict>
     <key>N</key>
     <dict>
       <key>public.kern2.KO_agrave__stack</key>
@@ -557,10 +1114,133 @@
       <key>public.kern2.KO_j__top</key>
       <integer>35</integer>
     </dict>
+    <key>Nu</key>
+    <dict>
+      <key>iotadieresis</key>
+      <integer>3</integer>
+      <key>iotadieresis.ss01</key>
+      <integer>3</integer>
+      <key>iotadieresistonos</key>
+      <integer>3</integer>
+      <key>iotadieresistonos.ss01</key>
+      <integer>3</integer>
+    </dict>
     <key>O</key>
     <dict>
       <key>M.ss06</key>
       <integer>-13</integer>
+      <key>asciicircum</key>
+      <integer>-50</integer>
+      <key>braceright</key>
+      <integer>-70</integer>
+      <key>bracketright.case</key>
+      <integer>-80</integer>
+      <key>seven</key>
+      <integer>-53</integer>
+      <key>trademark</key>
+      <integer>-74</integer>
+    </dict>
+    <key>Omega</key>
+    <dict>
+      <key>Alpha</key>
+      <integer>-44</integer>
+      <key>Chi</key>
+      <integer>-40</integer>
+      <key>Delta</key>
+      <integer>-44</integer>
+      <key>Lambda</key>
+      <integer>-44</integer>
+      <key>asciicircum</key>
+      <integer>-50</integer>
+      <key>braceright</key>
+      <integer>-24</integer>
+      <key>bracketright</key>
+      <integer>-26</integer>
+      <key>bracketright.case</key>
+      <integer>-22</integer>
+      <key>comma</key>
+      <integer>-43</integer>
+      <key>comma.ss01</key>
+      <integer>-27</integer>
+      <key>ellipsis.ss01</key>
+      <integer>-26</integer>
+      <key>guillemetright</key>
+      <integer>-33</integer>
+      <key>parenright</key>
+      <integer>-43</integer>
+      <key>parenright.case</key>
+      <integer>0</integer>
+      <key>period</key>
+      <integer>-43</integer>
+      <key>period.ss01</key>
+      <integer>-25</integer>
+      <key>seven</key>
+      <integer>-53</integer>
+      <key>slash</key>
+      <integer>-3</integer>
+      <key>trademark</key>
+      <integer>-74</integer>
+      <key>underscore</key>
+      <integer>-136</integer>
+    </dict>
+    <key>Omegatonos</key>
+    <dict>
+      <key>Alpha</key>
+      <integer>-44</integer>
+      <key>Chi</key>
+      <integer>-40</integer>
+      <key>Delta</key>
+      <integer>-44</integer>
+      <key>Lambda</key>
+      <integer>-44</integer>
+      <key>asciicircum</key>
+      <integer>-50</integer>
+      <key>braceright</key>
+      <integer>-24</integer>
+      <key>bracketright</key>
+      <integer>-26</integer>
+      <key>bracketright.case</key>
+      <integer>-22</integer>
+      <key>comma</key>
+      <integer>-43</integer>
+      <key>comma.ss01</key>
+      <integer>-27</integer>
+      <key>ellipsis.ss01</key>
+      <integer>-26</integer>
+      <key>guillemetright</key>
+      <integer>-33</integer>
+      <key>parenright</key>
+      <integer>-43</integer>
+      <key>parenright.case</key>
+      <integer>0</integer>
+      <key>period</key>
+      <integer>-43</integer>
+      <key>period.ss01</key>
+      <integer>-25</integer>
+      <key>seven</key>
+      <integer>-53</integer>
+      <key>slash</key>
+      <integer>-3</integer>
+      <key>trademark</key>
+      <integer>-74</integer>
+      <key>underscore</key>
+      <integer>-136</integer>
+    </dict>
+    <key>Omicron</key>
+    <dict>
+      <key>asciicircum</key>
+      <integer>-50</integer>
+      <key>braceright</key>
+      <integer>-70</integer>
+      <key>bracketright.case</key>
+      <integer>-80</integer>
+      <key>seven</key>
+      <integer>-53</integer>
+      <key>trademark</key>
+      <integer>-74</integer>
+    </dict>
+    <key>Omicrontonos</key>
+    <dict>
       <key>asciicircum</key>
       <integer>-50</integer>
       <key>braceright</key>
@@ -612,6 +1292,51 @@
       <key>seven</key>
       <integer>-6</integer>
     </dict>
+    <key>Phi</key>
+    <dict>
+      <key>asciicircum</key>
+      <integer>-50</integer>
+      <key>braceright</key>
+      <integer>-70</integer>
+      <key>bracketright.case</key>
+      <integer>-80</integer>
+      <key>seven</key>
+      <integer>-53</integer>
+      <key>trademark</key>
+      <integer>-74</integer>
+    </dict>
+    <key>Pi</key>
+    <dict>
+      <key>iotadieresis</key>
+      <integer>3</integer>
+      <key>iotadieresis.ss01</key>
+      <integer>3</integer>
+      <key>iotadieresistonos</key>
+      <integer>3</integer>
+      <key>iotadieresistonos.ss01</key>
+      <integer>3</integer>
+    </dict>
+    <key>Psi</key>
+    <dict>
+      <key>Alphatonos</key>
+      <integer>31</integer>
+      <key>Epsilontonos</key>
+      <integer>31</integer>
+      <key>Etatonos</key>
+      <integer>31</integer>
+      <key>Iotatonos</key>
+      <integer>31</integer>
+      <key>Omegatonos</key>
+      <integer>31</integer>
+      <key>Omicrontonos</key>
+      <integer>31</integer>
+      <key>Upsilontonos</key>
+      <integer>31</integer>
+      <key>asciitilde</key>
+      <integer>-29</integer>
+      <key>colon.case</key>
+      <integer>-11</integer>
+    </dict>
     <key>Q</key>
     <dict>
       <key>Dcroat</key>
@@ -647,6 +1372,37 @@
       <key>two.ss10</key>
       <integer>10</integer>
     </dict>
+    <key>Rho</key>
+    <dict>
+      <key>Alphatonos</key>
+      <integer>21</integer>
+      <key>Epsilontonos</key>
+      <integer>21</integer>
+      <key>Etatonos</key>
+      <integer>21</integer>
+      <key>Iotatonos</key>
+      <integer>21</integer>
+      <key>Omegatonos</key>
+      <integer>21</integer>
+      <key>Omicrontonos</key>
+      <integer>21</integer>
+      <key>Upsilontonos</key>
+      <integer>21</integer>
+      <key>ampersand</key>
+      <integer>-40</integer>
+      <key>ellipsis</key>
+      <integer>-157</integer>
+      <key>five</key>
+      <integer>-18</integer>
+      <key>four</key>
+      <integer>-57</integer>
+      <key>iotadieresis</key>
+      <integer>16</integer>
+      <key>iotadieresistonos</key>
+      <integer>16</integer>
+      <key>seven</key>
+      <integer>-6</integer>
+    </dict>
     <key>S</key>
     <dict>
       <key>dollar</key>
@@ -671,6 +1427,45 @@
     <key>Scaron</key>
     <dict>
       <key>imacron</key>
+      <integer>0</integer>
+    </dict>
+    <key>Sigma</key>
+    <dict>
+      <key>ampersand</key>
+      <integer>-21</integer>
+      <key>asciicircum</key>
+      <integer>-73</integer>
+      <key>asciitilde</key>
+      <integer>-56</integer>
+      <key>at</key>
+      <integer>-33</integer>
+      <key>colon.case</key>
+      <integer>-48</integer>
+      <key>eight</key>
+      <integer>-17</integer>
+      <key>equal</key>
+      <integer>-53</integer>
+      <key>five</key>
+      <integer>-19</integer>
+      <key>four</key>
+      <integer>-7</integer>
+      <key>iotadieresis</key>
+      <integer>22</integer>
+      <key>iotadieresis.ss01</key>
+      <integer>22</integer>
+      <key>iotadieresistonos</key>
+      <integer>22</integer>
+      <key>iotadieresistonos.ss01</key>
+      <integer>22</integer>
+      <key>multiply</key>
+      <integer>-69</integer>
+      <key>nine</key>
+      <integer>-15</integer>
+      <key>semicolon.case</key>
+      <integer>-41</integer>
+      <key>three</key>
+      <integer>-19</integer>
+      <key>two.ss10</key>
       <integer>0</integer>
     </dict>
     <key>T</key>
@@ -814,6 +1609,115 @@
       <key>z</key>
       <integer>-90</integer>
     </dict>
+    <key>Tau</key>
+    <dict>
+      <key>Alphatonos</key>
+      <integer>41</integer>
+      <key>Epsilontonos</key>
+      <integer>41</integer>
+      <key>Etatonos</key>
+      <integer>41</integer>
+      <key>Iotatonos</key>
+      <integer>41</integer>
+      <key>Omegatonos</key>
+      <integer>41</integer>
+      <key>Omicrontonos</key>
+      <integer>41</integer>
+      <key>Tau</key>
+      <integer>5</integer>
+      <key>Upsilontonos</key>
+      <integer>41</integer>
+      <key>ampersand</key>
+      <integer>-69</integer>
+      <key>ampersand.ss11</key>
+      <integer>-40</integer>
+      <key>asciicircum</key>
+      <integer>-57</integer>
+      <key>asciitilde</key>
+      <integer>-161</integer>
+      <key>at</key>
+      <integer>-67</integer>
+      <key>colon.case</key>
+      <integer>-46</integer>
+      <key>delta</key>
+      <integer>-70</integer>
+      <key>dollar</key>
+      <integer>-44</integer>
+      <key>eight</key>
+      <integer>-23</integer>
+      <key>epsilontonos</key>
+      <integer>-95</integer>
+      <key>equal</key>
+      <integer>-84</integer>
+      <key>eta</key>
+      <integer>-108</integer>
+      <key>five</key>
+      <integer>-35</integer>
+      <key>four</key>
+      <integer>-120</integer>
+      <key>greater</key>
+      <integer>-38</integer>
+      <key>iota</key>
+      <integer>-91</integer>
+      <key>iotadieresis</key>
+      <integer>37</integer>
+      <key>iotadieresis.ss01</key>
+      <integer>37</integer>
+      <key>iotadieresistonos</key>
+      <integer>37</integer>
+      <key>iotadieresistonos.ss01</key>
+      <integer>37</integer>
+      <key>iotatonos</key>
+      <integer>-19</integer>
+      <key>kappa</key>
+      <integer>-108</integer>
+      <key>less</key>
+      <integer>-136</integer>
+      <key>less_hyphen.liga</key>
+      <integer>-146</integer>
+      <key>micro</key>
+      <integer>-90</integer>
+      <key>mu</key>
+      <integer>-90</integer>
+      <key>multiply</key>
+      <integer>-67</integer>
+      <key>numbersign</key>
+      <integer>-64</integer>
+      <key>omega</key>
+      <integer>-90</integer>
+      <key>omegatonos</key>
+      <integer>-90</integer>
+      <key>periodcentered.loclCAT</key>
+      <integer>-92</integer>
+      <key>pi</key>
+      <integer>-108</integer>
+      <key>psi</key>
+      <integer>-90</integer>
+      <key>registered</key>
+      <integer>-60</integer>
+      <key>theta</key>
+      <integer>-86</integer>
+      <key>three</key>
+      <integer>-14</integer>
+      <key>two.ss10</key>
+      <integer>-5</integer>
+      <key>upsilon</key>
+      <integer>-90</integer>
+      <key>upsilondieresis</key>
+      <integer>-51</integer>
+      <key>upsilondieresis.ss01</key>
+      <integer>-51</integer>
+      <key>upsilondieresistonos</key>
+      <integer>-51</integer>
+      <key>upsilondieresistonos.ss01</key>
+      <integer>-51</integer>
+      <key>upsilontonos</key>
+      <integer>-90</integer>
+      <key>xi</key>
+      <integer>-31</integer>
+      <key>zeta</key>
+      <integer>-31</integer>
+    </dict>
     <key>Tcaron</key>
     <dict>
       <key>a.ss02</key>
@@ -838,6 +1742,19 @@
       <integer>-78</integer>
       <key>u</key>
       <integer>-90</integer>
+    </dict>
+    <key>Theta</key>
+    <dict>
+      <key>asciicircum</key>
+      <integer>-50</integer>
+      <key>braceright</key>
+      <integer>-70</integer>
+      <key>bracketright.case</key>
+      <integer>-80</integer>
+      <key>seven</key>
+      <integer>-53</integer>
+      <key>trademark</key>
+      <integer>-74</integer>
     </dict>
     <key>Thorn</key>
     <dict>
@@ -900,6 +1817,312 @@
       <integer>-29</integer>
       <key>colon.case</key>
       <integer>-11</integer>
+    </dict>
+    <key>Upsilon</key>
+    <dict>
+      <key>Alphatonos</key>
+      <integer>41</integer>
+      <key>Epsilontonos</key>
+      <integer>41</integer>
+      <key>Etatonos</key>
+      <integer>41</integer>
+      <key>Iotatonos</key>
+      <integer>41</integer>
+      <key>Omegatonos</key>
+      <integer>41</integer>
+      <key>Omicrontonos</key>
+      <integer>41</integer>
+      <key>Upsilontonos</key>
+      <integer>41</integer>
+      <key>ampersand</key>
+      <integer>-89</integer>
+      <key>asciicircum</key>
+      <integer>-73</integer>
+      <key>asciitilde</key>
+      <integer>-141</integer>
+      <key>at</key>
+      <integer>-78</integer>
+      <key>eight</key>
+      <integer>-44</integer>
+      <key>equal</key>
+      <integer>-80</integer>
+      <key>eta</key>
+      <integer>-84</integer>
+      <key>five</key>
+      <integer>-35</integer>
+      <key>four</key>
+      <integer>-131</integer>
+      <key>iotadieresis</key>
+      <integer>42</integer>
+      <key>iotadieresis.ss01</key>
+      <integer>31</integer>
+      <key>iotadieresistonos</key>
+      <integer>42</integer>
+      <key>iotadieresistonos.ss01</key>
+      <integer>26</integer>
+      <key>kappa</key>
+      <integer>-84</integer>
+      <key>less</key>
+      <integer>-115</integer>
+      <key>less_hyphen.liga</key>
+      <integer>-141</integer>
+      <key>micro</key>
+      <integer>-88</integer>
+      <key>mu</key>
+      <integer>-88</integer>
+      <key>nine</key>
+      <integer>-38</integer>
+      <key>numbersign</key>
+      <integer>-76</integer>
+      <key>omega</key>
+      <integer>-88</integer>
+      <key>omegatonos</key>
+      <integer>-88</integer>
+      <key>pi</key>
+      <integer>-84</integer>
+      <key>psi</key>
+      <integer>-88</integer>
+      <key>registered</key>
+      <integer>-71</integer>
+      <key>three</key>
+      <integer>-43</integer>
+      <key>two.ss10</key>
+      <integer>-36</integer>
+      <key>upsilon</key>
+      <integer>-88</integer>
+      <key>upsilondieresis</key>
+      <integer>-54</integer>
+      <key>upsilondieresis.ss01</key>
+      <integer>-54</integer>
+      <key>upsilondieresistonos</key>
+      <integer>-52</integer>
+      <key>upsilondieresistonos.ss01</key>
+      <integer>-54</integer>
+      <key>upsilontonos</key>
+      <integer>-88</integer>
+      <key>xi</key>
+      <integer>-31</integer>
+      <key>zeta</key>
+      <integer>-31</integer>
+    </dict>
+    <key>Upsilondieresis</key>
+    <dict>
+      <key>ampersand</key>
+      <integer>-89</integer>
+      <key>asciicircum</key>
+      <integer>-73</integer>
+      <key>asciitilde</key>
+      <integer>-141</integer>
+      <key>at</key>
+      <integer>-78</integer>
+      <key>eight</key>
+      <integer>-44</integer>
+      <key>equal</key>
+      <integer>-80</integer>
+      <key>eta</key>
+      <integer>-84</integer>
+      <key>five</key>
+      <integer>-35</integer>
+      <key>four</key>
+      <integer>-131</integer>
+      <key>iotadieresis</key>
+      <integer>42</integer>
+      <key>iotadieresis.ss01</key>
+      <integer>31</integer>
+      <key>iotadieresistonos</key>
+      <integer>42</integer>
+      <key>iotadieresistonos.ss01</key>
+      <integer>26</integer>
+      <key>kappa</key>
+      <integer>-84</integer>
+      <key>less</key>
+      <integer>-115</integer>
+      <key>less_hyphen.liga</key>
+      <integer>-141</integer>
+      <key>micro</key>
+      <integer>-88</integer>
+      <key>mu</key>
+      <integer>-88</integer>
+      <key>nine</key>
+      <integer>-38</integer>
+      <key>numbersign</key>
+      <integer>-76</integer>
+      <key>omega</key>
+      <integer>-88</integer>
+      <key>omegatonos</key>
+      <integer>-88</integer>
+      <key>pi</key>
+      <integer>-84</integer>
+      <key>psi</key>
+      <integer>-88</integer>
+      <key>registered</key>
+      <integer>-71</integer>
+      <key>three</key>
+      <integer>-43</integer>
+      <key>two.ss10</key>
+      <integer>-36</integer>
+      <key>upsilon</key>
+      <integer>-88</integer>
+      <key>upsilondieresis</key>
+      <integer>-54</integer>
+      <key>upsilondieresis.ss01</key>
+      <integer>-54</integer>
+      <key>upsilondieresistonos</key>
+      <integer>-52</integer>
+      <key>upsilondieresistonos.ss01</key>
+      <integer>-54</integer>
+      <key>upsilontonos</key>
+      <integer>-88</integer>
+      <key>xi</key>
+      <integer>-31</integer>
+      <key>zeta</key>
+      <integer>-31</integer>
+    </dict>
+    <key>Upsilondieresis.ss01</key>
+    <dict>
+      <key>ampersand</key>
+      <integer>-89</integer>
+      <key>asciicircum</key>
+      <integer>-73</integer>
+      <key>asciitilde</key>
+      <integer>-141</integer>
+      <key>at</key>
+      <integer>-78</integer>
+      <key>eight</key>
+      <integer>-44</integer>
+      <key>equal</key>
+      <integer>-80</integer>
+      <key>eta</key>
+      <integer>-84</integer>
+      <key>five</key>
+      <integer>-35</integer>
+      <key>four</key>
+      <integer>-131</integer>
+      <key>iotadieresis</key>
+      <integer>42</integer>
+      <key>iotadieresis.ss01</key>
+      <integer>31</integer>
+      <key>iotadieresistonos</key>
+      <integer>42</integer>
+      <key>iotadieresistonos.ss01</key>
+      <integer>26</integer>
+      <key>kappa</key>
+      <integer>-84</integer>
+      <key>less</key>
+      <integer>-115</integer>
+      <key>less_hyphen.liga</key>
+      <integer>-141</integer>
+      <key>micro</key>
+      <integer>-88</integer>
+      <key>mu</key>
+      <integer>-88</integer>
+      <key>nine</key>
+      <integer>-38</integer>
+      <key>numbersign</key>
+      <integer>-76</integer>
+      <key>omega</key>
+      <integer>-88</integer>
+      <key>omegatonos</key>
+      <integer>-88</integer>
+      <key>pi</key>
+      <integer>-84</integer>
+      <key>psi</key>
+      <integer>-88</integer>
+      <key>registered</key>
+      <integer>-71</integer>
+      <key>three</key>
+      <integer>-43</integer>
+      <key>two.ss10</key>
+      <integer>-36</integer>
+      <key>upsilon</key>
+      <integer>-88</integer>
+      <key>upsilondieresis</key>
+      <integer>-54</integer>
+      <key>upsilondieresis.ss01</key>
+      <integer>-54</integer>
+      <key>upsilondieresistonos</key>
+      <integer>-52</integer>
+      <key>upsilondieresistonos.ss01</key>
+      <integer>-54</integer>
+      <key>upsilontonos</key>
+      <integer>-88</integer>
+      <key>xi</key>
+      <integer>-45</integer>
+      <key>zeta</key>
+      <integer>-45</integer>
+    </dict>
+    <key>Upsilontonos</key>
+    <dict>
+      <key>ampersand</key>
+      <integer>-89</integer>
+      <key>asciicircum</key>
+      <integer>-73</integer>
+      <key>asciitilde</key>
+      <integer>-141</integer>
+      <key>at</key>
+      <integer>-78</integer>
+      <key>eight</key>
+      <integer>-44</integer>
+      <key>equal</key>
+      <integer>-80</integer>
+      <key>eta</key>
+      <integer>-84</integer>
+      <key>five</key>
+      <integer>-35</integer>
+      <key>four</key>
+      <integer>-131</integer>
+      <key>iotadieresis</key>
+      <integer>42</integer>
+      <key>iotadieresis.ss01</key>
+      <integer>31</integer>
+      <key>iotadieresistonos</key>
+      <integer>42</integer>
+      <key>iotadieresistonos.ss01</key>
+      <integer>26</integer>
+      <key>kappa</key>
+      <integer>-84</integer>
+      <key>less</key>
+      <integer>-115</integer>
+      <key>less_hyphen.liga</key>
+      <integer>-141</integer>
+      <key>micro</key>
+      <integer>-88</integer>
+      <key>mu</key>
+      <integer>-88</integer>
+      <key>nine</key>
+      <integer>-38</integer>
+      <key>numbersign</key>
+      <integer>-76</integer>
+      <key>omega</key>
+      <integer>-88</integer>
+      <key>omegatonos</key>
+      <integer>-88</integer>
+      <key>pi</key>
+      <integer>-84</integer>
+      <key>psi</key>
+      <integer>-88</integer>
+      <key>registered</key>
+      <integer>-71</integer>
+      <key>three</key>
+      <integer>-43</integer>
+      <key>two.ss10</key>
+      <integer>-36</integer>
+      <key>upsilon</key>
+      <integer>-88</integer>
+      <key>upsilondieresis</key>
+      <integer>-54</integer>
+      <key>upsilondieresis.ss01</key>
+      <integer>-54</integer>
+      <key>upsilondieresistonos</key>
+      <integer>-52</integer>
+      <key>upsilondieresistonos.ss01</key>
+      <integer>-54</integer>
+      <key>upsilontonos</key>
+      <integer>-88</integer>
+      <key>xi</key>
+      <integer>-45</integer>
+      <key>zeta</key>
+      <integer>-45</integer>
     </dict>
     <key>V</key>
     <dict>
@@ -1016,6 +2239,65 @@
       <key>trademark</key>
       <integer>-25</integer>
     </dict>
+    <key>Xi</key>
+    <dict>
+      <key>asciicircum</key>
+      <integer>-65</integer>
+      <key>at</key>
+      <integer>-51</integer>
+      <key>divide</key>
+      <integer>-100</integer>
+      <key>dollar</key>
+      <integer>-31</integer>
+      <key>eight</key>
+      <integer>-12</integer>
+      <key>emdash</key>
+      <integer>-102</integer>
+      <key>emdash.case</key>
+      <integer>-103</integer>
+      <key>endash</key>
+      <integer>-102</integer>
+      <key>endash.case</key>
+      <integer>-103</integer>
+      <key>equal</key>
+      <integer>-61</integer>
+      <key>five</key>
+      <integer>-18</integer>
+      <key>four</key>
+      <integer>-5</integer>
+      <key>guillemetleft</key>
+      <integer>-74</integer>
+      <key>guilsinglleft</key>
+      <integer>-74</integer>
+      <key>horizontalbar</key>
+      <integer>-102</integer>
+      <key>hyphen</key>
+      <integer>-99</integer>
+      <key>hyphen.case</key>
+      <integer>-105</integer>
+      <key>hyphen_greater.liga</key>
+      <integer>-106</integer>
+      <key>iotadieresis</key>
+      <integer>0</integer>
+      <key>iotadieresistonos</key>
+      <integer>0</integer>
+      <key>less</key>
+      <integer>-98</integer>
+      <key>less_hyphen.liga</key>
+      <integer>-93</integer>
+      <key>minus</key>
+      <integer>-100</integer>
+      <key>nine</key>
+      <integer>-11</integer>
+      <key>parenleft.case</key>
+      <integer>-58</integer>
+      <key>plus</key>
+      <integer>-100</integer>
+      <key>registered</key>
+      <integer>-48</integer>
+      <key>three</key>
+      <integer>-16</integer>
+    </dict>
     <key>Y</key>
     <dict>
       <key>M.ss06</key>
@@ -1112,6 +2394,41 @@
       <key>three</key>
       <integer>-16</integer>
     </dict>
+    <key>Zeta</key>
+    <dict>
+      <key>asciicircum</key>
+      <integer>-65</integer>
+      <key>at</key>
+      <integer>-51</integer>
+      <key>dollar</key>
+      <integer>-31</integer>
+      <key>eight</key>
+      <integer>-12</integer>
+      <key>equal</key>
+      <integer>-61</integer>
+      <key>five</key>
+      <integer>-18</integer>
+      <key>four</key>
+      <integer>-5</integer>
+      <key>iotadieresis</key>
+      <integer>13</integer>
+      <key>iotadieresis.ss01</key>
+      <integer>13</integer>
+      <key>iotadieresistonos</key>
+      <integer>13</integer>
+      <key>iotadieresistonos.ss01</key>
+      <integer>13</integer>
+      <key>less</key>
+      <integer>-100</integer>
+      <key>less_hyphen.liga</key>
+      <integer>-125</integer>
+      <key>nine</key>
+      <integer>-11</integer>
+      <key>registered</key>
+      <integer>-48</integer>
+      <key>three</key>
+      <integer>-16</integer>
+    </dict>
     <key>a</key>
     <dict>
       <key>T</key>
@@ -1171,9 +2488,125 @@
       <key>quotesingle</key>
       <integer>-96</integer>
     </dict>
+    <key>alpha</key>
+    <dict>
+      <key>Chi</key>
+      <integer>-31</integer>
+      <key>Tau</key>
+      <integer>-91</integer>
+      <key>asciicircum</key>
+      <integer>-57</integer>
+      <key>asciitilde</key>
+      <integer>-41</integer>
+      <key>braceright</key>
+      <integer>-36</integer>
+      <key>bracketright</key>
+      <integer>-36</integer>
+      <key>colon</key>
+      <integer>-15</integer>
+      <key>colon.ss01</key>
+      <integer>-13</integer>
+      <key>comma</key>
+      <integer>-28</integer>
+      <key>comma.ss01</key>
+      <integer>-26</integer>
+      <key>ellipsis.ss01</key>
+      <integer>-26</integer>
+      <key>exclam</key>
+      <integer>-29</integer>
+      <key>exclam.case</key>
+      <integer>-29</integer>
+      <key>exclam.ss01</key>
+      <integer>-23</integer>
+      <key>guillemetright</key>
+      <integer>-30</integer>
+      <key>guilsinglright</key>
+      <integer>-30</integer>
+      <key>idotaccent</key>
+      <integer>-18</integer>
+      <key>idotaccent.ss01</key>
+      <integer>-18</integer>
+      <key>period</key>
+      <integer>-28</integer>
+      <key>period.ss01</key>
+      <integer>-26</integer>
+      <key>quotesingle</key>
+      <integer>-60</integer>
+      <key>semicolon</key>
+      <integer>-15</integer>
+      <key>semicolon.ss01</key>
+      <integer>-13</integer>
+      <key>seven</key>
+      <integer>-84</integer>
+      <key>slash</key>
+      <integer>-30</integer>
+      <key>trademark</key>
+      <integer>-93</integer>
+      <key>underscore</key>
+      <integer>-63</integer>
+    </dict>
+    <key>alphatonos</key>
+    <dict>
+      <key>Chi</key>
+      <integer>-31</integer>
+      <key>Tau</key>
+      <integer>-91</integer>
+      <key>asciicircum</key>
+      <integer>-57</integer>
+      <key>asciitilde</key>
+      <integer>-41</integer>
+      <key>braceright</key>
+      <integer>-36</integer>
+      <key>bracketright</key>
+      <integer>-36</integer>
+      <key>colon</key>
+      <integer>-15</integer>
+      <key>colon.ss01</key>
+      <integer>-13</integer>
+      <key>comma</key>
+      <integer>-28</integer>
+      <key>comma.ss01</key>
+      <integer>-26</integer>
+      <key>ellipsis.ss01</key>
+      <integer>-26</integer>
+      <key>exclam</key>
+      <integer>-29</integer>
+      <key>exclam.case</key>
+      <integer>-29</integer>
+      <key>exclam.ss01</key>
+      <integer>-23</integer>
+      <key>guillemetright</key>
+      <integer>-30</integer>
+      <key>guilsinglright</key>
+      <integer>-30</integer>
+      <key>idotaccent</key>
+      <integer>-18</integer>
+      <key>idotaccent.ss01</key>
+      <integer>-18</integer>
+      <key>period</key>
+      <integer>-28</integer>
+      <key>period.ss01</key>
+      <integer>-26</integer>
+      <key>quotesingle</key>
+      <integer>-60</integer>
+      <key>semicolon</key>
+      <integer>-15</integer>
+      <key>semicolon.ss01</key>
+      <integer>-13</integer>
+      <key>seven</key>
+      <integer>-84</integer>
+      <key>slash</key>
+      <integer>-30</integer>
+      <key>trademark</key>
+      <integer>-93</integer>
+      <key>underscore</key>
+      <integer>-63</integer>
+    </dict>
     <key>ampersand</key>
     <dict>
       <key>B</key>
+      <integer>-11</integer>
+      <key>Beta</key>
       <integer>-11</integer>
       <key>C</key>
       <integer>-23</integer>
@@ -1181,10 +2614,26 @@
       <integer>-22</integer>
       <key>O</key>
       <integer>-23</integer>
+      <key>Omega</key>
+      <integer>0</integer>
+      <key>Omicron</key>
+      <integer>-23</integer>
+      <key>Phi</key>
+      <integer>-23</integer>
       <key>S</key>
       <integer>-44</integer>
       <key>T</key>
       <integer>-127</integer>
+      <key>Tau</key>
+      <integer>-127</integer>
+      <key>Theta</key>
+      <integer>-23</integer>
+      <key>Upsilon</key>
+      <integer>-132</integer>
+      <key>Upsilondieresis</key>
+      <integer>-132</integer>
+      <key>Upsilondieresis.ss01</key>
+      <integer>-132</integer>
       <key>V</key>
       <integer>-98</integer>
       <key>W</key>
@@ -1197,13 +2646,53 @@
       <integer>-54</integer>
       <key>t</key>
       <integer>-31</integer>
+      <key>tau</key>
+      <integer>-31</integer>
     </dict>
     <key>ampersand.ss11</key>
     <dict>
       <key>A</key>
       <integer>-66</integer>
+      <key>Alpha</key>
+      <integer>-66</integer>
+      <key>Delta</key>
+      <integer>-66</integer>
+      <key>Lambda</key>
+      <integer>-66</integer>
       <key>T</key>
       <integer>-103</integer>
+      <key>Tau</key>
+      <integer>-103</integer>
+    </dict>
+    <key>anoteleia</key>
+    <dict>
+      <key>question</key>
+      <integer>-124</integer>
+      <key>quotedblright</key>
+      <integer>-142</integer>
+    </dict>
+    <key>anoteleia.ss01</key>
+    <dict>
+      <key>braceright</key>
+      <integer>-61</integer>
+      <key>bracketright.case</key>
+      <integer>-42</integer>
+      <key>colon.case</key>
+      <integer>-59</integer>
+      <key>exclam.ss01</key>
+      <integer>-41</integer>
+      <key>question.case</key>
+      <integer>-136</integer>
+      <key>question.ss01</key>
+      <integer>-136</integer>
+      <key>quotedbl</key>
+      <integer>-142</integer>
+      <key>quotesingle</key>
+      <integer>-134</integer>
+      <key>semicolon.case</key>
+      <integer>-49</integer>
+      <key>six</key>
+      <integer>-53</integer>
     </dict>
     <key>aogonek</key>
     <dict>
@@ -1214,18 +2703,30 @@
     </dict>
     <key>asciicircum</key>
     <dict>
+      <key>anoteleia</key>
+      <integer>-142</integer>
+      <key>anoteleia.ss01</key>
+      <integer>-142</integer>
       <key>asterisk</key>
       <integer>-44</integer>
+      <key>chi</key>
+      <integer>-51</integer>
       <key>comma</key>
       <integer>-142</integer>
       <key>comma.ss01</key>
       <integer>-142</integer>
+      <key>delta</key>
+      <integer>-78</integer>
       <key>four</key>
       <integer>-117</integer>
       <key>hyphen</key>
       <integer>-187</integer>
       <key>hyphen_greater.liga</key>
       <integer>-77</integer>
+      <key>omega</key>
+      <integer>-51</integer>
+      <key>omegatonos</key>
+      <integer>-51</integer>
       <key>parenleft</key>
       <integer>-72</integer>
       <key>parenright</key>
@@ -1236,31 +2737,104 @@
       <integer>-142</integer>
       <key>period.ss01</key>
       <integer>-142</integer>
+      <key>questiongreek.ss01</key>
+      <integer>-66</integer>
       <key>semicolon.ss01</key>
       <integer>-66</integer>
+      <key>theta</key>
+      <integer>-38</integer>
       <key>three</key>
       <integer>-39</integer>
       <key>two.ss10</key>
       <integer>-29</integer>
+      <key>xi</key>
+      <integer>-44</integer>
     </dict>
     <key>asciitilde</key>
     <dict>
+      <key>Phi</key>
+      <integer>-20</integer>
+      <key>Psi</key>
+      <integer>-26</integer>
+      <key>Sigma</key>
+      <integer>-97</integer>
+      <key>Xi</key>
+      <integer>-57</integer>
+      <key>chi</key>
+      <integer>-38</integer>
       <key>exclam.ss01</key>
       <integer>-56</integer>
+      <key>nu</key>
+      <integer>-19</integer>
+      <key>omega</key>
+      <integer>-11</integer>
+      <key>omegatonos</key>
+      <integer>-11</integer>
+      <key>psi</key>
+      <integer>-23</integer>
       <key>question.ss01</key>
       <integer>-97</integer>
+      <key>tau</key>
+      <integer>-13</integer>
+      <key>theta</key>
+      <integer>-8</integer>
+      <key>upsilon</key>
+      <integer>-25</integer>
+      <key>upsilondieresis</key>
+      <integer>-25</integer>
+      <key>upsilondieresis.ss01</key>
+      <integer>-25</integer>
+      <key>upsilondieresistonos</key>
+      <integer>-25</integer>
+      <key>upsilondieresistonos.ss01</key>
+      <integer>-25</integer>
+      <key>upsilontonos</key>
+      <integer>-25</integer>
+    </dict>
+    <key>asterisk</key>
+    <dict>
+      <key>chi</key>
+      <integer>-50</integer>
+      <key>delta</key>
+      <integer>-39</integer>
+      <key>theta</key>
+      <integer>-27</integer>
+      <key>upsilondieresistonos</key>
+      <integer>-40</integer>
+      <key>upsilondieresistonos.ss01</key>
+      <integer>-40</integer>
+      <key>xi</key>
+      <integer>-25</integer>
+      <key>zeta</key>
+      <integer>-29</integer>
     </dict>
     <key>at</key>
     <dict>
       <key>A</key>
       <integer>-72</integer>
+      <key>Alpha</key>
+      <integer>-72</integer>
+      <key>Chi</key>
+      <integer>-72</integer>
+      <key>Delta</key>
+      <integer>-72</integer>
       <key>J</key>
       <integer>-89</integer>
+      <key>Lambda</key>
+      <integer>-72</integer>
+      <key>Sigma</key>
+      <integer>-53</integer>
       <key>T</key>
+      <integer>-47</integer>
+      <key>Tau</key>
       <integer>-47</integer>
       <key>X</key>
       <integer>-72</integer>
+      <key>Xi</key>
+      <integer>-53</integer>
       <key>Z</key>
+      <integer>-53</integer>
+      <key>Zeta</key>
       <integer>-53</integer>
       <key>a</key>
       <integer>-31</integer>
@@ -1296,6 +2870,14 @@
     <dict>
       <key>T</key>
       <integer>-128</integer>
+      <key>Tau</key>
+      <integer>-128</integer>
+      <key>Upsilon</key>
+      <integer>-137</integer>
+      <key>Upsilondieresis</key>
+      <integer>-137</integer>
+      <key>Upsilondieresis.ss01</key>
+      <integer>-137</integer>
       <key>V</key>
       <integer>-129</integer>
       <key>W</key>
@@ -1320,6 +2902,8 @@
       <integer>-125</integer>
       <key>t</key>
       <integer>-70</integer>
+      <key>tau</key>
+      <integer>-70</integer>
     </dict>
     <key>bar</key>
     <dict>
@@ -1328,25 +2912,108 @@
       <key>public.kern2.KO_j__top</key>
       <integer>41</integer>
     </dict>
+    <key>beta</key>
+    <dict>
+      <key>Tau</key>
+      <integer>-97</integer>
+      <key>asciicircum</key>
+      <integer>-78</integer>
+      <key>asterisk</key>
+      <integer>-59</integer>
+      <key>braceright</key>
+      <integer>-72</integer>
+      <key>gamma</key>
+      <integer>-14</integer>
+      <key>nu</key>
+      <integer>-14</integer>
+      <key>one</key>
+      <integer>-38</integer>
+      <key>question</key>
+      <integer>-45</integer>
+      <key>question.ss01</key>
+      <integer>-46</integer>
+      <key>quotedbl</key>
+      <integer>-79</integer>
+      <key>quotedblleft</key>
+      <integer>-54</integer>
+      <key>quotedblleft.ss01</key>
+      <integer>-65</integer>
+      <key>quotedblright</key>
+      <integer>-56</integer>
+      <key>quotedblright.ss01</key>
+      <integer>-61</integer>
+      <key>quoteleft</key>
+      <integer>-54</integer>
+      <key>quoteleft.ss01</key>
+      <integer>-65</integer>
+      <key>quoteright</key>
+      <integer>-61</integer>
+      <key>quoteright.ss01</key>
+      <integer>-61</integer>
+      <key>quotesingle</key>
+      <integer>-79</integer>
+      <key>seven</key>
+      <integer>-21</integer>
+      <key>trademark</key>
+      <integer>-78</integer>
+    </dict>
     <key>braceleft</key>
     <dict>
+      <key>Alphatonos</key>
+      <integer>-47</integer>
+      <key>Epsilontonos</key>
+      <integer>-47</integer>
+      <key>Etatonos</key>
+      <integer>-47</integer>
+      <key>Iotatonos</key>
+      <integer>-47</integer>
+      <key>Omega</key>
+      <integer>-24</integer>
+      <key>Omegatonos</key>
+      <integer>-47</integer>
+      <key>Omicrontonos</key>
+      <integer>-47</integer>
+      <key>Upsilontonos</key>
+      <integer>-47</integer>
+      <key>delta</key>
+      <integer>-52</integer>
+      <key>epsilon</key>
+      <integer>-72</integer>
       <key>four</key>
       <integer>-91</integer>
       <key>hyphen</key>
       <integer>-119</integer>
       <key>hyphen_greater.liga</key>
       <integer>-118</integer>
+      <key>micro</key>
+      <integer>-46</integer>
+      <key>mu</key>
+      <integer>-46</integer>
       <key>one</key>
       <integer>-41</integer>
       <key>parenleft</key>
       <integer>-88</integer>
+      <key>rho</key>
+      <integer>-4</integer>
+      <key>theta</key>
+      <integer>-70</integer>
+      <key>upsilondieresistonos</key>
+      <integer>-50</integer>
+      <key>upsilondieresistonos.ss01</key>
+      <integer>-50</integer>
+      <key>xi</key>
+      <integer>-36</integer>
       <key>zero</key>
       <integer>-67</integer>
       <key>zero.zero</key>
       <integer>-67</integer>
+      <key>zeta</key>
+      <integer>-36</integer>
     </dict>
     <key>braceright</key>
     <dict>
+      <key>anoteleia.ss01</key>
+      <integer>-78</integer>
       <key>braceright</key>
       <integer>-64</integer>
       <key>comma.ss01</key>
@@ -1360,25 +3027,83 @@
     </dict>
     <key>bracketleft</key>
     <dict>
+      <key>Alphatonos</key>
+      <integer>-47</integer>
       <key>Dcroat</key>
       <integer>-42</integer>
+      <key>Epsilontonos</key>
+      <integer>-47</integer>
+      <key>Etatonos</key>
+      <integer>-47</integer>
+      <key>Iotatonos</key>
+      <integer>-47</integer>
+      <key>Omega</key>
+      <integer>-26</integer>
+      <key>Omegatonos</key>
+      <integer>-47</integer>
+      <key>Omicrontonos</key>
+      <integer>-47</integer>
       <key>Oslash</key>
       <integer>-59</integer>
+      <key>Upsilontonos</key>
+      <integer>-47</integer>
       <key>asciitilde</key>
       <integer>-148</integer>
+      <key>delta</key>
+      <integer>-55</integer>
       <key>ellipsis</key>
       <integer>-49</integer>
+      <key>epsilon</key>
+      <integer>-79</integer>
+      <key>epsilontonos</key>
+      <integer>-79</integer>
       <key>equal</key>
       <integer>-113</integer>
+      <key>gamma</key>
+      <integer>-111</integer>
+      <key>micro</key>
+      <integer>-49</integer>
+      <key>mu</key>
+      <integer>-49</integer>
+      <key>nu</key>
+      <integer>-111</integer>
       <key>numbersign</key>
       <integer>-83</integer>
       <key>oslash</key>
       <integer>-49</integer>
+      <key>rho</key>
+      <integer>-9</integer>
+      <key>theta</key>
+      <integer>-75</integer>
+      <key>upsilondieresistonos</key>
+      <integer>-53</integer>
+      <key>upsilondieresistonos.ss01</key>
+      <integer>-53</integer>
       <key>v</key>
       <integer>-111</integer>
+      <key>xi</key>
+      <integer>-39</integer>
+      <key>zeta</key>
+      <integer>-39</integer>
     </dict>
     <key>bracketleft.case</key>
     <dict>
+      <key>Alphatonos</key>
+      <integer>-47</integer>
+      <key>Epsilontonos</key>
+      <integer>-47</integer>
+      <key>Etatonos</key>
+      <integer>-47</integer>
+      <key>Iotatonos</key>
+      <integer>-47</integer>
+      <key>Omega</key>
+      <integer>-21</integer>
+      <key>Omegatonos</key>
+      <integer>-47</integer>
+      <key>Omicrontonos</key>
+      <integer>-47</integer>
+      <key>Upsilontonos</key>
+      <integer>-47</integer>
       <key>ellipsis.ss01</key>
       <integer>-41</integer>
       <key>four</key>
@@ -1398,6 +3123,8 @@
     <key>bullet</key>
     <dict>
       <key>T</key>
+      <integer>-131</integer>
+      <key>Tau</key>
       <integer>-131</integer>
       <key>parenright</key>
       <integer>-121</integer>
@@ -1440,10 +3167,47 @@
       <key>seven</key>
       <integer>-90</integer>
     </dict>
+    <key>chi</key>
+    <dict>
+      <key>asciicircum</key>
+      <integer>-44</integer>
+      <key>braceright</key>
+      <integer>-31</integer>
+      <key>eight</key>
+      <integer>-27</integer>
+      <key>equal</key>
+      <integer>-33</integer>
+      <key>five</key>
+      <integer>-36</integer>
+      <key>four</key>
+      <integer>-58</integer>
+      <key>parenright</key>
+      <integer>-70</integer>
+      <key>pi</key>
+      <integer>0</integer>
+      <key>rho</key>
+      <integer>-36</integer>
+      <key>seven</key>
+      <integer>-84</integer>
+      <key>tau</key>
+      <integer>0</integer>
+      <key>trademark</key>
+      <integer>-98</integer>
+      <key>underscore</key>
+      <integer>0</integer>
+    </dict>
     <key>colon</key>
     <dict>
       <key>T</key>
       <integer>-124</integer>
+      <key>Tau</key>
+      <integer>-124</integer>
+      <key>Upsilon</key>
+      <integer>-93</integer>
+      <key>Upsilondieresis</key>
+      <integer>-93</integer>
+      <key>Upsilondieresis.ss01</key>
+      <integer>-93</integer>
       <key>V</key>
       <integer>-70</integer>
       <key>Y</key>
@@ -1475,7 +3239,15 @@
     <dict>
       <key>A</key>
       <integer>-57</integer>
+      <key>Alpha</key>
+      <integer>-57</integer>
+      <key>Delta</key>
+      <integer>-57</integer>
+      <key>Lambda</key>
+      <integer>-57</integer>
       <key>T</key>
+      <integer>-46</integer>
+      <key>Tau</key>
       <integer>-46</integer>
       <key>parenleft.case</key>
       <integer>-45</integer>
@@ -1488,13 +3260,25 @@
     </dict>
     <key>colon.ss01</key>
     <dict>
+      <key>omega</key>
+      <integer>-18</integer>
+      <key>omegatonos</key>
+      <integer>-18</integer>
       <key>parenright</key>
       <integer>-98</integer>
+      <key>rho</key>
+      <integer>-15</integer>
     </dict>
     <key>comma</key>
     <dict>
+      <key>Omega</key>
+      <integer>-43</integer>
+      <key>epsilontonos</key>
+      <integer>-33</integer>
       <key>quotedblright</key>
       <integer>-142</integer>
+      <key>rho</key>
+      <integer>-33</integer>
     </dict>
     <key>comma.ss01</key>
     <dict>
@@ -1527,22 +3311,102 @@
     <dict>
       <key>A</key>
       <integer>-127</integer>
+      <key>Alpha</key>
+      <integer>-127</integer>
       <key>C</key>
       <integer>-39</integer>
+      <key>Delta</key>
+      <integer>-127</integer>
+      <key>Lambda</key>
+      <integer>-127</integer>
       <key>S</key>
       <integer>-36</integer>
       <key>W</key>
       <integer>-31</integer>
       <key>a</key>
       <integer>-88</integer>
+      <key>alpha</key>
+      <integer>-90</integer>
       <key>c</key>
       <integer>-90</integer>
       <key>d</key>
       <integer>-86</integer>
+      <key>delta</key>
+      <integer>-32</integer>
+      <key>epsilon</key>
+      <integer>-90</integer>
       <key>g</key>
       <integer>-85</integer>
       <key>o</key>
       <integer>-90</integer>
+      <key>omicron</key>
+      <integer>-90</integer>
+      <key>phi</key>
+      <integer>-90</integer>
+      <key>rho</key>
+      <integer>-90</integer>
+      <key>sigma</key>
+      <integer>-90</integer>
+      <key>sigmafinal</key>
+      <integer>-90</integer>
+      <key>theta</key>
+      <integer>-30</integer>
+      <key>xi</key>
+      <integer>-24</integer>
+      <key>zeta</key>
+      <integer>-24</integer>
+    </dict>
+    <key>delta</key>
+    <dict>
+      <key>Tau</key>
+      <integer>-117</integer>
+      <key>asciicircum</key>
+      <integer>-84</integer>
+      <key>asciitilde</key>
+      <integer>-18</integer>
+      <key>asterisk</key>
+      <integer>-81</integer>
+      <key>braceright</key>
+      <integer>-72</integer>
+      <key>bracketright</key>
+      <integer>-80</integer>
+      <key>equal</key>
+      <integer>-12</integer>
+      <key>one</key>
+      <integer>-42</integer>
+      <key>parenright</key>
+      <integer>-73</integer>
+      <key>question</key>
+      <integer>-84</integer>
+      <key>question.ss01</key>
+      <integer>-84</integer>
+      <key>quotedbl</key>
+      <integer>-80</integer>
+      <key>quotedblleft.ss01</key>
+      <integer>-68</integer>
+      <key>quotedblright.ss01</key>
+      <integer>-63</integer>
+      <key>quoteleft.ss01</key>
+      <integer>-68</integer>
+      <key>quoteright.ss01</key>
+      <integer>-63</integer>
+      <key>quotesingle</key>
+      <integer>-80</integer>
+      <key>seven</key>
+      <integer>-65</integer>
+      <key>trademark</key>
+      <integer>-99</integer>
+    </dict>
+    <key>divide</key>
+    <dict>
+      <key>Xi</key>
+      <integer>-94</integer>
+      <key>chi</key>
+      <integer>-62</integer>
+      <key>omega</key>
+      <integer>-23</integer>
+      <key>omegatonos</key>
+      <integer>-23</integer>
     </dict>
     <key>downArrow</key>
     <dict>
@@ -1595,15 +3459,27 @@
     <dict>
       <key>A</key>
       <integer>-24</integer>
+      <key>Alpha</key>
+      <integer>-24</integer>
+      <key>Delta</key>
+      <integer>-24</integer>
+      <key>Lambda</key>
+      <integer>-24</integer>
       <key>T</key>
+      <integer>-23</integer>
+      <key>Tau</key>
       <integer>-23</integer>
       <key>bracketright.case</key>
       <integer>-44</integer>
+      <key>chi</key>
+      <integer>-34</integer>
       <key>degree</key>
       <integer>-26</integer>
       <key>ordmasculine</key>
       <integer>-16</integer>
       <key>t</key>
+      <integer>-11</integer>
+      <key>tau</key>
       <integer>-11</integer>
       <key>x</key>
       <integer>-34</integer>
@@ -1611,6 +3487,8 @@
     <key>ellipsis</key>
     <dict>
       <key>T</key>
+      <integer>-139</integer>
+      <key>Tau</key>
       <integer>-139</integer>
       <key>bracketright</key>
       <integer>-49</integer>
@@ -1637,8 +3515,18 @@
     </dict>
     <key>ellipsis.ss01</key>
     <dict>
+      <key>Omega</key>
+      <integer>-26</integer>
       <key>bracketright.case</key>
       <integer>-42</integer>
+      <key>epsilon</key>
+      <integer>-36</integer>
+      <key>epsilontonos</key>
+      <integer>-36</integer>
+      <key>micro</key>
+      <integer>-40</integer>
+      <key>mu</key>
+      <integer>-40</integer>
       <key>question.ss01</key>
       <integer>-136</integer>
       <key>quotedbl</key>
@@ -1649,9 +3537,19 @@
       <integer>-250</integer>
       <key>quotesingle</key>
       <integer>-134</integer>
+      <key>rho</key>
+      <integer>-20</integer>
     </dict>
     <key>emdash</key>
     <dict>
+      <key>Xi</key>
+      <integer>-77</integer>
+      <key>chi</key>
+      <integer>-103</integer>
+      <key>omega</key>
+      <integer>-32</integer>
+      <key>omegatonos</key>
+      <integer>-32</integer>
       <key>question.ss01</key>
       <integer>-150</integer>
       <key>questiondown.ss01</key>
@@ -1659,12 +3557,30 @@
       <key>quotedblright</key>
       <integer>-113</integer>
     </dict>
+    <key>emdash.case</key>
+    <dict>
+      <key>Xi</key>
+      <integer>-103</integer>
+    </dict>
     <key>endash</key>
     <dict>
+      <key>Xi</key>
+      <integer>-77</integer>
+      <key>chi</key>
+      <integer>-103</integer>
+      <key>omega</key>
+      <integer>-32</integer>
+      <key>omegatonos</key>
+      <integer>-32</integer>
       <key>question.ss01</key>
       <integer>-150</integer>
       <key>quotedblbase.ss01</key>
       <integer>-129</integer>
+    </dict>
+    <key>endash.case</key>
+    <dict>
+      <key>Xi</key>
+      <integer>-103</integer>
     </dict>
     <key>eng</key>
     <dict>
@@ -1678,32 +3594,90 @@
       <key>lslash.ss13</key>
       <integer>0</integer>
     </dict>
+    <key>epsilon</key>
+    <dict>
+      <key>asciicircum</key>
+      <integer>-76</integer>
+      <key>braceright</key>
+      <integer>-69</integer>
+      <key>equal</key>
+      <integer>-18</integer>
+      <key>parenright</key>
+      <integer>-103</integer>
+      <key>seven</key>
+      <integer>-96</integer>
+      <key>trademark</key>
+      <integer>-92</integer>
+    </dict>
+    <key>epsilontonos</key>
+    <dict>
+      <key>asciicircum</key>
+      <integer>-76</integer>
+      <key>braceright</key>
+      <integer>-69</integer>
+      <key>equal</key>
+      <integer>-18</integer>
+      <key>parenright</key>
+      <integer>-101</integer>
+      <key>seven</key>
+      <integer>-96</integer>
+      <key>trademark</key>
+      <integer>-92</integer>
+    </dict>
     <key>equal</key>
     <dict>
       <key>A</key>
       <integer>-68</integer>
+      <key>Alpha</key>
+      <integer>-68</integer>
       <key>B</key>
       <integer>-20</integer>
+      <key>Beta</key>
+      <integer>-20</integer>
+      <key>Chi</key>
+      <integer>-101</integer>
+      <key>Delta</key>
+      <integer>-68</integer>
       <key>J</key>
       <integer>-86</integer>
+      <key>Lambda</key>
+      <integer>-68</integer>
       <key>S</key>
       <integer>-22</integer>
+      <key>Sigma</key>
+      <integer>-71</integer>
       <key>T</key>
       <integer>-84</integer>
+      <key>Tau</key>
+      <integer>-84</integer>
+      <key>Upsilon</key>
+      <integer>-80</integer>
+      <key>Upsilondieresis</key>
+      <integer>-80</integer>
+      <key>Upsilondieresis.ss01</key>
+      <integer>-80</integer>
       <key>V</key>
       <integer>-61</integer>
       <key>W</key>
       <integer>-56</integer>
       <key>X</key>
       <integer>-101</integer>
+      <key>Xi</key>
+      <integer>-71</integer>
       <key>Y</key>
       <integer>-80</integer>
       <key>Z</key>
       <integer>-71</integer>
+      <key>Zeta</key>
+      <integer>-71</integer>
       <key>a</key>
       <integer>-40</integer>
+      <key>anoteleia.ss01</key>
+      <integer>-86</integer>
       <key>bracketright</key>
       <integer>-113</integer>
+      <key>chi</key>
+      <integer>-40</integer>
       <key>comma.ss01</key>
       <integer>-86</integer>
       <key>equal</key>
@@ -1740,6 +3714,76 @@
       <integer>-18</integer>
       <key>x</key>
       <integer>-40</integer>
+    </dict>
+    <key>eta</key>
+    <dict>
+      <key>asciicircum</key>
+      <integer>-76</integer>
+      <key>asciitilde</key>
+      <integer>-38</integer>
+      <key>at</key>
+      <integer>-8</integer>
+      <key>backslash</key>
+      <integer>-80</integer>
+      <key>braceright</key>
+      <integer>-51</integer>
+      <key>equal</key>
+      <integer>-31</integer>
+      <key>gamma</key>
+      <integer>-22</integer>
+      <key>multiply</key>
+      <integer>-41</integer>
+      <key>nu</key>
+      <integer>-22</integer>
+      <key>parenright</key>
+      <integer>-34</integer>
+      <key>seven</key>
+      <integer>-84</integer>
+      <key>slash</key>
+      <integer>-34</integer>
+      <key>three</key>
+      <integer>-14</integer>
+      <key>trademark</key>
+      <integer>-111</integer>
+      <key>two.ss10</key>
+      <integer>-5</integer>
+      <key>underscore</key>
+      <integer>-13</integer>
+    </dict>
+    <key>etatonos</key>
+    <dict>
+      <key>asciicircum</key>
+      <integer>-76</integer>
+      <key>asciitilde</key>
+      <integer>-38</integer>
+      <key>at</key>
+      <integer>-8</integer>
+      <key>backslash</key>
+      <integer>-80</integer>
+      <key>braceright</key>
+      <integer>-51</integer>
+      <key>equal</key>
+      <integer>-31</integer>
+      <key>gamma</key>
+      <integer>-22</integer>
+      <key>multiply</key>
+      <integer>-41</integer>
+      <key>nu</key>
+      <integer>-22</integer>
+      <key>parenright</key>
+      <integer>-34</integer>
+      <key>seven</key>
+      <integer>-84</integer>
+      <key>slash</key>
+      <integer>-34</integer>
+      <key>three</key>
+      <integer>-14</integer>
+      <key>trademark</key>
+      <integer>-111</integer>
+      <key>two.ss10</key>
+      <integer>-5</integer>
+      <key>underscore</key>
+      <integer>-13</integer>
     </dict>
     <key>eth</key>
     <dict>
@@ -1784,6 +3828,8 @@
     </dict>
     <key>euro</key>
     <dict>
+      <key>anoteleia.ss01</key>
+      <integer>-38</integer>
       <key>comma.ss01</key>
       <integer>-37</integer>
       <key>hyphen_greater.liga</key>
@@ -1817,11 +3863,21 @@
       <integer>-31</integer>
       <key>question.ss01</key>
       <integer>-40</integer>
+      <key>rho</key>
+      <integer>-16</integer>
     </dict>
     <key>exclamdown</key>
     <dict>
       <key>T</key>
       <integer>-99</integer>
+      <key>Tau</key>
+      <integer>-99</integer>
+      <key>Upsilon</key>
+      <integer>-97</integer>
+      <key>Upsilondieresis</key>
+      <integer>-97</integer>
+      <key>Upsilondieresis.ss01</key>
+      <integer>-97</integer>
       <key>V</key>
       <integer>-78</integer>
       <key>Y</key>
@@ -1833,22 +3889,48 @@
     <dict>
       <key>A</key>
       <integer>-41</integer>
+      <key>Alpha</key>
+      <integer>-41</integer>
       <key>B</key>
+      <integer>-22</integer>
+      <key>Beta</key>
       <integer>-22</integer>
       <key>C</key>
       <integer>-23</integer>
+      <key>Delta</key>
+      <integer>-41</integer>
       <key>G</key>
       <integer>-22</integer>
+      <key>Lambda</key>
+      <integer>-41</integer>
       <key>O</key>
       <integer>-23</integer>
+      <key>Omega</key>
+      <integer>-23</integer>
+      <key>Omicron</key>
+      <integer>-23</integer>
+      <key>Phi</key>
+      <integer>-23</integer>
+      <key>Psi</key>
+      <integer>-24</integer>
       <key>Q</key>
       <integer>-23</integer>
       <key>S</key>
       <integer>-31</integer>
       <key>T</key>
       <integer>-101</integer>
+      <key>Tau</key>
+      <integer>-101</integer>
+      <key>Theta</key>
+      <integer>-23</integer>
       <key>U</key>
       <integer>-24</integer>
+      <key>Upsilon</key>
+      <integer>-110</integer>
+      <key>Upsilondieresis</key>
+      <integer>-110</integer>
+      <key>Upsilondieresis.ss01</key>
+      <integer>-110</integer>
       <key>V</key>
       <integer>-83</integer>
       <key>Y</key>
@@ -1965,16 +4047,28 @@
     <dict>
       <key>A</key>
       <integer>-26</integer>
+      <key>Alpha</key>
+      <integer>-26</integer>
+      <key>Delta</key>
+      <integer>-26</integer>
+      <key>Lambda</key>
+      <integer>-26</integer>
       <key>asciicircum</key>
       <integer>-85</integer>
       <key>braceright</key>
       <integer>-42</integer>
       <key>bracketright.case</key>
       <integer>-42</integer>
+      <key>chi</key>
+      <integer>-50</integer>
       <key>degree</key>
       <integer>-46</integer>
+      <key>gamma</key>
+      <integer>-24</integer>
       <key>multiply</key>
       <integer>-26</integer>
+      <key>nu</key>
+      <integer>-24</integer>
       <key>ordfeminine</key>
       <integer>-48</integer>
       <key>ordmasculine</key>
@@ -1985,6 +4079,8 @@
       <integer>-48</integer>
       <key>t</key>
       <integer>-23</integer>
+      <key>tau</key>
+      <integer>-23</integer>
       <key>v</key>
       <integer>-24</integer>
       <key>x</key>
@@ -1994,8 +4090,24 @@
     <dict>
       <key>A</key>
       <integer>-21</integer>
+      <key>Alpha</key>
+      <integer>-21</integer>
+      <key>Chi</key>
+      <integer>-30</integer>
+      <key>Delta</key>
+      <integer>-21</integer>
+      <key>Lambda</key>
+      <integer>-21</integer>
       <key>T</key>
       <integer>-30</integer>
+      <key>Tau</key>
+      <integer>-30</integer>
+      <key>Upsilon</key>
+      <integer>-34</integer>
+      <key>Upsilondieresis</key>
+      <integer>-34</integer>
+      <key>Upsilondieresis.ss01</key>
+      <integer>-34</integer>
       <key>V</key>
       <integer>-35</integer>
       <key>W</key>
@@ -2008,6 +4120,8 @@
       <integer>-47</integer>
       <key>bracketright.case</key>
       <integer>-43</integer>
+      <key>chi</key>
+      <integer>-44</integer>
       <key>degree</key>
       <integer>-52</integer>
       <key>multiply</key>
@@ -2020,6 +4134,8 @@
       <integer>-50</integer>
       <key>t</key>
       <integer>-18</integer>
+      <key>tau</key>
+      <integer>-18</integer>
       <key>x</key>
       <integer>-44</integer>
       <key>y</key>
@@ -2029,6 +4145,41 @@
     <dict>
       <key>public.kern2.KO_I.ss13</key>
       <integer>-10</integer>
+    </dict>
+    <key>gamma</key>
+    <dict>
+      <key>alpha</key>
+      <integer>-16</integer>
+      <key>braceright</key>
+      <integer>-83</integer>
+      <key>delta</key>
+      <integer>-16</integer>
+      <key>four</key>
+      <integer>-41</integer>
+      <key>gamma</key>
+      <integer>20</integer>
+      <key>nu</key>
+      <integer>20</integer>
+      <key>omicron</key>
+      <integer>-16</integer>
+      <key>one</key>
+      <integer>0</integer>
+      <key>phi</key>
+      <integer>-16</integer>
+      <key>pi</key>
+      <integer>25</integer>
+      <key>rho</key>
+      <integer>-16</integer>
+      <key>seven</key>
+      <integer>-90</integer>
+      <key>sigma</key>
+      <integer>-16</integer>
+      <key>tau</key>
+      <integer>34</integer>
+      <key>theta</key>
+      <integer>-16</integer>
+      <key>trademark</key>
+      <integer>-77</integer>
     </dict>
     <key>gcommaaccent</key>
     <dict>
@@ -2120,22 +4271,46 @@
     <dict>
       <key>A</key>
       <integer>-88</integer>
+      <key>Alpha</key>
+      <integer>-88</integer>
+      <key>Chi</key>
+      <integer>-133</integer>
+      <key>Delta</key>
+      <integer>-88</integer>
       <key>J</key>
       <integer>-120</integer>
+      <key>Lambda</key>
+      <integer>-88</integer>
       <key>S</key>
       <integer>-54</integer>
+      <key>Sigma</key>
+      <integer>-110</integer>
       <key>T</key>
       <integer>-136</integer>
+      <key>Tau</key>
+      <integer>-136</integer>
+      <key>Upsilon</key>
+      <integer>-115</integer>
+      <key>Upsilondieresis</key>
+      <integer>-115</integer>
+      <key>Upsilondieresis.ss01</key>
+      <integer>-115</integer>
       <key>V</key>
       <integer>-82</integer>
       <key>W</key>
       <integer>-74</integer>
       <key>X</key>
       <integer>-133</integer>
+      <key>Xi</key>
+      <integer>-92</integer>
       <key>Y</key>
       <integer>-115</integer>
       <key>Z</key>
       <integer>-110</integer>
+      <key>Zeta</key>
+      <integer>-110</integer>
+      <key>chi</key>
+      <integer>-60</integer>
       <key>greater</key>
       <integer>-48</integer>
       <key>parenright</key>
@@ -2149,25 +4324,51 @@
     </dict>
     <key>guillemetleft</key>
     <dict>
+      <key>Alphatonos</key>
+      <integer>-47</integer>
+      <key>Epsilontonos</key>
+      <integer>-47</integer>
+      <key>Etatonos</key>
+      <integer>-47</integer>
       <key>Icircumflex</key>
       <integer>-35</integer>
+      <key>Iotatonos</key>
+      <integer>-47</integer>
+      <key>Omegatonos</key>
+      <integer>-47</integer>
+      <key>Omicrontonos</key>
+      <integer>-47</integer>
       <key>Oslash</key>
       <integer>-30</integer>
+      <key>Upsilontonos</key>
+      <integer>-47</integer>
       <key>exclam.ss01</key>
       <integer>-48</integer>
       <key>exclamdown.ss01</key>
       <integer>-48</integer>
       <key>icircumflex</key>
       <integer>-42</integer>
+      <key>omega</key>
+      <integer>-35</integer>
+      <key>omegatonos</key>
+      <integer>-35</integer>
       <key>question.ss01</key>
       <integer>-97</integer>
       <key>questiondown.ss01</key>
       <integer>-53</integer>
       <key>quotedblbase.ss01</key>
       <integer>-57</integer>
+      <key>rho</key>
+      <integer>-15</integer>
+      <key>theta</key>
+      <integer>-25</integer>
     </dict>
     <key>guillemetright</key>
     <dict>
+      <key>omega</key>
+      <integer>-28</integer>
+      <key>omegatonos</key>
+      <integer>-28</integer>
       <key>question.ss01</key>
       <integer>-134</integer>
       <key>quotesinglbase.ss01</key>
@@ -2175,8 +4376,37 @@
       <key>semicolon.case</key>
       <integer>-38</integer>
     </dict>
+    <key>guilsinglleft</key>
+    <dict>
+      <key>Alphatonos</key>
+      <integer>-47</integer>
+      <key>Epsilontonos</key>
+      <integer>-47</integer>
+      <key>Etatonos</key>
+      <integer>-47</integer>
+      <key>Iotatonos</key>
+      <integer>-47</integer>
+      <key>Omegatonos</key>
+      <integer>-47</integer>
+      <key>Omicrontonos</key>
+      <integer>-47</integer>
+      <key>Upsilontonos</key>
+      <integer>-47</integer>
+      <key>omega</key>
+      <integer>-35</integer>
+      <key>omegatonos</key>
+      <integer>-35</integer>
+      <key>rho</key>
+      <integer>-15</integer>
+      <key>theta</key>
+      <integer>-25</integer>
+    </dict>
     <key>guilsinglright</key>
     <dict>
+      <key>omega</key>
+      <integer>-28</integer>
+      <key>omegatonos</key>
+      <integer>-28</integer>
       <key>quotesinglbase.ss01</key>
       <integer>-106</integer>
     </dict>
@@ -2208,6 +4438,15 @@
       <key>hbar</key>
       <integer>-20</integer>
     </dict>
+    <key>horizontalbar</key>
+    <dict>
+      <key>question.ss01</key>
+      <integer>-150</integer>
+      <key>questiondown.ss01</key>
+      <integer>-117</integer>
+      <key>quotedblright</key>
+      <integer>-113</integer>
+    </dict>
     <key>hyphen</key>
     <dict>
       <key>Dcroat</key>
@@ -2226,6 +4465,8 @@
       <integer>-25</integer>
       <key>braceright</key>
       <integer>-119</integer>
+      <key>chi</key>
+      <integer>-101</integer>
       <key>dollar</key>
       <integer>-40</integer>
       <key>hbar</key>
@@ -2234,6 +4475,18 @@
       <integer>-41</integer>
       <key>idieresis</key>
       <integer>-41</integer>
+      <key>iotadieresis</key>
+      <integer>-41</integer>
+      <key>iotadieresis.ss01</key>
+      <integer>-41</integer>
+      <key>iotadieresistonos</key>
+      <integer>-41</integer>
+      <key>iotadieresistonos.ss01</key>
+      <integer>-41</integer>
+      <key>omega</key>
+      <integer>-31</integer>
+      <key>omegatonos</key>
+      <integer>-31</integer>
       <key>oslash</key>
       <integer>-16</integer>
       <key>question</key>
@@ -2257,6 +4510,8 @@
     <dict>
       <key>Hbar</key>
       <integer>-45</integer>
+      <key>Xi</key>
+      <integer>-104</integer>
       <key>bracketright.case</key>
       <integer>-138</integer>
       <key>quotedblbase.ss01</key>
@@ -2266,17 +4521,39 @@
     <dict>
       <key>A</key>
       <integer>-105</integer>
+      <key>Alpha</key>
+      <integer>-105</integer>
+      <key>Chi</key>
+      <integer>-147</integer>
+      <key>Delta</key>
+      <integer>-105</integer>
       <key>J</key>
       <integer>-134</integer>
+      <key>Lambda</key>
+      <integer>-105</integer>
+      <key>Sigma</key>
+      <integer>-125</integer>
       <key>T</key>
       <integer>-146</integer>
+      <key>Tau</key>
+      <integer>-146</integer>
+      <key>Upsilon</key>
+      <integer>-141</integer>
+      <key>Upsilondieresis</key>
+      <integer>-141</integer>
+      <key>Upsilondieresis.ss01</key>
+      <integer>-141</integer>
       <key>V</key>
       <integer>-105</integer>
       <key>X</key>
       <integer>-147</integer>
+      <key>Xi</key>
+      <integer>-83</integer>
       <key>Y</key>
       <integer>-141</integer>
       <key>Z</key>
+      <integer>-125</integer>
+      <key>Zeta</key>
       <integer>-125</integer>
       <key>greater</key>
       <integer>-74</integer>
@@ -2409,6 +4686,490 @@
       <key>quotedbl</key>
       <integer>0</integer>
     </dict>
+    <key>iota</key>
+    <dict>
+      <key>asciitilde</key>
+      <integer>-52</integer>
+      <key>braceright</key>
+      <integer>-38</integer>
+      <key>epsilon</key>
+      <integer>-19</integer>
+      <key>equal</key>
+      <integer>-15</integer>
+      <key>four</key>
+      <integer>-13</integer>
+      <key>seven</key>
+      <integer>-67</integer>
+      <key>sigmafinal</key>
+      <integer>-19</integer>
+      <key>trademark</key>
+      <integer>-83</integer>
+      <key>xi</key>
+      <integer>-19</integer>
+      <key>zeta</key>
+      <integer>-19</integer>
+    </dict>
+    <key>iotadieresis</key>
+    <dict>
+      <key>Chi</key>
+      <integer>-6</integer>
+      <key>Tau</key>
+      <integer>-32</integer>
+      <key>Upsilon</key>
+      <integer>-19</integer>
+      <key>Upsilondieresis</key>
+      <integer>-19</integer>
+      <key>Upsilondieresis.ss01</key>
+      <integer>-19</integer>
+      <key>asciitilde</key>
+      <integer>-52</integer>
+      <key>asterisk</key>
+      <integer>-26</integer>
+      <key>braceright</key>
+      <integer>-38</integer>
+      <key>bracketright</key>
+      <integer>-38</integer>
+      <key>epsilon</key>
+      <integer>-19</integer>
+      <key>equal</key>
+      <integer>-15</integer>
+      <key>exclam</key>
+      <integer>-22</integer>
+      <key>exclam.case</key>
+      <integer>-22</integer>
+      <key>exclam.ss01</key>
+      <integer>-20</integer>
+      <key>four</key>
+      <integer>-13</integer>
+      <key>idotaccent.ss01</key>
+      <integer>-5</integer>
+      <key>iotadieresis</key>
+      <integer>29</integer>
+      <key>iotadieresis.ss01</key>
+      <integer>29</integer>
+      <key>iotadieresistonos</key>
+      <integer>29</integer>
+      <key>iotadieresistonos.ss01</key>
+      <integer>29</integer>
+      <key>one</key>
+      <integer>0</integer>
+      <key>parenright</key>
+      <integer>-10</integer>
+      <key>question</key>
+      <integer>-19</integer>
+      <key>question.ss01</key>
+      <integer>-19</integer>
+      <key>quotedbl</key>
+      <integer>-22</integer>
+      <key>quotedblleft</key>
+      <integer>-15</integer>
+      <key>quotedblleft.ss01</key>
+      <integer>-29</integer>
+      <key>quotedblright</key>
+      <integer>-22</integer>
+      <key>quotedblright.ss01</key>
+      <integer>-27</integer>
+      <key>quoteleft</key>
+      <integer>-15</integer>
+      <key>quoteleft.ss01</key>
+      <integer>-29</integer>
+      <key>quoteright</key>
+      <integer>-27</integer>
+      <key>quoteright.ss01</key>
+      <integer>-27</integer>
+      <key>quotesingle</key>
+      <integer>-22</integer>
+      <key>sigmafinal</key>
+      <integer>-19</integer>
+      <key>upsilondieresistonos</key>
+      <integer>-12</integer>
+      <key>upsilondieresistonos.ss01</key>
+      <integer>-12</integer>
+      <key>xi</key>
+      <integer>-19</integer>
+      <key>zeta</key>
+      <integer>-19</integer>
+    </dict>
+    <key>iotadieresis.ss01</key>
+    <dict>
+      <key>Alphatonos</key>
+      <integer>0</integer>
+      <key>Chi</key>
+      <integer>-6</integer>
+      <key>Epsilontonos</key>
+      <integer>0</integer>
+      <key>Etatonos</key>
+      <integer>0</integer>
+      <key>Iotatonos</key>
+      <integer>0</integer>
+      <key>Omegatonos</key>
+      <integer>0</integer>
+      <key>Omicrontonos</key>
+      <integer>0</integer>
+      <key>Psi</key>
+      <integer>-10</integer>
+      <key>Tau</key>
+      <integer>-22</integer>
+      <key>Upsilon</key>
+      <integer>-20</integer>
+      <key>Upsilondieresis</key>
+      <integer>-20</integer>
+      <key>Upsilondieresis.ss01</key>
+      <integer>-20</integer>
+      <key>Upsilontonos</key>
+      <integer>0</integer>
+      <key>asciitilde</key>
+      <integer>-52</integer>
+      <key>asterisk</key>
+      <integer>-28</integer>
+      <key>braceright</key>
+      <integer>-34</integer>
+      <key>bracketright</key>
+      <integer>-34</integer>
+      <key>epsilon</key>
+      <integer>-19</integer>
+      <key>equal</key>
+      <integer>-15</integer>
+      <key>exclam</key>
+      <integer>-22</integer>
+      <key>exclam.case</key>
+      <integer>-22</integer>
+      <key>exclam.ss01</key>
+      <integer>-20</integer>
+      <key>four</key>
+      <integer>-13</integer>
+      <key>idotaccent.ss01</key>
+      <integer>0</integer>
+      <key>iotadieresis</key>
+      <integer>39</integer>
+      <key>iotadieresis.ss01</key>
+      <integer>39</integer>
+      <key>iotadieresistonos</key>
+      <integer>39</integer>
+      <key>iotadieresistonos.ss01</key>
+      <integer>38</integer>
+      <key>one</key>
+      <integer>0</integer>
+      <key>parenright</key>
+      <integer>-26</integer>
+      <key>question</key>
+      <integer>-19</integer>
+      <key>question.ss01</key>
+      <integer>-19</integer>
+      <key>quotedbl</key>
+      <integer>-12</integer>
+      <key>quotedblleft</key>
+      <integer>-15</integer>
+      <key>quotedblleft.ss01</key>
+      <integer>-29</integer>
+      <key>quotedblright</key>
+      <integer>-22</integer>
+      <key>quotedblright.ss01</key>
+      <integer>-23</integer>
+      <key>quoteleft</key>
+      <integer>-15</integer>
+      <key>quoteleft.ss01</key>
+      <integer>-29</integer>
+      <key>quoteright</key>
+      <integer>-27</integer>
+      <key>quoteright.ss01</key>
+      <integer>-21</integer>
+      <key>quotesingle</key>
+      <integer>-12</integer>
+      <key>sigmafinal</key>
+      <integer>-19</integer>
+      <key>upsilondieresistonos</key>
+      <integer>-12</integer>
+      <key>upsilondieresistonos.ss01</key>
+      <integer>-12</integer>
+      <key>xi</key>
+      <integer>-19</integer>
+      <key>zeta</key>
+      <integer>-19</integer>
+    </dict>
+    <key>iotadieresistonos</key>
+    <dict>
+      <key>Alphatonos</key>
+      <integer>0</integer>
+      <key>Chi</key>
+      <integer>-6</integer>
+      <key>Epsilontonos</key>
+      <integer>0</integer>
+      <key>Etatonos</key>
+      <integer>0</integer>
+      <key>Iotatonos</key>
+      <integer>0</integer>
+      <key>Omegatonos</key>
+      <integer>0</integer>
+      <key>Omicrontonos</key>
+      <integer>0</integer>
+      <key>Psi</key>
+      <integer>-8</integer>
+      <key>Sigma</key>
+      <integer>-8</integer>
+      <key>Tau</key>
+      <integer>8</integer>
+      <key>Upsilon</key>
+      <integer>21</integer>
+      <key>Upsilondieresis</key>
+      <integer>21</integer>
+      <key>Upsilondieresis.ss01</key>
+      <integer>21</integer>
+      <key>Upsilontonos</key>
+      <integer>0</integer>
+      <key>asciitilde</key>
+      <integer>-52</integer>
+      <key>asterisk</key>
+      <integer>0</integer>
+      <key>braceright</key>
+      <integer>-4</integer>
+      <key>bracketright</key>
+      <integer>-4</integer>
+      <key>delta</key>
+      <integer>-18</integer>
+      <key>epsilon</key>
+      <integer>-19</integer>
+      <key>equal</key>
+      <integer>-15</integer>
+      <key>exclam</key>
+      <integer>0</integer>
+      <key>exclam.case</key>
+      <integer>0</integer>
+      <key>exclam.ss01</key>
+      <integer>-2</integer>
+      <key>four</key>
+      <integer>-13</integer>
+      <key>idotaccent</key>
+      <integer>0</integer>
+      <key>idotaccent.ss01</key>
+      <integer>0</integer>
+      <key>iotadieresis</key>
+      <integer>69</integer>
+      <key>iotadieresis.ss01</key>
+      <integer>69</integer>
+      <key>iotadieresistonos</key>
+      <integer>69</integer>
+      <key>iotadieresistonos.ss01</key>
+      <integer>69</integer>
+      <key>one</key>
+      <integer>0</integer>
+      <key>parenright</key>
+      <integer>0</integer>
+      <key>question</key>
+      <integer>0</integer>
+      <key>question.ss01</key>
+      <integer>0</integer>
+      <key>quotedbl</key>
+      <integer>0</integer>
+      <key>quotedblleft</key>
+      <integer>0</integer>
+      <key>quotedblleft.ss01</key>
+      <integer>-3</integer>
+      <key>quotedblright</key>
+      <integer>0</integer>
+      <key>quotedblright.ss01</key>
+      <integer>0</integer>
+      <key>quoteleft</key>
+      <integer>0</integer>
+      <key>quoteleft.ss01</key>
+      <integer>-3</integer>
+      <key>quoteright</key>
+      <integer>-1</integer>
+      <key>quoteright.ss01</key>
+      <integer>0</integer>
+      <key>quotesingle</key>
+      <integer>0</integer>
+      <key>sigmafinal</key>
+      <integer>-19</integer>
+      <key>six</key>
+      <integer>-8</integer>
+      <key>theta</key>
+      <integer>-18</integer>
+      <key>upsilondieresistonos</key>
+      <integer>-12</integer>
+      <key>upsilondieresistonos.ss01</key>
+      <integer>-12</integer>
+      <key>xi</key>
+      <integer>-18</integer>
+      <key>zero</key>
+      <integer>-8</integer>
+      <key>zeta</key>
+      <integer>-18</integer>
+    </dict>
+    <key>iotadieresistonos.ss01</key>
+    <dict>
+      <key>Alphatonos</key>
+      <integer>5</integer>
+      <key>Beta</key>
+      <integer>12</integer>
+      <key>Chi</key>
+      <integer>8</integer>
+      <key>Epsilon</key>
+      <integer>12</integer>
+      <key>Epsilontonos</key>
+      <integer>5</integer>
+      <key>Eta</key>
+      <integer>12</integer>
+      <key>Etatonos</key>
+      <integer>5</integer>
+      <key>Gamma</key>
+      <integer>12</integer>
+      <key>Iota</key>
+      <integer>12</integer>
+      <key>Iotatonos</key>
+      <integer>5</integer>
+      <key>Kappa</key>
+      <integer>12</integer>
+      <key>Mu</key>
+      <integer>12</integer>
+      <key>Nu</key>
+      <integer>12</integer>
+      <key>Omegatonos</key>
+      <integer>5</integer>
+      <key>Omicrontonos</key>
+      <integer>5</integer>
+      <key>Pi</key>
+      <integer>12</integer>
+      <key>Psi</key>
+      <integer>22</integer>
+      <key>Rho</key>
+      <integer>12</integer>
+      <key>Sigma</key>
+      <integer>7</integer>
+      <key>Tau</key>
+      <integer>38</integer>
+      <key>Upsilon</key>
+      <integer>36</integer>
+      <key>Upsilondieresis</key>
+      <integer>36</integer>
+      <key>Upsilondieresis.ss01</key>
+      <integer>36</integer>
+      <key>Upsilontonos</key>
+      <integer>0</integer>
+      <key>Xi</key>
+      <integer>-10</integer>
+      <key>Zeta</key>
+      <integer>8</integer>
+      <key>asciitilde</key>
+      <integer>-52</integer>
+      <key>asterisk</key>
+      <integer>0</integer>
+      <key>braceright</key>
+      <integer>0</integer>
+      <key>bracketright</key>
+      <integer>0</integer>
+      <key>delta</key>
+      <integer>-12</integer>
+      <key>epsilon</key>
+      <integer>-19</integer>
+      <key>equal</key>
+      <integer>-15</integer>
+      <key>exclam</key>
+      <integer>0</integer>
+      <key>exclam.case</key>
+      <integer>0</integer>
+      <key>exclam.ss01</key>
+      <integer>0</integer>
+      <key>four</key>
+      <integer>-13</integer>
+      <key>idotaccent</key>
+      <integer>0</integer>
+      <key>idotaccent.ss01</key>
+      <integer>0</integer>
+      <key>iotadieresis</key>
+      <integer>99</integer>
+      <key>iotadieresis.ss01</key>
+      <integer>98</integer>
+      <key>iotadieresistonos</key>
+      <integer>99</integer>
+      <key>iotadieresistonos.ss01</key>
+      <integer>99</integer>
+      <key>iotatonos</key>
+      <integer>2</integer>
+      <key>one</key>
+      <integer>0</integer>
+      <key>parenright</key>
+      <integer>0</integer>
+      <key>question</key>
+      <integer>0</integer>
+      <key>question.ss01</key>
+      <integer>0</integer>
+      <key>quotedbl</key>
+      <integer>0</integer>
+      <key>quotedblleft</key>
+      <integer>0</integer>
+      <key>quotedblleft.ss01</key>
+      <integer>0</integer>
+      <key>quotedblright</key>
+      <integer>0</integer>
+      <key>quotedblright.ss01</key>
+      <integer>0</integer>
+      <key>quoteleft</key>
+      <integer>0</integer>
+      <key>quoteleft.ss01</key>
+      <integer>0</integer>
+      <key>quoteright</key>
+      <integer>0</integer>
+      <key>quoteright.ss01</key>
+      <integer>0</integer>
+      <key>quotesingle</key>
+      <integer>0</integer>
+      <key>sigmafinal</key>
+      <integer>-19</integer>
+      <key>six</key>
+      <integer>-8</integer>
+      <key>theta</key>
+      <integer>-18</integer>
+      <key>upsilondieresis</key>
+      <integer>-12</integer>
+      <key>upsilondieresis.ss01</key>
+      <integer>-12</integer>
+      <key>upsilondieresistonos</key>
+      <integer>5</integer>
+      <key>upsilondieresistonos.ss01</key>
+      <integer>5</integer>
+      <key>xi</key>
+      <integer>12</integer>
+      <key>zero</key>
+      <integer>-8</integer>
+      <key>zeta</key>
+      <integer>12</integer>
+    </dict>
+    <key>iotatonos</key>
+    <dict>
+      <key>Tau</key>
+      <integer>-85</integer>
+      <key>Upsilon</key>
+      <integer>-74</integer>
+      <key>Upsilondieresis</key>
+      <integer>-74</integer>
+      <key>Upsilondieresis.ss01</key>
+      <integer>-74</integer>
+      <key>asciitilde</key>
+      <integer>-52</integer>
+      <key>braceright</key>
+      <integer>-38</integer>
+      <key>epsilon</key>
+      <integer>-19</integer>
+      <key>equal</key>
+      <integer>-15</integer>
+      <key>four</key>
+      <integer>-13</integer>
+      <key>iotadieresis</key>
+      <integer>-7</integer>
+      <key>parenright</key>
+      <integer>-58</integer>
+      <key>seven</key>
+      <integer>-39</integer>
+      <key>sigmafinal</key>
+      <integer>-19</integer>
+      <key>trademark</key>
+      <integer>-53</integer>
+      <key>xi</key>
+      <integer>-19</integer>
+      <key>zeta</key>
+      <integer>-19</integer>
+    </dict>
     <key>j</key>
     <dict>
       <key>j</key>
@@ -2444,6 +5205,43 @@
       <key>trademark</key>
       <integer>-87</integer>
     </dict>
+    <key>kappa</key>
+    <dict>
+      <key>Chi</key>
+      <integer>0</integer>
+      <key>ampersand</key>
+      <integer>-38</integer>
+      <key>asciitilde</key>
+      <integer>-85</integer>
+      <key>chi</key>
+      <integer>0</integer>
+      <key>epsilon</key>
+      <integer>-37</integer>
+      <key>four</key>
+      <integer>-52</integer>
+      <key>gamma</key>
+      <integer>4</integer>
+      <key>nu</key>
+      <integer>4</integer>
+      <key>pi</key>
+      <integer>9</integer>
+      <key>rho</key>
+      <integer>-8</integer>
+      <key>seven</key>
+      <integer>-72</integer>
+      <key>sigmafinal</key>
+      <integer>-37</integer>
+      <key>tau</key>
+      <integer>18</integer>
+      <key>theta</key>
+      <integer>-38</integer>
+      <key>trademark</key>
+      <integer>-87</integer>
+      <key>xi</key>
+      <integer>-37</integer>
+      <key>zeta</key>
+      <integer>-37</integer>
+    </dict>
     <key>kcommaaccent</key>
     <dict>
       <key>imacron</key>
@@ -2467,6 +5265,53 @@
       <key>zcaron</key>
       <integer>-17</integer>
     </dict>
+    <key>lambda</key>
+    <dict>
+      <key>Omega</key>
+      <integer>-28</integer>
+      <key>ampersand</key>
+      <integer>-28</integer>
+      <key>asciicircum</key>
+      <integer>-128</integer>
+      <key>asciitilde</key>
+      <integer>-80</integer>
+      <key>backslash</key>
+      <integer>-124</integer>
+      <key>bracketright</key>
+      <integer>-26</integer>
+      <key>colon.case</key>
+      <integer>-57</integer>
+      <key>dollar</key>
+      <integer>-41</integer>
+      <key>eight</key>
+      <integer>-24</integer>
+      <key>equal</key>
+      <integer>-68</integer>
+      <key>five</key>
+      <integer>-29</integer>
+      <key>four</key>
+      <integer>-24</integer>
+      <key>less</key>
+      <integer>-88</integer>
+      <key>less_hyphen.liga</key>
+      <integer>-105</integer>
+      <key>multiply</key>
+      <integer>-69</integer>
+      <key>nine</key>
+      <integer>-31</integer>
+      <key>question.case</key>
+      <integer>-108</integer>
+      <key>rho</key>
+      <integer>0</integer>
+      <key>seven</key>
+      <integer>-75</integer>
+      <key>slash</key>
+      <integer>-21</integer>
+      <key>three</key>
+      <integer>-32</integer>
+      <key>trademark</key>
+      <integer>-144</integer>
+    </dict>
     <key>leftArrow</key>
     <dict>
       <key>public.kern2.KO_I.ss13</key>
@@ -2479,15 +5324,31 @@
     </dict>
     <key>less</key>
     <dict>
+      <key>Chi</key>
+      <integer>-79</integer>
       <key>J</key>
       <integer>-34</integer>
+      <key>Sigma</key>
+      <integer>-43</integer>
       <key>T</key>
       <integer>-38</integer>
+      <key>Tau</key>
+      <integer>-38</integer>
+      <key>Upsilon</key>
+      <integer>-60</integer>
+      <key>Upsilondieresis</key>
+      <integer>-60</integer>
+      <key>Upsilondieresis.ss01</key>
+      <integer>-60</integer>
       <key>X</key>
       <integer>-79</integer>
+      <key>Xi</key>
+      <integer>-43</integer>
       <key>Y</key>
       <integer>-60</integer>
       <key>Z</key>
+      <integer>-43</integer>
+      <key>Zeta</key>
       <integer>-43</integer>
       <key>less</key>
       <integer>-48</integer>
@@ -2500,6 +5361,8 @@
     </dict>
     <key>less_hyphen.liga</key>
     <dict>
+      <key>Chi</key>
+      <integer>-138</integer>
       <key>Hbar</key>
       <integer>-41</integer>
       <key>Icircumflex</key>
@@ -2508,8 +5371,20 @@
       <integer>-33</integer>
       <key>Iogonek</key>
       <integer>-33</integer>
+      <key>Omega</key>
+      <integer>-21</integer>
       <key>Oslash</key>
       <integer>-21</integer>
+      <key>Sigma</key>
+      <integer>-107</integer>
+      <key>Xi</key>
+      <integer>-97</integer>
+      <key>Zeta</key>
+      <integer>-107</integer>
+      <key>chi</key>
+      <integer>-62</integer>
+      <key>delta</key>
+      <integer>-22</integer>
       <key>dollar</key>
       <integer>-51</integer>
       <key>hbar</key>
@@ -2518,8 +5393,28 @@
       <integer>-38</integer>
       <key>idieresis</key>
       <integer>-38</integer>
+      <key>iotadieresis</key>
+      <integer>-38</integer>
+      <key>iotadieresis.ss01</key>
+      <integer>-38</integer>
+      <key>iotadieresistonos</key>
+      <integer>-38</integer>
+      <key>iotadieresistonos.ss01</key>
+      <integer>-38</integer>
+      <key>omega</key>
+      <integer>-23</integer>
+      <key>omegatonos</key>
+      <integer>-23</integer>
+      <key>omicron</key>
+      <integer>-22</integer>
+      <key>omicrontonos</key>
+      <integer>-22</integer>
       <key>oslash</key>
       <integer>-21</integer>
+      <key>phi</key>
+      <integer>-22</integer>
+      <key>psi</key>
+      <integer>-35</integer>
       <key>question.ss01</key>
       <integer>-101</integer>
       <key>questiondown.ss01</key>
@@ -2530,6 +5425,24 @@
       <integer>-203</integer>
       <key>quotesinglbase.ss01</key>
       <integer>-142</integer>
+      <key>rho</key>
+      <integer>-22</integer>
+      <key>sigma</key>
+      <integer>-22</integer>
+      <key>tau</key>
+      <integer>-26</integer>
+      <key>upsilon</key>
+      <integer>-35</integer>
+      <key>upsilondieresis</key>
+      <integer>-35</integer>
+      <key>upsilondieresis.ss01</key>
+      <integer>-35</integer>
+      <key>upsilondieresistonos</key>
+      <integer>-35</integer>
+      <key>upsilondieresistonos.ss01</key>
+      <integer>-35</integer>
+      <key>upsilontonos</key>
+      <integer>-35</integer>
     </dict>
     <key>lslash</key>
     <dict>
@@ -2672,11 +5585,64 @@
       <key>two.ss10</key>
       <integer>-5</integer>
     </dict>
+    <key>micro</key>
+    <dict>
+      <key>Tau</key>
+      <integer>-91</integer>
+      <key>asciicircum</key>
+      <integer>-57</integer>
+      <key>asciitilde</key>
+      <integer>-41</integer>
+      <key>braceright</key>
+      <integer>-54</integer>
+      <key>quotesingle</key>
+      <integer>-60</integer>
+      <key>seven</key>
+      <integer>-84</integer>
+      <key>trademark</key>
+      <integer>-93</integer>
+    </dict>
+    <key>minus</key>
+    <dict>
+      <key>Xi</key>
+      <integer>-94</integer>
+      <key>chi</key>
+      <integer>-62</integer>
+      <key>omega</key>
+      <integer>-23</integer>
+      <key>omegatonos</key>
+      <integer>-23</integer>
+    </dict>
+    <key>mu</key>
+    <dict>
+      <key>Tau</key>
+      <integer>-91</integer>
+      <key>asciicircum</key>
+      <integer>-57</integer>
+      <key>asciitilde</key>
+      <integer>-41</integer>
+      <key>braceright</key>
+      <integer>-54</integer>
+      <key>quotesingle</key>
+      <integer>-60</integer>
+      <key>seven</key>
+      <integer>-84</integer>
+      <key>trademark</key>
+      <integer>-93</integer>
+    </dict>
     <key>multiply</key>
     <dict>
       <key>A</key>
       <integer>-69</integer>
+      <key>Alpha</key>
+      <integer>-69</integer>
+      <key>Delta</key>
+      <integer>-69</integer>
+      <key>Lambda</key>
+      <integer>-69</integer>
       <key>T</key>
+      <integer>-67</integer>
+      <key>Tau</key>
       <integer>-67</integer>
       <key>five</key>
       <integer>-29</integer>
@@ -2742,6 +5708,10 @@
       <integer>-31</integer>
       <key>multiply</key>
       <integer>-22</integer>
+      <key>omega</key>
+      <integer>0</integer>
+      <key>omegatonos</key>
+      <integer>0</integer>
       <key>ordmasculine</key>
       <integer>-19</integer>
       <key>underscore</key>
@@ -2752,16 +5722,95 @@
       <key>quotedbl</key>
       <integer>-67</integer>
     </dict>
+    <key>nu</key>
+    <dict>
+      <key>alpha</key>
+      <integer>-16</integer>
+      <key>braceright</key>
+      <integer>-83</integer>
+      <key>colon.ss01</key>
+      <integer>-11</integer>
+      <key>comma</key>
+      <integer>-76</integer>
+      <key>comma.ss01</key>
+      <integer>-91</integer>
+      <key>delta</key>
+      <integer>-16</integer>
+      <key>divide</key>
+      <integer>-15</integer>
+      <key>ellipsis.ss01</key>
+      <integer>-97</integer>
+      <key>emdash</key>
+      <integer>-33</integer>
+      <key>endash</key>
+      <integer>-33</integer>
+      <key>four</key>
+      <integer>-13</integer>
+      <key>gamma</key>
+      <integer>20</integer>
+      <key>guillemetleft</key>
+      <integer>-34</integer>
+      <key>guillemetright</key>
+      <integer>-28</integer>
+      <key>guilsinglleft</key>
+      <integer>-34</integer>
+      <key>guilsinglright</key>
+      <integer>-28</integer>
+      <key>hyphen</key>
+      <integer>-32</integer>
+      <key>hyphen_greater.liga</key>
+      <integer>-22</integer>
+      <key>minus</key>
+      <integer>-15</integer>
+      <key>nu</key>
+      <integer>20</integer>
+      <key>omicron</key>
+      <integer>-16</integer>
+      <key>period</key>
+      <integer>-76</integer>
+      <key>period.ss01</key>
+      <integer>-91</integer>
+      <key>phi</key>
+      <integer>-16</integer>
+      <key>pi</key>
+      <integer>25</integer>
+      <key>plus</key>
+      <integer>-15</integer>
+      <key>rho</key>
+      <integer>-16</integer>
+      <key>semicolon.ss01</key>
+      <integer>-11</integer>
+      <key>seven</key>
+      <integer>-90</integer>
+      <key>sigma</key>
+      <integer>-16</integer>
+      <key>tau</key>
+      <integer>34</integer>
+      <key>theta</key>
+      <integer>-13</integer>
+      <key>trademark</key>
+      <integer>-77</integer>
+    </dict>
     <key>numbersign</key>
     <dict>
       <key>A</key>
       <integer>-64</integer>
+      <key>Alpha</key>
+      <integer>-64</integer>
+      <key>Delta</key>
+      <integer>-64</integer>
       <key>J</key>
       <integer>-58</integer>
+      <key>Lambda</key>
+      <integer>-64</integer>
       <key>T</key>
+      <integer>-38</integer>
+      <key>Tau</key>
       <integer>-38</integer>
       <key>a</key>
       <integer>-31</integer>
+      <key>anoteleia.ss01</key>
+      <integer>-74</integer>
       <key>comma.ss01</key>
       <integer>-73</integer>
       <key>five</key>
@@ -2843,18 +5892,208 @@
       <key>parenright</key>
       <integer>-38</integer>
     </dict>
+    <key>omega</key>
+    <dict>
+      <key>Tau</key>
+      <integer>-117</integer>
+      <key>asciicircum</key>
+      <integer>-34</integer>
+      <key>asciitilde</key>
+      <integer>-20</integer>
+      <key>asterisk</key>
+      <integer>-27</integer>
+      <key>braceright</key>
+      <integer>-72</integer>
+      <key>bracketright</key>
+      <integer>-80</integer>
+      <key>chi</key>
+      <integer>-15</integer>
+      <key>equal</key>
+      <integer>-12</integer>
+      <key>gamma</key>
+      <integer>11</integer>
+      <key>guillemetright</key>
+      <integer>-24</integer>
+      <key>guilsinglright</key>
+      <integer>-24</integer>
+      <key>nu</key>
+      <integer>11</integer>
+      <key>one</key>
+      <integer>-4</integer>
+      <key>parenright</key>
+      <integer>-103</integer>
+      <key>question</key>
+      <integer>-6</integer>
+      <key>question.ss01</key>
+      <integer>-6</integer>
+      <key>quotedbl</key>
+      <integer>-58</integer>
+      <key>quotedblleft</key>
+      <integer>-37</integer>
+      <key>quotedblleft.ss01</key>
+      <integer>-36</integer>
+      <key>quotedblright</key>
+      <integer>-31</integer>
+      <key>quotedblright.ss01</key>
+      <integer>-45</integer>
+      <key>quoteleft</key>
+      <integer>-37</integer>
+      <key>quoteleft.ss01</key>
+      <integer>-36</integer>
+      <key>quoteright</key>
+      <integer>-35</integer>
+      <key>quoteright.ss01</key>
+      <integer>-41</integer>
+      <key>quotesingle</key>
+      <integer>-58</integer>
+      <key>seven</key>
+      <integer>-85</integer>
+      <key>tau</key>
+      <integer>6</integer>
+      <key>trademark</key>
+      <integer>-99</integer>
+    </dict>
+    <key>omegatonos</key>
+    <dict>
+      <key>Tau</key>
+      <integer>-117</integer>
+      <key>asciicircum</key>
+      <integer>-34</integer>
+      <key>asciitilde</key>
+      <integer>-20</integer>
+      <key>asterisk</key>
+      <integer>-27</integer>
+      <key>braceright</key>
+      <integer>-72</integer>
+      <key>bracketright</key>
+      <integer>-80</integer>
+      <key>chi</key>
+      <integer>-15</integer>
+      <key>equal</key>
+      <integer>-12</integer>
+      <key>gamma</key>
+      <integer>11</integer>
+      <key>guillemetright</key>
+      <integer>-24</integer>
+      <key>guilsinglright</key>
+      <integer>-24</integer>
+      <key>nu</key>
+      <integer>11</integer>
+      <key>one</key>
+      <integer>-4</integer>
+      <key>parenright</key>
+      <integer>-103</integer>
+      <key>question</key>
+      <integer>-6</integer>
+      <key>question.ss01</key>
+      <integer>-6</integer>
+      <key>quotedbl</key>
+      <integer>-58</integer>
+      <key>quotedblleft</key>
+      <integer>-37</integer>
+      <key>quotedblleft.ss01</key>
+      <integer>-36</integer>
+      <key>quotedblright</key>
+      <integer>-31</integer>
+      <key>quotedblright.ss01</key>
+      <integer>-45</integer>
+      <key>quoteleft</key>
+      <integer>-37</integer>
+      <key>quoteleft.ss01</key>
+      <integer>-36</integer>
+      <key>quoteright</key>
+      <integer>-35</integer>
+      <key>quoteright.ss01</key>
+      <integer>-41</integer>
+      <key>quotesingle</key>
+      <integer>-58</integer>
+      <key>seven</key>
+      <integer>-85</integer>
+      <key>tau</key>
+      <integer>6</integer>
+      <key>trademark</key>
+      <integer>-99</integer>
+    </dict>
+    <key>omicron</key>
+    <dict>
+      <key>Tau</key>
+      <integer>-117</integer>
+      <key>asciicircum</key>
+      <integer>-84</integer>
+      <key>asciitilde</key>
+      <integer>-18</integer>
+      <key>braceright</key>
+      <integer>-72</integer>
+      <key>bracketright</key>
+      <integer>-80</integer>
+      <key>equal</key>
+      <integer>-12</integer>
+      <key>parenright</key>
+      <integer>-103</integer>
+      <key>quotedbl</key>
+      <integer>-80</integer>
+      <key>quotedblright.ss01</key>
+      <integer>-63</integer>
+      <key>quoteright.ss01</key>
+      <integer>-63</integer>
+      <key>quotesingle</key>
+      <integer>-80</integer>
+      <key>seven</key>
+      <integer>-85</integer>
+      <key>trademark</key>
+      <integer>-99</integer>
+    </dict>
+    <key>omicrontonos</key>
+    <dict>
+      <key>Tau</key>
+      <integer>-117</integer>
+      <key>asciicircum</key>
+      <integer>-84</integer>
+      <key>asciitilde</key>
+      <integer>-18</integer>
+      <key>braceright</key>
+      <integer>-72</integer>
+      <key>bracketright</key>
+      <integer>-80</integer>
+      <key>equal</key>
+      <integer>-12</integer>
+      <key>parenright</key>
+      <integer>-101</integer>
+      <key>quotedbl</key>
+      <integer>-80</integer>
+      <key>quotedblright.ss01</key>
+      <integer>-63</integer>
+      <key>quoteright.ss01</key>
+      <integer>-63</integer>
+      <key>quotesingle</key>
+      <integer>-80</integer>
+      <key>seven</key>
+      <integer>-85</integer>
+      <key>trademark</key>
+      <integer>-99</integer>
+    </dict>
     <key>one</key>
     <dict>
       <key>A</key>
       <integer>-13</integer>
+      <key>Alpha</key>
+      <integer>-13</integer>
       <key>B</key>
       <integer>-11</integer>
+      <key>Beta</key>
+      <integer>-11</integer>
+      <key>Delta</key>
+      <integer>-13</integer>
+      <key>Lambda</key>
+      <integer>-13</integer>
       <key>a</key>
       <integer>-10</integer>
       <key>braceright</key>
       <integer>-27</integer>
       <key>bracketright.case</key>
       <integer>-23</integer>
+      <key>chi</key>
+      <integer>-22</integer>
       <key>colon.case</key>
       <integer>-13</integer>
       <key>degree</key>
@@ -2948,8 +6187,14 @@
     </dict>
     <key>parenleft</key>
     <dict>
+      <key>Alphatonos</key>
+      <integer>-47</integer>
       <key>Dcroat</key>
       <integer>-49</integer>
+      <key>Epsilontonos</key>
+      <integer>-47</integer>
+      <key>Etatonos</key>
+      <integer>-47</integer>
       <key>Eth</key>
       <integer>-49</integer>
       <key>Germandbls</key>
@@ -2958,10 +6203,20 @@
       <integer>-46</integer>
       <key>Icircumflex</key>
       <integer>-5</integer>
+      <key>Iotatonos</key>
+      <integer>-47</integer>
       <key>Lslash</key>
       <integer>-43</integer>
+      <key>Omega</key>
+      <integer>-47</integer>
+      <key>Omegatonos</key>
+      <integer>-47</integer>
+      <key>Omicrontonos</key>
+      <integer>-47</integer>
       <key>Oslash</key>
       <integer>-92</integer>
+      <key>Upsilontonos</key>
+      <integer>-47</integer>
       <key>ampersand</key>
       <integer>-96</integer>
       <key>asciicircum</key>
@@ -2974,10 +6229,14 @@
       <integer>-121</integer>
       <key>cent</key>
       <integer>-104</integer>
+      <key>chi</key>
+      <integer>-70</integer>
       <key>copyright</key>
       <integer>-108</integer>
       <key>degree</key>
       <integer>-66</integer>
+      <key>delta</key>
+      <integer>-81</integer>
       <key>dollar</key>
       <integer>-87</integer>
       <key>dollar.ss12</key>
@@ -2994,12 +6253,16 @@
       <integer>-47</integer>
       <key>exclamdown.ss01</key>
       <integer>-54</integer>
+      <key>gamma</key>
+      <integer>-99</integer>
       <key>greater</key>
       <integer>-105</integer>
       <key>icircumflex</key>
       <integer>-22</integer>
       <key>iogonek</key>
       <integer>-20</integer>
+      <key>iotatonos</key>
+      <integer>-36</integer>
       <key>j</key>
       <integer>0</integer>
       <key>j.ss01</key>
@@ -3012,8 +6275,14 @@
       <integer>-55</integer>
       <key>lslash.ss13</key>
       <integer>-55</integer>
+      <key>micro</key>
+      <integer>-3</integer>
+      <key>mu</key>
+      <integer>-3</integer>
       <key>multiply</key>
       <integer>-120</integer>
+      <key>nu</key>
+      <integer>-99</integer>
       <key>numbersign</key>
       <integer>-106</integer>
       <key>oslash</key>
@@ -3038,25 +6307,57 @@
       <integer>-46</integer>
       <key>registered</key>
       <integer>-108</integer>
+      <key>rho</key>
+      <integer>0</integer>
       <key>scaron</key>
       <integer>-46</integer>
       <key>section</key>
       <integer>-68</integer>
       <key>sterling</key>
       <integer>-70</integer>
+      <key>theta</key>
+      <integer>-103</integer>
       <key>udieresis</key>
       <integer>-79</integer>
+      <key>upsilondieresis</key>
+      <integer>-79</integer>
+      <key>upsilondieresis.ss01</key>
+      <integer>-79</integer>
+      <key>upsilondieresistonos</key>
+      <integer>-45</integer>
+      <key>upsilondieresistonos.ss01</key>
+      <integer>-75</integer>
       <key>v</key>
       <integer>-99</integer>
+      <key>xi</key>
+      <integer>0</integer>
       <key>zcaron</key>
       <integer>-40</integer>
+      <key>zeta</key>
+      <integer>0</integer>
     </dict>
     <key>parenleft.case</key>
     <dict>
+      <key>Alphatonos</key>
+      <integer>-47</integer>
       <key>Dcroat</key>
       <integer>-52</integer>
+      <key>Epsilontonos</key>
+      <integer>-47</integer>
+      <key>Etatonos</key>
+      <integer>-47</integer>
+      <key>Iotatonos</key>
+      <integer>-47</integer>
+      <key>Omega</key>
+      <integer>0</integer>
+      <key>Omegatonos</key>
+      <integer>-47</integer>
+      <key>Omicrontonos</key>
+      <integer>-47</integer>
       <key>Oslash</key>
       <integer>-71</integer>
+      <key>Upsilontonos</key>
+      <integer>-47</integer>
       <key>asciicircum</key>
       <integer>-118</integer>
       <key>asciitilde</key>
@@ -3101,6 +6402,10 @@
     </dict>
     <key>parenright.case</key>
     <dict>
+      <key>Xi</key>
+      <integer>-56</integer>
+      <key>anoteleia.ss01</key>
+      <integer>-86</integer>
       <key>bracketright.case</key>
       <integer>-95</integer>
       <key>colon.case</key>
@@ -3119,6 +6424,10 @@
     </dict>
     <key>period</key>
     <dict>
+      <key>Omega</key>
+      <integer>-43</integer>
+      <key>epsilontonos</key>
+      <integer>-33</integer>
       <key>ordfeminine</key>
       <integer>-142</integer>
       <key>ordmasculine</key>
@@ -3127,17 +6436,29 @@
       <integer>-124</integer>
       <key>quotedblright</key>
       <integer>-142</integer>
+      <key>rho</key>
+      <integer>-33</integer>
     </dict>
     <key>period.ss01</key>
     <dict>
+      <key>Omega</key>
+      <integer>-26</integer>
       <key>braceright</key>
       <integer>-61</integer>
       <key>bracketright.case</key>
       <integer>-42</integer>
       <key>colon.case</key>
       <integer>-59</integer>
+      <key>epsilon</key>
+      <integer>-36</integer>
+      <key>epsilontonos</key>
+      <integer>-36</integer>
       <key>exclam.ss01</key>
       <integer>-41</integer>
+      <key>micro</key>
+      <integer>-40</integer>
+      <key>mu</key>
+      <integer>-40</integer>
       <key>ordfeminine</key>
       <integer>-142</integer>
       <key>ordmasculine</key>
@@ -3150,6 +6471,8 @@
       <integer>-142</integer>
       <key>quotesingle</key>
       <integer>-134</integer>
+      <key>rho</key>
+      <integer>-20</integer>
       <key>semicolon.case</key>
       <integer>-49</integer>
       <key>six</key>
@@ -3166,15 +6489,37 @@
     <dict>
       <key>A</key>
       <integer>-62</integer>
+      <key>Alpha</key>
+      <integer>-62</integer>
+      <key>Chi</key>
+      <integer>-92</integer>
+      <key>Delta</key>
+      <integer>-62</integer>
       <key>J</key>
+      <integer>-92</integer>
+      <key>Lambda</key>
+      <integer>-62</integer>
+      <key>Sigma</key>
       <integer>-92</integer>
       <key>T</key>
       <integer>-92</integer>
+      <key>Tau</key>
+      <integer>-92</integer>
+      <key>Upsilon</key>
+      <integer>-92</integer>
+      <key>Upsilondieresis</key>
+      <integer>-92</integer>
+      <key>Upsilondieresis.ss01</key>
+      <integer>-92</integer>
       <key>X</key>
       <integer>-92</integer>
+      <key>Xi</key>
+      <integer>-50</integer>
       <key>Y</key>
       <integer>-92</integer>
       <key>Z</key>
+      <integer>-92</integer>
+      <key>Zeta</key>
       <integer>-92</integer>
       <key>one</key>
       <integer>0</integer>
@@ -3187,13 +6532,29 @@
     <dict>
       <key>A</key>
       <integer>-78</integer>
+      <key>Alpha</key>
+      <integer>-78</integer>
+      <key>Chi</key>
+      <integer>-92</integer>
+      <key>Delta</key>
+      <integer>-78</integer>
       <key>J</key>
       <integer>-92</integer>
+      <key>Lambda</key>
+      <integer>-78</integer>
+      <key>Sigma</key>
+      <integer>-75</integer>
       <key>T</key>
+      <integer>-77</integer>
+      <key>Tau</key>
       <integer>-77</integer>
       <key>X</key>
       <integer>-92</integer>
+      <key>Xi</key>
+      <integer>-59</integer>
       <key>Z</key>
+      <integer>-75</integer>
+      <key>Zeta</key>
       <integer>-75</integer>
       <key>parenright</key>
       <integer>-92</integer>
@@ -3205,6 +6566,8 @@
     </dict>
     <key>perthousand</key>
     <dict>
+      <key>anoteleia.ss01</key>
+      <integer>-24</integer>
       <key>asterisk</key>
       <integer>-132</integer>
       <key>comma.ss01</key>
@@ -3224,12 +6587,191 @@
       <key>quoteright.ss01</key>
       <integer>-104</integer>
     </dict>
+    <key>phi</key>
+    <dict>
+      <key>Tau</key>
+      <integer>-117</integer>
+      <key>asciicircum</key>
+      <integer>-84</integer>
+      <key>asciitilde</key>
+      <integer>-18</integer>
+      <key>braceright</key>
+      <integer>-72</integer>
+      <key>bracketright</key>
+      <integer>-80</integer>
+      <key>chi</key>
+      <integer>0</integer>
+      <key>equal</key>
+      <integer>-12</integer>
+      <key>parenright</key>
+      <integer>-103</integer>
+      <key>quotedbl</key>
+      <integer>-80</integer>
+      <key>quotedblright.ss01</key>
+      <integer>-63</integer>
+      <key>quoteright.ss01</key>
+      <integer>-63</integer>
+      <key>quotesingle</key>
+      <integer>-80</integer>
+      <key>seven</key>
+      <integer>-85</integer>
+      <key>trademark</key>
+      <integer>-99</integer>
+    </dict>
+    <key>pi</key>
+    <dict>
+      <key>asciicircum</key>
+      <integer>-28</integer>
+      <key>asciitilde</key>
+      <integer>-38</integer>
+      <key>asterisk</key>
+      <integer>-12</integer>
+      <key>at</key>
+      <integer>-6</integer>
+      <key>backslash</key>
+      <integer>-44</integer>
+      <key>braceright</key>
+      <integer>-51</integer>
+      <key>chi</key>
+      <integer>-9</integer>
+      <key>colon</key>
+      <integer>-11</integer>
+      <key>colon.ss01</key>
+      <integer>-15</integer>
+      <key>divide</key>
+      <integer>-23</integer>
+      <key>equal</key>
+      <integer>-21</integer>
+      <key>gamma</key>
+      <integer>25</integer>
+      <key>guillemetright</key>
+      <integer>-31</integer>
+      <key>guilsinglright</key>
+      <integer>-31</integer>
+      <key>hyphen_greater.liga</key>
+      <integer>-29</integer>
+      <key>idotaccent</key>
+      <integer>-16</integer>
+      <key>idotaccent.ss01</key>
+      <integer>-16</integer>
+      <key>minus</key>
+      <integer>-23</integer>
+      <key>multiply</key>
+      <integer>-31</integer>
+      <key>nu</key>
+      <integer>25</integer>
+      <key>omega</key>
+      <integer>-3</integer>
+      <key>omegatonos</key>
+      <integer>-3</integer>
+      <key>one</key>
+      <integer>-1</integer>
+      <key>parenleft</key>
+      <integer>-30</integer>
+      <key>parenleft.case</key>
+      <integer>-28</integer>
+      <key>pi</key>
+      <integer>0</integer>
+      <key>plus</key>
+      <integer>-23</integer>
+      <key>psi</key>
+      <integer>-17</integer>
+      <key>question</key>
+      <integer>0</integer>
+      <key>question.ss01</key>
+      <integer>0</integer>
+      <key>quotedbl</key>
+      <integer>-40</integer>
+      <key>quotedblleft</key>
+      <integer>-32</integer>
+      <key>quotedblleft.ss01</key>
+      <integer>-22</integer>
+      <key>quotedblright</key>
+      <integer>-32</integer>
+      <key>quotedblright.ss01</key>
+      <integer>-39</integer>
+      <key>quoteleft</key>
+      <integer>-32</integer>
+      <key>quoteleft.ss01</key>
+      <integer>-22</integer>
+      <key>quoteright</key>
+      <integer>-35</integer>
+      <key>quoteright.ss01</key>
+      <integer>-35</integer>
+      <key>quotesingle</key>
+      <integer>-40</integer>
+      <key>semicolon</key>
+      <integer>-11</integer>
+      <key>semicolon.ss01</key>
+      <integer>-17</integer>
+      <key>seven</key>
+      <integer>-84</integer>
+      <key>six</key>
+      <integer>-2</integer>
+      <key>tau</key>
+      <integer>9</integer>
+      <key>three</key>
+      <integer>-8</integer>
+      <key>trademark</key>
+      <integer>-111</integer>
+      <key>upsilon</key>
+      <integer>-17</integer>
+      <key>upsilondieresis</key>
+      <integer>-17</integer>
+      <key>upsilondieresis.ss01</key>
+      <integer>-17</integer>
+      <key>upsilondieresistonos</key>
+      <integer>-17</integer>
+      <key>upsilondieresistonos.ss01</key>
+      <integer>-17</integer>
+      <key>upsilontonos</key>
+      <integer>-17</integer>
+      <key>zero</key>
+      <integer>-2</integer>
+    </dict>
     <key>plus</key>
     <dict>
+      <key>Xi</key>
+      <integer>-94</integer>
+      <key>chi</key>
+      <integer>-62</integer>
       <key>equal</key>
       <integer>-45</integer>
+      <key>omega</key>
+      <integer>-23</integer>
+      <key>omegatonos</key>
+      <integer>-23</integer>
       <key>question.ss01</key>
       <integer>-109</integer>
+    </dict>
+    <key>psi</key>
+    <dict>
+      <key>Tau</key>
+      <integer>-91</integer>
+      <key>asciicircum</key>
+      <integer>-55</integer>
+      <key>asciitilde</key>
+      <integer>-23</integer>
+      <key>braceright</key>
+      <integer>-54</integer>
+      <key>guillemetleft</key>
+      <integer>-40</integer>
+      <key>guilsinglleft</key>
+      <integer>-40</integer>
+      <key>one</key>
+      <integer>-12</integer>
+      <key>question</key>
+      <integer>-44</integer>
+      <key>question.ss01</key>
+      <integer>-44</integer>
+      <key>quotesingle</key>
+      <integer>-60</integer>
+      <key>seven</key>
+      <integer>-84</integer>
+      <key>tau</key>
+      <integer>-8</integer>
+      <key>trademark</key>
+      <integer>-93</integer>
     </dict>
     <key>public.kern1.KO_A</key>
     <dict>
@@ -21503,20 +25045,78 @@
       <key>public.kern2.KO_I.ss13</key>
       <integer>-10</integer>
     </dict>
+    <key>question</key>
+    <dict>
+      <key>chi</key>
+      <integer>-32</integer>
+      <key>delta</key>
+      <integer>-30</integer>
+      <key>omega</key>
+      <integer>-28</integer>
+      <key>omegatonos</key>
+      <integer>-28</integer>
+      <key>theta</key>
+      <integer>-18</integer>
+      <key>upsilondieresistonos</key>
+      <integer>-28</integer>
+      <key>xi</key>
+      <integer>-16</integer>
+      <key>zeta</key>
+      <integer>-28</integer>
+    </dict>
+    <key>question.case</key>
+    <dict>
+      <key>chi</key>
+      <integer>-32</integer>
+      <key>delta</key>
+      <integer>-34</integer>
+      <key>omega</key>
+      <integer>-28</integer>
+      <key>omegatonos</key>
+      <integer>-28</integer>
+      <key>theta</key>
+      <integer>-18</integer>
+      <key>upsilondieresistonos</key>
+      <integer>-28</integer>
+      <key>xi</key>
+      <integer>-20</integer>
+      <key>zeta</key>
+      <integer>-38</integer>
+    </dict>
     <key>question.ss01</key>
     <dict>
+      <key>chi</key>
+      <integer>-32</integer>
+      <key>delta</key>
+      <integer>-30</integer>
       <key>exclam.ss01</key>
+      <integer>-28</integer>
+      <key>omega</key>
+      <integer>-28</integer>
+      <key>omegatonos</key>
       <integer>-28</integer>
       <key>question.ss01</key>
       <integer>-10</integer>
       <key>questiondown.ss01</key>
       <integer>-103</integer>
+      <key>theta</key>
+      <integer>-18</integer>
+      <key>upsilondieresistonos</key>
+      <integer>-28</integer>
+      <key>xi</key>
+      <integer>-16</integer>
+      <key>zeta</key>
+      <integer>-28</integer>
     </dict>
     <key>questiondown</key>
     <dict>
       <key>C</key>
       <integer>-111</integer>
       <key>O</key>
+      <integer>-111</integer>
+      <key>Omicron</key>
+      <integer>-111</integer>
+      <key>Phi</key>
       <integer>-111</integer>
       <key>Q</key>
       <integer>-111</integer>
@@ -21526,6 +25126,16 @@
       <integer>-88</integer>
       <key>T</key>
       <integer>-151</integer>
+      <key>Tau</key>
+      <integer>-151</integer>
+      <key>Theta</key>
+      <integer>-111</integer>
+      <key>Upsilon</key>
+      <integer>-165</integer>
+      <key>Upsilondieresis</key>
+      <integer>-165</integer>
+      <key>Upsilondieresis.ss01</key>
+      <integer>-165</integer>
       <key>V</key>
       <integer>-160</integer>
       <key>Y</key>
@@ -21534,10 +25144,18 @@
       <integer>-81</integer>
       <key>e</key>
       <integer>-81</integer>
+      <key>epsilon</key>
+      <integer>-81</integer>
       <key>public.kern2.KO_I.ss13</key>
       <integer>-56</integer>
       <key>q</key>
       <integer>-77</integer>
+      <key>sigmafinal</key>
+      <integer>-81</integer>
+      <key>xi</key>
+      <integer>-81</integer>
+      <key>zeta</key>
+      <integer>-81</integer>
     </dict>
     <key>questiondown.case</key>
     <dict>
@@ -21547,21 +25165,51 @@
       <integer>-43</integer>
       <key>T</key>
       <integer>-119</integer>
+      <key>Tau</key>
+      <integer>-119</integer>
+      <key>Upsilon</key>
+      <integer>-125</integer>
+      <key>Upsilondieresis</key>
+      <integer>-125</integer>
+      <key>Upsilondieresis.ss01</key>
+      <integer>-125</integer>
       <key>Y</key>
       <integer>-125</integer>
     </dict>
     <key>questiondown.ss01</key>
     <dict>
+      <key>Omega</key>
+      <integer>0</integer>
+      <key>epsilon</key>
+      <integer>-81</integer>
+      <key>epsilontonos</key>
+      <integer>-81</integer>
       <key>four</key>
       <integer>-130</integer>
       <key>guillemetright</key>
       <integer>-94</integer>
+      <key>micro</key>
+      <integer>-30</integer>
+      <key>mu</key>
+      <integer>-30</integer>
       <key>one</key>
       <integer>-110</integer>
       <key>quotedbl</key>
       <integer>-158</integer>
       <key>quotedblright.ss01</key>
       <integer>-141</integer>
+      <key>rho</key>
+      <integer>0</integer>
+    </dict>
+    <key>questiongreek</key>
+    <dict>
+      <key>parenright</key>
+      <integer>-54</integer>
+    </dict>
+    <key>questiongreek.ss01</key>
+    <dict>
+      <key>parenright</key>
+      <integer>-58</integer>
     </dict>
     <key>quotedbl</key>
     <dict>
@@ -21575,14 +25223,20 @@
       <integer>-30</integer>
       <key>Oslash</key>
       <integer>-52</integer>
+      <key>anoteleia</key>
+      <integer>-142</integer>
       <key>asciitilde</key>
       <integer>-105</integer>
       <key>at</key>
       <integer>-60</integer>
+      <key>chi</key>
+      <integer>-61</integer>
       <key>colon.case</key>
       <integer>-44</integer>
       <key>comma</key>
       <integer>-142</integer>
+      <key>delta</key>
+      <integer>-55</integer>
       <key>dollar</key>
       <integer>-50</integer>
       <key>ellipsis</key>
@@ -21599,6 +25253,8 @@
       <integer>-68</integer>
       <key>exclamdown.ss01</key>
       <integer>-72</integer>
+      <key>horizontalbar</key>
+      <integer>-120</integer>
       <key>hyphen</key>
       <integer>-117</integer>
       <key>icircumflex</key>
@@ -21621,13 +25277,31 @@
       <integer>-48</integer>
       <key>semicolon.case</key>
       <integer>-45</integer>
+      <key>theta</key>
+      <integer>-61</integer>
       <key>underscore</key>
       <integer>-241</integer>
+      <key>upsilondieresistonos</key>
+      <integer>-50</integer>
+      <key>upsilondieresistonos.ss01</key>
+      <integer>-50</integer>
+      <key>xi</key>
+      <integer>-37</integer>
+      <key>zeta</key>
+      <integer>-37</integer>
     </dict>
     <key>quotedblbase</key>
     <dict>
+      <key>Omega</key>
+      <integer>-32</integer>
+      <key>epsilon</key>
+      <integer>-42</integer>
+      <key>epsilontonos</key>
+      <integer>-42</integer>
       <key>quotedblright</key>
       <integer>-239</integer>
+      <key>rho</key>
+      <integer>-32</integer>
     </dict>
     <key>quotedblbase.ss01</key>
     <dict>
@@ -21639,33 +25313,77 @@
       <integer>-22</integer>
       <key>Lslash</key>
       <integer>-44</integer>
+      <key>Omega</key>
+      <integer>-21</integer>
       <key>Oslash</key>
       <integer>-40</integer>
       <key>V</key>
       <integer>-156</integer>
+      <key>epsilon</key>
+      <integer>-60</integer>
+      <key>epsilontonos</key>
+      <integer>-60</integer>
       <key>equal</key>
       <integer>-127</integer>
       <key>icircumflex</key>
       <integer>-44</integer>
       <key>j</key>
       <integer>0</integer>
+      <key>micro</key>
+      <integer>-52</integer>
+      <key>mu</key>
+      <integer>-52</integer>
       <key>question.ss01</key>
       <integer>-140</integer>
       <key>quotedblleft.ss01</key>
       <integer>-250</integer>
       <key>quotedblright.ss01</key>
       <integer>-250</integer>
+      <key>rho</key>
+      <integer>-18</integer>
     </dict>
     <key>quotedblleft</key>
     <dict>
+      <key>Alphatonos</key>
+      <integer>-47</integer>
+      <key>Epsilontonos</key>
+      <integer>-47</integer>
+      <key>Etatonos</key>
+      <integer>-47</integer>
+      <key>Iotatonos</key>
+      <integer>-47</integer>
+      <key>Omegatonos</key>
+      <integer>-47</integer>
+      <key>Omicrontonos</key>
+      <integer>-47</integer>
+      <key>Upsilontonos</key>
+      <integer>-47</integer>
+      <key>chi</key>
+      <integer>-44</integer>
+      <key>delta</key>
+      <integer>-58</integer>
       <key>ellipsis</key>
       <integer>-242</integer>
+      <key>omega</key>
+      <integer>-29</integer>
+      <key>omegatonos</key>
+      <integer>-29</integer>
       <key>questiondown</key>
       <integer>-120</integer>
       <key>quotedblbase</key>
       <integer>-239</integer>
+      <key>theta</key>
+      <integer>-40</integer>
       <key>underscore</key>
       <integer>-242</integer>
+      <key>upsilondieresistonos</key>
+      <integer>-33</integer>
+      <key>upsilondieresistonos.ss01</key>
+      <integer>-33</integer>
+      <key>xi</key>
+      <integer>-54</integer>
+      <key>zeta</key>
+      <integer>-58</integer>
     </dict>
     <key>quotedblleft.ss01</key>
     <dict>
@@ -21675,6 +25393,10 @@
       <integer>-114</integer>
       <key>J.ss08</key>
       <integer>-178</integer>
+      <key>chi</key>
+      <integer>-48</integer>
+      <key>delta</key>
+      <integer>-65</integer>
       <key>ellipsis.ss01</key>
       <integer>-250</integer>
       <key>exclam.ss01</key>
@@ -21683,6 +25405,10 @@
       <integer>-50</integer>
       <key>hyphen</key>
       <integer>-117</integer>
+      <key>omega</key>
+      <integer>-40</integer>
+      <key>omegatonos</key>
+      <integer>-40</integer>
       <key>question.ss01</key>
       <integer>-30</integer>
       <key>questiondown.case</key>
@@ -21691,18 +25417,34 @@
       <integer>-130</integer>
       <key>quotedblbase.ss01</key>
       <integer>-250</integer>
+      <key>theta</key>
+      <integer>-35</integer>
       <key>underscore</key>
       <integer>-243</integer>
+      <key>upsilondieresistonos</key>
+      <integer>-40</integer>
+      <key>upsilondieresistonos.ss01</key>
+      <integer>-40</integer>
+      <key>xi</key>
+      <integer>-41</integer>
+      <key>zeta</key>
+      <integer>-55</integer>
     </dict>
     <key>quotedblright</key>
     <dict>
+      <key>anoteleia</key>
+      <integer>-142</integer>
       <key>colon</key>
       <integer>-64</integer>
       <key>comma</key>
       <integer>-142</integer>
+      <key>delta</key>
+      <integer>-46</integer>
       <key>ellipsis</key>
       <integer>-242</integer>
       <key>emdash</key>
+      <integer>-153</integer>
+      <key>horizontalbar</key>
       <integer>-153</integer>
       <key>hyphen</key>
       <integer>-150</integer>
@@ -21712,13 +25454,27 @@
       <integer>-40</integer>
       <key>period</key>
       <integer>-142</integer>
+      <key>questiongreek</key>
+      <integer>-64</integer>
       <key>semicolon</key>
       <integer>-64</integer>
+      <key>theta</key>
+      <integer>-46</integer>
+      <key>upsilondieresistonos</key>
+      <integer>-58</integer>
+      <key>upsilondieresistonos.ss01</key>
+      <integer>-58</integer>
+      <key>xi</key>
+      <integer>-32</integer>
+      <key>zeta</key>
+      <integer>-32</integer>
     </dict>
     <key>quotedblright.ss01</key>
     <dict>
       <key>Oslash</key>
       <integer>-51</integer>
+      <key>delta</key>
+      <integer>-45</integer>
       <key>ellipsis.ss01</key>
       <integer>-250</integer>
       <key>hyphen</key>
@@ -21729,15 +25485,57 @@
       <integer>-142</integer>
       <key>scaron</key>
       <integer>-53</integer>
+      <key>theta</key>
+      <integer>-47</integer>
+      <key>upsilondieresistonos</key>
+      <integer>-56</integer>
+      <key>upsilondieresistonos.ss01</key>
+      <integer>-56</integer>
+      <key>xi</key>
+      <integer>-31</integer>
+      <key>zeta</key>
+      <integer>-31</integer>
     </dict>
     <key>quoteleft</key>
     <dict>
+      <key>Alphatonos</key>
+      <integer>-47</integer>
+      <key>Epsilontonos</key>
+      <integer>-47</integer>
+      <key>Etatonos</key>
+      <integer>-47</integer>
+      <key>Iotatonos</key>
+      <integer>-47</integer>
+      <key>Omegatonos</key>
+      <integer>-47</integer>
+      <key>Omicrontonos</key>
+      <integer>-47</integer>
+      <key>Upsilontonos</key>
+      <integer>-47</integer>
+      <key>chi</key>
+      <integer>-44</integer>
+      <key>delta</key>
+      <integer>-58</integer>
       <key>ellipsis</key>
       <integer>-133</integer>
+      <key>omega</key>
+      <integer>-29</integer>
+      <key>omegatonos</key>
+      <integer>-29</integer>
       <key>questiondown</key>
       <integer>-120</integer>
       <key>quotedblbase</key>
       <integer>-133</integer>
+      <key>theta</key>
+      <integer>-40</integer>
+      <key>upsilondieresistonos</key>
+      <integer>-33</integer>
+      <key>upsilondieresistonos.ss01</key>
+      <integer>-33</integer>
+      <key>xi</key>
+      <integer>-54</integer>
+      <key>zeta</key>
+      <integer>-58</integer>
     </dict>
     <key>quoteleft.ss01</key>
     <dict>
@@ -21745,23 +25543,45 @@
       <integer>-114</integer>
       <key>J.ss08</key>
       <integer>-142</integer>
+      <key>chi</key>
+      <integer>-48</integer>
+      <key>delta</key>
+      <integer>-65</integer>
       <key>ellipsis.ss01</key>
       <integer>-142</integer>
       <key>exclamdown.ss01</key>
       <integer>-50</integer>
       <key>hyphen</key>
       <integer>-117</integer>
+      <key>omega</key>
+      <integer>-40</integer>
+      <key>omegatonos</key>
+      <integer>-40</integer>
       <key>oslash</key>
       <integer>-65</integer>
       <key>questiondown.ss01</key>
       <integer>-130</integer>
       <key>quotedblbase.ss01</key>
       <integer>-142</integer>
+      <key>theta</key>
+      <integer>-35</integer>
+      <key>upsilondieresistonos</key>
+      <integer>-40</integer>
+      <key>upsilondieresistonos.ss01</key>
+      <integer>-40</integer>
+      <key>xi</key>
+      <integer>-41</integer>
+      <key>zeta</key>
+      <integer>-55</integer>
     </dict>
     <key>quoteright</key>
     <dict>
+      <key>anoteleia</key>
+      <integer>-142</integer>
       <key>comma</key>
       <integer>-142</integer>
+      <key>delta</key>
+      <integer>-49</integer>
       <key>guillemetleft</key>
       <integer>-142</integer>
       <key>guilsinglleft</key>
@@ -21772,17 +25592,31 @@
       <integer>-45</integer>
       <key>period</key>
       <integer>-142</integer>
+      <key>theta</key>
+      <integer>-49</integer>
+      <key>upsilondieresistonos</key>
+      <integer>-61</integer>
+      <key>upsilondieresistonos.ss01</key>
+      <integer>-61</integer>
+      <key>xi</key>
+      <integer>-35</integer>
+      <key>zeta</key>
+      <integer>-35</integer>
     </dict>
     <key>quoteright.ss01</key>
     <dict>
       <key>Oslash</key>
       <integer>-51</integer>
+      <key>delta</key>
+      <integer>-41</integer>
       <key>eacute</key>
       <integer>-101</integer>
       <key>egrave</key>
       <integer>-101</integer>
       <key>ellipsis.ss01</key>
       <integer>-142</integer>
+      <key>epsilontonos</key>
+      <integer>-101</integer>
       <key>hyphen</key>
       <integer>-142</integer>
       <key>icircumflex</key>
@@ -21791,19 +25625,60 @@
       <integer>-101</integer>
       <key>quotedblbase.ss01</key>
       <integer>-142</integer>
+      <key>theta</key>
+      <integer>-43</integer>
+      <key>upsilondieresistonos</key>
+      <integer>-54</integer>
+      <key>upsilondieresistonos.ss01</key>
+      <integer>-56</integer>
+      <key>xi</key>
+      <integer>-27</integer>
+      <key>zeta</key>
+      <integer>-27</integer>
+    </dict>
+    <key>quotesinglbase</key>
+    <dict>
+      <key>Omega</key>
+      <integer>-32</integer>
+      <key>epsilon</key>
+      <integer>-42</integer>
+      <key>epsilontonos</key>
+      <integer>-42</integer>
+      <key>rho</key>
+      <integer>-32</integer>
     </dict>
     <key>quotesinglbase.ss01</key>
     <dict>
+      <key>Omega</key>
+      <integer>-21</integer>
       <key>Oslash</key>
       <integer>-40</integer>
       <key>T</key>
+      <integer>-142</integer>
+      <key>Tau</key>
+      <integer>-142</integer>
+      <key>Upsilon</key>
+      <integer>-142</integer>
+      <key>Upsilondieresis</key>
+      <integer>-142</integer>
+      <key>Upsilondieresis.ss01</key>
       <integer>-142</integer>
       <key>V</key>
       <integer>-142</integer>
       <key>Y</key>
       <integer>-142</integer>
+      <key>epsilon</key>
+      <integer>-60</integer>
+      <key>epsilontonos</key>
+      <integer>-60</integer>
       <key>j</key>
       <integer>0</integer>
+      <key>micro</key>
+      <integer>-52</integer>
+      <key>mu</key>
+      <integer>-52</integer>
+      <key>rho</key>
+      <integer>-18</integer>
     </dict>
     <key>quotesingle</key>
     <dict>
@@ -21815,16 +25690,26 @@
       <integer>-134</integer>
       <key>Oslash</key>
       <integer>-52</integer>
+      <key>anoteleia</key>
+      <integer>-134</integer>
+      <key>anoteleia.ss01</key>
+      <integer>-134</integer>
+      <key>chi</key>
+      <integer>-61</integer>
       <key>comma</key>
       <integer>-134</integer>
       <key>comma.ss01</key>
       <integer>-134</integer>
+      <key>delta</key>
+      <integer>-55</integer>
       <key>eacute</key>
       <integer>-80</integer>
       <key>egrave</key>
       <integer>-80</integer>
       <key>ellipsis.ss01</key>
       <integer>-134</integer>
+      <key>epsilontonos</key>
+      <integer>-80</integer>
       <key>exclamdown.ss01</key>
       <integer>-72</integer>
       <key>hyphen</key>
@@ -21833,18 +25718,38 @@
       <integer>0</integer>
       <key>igrave</key>
       <integer>17</integer>
+      <key>micro</key>
+      <integer>-56</integer>
+      <key>mu</key>
+      <integer>-56</integer>
+      <key>omega</key>
+      <integer>-56</integer>
       <key>period</key>
       <integer>-134</integer>
       <key>period.ss01</key>
       <integer>-134</integer>
+      <key>psi</key>
+      <integer>-56</integer>
       <key>questiondown.ss01</key>
       <integer>-134</integer>
       <key>scaron</key>
       <integer>-48</integer>
+      <key>theta</key>
+      <integer>-61</integer>
       <key>u</key>
       <integer>-56</integer>
       <key>underscore</key>
       <integer>-134</integer>
+      <key>upsilon</key>
+      <integer>-56</integer>
+      <key>upsilondieresistonos</key>
+      <integer>-50</integer>
+      <key>upsilondieresistonos.ss01</key>
+      <integer>-50</integer>
+      <key>xi</key>
+      <integer>-37</integer>
+      <key>zeta</key>
+      <integer>-37</integer>
     </dict>
     <key>r</key>
     <dict>
@@ -21933,6 +25838,8 @@
     </dict>
     <key>registered</key>
     <dict>
+      <key>anoteleia.ss01</key>
+      <integer>-71</integer>
       <key>comma.ss01</key>
       <integer>-70</integer>
       <key>parenright</key>
@@ -21941,6 +25848,17 @@
       <integer>-109</integer>
       <key>period.ss01</key>
       <integer>-71</integer>
+    </dict>
+    <key>rho</key>
+    <dict>
+      <key>asciicircum</key>
+      <integer>-78</integer>
+      <key>braceright</key>
+      <integer>-72</integer>
+      <key>seven</key>
+      <integer>-85</integer>
+      <key>trademark</key>
+      <integer>-100</integer>
     </dict>
     <key>rightArrow</key>
     <dict>
@@ -22045,8 +25963,14 @@
     </dict>
     <key>semicolon.ss01</key>
     <dict>
+      <key>omega</key>
+      <integer>-18</integer>
+      <key>omegatonos</key>
+      <integer>-18</integer>
       <key>parenright</key>
       <integer>-58</integer>
+      <key>rho</key>
+      <integer>-17</integer>
     </dict>
     <key>seven</key>
     <dict>
@@ -22056,21 +25980,113 @@
       <integer>-29</integer>
       <key>degree</key>
       <integer>-10</integer>
+      <key>delta</key>
+      <integer>-2</integer>
       <key>multiply</key>
       <integer>-47</integer>
       <key>six</key>
       <integer>-24</integer>
+      <key>theta</key>
+      <integer>-12</integer>
       <key>underscore</key>
       <integer>-147</integer>
+      <key>upsilondieresistonos</key>
+      <integer>-25</integer>
+      <key>upsilondieresistonos.ss01</key>
+      <integer>-25</integer>
+      <key>xi</key>
+      <integer>0</integer>
+      <key>zeta</key>
+      <integer>0</integer>
+    </dict>
+    <key>sigma</key>
+    <dict>
+      <key>alpha</key>
+      <integer>-8</integer>
+      <key>ampersand</key>
+      <integer>-36</integer>
+      <key>asciitilde</key>
+      <integer>-43</integer>
+      <key>braceright</key>
+      <integer>-85</integer>
+      <key>chi</key>
+      <integer>-11</integer>
+      <key>comma</key>
+      <integer>-106</integer>
+      <key>delta</key>
+      <integer>-8</integer>
+      <key>ellipsis</key>
+      <integer>-100</integer>
+      <key>four</key>
+      <integer>-46</integer>
+      <key>gamma</key>
+      <integer>23</integer>
+      <key>nu</key>
+      <integer>23</integer>
+      <key>omega</key>
+      <integer>-5</integer>
+      <key>omegatonos</key>
+      <integer>-5</integer>
+      <key>omicron</key>
+      <integer>-8</integer>
+      <key>period</key>
+      <integer>-106</integer>
+      <key>phi</key>
+      <integer>-8</integer>
+      <key>pi</key>
+      <integer>0</integer>
+      <key>rho</key>
+      <integer>-8</integer>
+      <key>seven</key>
+      <integer>-79</integer>
+      <key>sigma</key>
+      <integer>-8</integer>
+      <key>tau</key>
+      <integer>13</integer>
+      <key>theta</key>
+      <integer>-5</integer>
+      <key>trademark</key>
+      <integer>-69</integer>
+    </dict>
+    <key>sigmafinal</key>
+    <dict>
+      <key>asciicircum</key>
+      <integer>-76</integer>
+      <key>braceright</key>
+      <integer>-35</integer>
+      <key>bracketright</key>
+      <integer>-35</integer>
+      <key>equal</key>
+      <integer>-18</integer>
+      <key>parenright</key>
+      <integer>-1</integer>
+      <key>seven</key>
+      <integer>-96</integer>
+      <key>slash</key>
+      <integer>-13</integer>
+      <key>trademark</key>
+      <integer>-92</integer>
+      <key>underscore</key>
+      <integer>0</integer>
     </dict>
     <key>six</key>
     <dict>
       <key>A</key>
       <integer>-23</integer>
+      <key>Alpha</key>
+      <integer>-23</integer>
+      <key>Delta</key>
+      <integer>-23</integer>
+      <key>Lambda</key>
+      <integer>-23</integer>
       <key>T</key>
+      <integer>-18</integer>
+      <key>Tau</key>
       <integer>-18</integer>
       <key>bracketright.case</key>
       <integer>-45</integer>
+      <key>chi</key>
+      <integer>-30</integer>
       <key>degree</key>
       <integer>-22</integer>
       <key>ordmasculine</key>
@@ -22084,12 +26100,24 @@
     <dict>
       <key>Oslash</key>
       <integer>-52</integer>
+      <key>delta</key>
+      <integer>-56</integer>
       <key>dollar</key>
       <integer>-53</integer>
       <key>oslash</key>
       <integer>-74</integer>
       <key>quotedblbase.ss01</key>
       <integer>-150</integer>
+      <key>theta</key>
+      <integer>-64</integer>
+      <key>upsilondieresistonos</key>
+      <integer>-35</integer>
+      <key>upsilondieresistonos.ss01</key>
+      <integer>-57</integer>
+      <key>xi</key>
+      <integer>-6</integer>
+      <key>zeta</key>
+      <integer>-6</integer>
     </dict>
     <key>sterling</key>
     <dict>
@@ -22129,6 +26157,31 @@
       <key>trademark</key>
       <integer>-83</integer>
     </dict>
+    <key>tau</key>
+    <dict>
+      <key>asciitilde</key>
+      <integer>-52</integer>
+      <key>braceright</key>
+      <integer>-38</integer>
+      <key>epsilon</key>
+      <integer>-19</integer>
+      <key>equal</key>
+      <integer>-15</integer>
+      <key>four</key>
+      <integer>-13</integer>
+      <key>pi</key>
+      <integer>0</integer>
+      <key>seven</key>
+      <integer>-67</integer>
+      <key>sigmafinal</key>
+      <integer>-19</integer>
+      <key>trademark</key>
+      <integer>-83</integer>
+      <key>xi</key>
+      <integer>-19</integer>
+      <key>zeta</key>
+      <integer>-19</integer>
+    </dict>
     <key>tcaron</key>
     <dict>
       <key>k</key>
@@ -22139,18 +26192,83 @@
       <key>comma.ss01</key>
       <integer>-16</integer>
     </dict>
+    <key>theta</key>
+    <dict>
+      <key>Tau</key>
+      <integer>-86</integer>
+      <key>asciicircum</key>
+      <integer>-38</integer>
+      <key>asciitilde</key>
+      <integer>-20</integer>
+      <key>asterisk</key>
+      <integer>-27</integer>
+      <key>braceright</key>
+      <integer>-70</integer>
+      <key>bracketright</key>
+      <integer>-74</integer>
+      <key>equal</key>
+      <integer>-12</integer>
+      <key>guillemetright</key>
+      <integer>-24</integer>
+      <key>guilsinglright</key>
+      <integer>-24</integer>
+      <key>one</key>
+      <integer>-6</integer>
+      <key>parenright</key>
+      <integer>-103</integer>
+      <key>question</key>
+      <integer>-8</integer>
+      <key>question.ss01</key>
+      <integer>-8</integer>
+      <key>quotedbl</key>
+      <integer>-60</integer>
+      <key>quotedblleft</key>
+      <integer>-37</integer>
+      <key>quotedblleft.ss01</key>
+      <integer>-38</integer>
+      <key>quotedblright</key>
+      <integer>-33</integer>
+      <key>quotedblright.ss01</key>
+      <integer>-45</integer>
+      <key>quoteleft</key>
+      <integer>-37</integer>
+      <key>quoteleft.ss01</key>
+      <integer>-38</integer>
+      <key>quoteright</key>
+      <integer>-35</integer>
+      <key>quoteright.ss01</key>
+      <integer>-43</integer>
+      <key>quotesingle</key>
+      <integer>-60</integer>
+      <key>seven</key>
+      <integer>-7</integer>
+      <key>tau</key>
+      <integer>6</integer>
+      <key>trademark</key>
+      <integer>-69</integer>
+    </dict>
     <key>three</key>
     <dict>
       <key>A</key>
       <integer>-21</integer>
+      <key>Alpha</key>
+      <integer>-21</integer>
       <key>C</key>
       <integer>0</integer>
+      <key>Chi</key>
+      <integer>-31</integer>
+      <key>Delta</key>
+      <integer>-21</integer>
+      <key>Lambda</key>
+      <integer>-21</integer>
       <key>X</key>
       <integer>-31</integer>
       <key>braceright</key>
       <integer>-44</integer>
       <key>bracketright.case</key>
       <integer>-41</integer>
+      <key>chi</key>
+      <integer>-31</integer>
       <key>degree</key>
       <integer>-20</integer>
       <key>multiply</key>
@@ -22164,6 +26282,10 @@
     </dict>
     <key>trademark</key>
     <dict>
+      <key>anoteleia</key>
+      <integer>-142</integer>
+      <key>anoteleia.ss01</key>
+      <integer>-142</integer>
       <key>comma</key>
       <integer>-142</integer>
       <key>comma.ss01</key>
@@ -22222,14 +26344,24 @@
     </dict>
     <key>underscore</key>
     <dict>
+      <key>Omega</key>
+      <integer>-136</integer>
       <key>asterisk</key>
       <integer>-220</integer>
+      <key>chi</key>
+      <integer>0</integer>
       <key>eight</key>
       <integer>-103</integer>
       <key>five</key>
       <integer>-104</integer>
       <key>four</key>
       <integer>-207</integer>
+      <key>gamma</key>
+      <integer>-42</integer>
+      <key>micro</key>
+      <integer>0</integer>
+      <key>mu</key>
+      <integer>0</integer>
       <key>nine</key>
       <integer>-105</integer>
       <key>one</key>
@@ -22244,6 +26376,8 @@
       <integer>-243</integer>
       <key>quotesingle</key>
       <integer>-134</integer>
+      <key>rho</key>
+      <integer>0</integer>
       <key>seven</key>
       <integer>-92</integer>
       <key>six</key>
@@ -22268,6 +26402,432 @@
     <dict>
       <key>public.kern2.KO_I.ss13</key>
       <integer>-56</integer>
+    </dict>
+    <key>upsilon</key>
+    <dict>
+      <key>Tau</key>
+      <integer>-117</integer>
+      <key>asciicircum</key>
+      <integer>-50</integer>
+      <key>asciitilde</key>
+      <integer>-20</integer>
+      <key>asterisk</key>
+      <integer>-43</integer>
+      <key>braceright</key>
+      <integer>-72</integer>
+      <key>bracketright</key>
+      <integer>-80</integer>
+      <key>chi</key>
+      <integer>-31</integer>
+      <key>equal</key>
+      <integer>-12</integer>
+      <key>gamma</key>
+      <integer>-5</integer>
+      <key>guillemetright</key>
+      <integer>-38</integer>
+      <key>guilsinglright</key>
+      <integer>-38</integer>
+      <key>nu</key>
+      <integer>-5</integer>
+      <key>one</key>
+      <integer>-20</integer>
+      <key>parenright</key>
+      <integer>-103</integer>
+      <key>question</key>
+      <integer>-22</integer>
+      <key>question.ss01</key>
+      <integer>-22</integer>
+      <key>quotedbl</key>
+      <integer>-74</integer>
+      <key>quotedblleft</key>
+      <integer>-51</integer>
+      <key>quotedblleft.ss01</key>
+      <integer>-52</integer>
+      <key>quotedblright</key>
+      <integer>-45</integer>
+      <key>quotedblright.ss01</key>
+      <integer>-59</integer>
+      <key>quoteleft</key>
+      <integer>-51</integer>
+      <key>quoteleft.ss01</key>
+      <integer>-52</integer>
+      <key>quoteright</key>
+      <integer>-49</integer>
+      <key>quoteright.ss01</key>
+      <integer>-55</integer>
+      <key>quotesingle</key>
+      <integer>-74</integer>
+      <key>seven</key>
+      <integer>-85</integer>
+      <key>tau</key>
+      <integer>-8</integer>
+      <key>trademark</key>
+      <integer>-99</integer>
+    </dict>
+    <key>upsilondieresis</key>
+    <dict>
+      <key>Tau</key>
+      <integer>-105</integer>
+      <key>Upsilon</key>
+      <integer>-92</integer>
+      <key>Upsilondieresis</key>
+      <integer>-92</integer>
+      <key>Upsilondieresis.ss01</key>
+      <integer>-92</integer>
+      <key>asciicircum</key>
+      <integer>-50</integer>
+      <key>asciitilde</key>
+      <integer>-20</integer>
+      <key>asterisk</key>
+      <integer>-43</integer>
+      <key>braceright</key>
+      <integer>-72</integer>
+      <key>bracketright</key>
+      <integer>-80</integer>
+      <key>chi</key>
+      <integer>-31</integer>
+      <key>equal</key>
+      <integer>-12</integer>
+      <key>gamma</key>
+      <integer>-5</integer>
+      <key>guillemetright</key>
+      <integer>-38</integer>
+      <key>guilsinglright</key>
+      <integer>-38</integer>
+      <key>nu</key>
+      <integer>-5</integer>
+      <key>one</key>
+      <integer>-20</integer>
+      <key>parenright</key>
+      <integer>-41</integer>
+      <key>question</key>
+      <integer>-22</integer>
+      <key>question.ss01</key>
+      <integer>-22</integer>
+      <key>quotedbl</key>
+      <integer>-74</integer>
+      <key>quotedblleft</key>
+      <integer>-51</integer>
+      <key>quotedblleft.ss01</key>
+      <integer>-52</integer>
+      <key>quotedblright</key>
+      <integer>-45</integer>
+      <key>quotedblright.ss01</key>
+      <integer>-59</integer>
+      <key>quoteleft</key>
+      <integer>-51</integer>
+      <key>quoteleft.ss01</key>
+      <integer>-52</integer>
+      <key>quoteright</key>
+      <integer>-49</integer>
+      <key>quoteright.ss01</key>
+      <integer>-55</integer>
+      <key>quotesingle</key>
+      <integer>-74</integer>
+      <key>seven</key>
+      <integer>-35</integer>
+      <key>tau</key>
+      <integer>-8</integer>
+      <key>trademark</key>
+      <integer>-77</integer>
+    </dict>
+    <key>upsilondieresis.ss01</key>
+    <dict>
+      <key>Tau</key>
+      <integer>-95</integer>
+      <key>Upsilon</key>
+      <integer>-93</integer>
+      <key>Upsilondieresis</key>
+      <integer>-93</integer>
+      <key>Upsilondieresis.ss01</key>
+      <integer>-93</integer>
+      <key>asciicircum</key>
+      <integer>-50</integer>
+      <key>asciitilde</key>
+      <integer>-20</integer>
+      <key>asterisk</key>
+      <integer>-43</integer>
+      <key>braceright</key>
+      <integer>-72</integer>
+      <key>bracketright</key>
+      <integer>-76</integer>
+      <key>chi</key>
+      <integer>-31</integer>
+      <key>equal</key>
+      <integer>-12</integer>
+      <key>gamma</key>
+      <integer>-5</integer>
+      <key>guillemetright</key>
+      <integer>-38</integer>
+      <key>guilsinglright</key>
+      <integer>-38</integer>
+      <key>iotadieresis</key>
+      <integer>-3</integer>
+      <key>iotadieresis.ss01</key>
+      <integer>-3</integer>
+      <key>iotadieresistonos</key>
+      <integer>-3</integer>
+      <key>nu</key>
+      <integer>-5</integer>
+      <key>one</key>
+      <integer>-20</integer>
+      <key>parenright</key>
+      <integer>-51</integer>
+      <key>question</key>
+      <integer>-22</integer>
+      <key>question.ss01</key>
+      <integer>-22</integer>
+      <key>quotedbl</key>
+      <integer>-74</integer>
+      <key>quotedblleft</key>
+      <integer>-51</integer>
+      <key>quotedblleft.ss01</key>
+      <integer>-52</integer>
+      <key>quotedblright</key>
+      <integer>-45</integer>
+      <key>quotedblright.ss01</key>
+      <integer>-59</integer>
+      <key>quoteleft</key>
+      <integer>-51</integer>
+      <key>quoteleft.ss01</key>
+      <integer>-52</integer>
+      <key>quoteright</key>
+      <integer>-49</integer>
+      <key>quoteright.ss01</key>
+      <integer>-55</integer>
+      <key>quotesingle</key>
+      <integer>-74</integer>
+      <key>seven</key>
+      <integer>-25</integer>
+      <key>tau</key>
+      <integer>-8</integer>
+      <key>trademark</key>
+      <integer>-67</integer>
+    </dict>
+    <key>upsilondieresistonos</key>
+    <dict>
+      <key>Tau</key>
+      <integer>-65</integer>
+      <key>Upsilon</key>
+      <integer>-52</integer>
+      <key>Upsilondieresis</key>
+      <integer>-52</integer>
+      <key>Upsilondieresis.ss01</key>
+      <integer>-52</integer>
+      <key>asciicircum</key>
+      <integer>-50</integer>
+      <key>asciitilde</key>
+      <integer>-20</integer>
+      <key>asterisk</key>
+      <integer>-35</integer>
+      <key>braceright</key>
+      <integer>-42</integer>
+      <key>bracketright</key>
+      <integer>-46</integer>
+      <key>chi</key>
+      <integer>-31</integer>
+      <key>equal</key>
+      <integer>-12</integer>
+      <key>gamma</key>
+      <integer>-5</integer>
+      <key>guillemetright</key>
+      <integer>-38</integer>
+      <key>guilsinglright</key>
+      <integer>-38</integer>
+      <key>iotadieresis</key>
+      <integer>-3</integer>
+      <key>iotadieresis.ss01</key>
+      <integer>-3</integer>
+      <key>iotadieresistonos</key>
+      <integer>-3</integer>
+      <key>iotadieresistonos.ss01</key>
+      <integer>-3</integer>
+      <key>nu</key>
+      <integer>-5</integer>
+      <key>one</key>
+      <integer>-20</integer>
+      <key>parenright</key>
+      <integer>-1</integer>
+      <key>question</key>
+      <integer>-22</integer>
+      <key>question.ss01</key>
+      <integer>-22</integer>
+      <key>quotedbl</key>
+      <integer>-44</integer>
+      <key>quotedblleft</key>
+      <integer>-51</integer>
+      <key>quotedblleft.ss01</key>
+      <integer>-52</integer>
+      <key>quotedblright</key>
+      <integer>-45</integer>
+      <key>quotedblright.ss01</key>
+      <integer>-59</integer>
+      <key>quoteleft</key>
+      <integer>-51</integer>
+      <key>quoteleft.ss01</key>
+      <integer>-52</integer>
+      <key>quoteright</key>
+      <integer>-49</integer>
+      <key>quoteright.ss01</key>
+      <integer>-55</integer>
+      <key>quotesingle</key>
+      <integer>-44</integer>
+      <key>seven</key>
+      <integer>0</integer>
+      <key>tau</key>
+      <integer>-8</integer>
+      <key>trademark</key>
+      <integer>-37</integer>
+    </dict>
+    <key>upsilondieresistonos.ss01</key>
+    <dict>
+      <key>Chi</key>
+      <integer>-56</integer>
+      <key>Tau</key>
+      <integer>-35</integer>
+      <key>Upsilon</key>
+      <integer>-37</integer>
+      <key>Upsilondieresis</key>
+      <integer>-37</integer>
+      <key>Upsilondieresis.ss01</key>
+      <integer>-37</integer>
+      <key>asciicircum</key>
+      <integer>-50</integer>
+      <key>asciitilde</key>
+      <integer>-20</integer>
+      <key>asterisk</key>
+      <integer>-13</integer>
+      <key>braceright</key>
+      <integer>-12</integer>
+      <key>bracketright</key>
+      <integer>-16</integer>
+      <key>chi</key>
+      <integer>-31</integer>
+      <key>equal</key>
+      <integer>-12</integer>
+      <key>exclam</key>
+      <integer>-24</integer>
+      <key>exclam.case</key>
+      <integer>-24</integer>
+      <key>exclam.ss01</key>
+      <integer>-24</integer>
+      <key>gamma</key>
+      <integer>-5</integer>
+      <key>guillemetright</key>
+      <integer>-38</integer>
+      <key>guilsinglright</key>
+      <integer>-38</integer>
+      <key>idotaccent</key>
+      <integer>-3</integer>
+      <key>idotaccent.ss01</key>
+      <integer>-3</integer>
+      <key>iotadieresis</key>
+      <integer>26</integer>
+      <key>iotadieresis.ss01</key>
+      <integer>25</integer>
+      <key>iotadieresistonos</key>
+      <integer>26</integer>
+      <key>iotadieresistonos.ss01</key>
+      <integer>26</integer>
+      <key>nu</key>
+      <integer>-5</integer>
+      <key>one</key>
+      <integer>-20</integer>
+      <key>parenright</key>
+      <integer>0</integer>
+      <key>question</key>
+      <integer>-20</integer>
+      <key>question.ss01</key>
+      <integer>-20</integer>
+      <key>quotedbl</key>
+      <integer>-14</integer>
+      <key>quotedblleft</key>
+      <integer>-51</integer>
+      <key>quotedblleft.ss01</key>
+      <integer>-42</integer>
+      <key>quotedblright</key>
+      <integer>-33</integer>
+      <key>quotedblright.ss01</key>
+      <integer>-37</integer>
+      <key>quoteleft</key>
+      <integer>-51</integer>
+      <key>quoteleft.ss01</key>
+      <integer>-42</integer>
+      <key>quoteright</key>
+      <integer>-37</integer>
+      <key>quoteright.ss01</key>
+      <integer>-35</integer>
+      <key>quotesingle</key>
+      <integer>-14</integer>
+      <key>seven</key>
+      <integer>0</integer>
+      <key>tau</key>
+      <integer>-8</integer>
+      <key>trademark</key>
+      <integer>-9</integer>
+      <key>upsilondieresistonos</key>
+      <integer>0</integer>
+    </dict>
+    <key>upsilontonos</key>
+    <dict>
+      <key>Tau</key>
+      <integer>-117</integer>
+      <key>asciicircum</key>
+      <integer>-50</integer>
+      <key>asciitilde</key>
+      <integer>-20</integer>
+      <key>asterisk</key>
+      <integer>-43</integer>
+      <key>braceright</key>
+      <integer>-72</integer>
+      <key>bracketright</key>
+      <integer>-80</integer>
+      <key>chi</key>
+      <integer>-31</integer>
+      <key>equal</key>
+      <integer>-12</integer>
+      <key>gamma</key>
+      <integer>-5</integer>
+      <key>guillemetright</key>
+      <integer>-38</integer>
+      <key>guilsinglright</key>
+      <integer>-38</integer>
+      <key>nu</key>
+      <integer>-5</integer>
+      <key>one</key>
+      <integer>-20</integer>
+      <key>parenright</key>
+      <integer>-89</integer>
+      <key>question</key>
+      <integer>-22</integer>
+      <key>question.ss01</key>
+      <integer>-22</integer>
+      <key>quotedbl</key>
+      <integer>-74</integer>
+      <key>quotedblleft</key>
+      <integer>-51</integer>
+      <key>quotedblleft.ss01</key>
+      <integer>-52</integer>
+      <key>quotedblright</key>
+      <integer>-45</integer>
+      <key>quotedblright.ss01</key>
+      <integer>-59</integer>
+      <key>quoteleft</key>
+      <integer>-51</integer>
+      <key>quoteleft.ss01</key>
+      <integer>-52</integer>
+      <key>quoteright</key>
+      <integer>-49</integer>
+      <key>quoteright.ss01</key>
+      <integer>-55</integer>
+      <key>quotesingle</key>
+      <integer>-74</integer>
+      <key>seven</key>
+      <integer>-85</integer>
+      <key>tau</key>
+      <integer>-8</integer>
+      <key>trademark</key>
+      <integer>-99</integer>
     </dict>
     <key>v</key>
     <dict>
@@ -22351,6 +26911,99 @@
       <key>trademark</key>
       <integer>-98</integer>
     </dict>
+    <key>xi</key>
+    <dict>
+      <key>Chi</key>
+      <integer>-42</integer>
+      <key>alpha</key>
+      <integer>-92</integer>
+      <key>alphatonos</key>
+      <integer>-92</integer>
+      <key>asciicircum</key>
+      <integer>-76</integer>
+      <key>braceright</key>
+      <integer>-19</integer>
+      <key>bracketright</key>
+      <integer>-19</integer>
+      <key>chi</key>
+      <integer>-47</integer>
+      <key>delta</key>
+      <integer>-103</integer>
+      <key>epsilon</key>
+      <integer>-79</integer>
+      <key>epsilontonos</key>
+      <integer>-80</integer>
+      <key>equal</key>
+      <integer>-18</integer>
+      <key>gamma</key>
+      <integer>-123</integer>
+      <key>horizontalbar</key>
+      <integer>-247</integer>
+      <key>horizontalbar.case</key>
+      <integer>-160</integer>
+      <key>iota</key>
+      <integer>-63</integer>
+      <key>iotadieresis</key>
+      <integer>-86</integer>
+      <key>iotadieresis.ss01</key>
+      <integer>-86</integer>
+      <key>iotadieresistonos</key>
+      <integer>-98</integer>
+      <key>iotadieresistonos.ss01</key>
+      <integer>-100</integer>
+      <key>iotatonos</key>
+      <integer>-63</integer>
+      <key>nu</key>
+      <integer>-130</integer>
+      <key>omega</key>
+      <integer>-82</integer>
+      <key>omegatonos</key>
+      <integer>-82</integer>
+      <key>omicron</key>
+      <integer>-108</integer>
+      <key>omicrontonos</key>
+      <integer>-108</integer>
+      <key>parenright</key>
+      <integer>0</integer>
+      <key>phi</key>
+      <integer>-125</integer>
+      <key>pi</key>
+      <integer>-103</integer>
+      <key>psi</key>
+      <integer>-136</integer>
+      <key>seven</key>
+      <integer>-96</integer>
+      <key>sigma</key>
+      <integer>-106</integer>
+      <key>sigmafinal</key>
+      <integer>-95</integer>
+      <key>slash</key>
+      <integer>0</integer>
+      <key>tau</key>
+      <integer>-129</integer>
+      <key>theta</key>
+      <integer>-126</integer>
+      <key>trademark</key>
+      <integer>-92</integer>
+      <key>underscore</key>
+      <integer>0</integer>
+      <key>upsilon</key>
+      <integer>-99</integer>
+      <key>upsilondieresis</key>
+      <integer>-99</integer>
+      <key>upsilondieresis.ss01</key>
+      <integer>-99</integer>
+      <key>upsilondieresistonos</key>
+      <integer>-99</integer>
+      <key>upsilondieresistonos.ss01</key>
+      <integer>-99</integer>
+      <key>upsilontonos</key>
+      <integer>-99</integer>
+      <key>xi</key>
+      <integer>-87</integer>
+      <key>zeta</key>
+      <integer>-104</integer>
+    </dict>
     <key>y</key>
     <dict>
       <key>ampersand</key>
@@ -22396,6 +27049,8 @@
     </dict>
     <key>yen</key>
     <dict>
+      <key>anoteleia.ss01</key>
+      <integer>-94</integer>
       <key>comma.ss01</key>
       <integer>-94</integer>
       <key>period.ss01</key>
@@ -22425,6 +27080,8 @@
     </dict>
     <key>zero</key>
     <dict>
+      <key>anoteleia.ss01</key>
+      <integer>-63</integer>
       <key>asciicircum</key>
       <integer>-48</integer>
       <key>asciitilde</key>
@@ -22448,6 +27105,10 @@
       <key>multiply</key>
       <integer>-25</integer>
       <key>nine</key>
+      <integer>0</integer>
+      <key>omega</key>
+      <integer>0</integer>
+      <key>omegatonos</key>
       <integer>0</integer>
       <key>ordmasculine</key>
       <integer>-23</integer>
@@ -22512,6 +27173,121 @@
       <integer>11</integer>
       <key>zero.zero</key>
       <integer>11</integer>
+    </dict>
+    <key>zeta</key>
+    <dict>
+      <key>Tau</key>
+      <integer>-109</integer>
+      <key>Upsilon</key>
+      <integer>-96</integer>
+      <key>Upsilondieresis</key>
+      <integer>-96</integer>
+      <key>Upsilondieresis.ss01</key>
+      <integer>-96</integer>
+      <key>alpha</key>
+      <integer>-104</integer>
+      <key>alphatonos</key>
+      <integer>-104</integer>
+      <key>asciicircum</key>
+      <integer>-76</integer>
+      <key>asterisk</key>
+      <integer>-72</integer>
+      <key>braceright</key>
+      <integer>-31</integer>
+      <key>bracketright</key>
+      <integer>-31</integer>
+      <key>chi</key>
+      <integer>-49</integer>
+      <key>delta</key>
+      <integer>-115</integer>
+      <key>epsilon</key>
+      <integer>-91</integer>
+      <key>epsilontonos</key>
+      <integer>-92</integer>
+      <key>equal</key>
+      <integer>-18</integer>
+      <key>gamma</key>
+      <integer>-135</integer>
+      <key>horizontalbar</key>
+      <integer>-295</integer>
+      <key>horizontalbar.case</key>
+      <integer>-235</integer>
+      <key>iota</key>
+      <integer>-75</integer>
+      <key>iotadieresis</key>
+      <integer>-48</integer>
+      <key>iotadieresis.ss01</key>
+      <integer>-50</integer>
+      <key>iotadieresistonos</key>
+      <integer>-48</integer>
+      <key>iotadieresistonos.ss01</key>
+      <integer>-50</integer>
+      <key>iotatonos</key>
+      <integer>-75</integer>
+      <key>nu</key>
+      <integer>-142</integer>
+      <key>omega</key>
+      <integer>-94</integer>
+      <key>omegatonos</key>
+      <integer>-94</integer>
+      <key>omicron</key>
+      <integer>-120</integer>
+      <key>omicrontonos</key>
+      <integer>-120</integer>
+      <key>one</key>
+      <integer>-28</integer>
+      <key>parenright</key>
+      <integer>0</integer>
+      <key>phi</key>
+      <integer>-137</integer>
+      <key>pi</key>
+      <integer>-115</integer>
+      <key>psi</key>
+      <integer>-148</integer>
+      <key>question</key>
+      <integer>-76</integer>
+      <key>question.ss01</key>
+      <integer>-76</integer>
+      <key>quotedbl</key>
+      <integer>-72</integer>
+      <key>quotedblleft.ss01</key>
+      <integer>-62</integer>
+      <key>quoteleft.ss01</key>
+      <integer>-62</integer>
+      <key>quotesingle</key>
+      <integer>-72</integer>
+      <key>seven</key>
+      <integer>-54</integer>
+      <key>sigma</key>
+      <integer>-118</integer>
+      <key>sigmafinal</key>
+      <integer>-107</integer>
+      <key>slash</key>
+      <integer>-7</integer>
+      <key>tau</key>
+      <integer>-141</integer>
+      <key>theta</key>
+      <integer>-138</integer>
+      <key>trademark</key>
+      <integer>-84</integer>
+      <key>underscore</key>
+      <integer>0</integer>
+      <key>upsilon</key>
+      <integer>-111</integer>
+      <key>upsilondieresis</key>
+      <integer>-111</integer>
+      <key>upsilondieresis.ss01</key>
+      <integer>-111</integer>
+      <key>upsilondieresistonos</key>
+      <integer>-111</integer>
+      <key>upsilondieresistonos.ss01</key>
+      <integer>-111</integer>
+      <key>upsilontonos</key>
+      <integer>-111</integer>
+      <key>xi</key>
+      <integer>-99</integer>
+      <key>zeta</key>
+      <integer>-116</integer>
     </dict>
   </dict>
 </plist>

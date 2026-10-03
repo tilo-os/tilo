@@ -13,6 +13,11 @@
       <string>Aogonek</string>
       <string>Aring</string>
       <string>Adieresis.ss01</string>
+      <string>lambda</string>
+      <string>Alphatonos</string>
+      <string>Lambda</string>
+      <string>Delta</string>
+      <string>Alpha</string>
     </array>
     <key>public.kern1.KO_A__stack</key>
     <array>
@@ -40,6 +45,7 @@
     </array>
     <key>public.kern1.KO_B</key>
     <array>
+      <string>Beta</string>
       <string>B</string>
     </array>
     <key>public.kern1.KO_C</key>
@@ -76,6 +82,9 @@
       <string>OE</string>
       <string>Edieresis.ss01</string>
       <string>Edotaccent.ss01</string>
+      <string>Epsilontonos</string>
+      <string>Sigma</string>
+      <string>Epsilon</string>
     </array>
     <key>public.kern1.KO_E__top</key>
     <array>
@@ -143,6 +152,7 @@
     </array>
     <key>public.kern1.KO_K</key>
     <array>
+      <string>Kappa</string>
       <string>K</string>
       <string>Kcommaaccent</string>
       <string>Kcommaaccent.ss01</string>
@@ -189,6 +199,12 @@
       <string>Otilde</string>
       <string>Odieresis.ss01</string>
       <string>Q.ss09</string>
+      <string>Omegatonos</string>
+      <string>Omicrontonos</string>
+      <string>Omega</string>
+      <string>Phi</string>
+      <string>Theta</string>
+      <string>Omicron</string>
     </array>
     <key>public.kern1.KO_Ohorn</key>
     <array>
@@ -205,6 +221,7 @@
     </array>
     <key>public.kern1.KO_P</key>
     <array>
+      <string>Rho</string>
       <string>P</string>
     </array>
     <key>public.kern1.KO_Q</key>
@@ -237,6 +254,8 @@
     </array>
     <key>public.kern1.KO_T</key>
     <array>
+      <string>Gamma</string>
+      <string>Tau</string>
       <string>T</string>
       <string>Tcaron</string>
       <string>Tcommaaccent</string>
@@ -259,6 +278,7 @@
       <string>Uring</string>
       <string>Udieresis.ss01</string>
       <string>J.ss08</string>
+      <string>Psi</string>
     </array>
     <key>public.kern1.KO_Uhorn</key>
     <array>
@@ -287,6 +307,7 @@
     </array>
     <key>public.kern1.KO_X</key>
     <array>
+      <string>Chi</string>
       <string>X</string>
     </array>
     <key>public.kern1.KO_Y</key>
@@ -300,9 +321,15 @@
       <string>Ydieresis</string>
       <string>Ygrave</string>
       <string>Ydieresis.ss01</string>
+      <string>Upsilondieresis.ss01</string>
+      <string>Upsilontonos</string>
+      <string>Upsilondieresis</string>
+      <string>Upsilon</string>
     </array>
     <key>public.kern1.KO_Z</key>
     <array>
+      <string>Xi</string>
+      <string>Zeta</string>
       <string>Z</string>
       <string>Zacute</string>
       <string>Zcaron</string>
@@ -371,6 +398,11 @@
     </array>
     <key>public.kern1.KO_c</key>
     <array>
+      <string>epsilontonos</string>
+      <string>sigmafinal</string>
+      <string>xi</string>
+      <string>zeta</string>
+      <string>epsilon</string>
       <string>c</string>
       <string>cacute</string>
       <string>ccaron</string>
@@ -380,6 +412,7 @@
     </array>
     <key>public.kern1.KO_colon</key>
     <array>
+      <string>questiongreek.ss01</string>
       <string>colon.ss01</string>
       <string>semicolon.ss01</string>
     </array>
@@ -450,11 +483,13 @@
     </array>
     <key>public.kern1.KO_endash</key>
     <array>
+      <string>horizontalbar</string>
       <string>endash</string>
       <string>emdash</string>
     </array>
     <key>public.kern1.KO_endash.case</key>
     <array>
+      <string>horizontalbar.case</string>
       <string>endash.case</string>
       <string>emdash.case</string>
     </array>
@@ -545,6 +580,7 @@
     </array>
     <key>public.kern1.KO_k</key>
     <array>
+      <string>kappa</string>
       <string>k</string>
       <string>kcommaaccent</string>
       <string>kcommaaccent.ss01</string>
@@ -575,6 +611,9 @@
     </array>
     <key>public.kern1.KO_n</key>
     <array>
+      <string>etatonos</string>
+      <string>pi</string>
+      <string>eta</string>
       <string>h</string>
       <string>hbar</string>
       <string>m</string>
@@ -595,6 +634,19 @@
       <string>ohungarumlaut</string>
       <string>omacron</string>
       <string>odieresis.ss01</string>
+      <string>upsilondieresistonos.ss01</string>
+      <string>upsilondieresis.ss01</string>
+      <string>upsilondieresistonos</string>
+      <string>upsilondieresis</string>
+      <string>omegatonos</string>
+      <string>upsilontonos</string>
+      <string>omicrontonos</string>
+      <string>omega</string>
+      <string>phi</string>
+      <string>upsilon</string>
+      <string>omicron</string>
+      <string>theta</string>
+      <string>delta</string>
     </array>
     <key>public.kern1.KO_o__stack</key>
     <array>
@@ -640,6 +692,8 @@
     </array>
     <key>public.kern1.KO_p</key>
     <array>
+      <string>rho</string>
+      <string>beta</string>
       <string>b</string>
       <string>p</string>
       <string>thorn</string>
@@ -663,11 +717,13 @@
     </array>
     <key>public.kern1.KO_period</key>
     <array>
+      <string>anoteleia.ss01</string>
       <string>period.ss01</string>
       <string>ellipsis.ss01</string>
     </array>
     <key>public.kern1.KO_period.ss01</key>
     <array>
+      <string>anoteleia</string>
       <string>period</string>
       <string>comma</string>
     </array>
@@ -727,6 +783,7 @@
     </array>
     <key>public.kern1.KO_r</key>
     <array>
+      <string>sigma</string>
       <string>r</string>
       <string>rcommaaccent</string>
       <string>rcommaaccent.ss01</string>
@@ -753,6 +810,13 @@
     </array>
     <key>public.kern1.KO_t</key>
     <array>
+      <string>iotadieresistonos.ss01</string>
+      <string>iotadieresis.ss01</string>
+      <string>iotadieresistonos</string>
+      <string>iotadieresis</string>
+      <string>iotatonos</string>
+      <string>tau</string>
+      <string>iota</string>
       <string>t</string>
       <string>tcommaaccent</string>
       <string>tcommaaccent.ss01</string>
@@ -822,6 +886,11 @@
       <string>aring.ss02</string>
       <string>atilde.ss02</string>
       <string>adieresis.ss01.ss02</string>
+      <string>micro</string>
+      <string>alphatonos</string>
+      <string>psi</string>
+      <string>mu</string>
+      <string>alpha</string>
     </array>
     <key>public.kern1.KO_uhorn</key>
     <array>
@@ -855,6 +924,7 @@
     </array>
     <key>public.kern1.KO_x</key>
     <array>
+      <string>chi</string>
       <string>x</string>
     </array>
     <key>public.kern1.KO_y</key>
@@ -872,6 +942,8 @@
       <string>ycircumflex.ss03</string>
       <string>ydieresis.ss03</string>
       <string>ydieresis.ss01.ss03</string>
+      <string>nu</string>
+      <string>gamma</string>
     </array>
     <key>public.kern1.KO_y__top</key>
     <array>
@@ -920,6 +992,9 @@
       <string>Aring</string>
       <string>AE</string>
       <string>Adieresis.ss01</string>
+      <string>Lambda</string>
+      <string>Delta</string>
+      <string>Alpha</string>
     </array>
     <key>public.kern2.KO_A__stack</key>
     <array>
@@ -983,6 +1058,7 @@
       <string>Rcommaaccent.ss05</string>
       <string>Kcommaaccent.ss01.ss04</string>
       <string>Rcommaaccent.ss01.ss05</string>
+      <string>Beta</string>
     </array>
     <key>public.kern2.KO_B__stack</key>
     <array>
@@ -1062,6 +1138,10 @@
       <string>Q.ss09</string>
       <string>Gcommaaccent.ss01.ss07</string>
       <string>Gdotaccent.ss01.ss07</string>
+      <string>Omega</string>
+      <string>Phi</string>
+      <string>Theta</string>
+      <string>Omicron</string>
     </array>
     <key>public.kern2.KO_O__stack</key>
     <array>
@@ -1095,6 +1175,7 @@
     </array>
     <key>public.kern2.KO_T</key>
     <array>
+      <string>Tau</string>
       <string>T</string>
       <string>Tcaron</string>
       <string>Tcommaaccent</string>
@@ -1116,6 +1197,7 @@
       <string>Uogonek</string>
       <string>Uring</string>
       <string>Udieresis.ss01</string>
+      <string>Psi</string>
     </array>
     <key>public.kern2.KO_U__top</key>
     <array>
@@ -1140,6 +1222,7 @@
     </array>
     <key>public.kern2.KO_X</key>
     <array>
+      <string>Chi</string>
       <string>X</string>
     </array>
     <key>public.kern2.KO_Y</key>
@@ -1150,6 +1233,9 @@
       <string>Ycircumflex</string>
       <string>Ydieresis</string>
       <string>Ydieresis.ss01</string>
+      <string>Upsilondieresis.ss01</string>
+      <string>Upsilondieresis</string>
+      <string>Upsilon</string>
     </array>
     <key>public.kern2.KO_Y__top</key>
     <array>
@@ -1159,6 +1245,9 @@
     </array>
     <key>public.kern2.KO_Z</key>
     <array>
+      <string>Sigma</string>
+      <string>Xi</string>
+      <string>Zeta</string>
       <string>Z</string>
       <string>Zacute</string>
       <string>Zcaron</string>
@@ -1218,11 +1307,13 @@
     </array>
     <key>public.kern2.KO_colon</key>
     <array>
+      <string>questiongreek.ss01</string>
       <string>colon.ss01</string>
       <string>semicolon.ss01</string>
     </array>
     <key>public.kern2.KO_colon.ss01</key>
     <array>
+      <string>questiongreek</string>
       <string>colon</string>
       <string>semicolon</string>
     </array>
@@ -1281,6 +1372,20 @@
       <string>oe</string>
       <string>cdotaccent.ss01</string>
       <string>edotaccent.ss01</string>
+      <string>omicrontonos</string>
+      <string>epsilontonos</string>
+      <string>alphatonos</string>
+      <string>phi</string>
+      <string>sigmafinal</string>
+      <string>sigma</string>
+      <string>rho</string>
+      <string>omicron</string>
+      <string>xi</string>
+      <string>theta</string>
+      <string>zeta</string>
+      <string>epsilon</string>
+      <string>delta</string>
+      <string>alpha</string>
     </array>
     <key>public.kern2.KO_e__top</key>
     <array>
@@ -1302,11 +1407,13 @@
     </array>
     <key>public.kern2.KO_endash</key>
     <array>
+      <string>horizontalbar</string>
       <string>endash</string>
       <string>emdash</string>
     </array>
     <key>public.kern2.KO_endash.case</key>
     <array>
+      <string>horizontalbar.case</string>
       <string>endash.case</string>
       <string>emdash.case</string>
     </array>
@@ -1382,10 +1489,16 @@
     </array>
     <key>public.kern2.KO_idieresis</key>
     <array>
+      <string>iotadieresistonos.ss01</string>
+      <string>iotadieresis.ss01</string>
+      <string>iotadieresistonos</string>
+      <string>iotadieresis</string>
       <string>idieresis</string>
     </array>
     <key>public.kern2.KO_idotless</key>
     <array>
+      <string>etatonos</string>
+      <string>iota</string>
       <string>idotless</string>
       <string>nacute</string>
       <string>ncaron</string>
@@ -1423,6 +1536,7 @@
       <string>lcaron.ss13</string>
       <string>lcommaaccent.ss13</string>
       <string>lcommaaccent.ss01.ss13</string>
+      <string>iotatonos</string>
     </array>
     <key>public.kern2.KO_j__top</key>
     <array>
@@ -1493,11 +1607,13 @@
     </array>
     <key>public.kern2.KO_period</key>
     <array>
+      <string>anoteleia.ss01</string>
       <string>period.ss01</string>
       <string>comma.ss01</string>
     </array>
     <key>public.kern2.KO_period.ss01</key>
     <array>
+      <string>anoteleia</string>
       <string>period</string>
       <string>comma</string>
     </array>
@@ -1559,6 +1675,7 @@
     </array>
     <key>public.kern2.KO_t</key>
     <array>
+      <string>tau</string>
       <string>t</string>
       <string>tcaron</string>
       <string>tcommaaccent</string>
@@ -1592,6 +1709,17 @@
       <string>uogonek</string>
       <string>uring</string>
       <string>udieresis.ss01</string>
+      <string>upsilondieresistonos.ss01</string>
+      <string>upsilondieresis.ss01</string>
+      <string>micro</string>
+      <string>upsilondieresistonos</string>
+      <string>upsilondieresis</string>
+      <string>omegatonos</string>
+      <string>upsilontonos</string>
+      <string>omega</string>
+      <string>psi</string>
+      <string>upsilon</string>
+      <string>mu</string>
     </array>
     <key>public.kern2.KO_u__top</key>
     <array>
@@ -1615,6 +1743,8 @@
       <string>ycircumflex</string>
       <string>ydieresis</string>
       <string>ydieresis.ss01</string>
+      <string>nu</string>
+      <string>gamma</string>
     </array>
     <key>public.kern2.KO_v__top</key>
     <array>
@@ -1634,6 +1764,7 @@
     </array>
     <key>public.kern2.KO_x</key>
     <array>
+      <string>chi</string>
       <string>x</string>
     </array>
     <key>public.kern2.KO_y.ss03</key>
