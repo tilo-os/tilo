@@ -163,12 +163,11 @@ impl<W: EditsText> TextControl<W> {
         if located == self.bound {
             return;
         }
-        match &located {
-            Some(obj) => self.control.show_text(obj.clone()),
-            None => {
-                self.control.hide_text();
-                self.control.reset_text("");
-            }
+        if let Some(obj) = &located {
+            self.control.show_text(obj.clone());
+        } else {
+            self.control.hide_text();
+            self.control.reset_text("");
         }
         self.bound = located;
     }

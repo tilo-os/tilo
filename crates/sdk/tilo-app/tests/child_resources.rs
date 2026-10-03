@@ -110,7 +110,7 @@ impl ResourceApp for QueryApp {
 }
 
 fn typed_sql(app: &TestApp<QueryApp>) -> String {
-    app.read_document(|doc| doc.text(&sql(doc).unwrap()).unwrap())
+    app.read_document(|doc| doc.text(sql(doc).unwrap()).unwrap())
 }
 
 fn open(role: Role) -> TestApp<QueryApp> {
@@ -129,15 +129,11 @@ fn typing_splices_the_child_through_the_parents_action() {
         "untitled",
         "the rest of the query is untouched"
     );
-    let edits: Vec<String> = app
-        .versions()
-        .into_iter()
-        .filter_map(|version| version.context)
-        .filter(|context| context.resource.as_ref().is_some_and(|r| r.id == sql_id()))
-        .map(|context| context.action_label)
-        .collect();
     assert!(
-        !edits.is_empty(),
+        app.versions()
+            .into_iter()
+            .filter_map(|version| version.context)
+            .any(|context| context.resource.as_ref().is_some_and(|r| r.id == sql_id())),
         "history names the SQL as the resource edited"
     );
 }
