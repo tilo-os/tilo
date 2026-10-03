@@ -144,15 +144,18 @@ fn every_control_is_a_focusable_accessible_node() {
 /// Case of `every_surface_exposes_named_accessible_controls`.
 fn empty_and_error_response_surfaces_expose_recovery_actions() {
     let empty = staged("empty", (1280, 800));
+    let nodes = empty.focus_access_nodes();
     assert!(
-        empty.focus_access_nodes().iter().any(|node| {
-            node.role == Role::Group
-                && node.name.as_deref() == Some("No response yet")
-                && node.children.iter().any(|child| {
-                    child.role == Role::Button && child.name.as_deref() == Some("Send request")
-                })
-        }),
-        "the empty response state exposes its primary Send action"
+        empty.a11y_node_named("No response yet").is_some(),
+        "the empty response state says there is no response"
+    );
+    assert_eq!(
+        nodes
+            .iter()
+            .filter(|node| node.role == Role::Button && node.name.as_deref() == Some("Send"))
+            .count(),
+        1,
+        "Send is offered once: the empty state does not repeat it"
     );
 
     let error = staged("error", (390, 844));
@@ -452,8 +455,8 @@ fn the_split_drags_and_text_scale_keeps_controls_on_screen() {
     let mut d = driver();
     let before = d.targets()["api.response-view"];
     let height = 800.0;
-    // The divider is centred on the response's top edge.
-    let divider_y = before.y0;
+    // The divider lies a little above the response's own top edge, which
+    // leaves room between the two; find where it can be taken.
     let pointer = |d: &mut Driver, y: f64| {
         d.send(&winit::event::WindowEvent::CursorMoved {
             device_id: winit::event::DeviceId::dummy(),
@@ -467,11 +470,18 @@ fn the_split_drags_and_text_scale_keeps_controls_on_screen() {
             button: winit::event::MouseButton::Left,
         });
     };
-    pointer(&mut d, divider_y);
-    button(&mut d, winit::event::ElementState::Pressed);
-    pointer(&mut d, divider_y + 120.0);
-    button(&mut d, winit::event::ElementState::Released);
-    let after = d.targets()["api.response-view"];
+    let mut after = before;
+    for above in (0..40).map(f64::from) {
+        let divider_y = before.y0 - above;
+        pointer(&mut d, divider_y);
+        button(&mut d, winit::event::ElementState::Pressed);
+        pointer(&mut d, divider_y + 120.0);
+        button(&mut d, winit::event::ElementState::Released);
+        after = d.targets()["api.response-view"];
+        if after.y0 > before.y0 + 60.0 {
+            break;
+        }
+    }
     assert!(
         after.y0 > before.y0 + 60.0,
         "the response moved down with the divider: {before:?} -> {after:?}"

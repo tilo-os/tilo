@@ -28,9 +28,6 @@ pub(crate) fn empty() -> Element {
         EmptyState::new("No response yet")
             .with_icon(Icon::Globe)
             .with_message("Send the request to see what comes back.")
-            .with_action("Send request")
-            .with_action_id("api.response.send")
-            .on_action(crate::app::active_send_binding())
             .into_scrollable(),
     )
 }

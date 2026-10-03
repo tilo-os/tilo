@@ -21,6 +21,7 @@ use std::sync::mpsc::{Receiver, Sender};
 
 use automerge::{AutoCommit, ObjId};
 use ui::LocalState;
+use ui::tokens::Spacing;
 use ui::widget::resizable_split::SplitOrientation;
 use ui::widget::{
     AppModel, Column, Dropdown, Element, ModelPath, NavShell, ResizableSplit, Spacer, Stack, Widget,
@@ -55,6 +56,71 @@ const ENVIRONMENT_COMMANDS: [(&str, FormMode); 5] = [
     ("Delete variable\u{2026}", FormMode::DeleteVariable),
     ("Delete environment\u{2026}", FormMode::DeleteEnvironment),
 ];
+
+/// A pane of the split: `slot` with room between it and the divider, which
+/// is painted over the edge of both panes.
+fn pane(slot: Swap, below_divider: bool) -> Column {
+    let gap = Spacing::BASE.s3;
+    let column = Column::new().with_no_padding();
+    let column = if below_divider {
+        column.with_extra_top_padding(gap)
+    } else {
+        column.with_extra_bottom_padding(gap)
+    };
+    column.push(Box::new(
+        Column::new()
+            .with_no_padding()
+            .with_fill_remaining_height()
+            .push(Box::new(slot)),
+    ))
+}
+
+/// Something the document keeps by id.
+trait Keyed {
+    fn key(&self) -> uuid::Uuid;
+    /// The records inside it, when it holds any.
+    fn order_within(&mut self, _known: &Self) {}
+}
+
+impl Keyed for Request {
+    fn key(&self) -> uuid::Uuid {
+        self.id
+    }
+}
+
+impl Keyed for Environment {
+    fn key(&self) -> uuid::Uuid {
+        self.id
+    }
+}
+
+impl Keyed for Collection {
+    fn key(&self) -> uuid::Uuid {
+        self.id
+    }
+
+    fn order_within(&mut self, known: &Self) {
+        self.requests = in_known_order(&known.requests, std::mem::take(&mut self.requests));
+    }
+}
+
+/// `fresh` in the order `known` has it, what `known` lacks after. The
+/// document hands records back by id, which is not the order they were made
+/// in, so a rename or a pick would otherwise shuffle the lists on screen.
+fn in_known_order<T: Keyed>(known: &[T], mut fresh: Vec<T>) -> Vec<T> {
+    for item in &mut fresh {
+        if let Some(before) = known.iter().find(|before| before.key() == item.key()) {
+            item.order_within(before);
+        }
+    }
+    fresh.sort_by_key(|item| {
+        known
+            .iter()
+            .position(|before| before.key() == item.key())
+            .unwrap_or(usize::MAX)
+    });
+    fresh
+}
 
 /// What stands where a sheet goes while none is open.
 fn no_dialog() -> Element {
@@ -318,8 +384,12 @@ impl ApiTesterApp {
         sink: &Sink,
     ) -> Element {
         let split = Following::new(
-            ResizableSplit::new(request, response, SplitOrientation::Vertical)
-                .with_split_position(0.45),
+            ResizableSplit::new(
+                pane(request, false),
+                pane(response, true),
+                SplitOrientation::Vertical,
+            )
+            .with_split_position(0.5),
         );
         Box::new(
             Stack::new()
@@ -803,11 +873,11 @@ impl ApiTesterApp {
     fn adopt(&mut self, state: &AutoCommit, root: &ObjId) {
         let cols = ApiDoc::collections(state, root);
         if !cols.is_empty() {
-            self.collections = cols;
+            self.collections = in_known_order(&self.collections, cols);
         }
         let envs = ApiDoc::environments(state, root);
         if !envs.is_empty() {
-            self.environments = envs;
+            self.environments = in_known_order(&self.environments, envs);
         }
         if let Some(id) = ApiDoc::active_env(state, root) {
             self.active_env = self.existing_environment(id.parse().ok());
@@ -919,8 +989,8 @@ impl ApiTesterApp {
     /// untouched — those are not what an action changed.
     fn adopt_workspace(&mut self, state: &AutoCommit, path: &ObjId) {
         let kept = self.selected_request().map(|(_, request)| request);
-        self.collections = ApiDoc::collections(state, path);
-        self.environments = ApiDoc::environments(state, path);
+        self.collections = in_known_order(&self.collections, ApiDoc::collections(state, path));
+        self.environments = in_known_order(&self.environments, ApiDoc::environments(state, path));
         self.active_env = self
             .existing_environment(ApiDoc::active_env(state, path).and_then(|id| id.parse().ok()));
         self.selected = kept.and_then(|id| self.position_of(id));
@@ -1096,12 +1166,7 @@ impl ApiTesterApp {
             .map(|(_, queue)| queue.clone());
         if row == blank {
             match edit {
-                RowEdit::Remove => {
-                    if let Some(queue) = &queue {
-                        queue.push(KvChange::Clear(blank));
-                    }
-                }
-                RowEdit::Enabled(_) => {}
+                RowEdit::Remove | RowEdit::Enabled(_) => {}
                 RowEdit::Key(_) | RowEdit::Value(_) => {
                     let mut pair = KeyValue::new("", "");
                     pair.id.clone_from(&blank);
