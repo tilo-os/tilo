@@ -15,8 +15,8 @@ use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::keyboard::{Key, NamedKey};
+use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
@@ -36,6 +36,7 @@ use crate::highlight;
 use crate::i18n::{count, t, t_args};
 use crate::model::{MergeHunk, MergeModel, Resolution};
 use crate::pane::{self, CodeMetrics};
+use crate::scroll::{HScroll, wheel_pixels};
 use ui::icons::Icon;
 
 /// Row metrics measured from the renderer the panel paints with.
@@ -79,8 +80,9 @@ impl Metrics {
         }
     }
 
-    fn estimate(theme: &Theme) -> Self {
-        let code = CodeMetrics::estimate(theme);
+    /// What is known before the first frame measures anything.
+    fn unmeasured(theme: &Theme) -> Self {
+        let code = CodeMetrics::unmeasured(theme);
         let sp = &theme.tokens.spacing;
         Self {
             strip_h: SegmentedFace::height(ControlSize::Small, theme),
@@ -104,6 +106,13 @@ impl Metrics {
     }
 }
 
+/// The prefix of the accessibility target that switches the narrow layout's
+/// source.
+pub(crate) const SOURCE_TARGET: &str = "diffmerge.merge-source:";
+
+/// The fewest lines of the merged result the source band leaves room for.
+const MERGED_MIN_LINES: usize = 5;
+
 /// One of the source revisions shown by the compact merge view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SourcePane {
@@ -123,11 +132,11 @@ impl SourcePane {
         }
     }
 
-    fn a11y_id(self) -> &'static str {
+    fn tag(self) -> &'static str {
         match self {
-            Self::Base => "diffmerge.source.base",
-            Self::Ours => "diffmerge.source.ours",
-            Self::Theirs => "diffmerge.source.theirs",
+            Self::Base => "base",
+            Self::Ours => "ours",
+            Self::Theirs => "theirs",
         }
     }
 
@@ -197,6 +206,14 @@ pub struct MergeView {
     active_hunk: Option<usize>,
     /// Cursor position cache for click hit-testing.
     cursor: Point,
+    modifiers: ModifiersState,
+    /// Horizontal scroll shared by the three source columns.
+    across: HScroll,
+    /// The widest source line in characters, which sets how far code scrolls.
+    widest: usize,
+    /// The hunk the next draw scrolls into view, once the pane has a size:
+    /// the change under review when fresh inputs were loaded.
+    reveal: Option<usize>,
     dirty: bool,
     /// Set when a fresh set of inputs was loaded: the next `sync` seeds the
     /// merged buffer (a projection of the external inputs, not a replayable
@@ -243,6 +260,10 @@ impl MergeView {
             selected_source: SourcePane::Ours,
             active_hunk: None,
             cursor: Point::ZERO,
+            modifiers: ModifiersState::empty(),
+            across: HScroll::default(),
+            widest: 0,
+            reveal: None,
             dirty: true,
             pending_seed: false,
             hosted: false,
@@ -250,7 +271,7 @@ impl MergeView {
             expected_content: None,
             merged_output: String::new(),
             pending_action: None,
-            metrics: Metrics::estimate(&Theme::dark()),
+            metrics: Metrics::unmeasured(&Theme::dark()),
             merged_editor: CodeEditor::new(Vec::new())
                 .with_language(Language::PlainText)
                 .with_id("diffmerge_merged_editor"),
@@ -410,9 +431,11 @@ impl MergeView {
         // set at an unchanged rect must not paint against stale spans.
         self.recompute_spans();
         self.scroll_y = 0.0;
+        self.across.reset();
         self.active_hunk = self
             .first_conflict()
             .or_else(|| self.model.change_indices().first().copied());
+        self.reveal = self.active_hunk;
         self.dirty = true;
         self.pending_seed = true;
     }
@@ -508,6 +531,64 @@ impl MergeView {
         self.pending_action.take()
     }
 
+    /// The controls the last draw laid out, as accessibility nodes: the source
+    /// switch of the narrow layout and every change's resolution. The root
+    /// publishes them, so they are exposed once and act through the same
+    /// action path as a click.
+    pub(crate) fn access_controls(&self) -> Vec<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        let mut controls = Vec::new();
+        if self.is_compact() {
+            controls.extend(SourcePane::ALL.into_iter().map(|source| {
+                AccessNode::new(Role::ToggleButton)
+                    .with_name(format!("Show {} source", source.label()))
+                    .with_description("Switch the visible merge source")
+                    .with_action_target(format!("{SOURCE_TARGET}{}", source.tag()))
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .checked(source == self.selected_source),
+                    )
+            }));
+        }
+        controls.extend(self.action_hits.iter().map(|hit| {
+            let choice = match hit.choice {
+                HunkChoice::Ours => "ours",
+                HunkChoice::Theirs => "theirs",
+                HunkChoice::Both => "both",
+            };
+            let label = match hit.choice {
+                HunkChoice::Ours => t("take-ours"),
+                HunkChoice::Theirs => t("take-theirs"),
+                HunkChoice::Both => t("take-both"),
+            };
+            AccessNode::new(Role::Button)
+                .with_name(format!("{label} for change {}", hit.hunk.saturating_add(1)))
+                .with_description("Resolve this shared merge hunk")
+                .with_action_target(format!("diffmerge.merge.resolve:{}:{choice}", hit.hunk))
+                .with_bounds(hit.rect)
+                .with_state(
+                    AccessState::new().focusable(true).selected(
+                        self.model
+                            .hunks
+                            .get(hit.hunk)
+                            .is_some_and(|hunk| chip_is_selected(hunk.resolution, hit.choice)),
+                    ),
+                )
+        }));
+        controls
+    }
+
+    /// Show the source an accessibility action names (`base`, `ours`,
+    /// `theirs`). Returns whether it named one.
+    pub(crate) fn select_source_tagged(&mut self, tag: &str) -> bool {
+        let Some(source) = SourcePane::ALL.into_iter().find(|s| s.tag() == tag) else {
+            return false;
+        };
+        self.select_source(source);
+        true
+    }
+
     fn first_conflict(&self) -> Option<usize> {
         self.model
             .hunks
@@ -567,6 +648,22 @@ impl MergeView {
         true
     }
 
+    /// Scroll just far enough that the whole of `hunk`, with its resolution,
+    /// shows in the band.
+    fn reveal_hunk(&mut self, hunk: usize) {
+        if let Some((top, bottom)) = self.hunk_spans.get(hunk).copied() {
+            let band = self.source_band_height();
+            let target = if top < self.scroll_y {
+                top
+            } else if bottom > self.scroll_y + band {
+                bottom - band
+            } else {
+                self.scroll_y
+            };
+            self.scroll_y = target.max(0.0).min(self.max_scroll());
+        }
+    }
+
     fn scroll_hunk_into_view(&mut self, hunk: usize) {
         if let Some((top, bot)) = self.hunk_spans.get(hunk).copied() {
             let vh = self.source_band_height();
@@ -575,9 +672,55 @@ impl MergeView {
         }
     }
 
+    /// The height of the source band. It takes what the hunks need, so every
+    /// change and its resolution show at once, and leaves the merged result
+    /// at least [`MERGED_MIN_LINES`] lines. When the hunks need more than
+    /// that, the band ends where the last hunk that fits ends, so what rests
+    /// at the foot of the band is a whole hunk and not half a control.
     fn source_band_height(&self) -> f64 {
-        // The source band occupies the top ~58% of the panel.
-        ((self.rect.height() - self.metrics.code.header_h) * 0.58).max(0.0)
+        let m = &self.metrics;
+        let total = (self.rect.height() - m.code.header_h).max(0.0);
+        let merged_min = m.merged_header_h + MERGED_MIN_LINES as f64 * m.code.row_h;
+        let room = (total - merged_min).max(0.0);
+        let content = self.content_height();
+        if self.hunk_spans.is_empty() {
+            return room.max(total / 2.0);
+        }
+        if content <= room {
+            return content;
+        }
+        self.hunk_spans
+            .iter()
+            .map(|&(_, bottom)| bottom)
+            .take_while(|&bottom| bottom <= room)
+            .last()
+            .unwrap_or(room)
+    }
+
+    /// The source columns as `(x0, x1)`: three side by side, or the one the
+    /// narrow layout shows.
+    fn source_columns(&self) -> Vec<(f64, f64)> {
+        let r = self.rect;
+        if self.is_compact() {
+            return vec![(r.x0, r.x1)];
+        }
+        let col_w = r.width() / 3.0;
+        (0..3)
+            .map(|i| {
+                let x0 = r.x0 + f64::from(i) * col_w;
+                (x0, if i == 2 { r.x1 } else { x0 + col_w })
+            })
+            .collect()
+    }
+
+    /// Tell the horizontal scroll how wide the code is and how much of it
+    /// shows.
+    fn fit_across(&mut self) {
+        let m = self.metrics;
+        let col_w = self.rect.width() / self.source_columns().len().max(1) as f64;
+        let viewport = (col_w - 2.0 * m.code.pad).max(0.0);
+        let content = self.widest as f64 * m.code.cell_w + m.code.pad;
+        self.across.set_extent(content, viewport);
     }
 
     fn merged_band_rect(&self) -> Rect {
@@ -605,6 +748,14 @@ impl MergeView {
     /// Recompute the per-hunk vertical spans (content space).
     fn recompute_spans(&mut self) {
         self.hunk_spans.clear();
+        self.widest = self
+            .model
+            .hunks
+            .iter()
+            .flat_map(|h| h.base.iter().chain(&h.ours).chain(&h.theirs))
+            .map(|line| line.chars().count())
+            .max()
+            .unwrap_or(0);
         let m = self.metrics;
         let compact = self.is_compact();
         let mut y = 0.0;
@@ -677,34 +828,33 @@ impl MergeView {
         }
     }
 
-    /// The wash each side of a hunk takes for its resolution, over `ground`.
+    /// The wash each side of a hunk takes for its resolution; `active` is the
+    /// hunk under review, which takes the stronger wash of its hue.
     fn hunk_washes(
-        ground: Color,
         resolution: Resolution,
+        active: bool,
         theme: &Theme,
     ) -> (Option<Color>, Option<Color>) {
-        let s = &theme.tokens.colors.semantic;
+        let c = &theme.tokens.colors;
+        let washed = |tone| pane::washed(c.surfaces.content, tone, active);
         match resolution {
             Resolution::Unchanged => (None, None),
             Resolution::Conflict => (
-                Some(pane::washed(ground, s.danger)),
-                Some(pane::washed(ground, s.danger)),
+                Some(washed(c.semantic.danger)),
+                Some(washed(c.semantic.danger)),
             ),
-            Resolution::Ours | Resolution::TookOurs => {
-                (Some(pane::washed(ground, s.success)), None)
-            }
-            Resolution::Theirs | Resolution::TookTheirs => {
-                (None, Some(pane::washed(ground, s.info)))
-            }
+            Resolution::Ours | Resolution::TookOurs => (Some(washed(c.semantic.success)), None),
+            Resolution::Theirs | Resolution::TookTheirs => (None, Some(washed(c.semantic.info))),
             Resolution::TookBoth => (
-                Some(pane::washed(ground, s.success)),
-                Some(pane::washed(ground, s.info)),
+                Some(washed(c.semantic.success)),
+                Some(washed(c.semantic.info)),
             ),
         }
     }
 
-    /// Hunk tint per side. The hunk under review stands on the selection lift
-    /// so it reads as chosen, whatever its resolution.
+    /// Hunk tint per side. The hunk under review takes a stronger wash of its
+    /// own hue; a side with no hue stays on the ground, since a neutral lift
+    /// beside a coloured wash reads as an unrelated grey.
     fn draw_hunk_tint(
         ctx: &mut PaintCtx<'_>,
         block: Rect,
@@ -712,35 +862,24 @@ impl MergeView {
         h: &MergeHunk,
         is_active: bool,
     ) {
-        let col_w = block.width() / 3.0;
-        let colors = &ctx.theme.tokens.colors;
-        let ground = if is_active && h.is_change {
-            colors.intent.selection
-        } else {
-            colors.surfaces.content
-        };
-        let (ours_tint, theirs_tint) = Self::hunk_washes(ground, h.resolution, ctx.theme);
-        if ground != colors.surfaces.content {
-            ctx.fill_rect(block, ground);
-        }
-
+        let active = is_active && h.is_change;
+        let (ours_tint, theirs_tint) = Self::hunk_washes(h.resolution, active, ctx.theme);
         if let Some(source) = compact_source {
             let tint = match source {
                 SourcePane::Base => None,
                 SourcePane::Ours => ours_tint,
                 SourcePane::Theirs => theirs_tint,
             };
-            if let Some(t) = tint {
-                ctx.fill_rect(block, t);
+            if let Some(tint) = tint {
+                ctx.fill_rect(block, tint);
             }
-        } else {
-            if let Some(t) = ours_tint {
-                let rect = Rect::new(block.x0 + col_w, block.y0, block.x0 + 2.0 * col_w, block.y1);
-                ctx.fill_rect(rect, t);
-            }
-            if let Some(t) = theirs_tint {
-                let rect = Rect::new(block.x0 + 2.0 * col_w, block.y0, block.x1, block.y1);
-                ctx.fill_rect(rect, t);
+            return;
+        }
+        let col_w = block.width() / 3.0;
+        for (index, tint) in [None, ours_tint, theirs_tint].into_iter().enumerate() {
+            if let Some(tint) = tint {
+                let x0 = block.x0 + index as f64 * col_w;
+                ctx.fill_rect(Rect::new(x0, block.y0, x0 + col_w, block.y1), tint);
             }
         }
     }
@@ -864,15 +1003,31 @@ impl MergeView {
                 (&h.theirs, side(|s| &s.theirs)),
             );
             let pad = m.code.pad;
-            match compact_source {
-                Some(SourcePane::Base) => draw_lines(ctx, Point::new(r.x0 + pad, y), base, m),
-                Some(SourcePane::Ours) => draw_lines(ctx, Point::new(r.x0 + pad, y), ours, m),
-                Some(SourcePane::Theirs) => draw_lines(ctx, Point::new(r.x0 + pad, y), theirs, m),
-                None => {
-                    draw_lines(ctx, Point::new(r.x0 + pad, y), base, m);
-                    draw_lines(ctx, Point::new(r.x0 + col_w + pad, y), ours, m);
-                    draw_lines(ctx, Point::new(r.x0 + 2.0 * col_w + pad, y), theirs, m);
-                }
+            let across = self.across.offset();
+            let sources = match compact_source {
+                Some(source) => vec![(source, r.x0, r.x1)],
+                None => vec![
+                    (SourcePane::Base, r.x0, r.x0 + col_w),
+                    (SourcePane::Ours, r.x0 + col_w, r.x0 + 2.0 * col_w),
+                    (SourcePane::Theirs, r.x0 + 2.0 * col_w, r.x1),
+                ],
+            };
+            for (source, x0, x1) in sources {
+                let lines = match source {
+                    SourcePane::Base => base,
+                    SourcePane::Ours => ours,
+                    SourcePane::Theirs => theirs,
+                };
+                let view = Rect::new(x0 + pad, y, x1 - pad, y + block_h);
+                ctx.scene.push_layer(
+                    Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    1.0,
+                    ctx.transform,
+                    &view,
+                );
+                draw_lines(ctx, Point::new(view.x0 - across, y), lines, m);
+                ctx.scene.pop_layer();
             }
 
             // Status and resolution for change hunks.
@@ -1076,7 +1231,14 @@ impl Widget for MergeView {
             self.recompute_spans();
             self.scroll_y = self.scroll_y.min(self.max_scroll());
         }
+        self.fit_across();
+        if self.rect.height() > 0.0
+            && let Some(hunk) = self.reveal.take()
+        {
+            self.reveal_hunk(hunk);
+        }
         let r = self.rect;
+        let m = self.metrics;
         let mut ctx = PaintCtx::new(scene, transform, tr, theme);
 
         self.draw_column_headers(&mut ctx);
@@ -1110,6 +1272,15 @@ impl Widget for MergeView {
             EmptyState::paint(&mut ctx, band_clip, &content, Point::new(-1.0, -1.0));
         } else {
             self.draw_hunks(&mut ctx);
+            let tracks: Vec<Rect> = self
+                .source_columns()
+                .into_iter()
+                .map(|(x0, x1)| {
+                    let view = Rect::new(x0 + m.code.pad, band_top, x1 - m.code.pad, band_bot);
+                    HScroll::track_in(view, theme)
+                })
+                .collect();
+            self.across.draw(&mut ctx, &tracks);
         }
         ctx.scene.pop_layer();
 
@@ -1136,18 +1307,35 @@ impl Widget for MergeView {
             }
         }
         match event {
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.modifiers = modifiers.state();
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor =
                     Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let mut moved = false;
+                if self.across.pointer(event, self.cursor, &mut moved) {
+                    self.dirty |= moved;
+                    *ctx.handled = true;
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let mut moved = false;
+                if self.across.pointer(event, self.cursor, &mut moved) {
+                    self.dirty = true;
+                }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                // Only scroll the source band when the cursor is above the
-                // merged divider; otherwise let the merged band stay put.
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => f64::from(-*y) * 60.0,
-                    MouseScrollDelta::PixelDelta(pp) => -pp.y,
-                };
+                let (dx, dy) =
+                    wheel_pixels(*delta, self.metrics.code.row_h, self.modifiers.shift_key());
                 self.scroll_by(dy);
+                if self.across.scroll_by(dx) {
+                    self.dirty = true;
+                }
                 *ctx.handled = true;
             }
             WindowEvent::MouseInput {
@@ -1155,6 +1343,12 @@ impl Widget for MergeView {
                 button: MouseButton::Left,
                 ..
             } => {
+                let mut moved = false;
+                if self.across.pointer(event, self.cursor, &mut moved) {
+                    self.dirty |= moved;
+                    *ctx.handled = true;
+                    return;
+                }
                 if let Some(source) = self
                     .source_hits
                     .iter()
@@ -1234,98 +1428,17 @@ impl Widget for MergeView {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        use ui::a11y::{AccessNode, AccessState, Role};
-        let mut node = AccessNode::new(Role::Group).with_name("Three-way merge");
-        let mut children = Vec::new();
-        if self.is_compact() {
-            children.extend(SourcePane::ALL.into_iter().map(|source| {
-                AccessNode::new(Role::ToggleButton)
-                    .with_name(format!("Show {} source", source.label()))
-                    .with_description("Switch the visible merge source")
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .checked(source == self.selected_source),
-                    )
-                    .with_hashed_key(source.a11y_id())
-            }));
-            node = node.with_description(
-                "One source is visible at a time. Use Left and Right Arrow to switch source.",
-            );
+        use ui::a11y::{AccessNode, Role};
+        let description = if self.is_compact() {
+            "One source is visible at a time. Use Left and Right Arrow to switch source."
         } else {
-            node = node.with_description("Base, ours, and theirs are shown side by side.");
-        }
-        children.extend(self.action_hits.iter().map(|hit| {
-            let choice = match hit.choice {
-                HunkChoice::Ours => "ours",
-                HunkChoice::Theirs => "theirs",
-                HunkChoice::Both => "both",
-            };
-            let label = match hit.choice {
-                HunkChoice::Ours => t("take-ours"),
-                HunkChoice::Theirs => t("take-theirs"),
-                HunkChoice::Both => t("take-both"),
-            };
-            AccessNode::new(Role::Button)
-                .with_name(format!("{label} for change {}", hit.hunk.saturating_add(1)))
-                .with_description("Resolve this shared merge hunk")
-                .with_action_target(format!("diffmerge.merge.resolve:{}:{choice}", hit.hunk))
-                .with_bounds(hit.rect)
-                .with_state(
-                    AccessState::new().focusable(true).selected(
-                        self.model
-                            .hunks
-                            .get(hit.hunk)
-                            .is_some_and(|hunk| chip_is_selected(hunk.resolution, hit.choice)),
-                    ),
-                )
-        }));
-        if !children.is_empty() {
-            node = node.with_children(children);
-        }
-        Some(node)
-    }
-
-    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
-        let index = *path.first()?;
-        self.source_selector_rects().get(index).map(|hit| hit.rect)
-    }
-
-    fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
-        let Some(&index) = path.first() else {
-            return false;
+            "Base, ours, and theirs are shown side by side."
         };
-        let Some(source) = SourcePane::ALL.get(index).copied() else {
-            return false;
-        };
-        self.select_source(source);
-        true
-    }
-
-    fn perform_action_at(
-        &mut self,
-        action: &ui::a11y::Action,
-        key_path: &[u64],
-        _state: &mut AppModel,
-        _path: &ModelPath,
-    ) -> bool {
-        use ui::a11y::hash_key;
-        if !self.is_compact()
-            || !matches!(action, ui::a11y::Action::Activate | ui::a11y::Action::Focus)
-        {
-            return false;
-        }
-        let Some(&key) = key_path.first() else {
-            return false;
-        };
-        let Some(source) = SourcePane::ALL
-            .into_iter()
-            .find(|source| hash_key(&source.a11y_id()) == key)
-        else {
-            return false;
-        };
-        self.select_source(source);
-        true
+        Some(
+            AccessNode::new(Role::Group)
+                .with_name("Three-way merge")
+                .with_description(description),
+        )
     }
 
     fn needs_redraw(&self) -> bool {
