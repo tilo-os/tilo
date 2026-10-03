@@ -164,6 +164,120 @@ pub struct ProductionComputeWorkerConfig {
     pub state_root: PathBuf,
     /// Process-local readiness projection cleared on every exit path.
     pub readiness: Arc<AtomicBool>,
+    /// Environment sessions and legacy apps this worker hosts for members.
+    pub environments: WorkerEnvironments,
+}
+
+/// What a worker hosts for members besides batch jobs.
+#[derive(Clone, Default)]
+pub struct WorkerEnvironments {
+    /// Interactive environment sessions.
+    pub host: Option<crate::environment_host::EnvironmentHost>,
+    /// Legacy apps, on a worker with KVM.
+    pub legacy: Option<crate::legacy_host::LegacyWorker>,
+}
+
+impl WorkerEnvironments {
+    fn capacity(&self) -> (u32, u32) {
+        self.host.as_ref().map_or((0, 0), |host| {
+            (
+                host.config().capacity,
+                u32::try_from(host.active_sessions()).unwrap_or(u32::MAX),
+            )
+        })
+    }
+
+    fn accelerators(&self) -> BTreeSet<ComputeAccelerator> {
+        if self.legacy.is_some() && Path::new("/dev/kvm").exists() {
+            BTreeSet::from([ComputeAccelerator::Kvm])
+        } else {
+            BTreeSet::new()
+        }
+    }
+
+    fn hosts_anything(&self) -> bool {
+        self.host.is_some() || self.legacy.is_some()
+    }
+}
+
+/// Serve a stream the relay opened to this worker on a task of its own.
+pub fn spawn_worker_stream(
+    environments: WorkerEnvironments,
+    (mut send, mut receive): (iroh::endpoint::SendStream, iroh::endpoint::RecvStream),
+) {
+    tokio::spawn(async move {
+        if let Err(error) = serve_worker_stream(environments, &mut send, &mut receive).await {
+            tracing::debug!(%error, "worker environment stream ended");
+        }
+        let _ = send.finish();
+    });
+}
+
+/// Serve one stream the relay opened to this worker.
+///
+/// # Errors
+///
+/// Returns an error when the stream fails or its first frame is malformed.
+pub async fn serve_worker_stream<S, R>(
+    environments: WorkerEnvironments,
+    send: &mut S,
+    receive: &mut R,
+) -> Result<(), crate::environment_host::EnvironmentStreamError>
+where
+    S: tokio::io::AsyncWrite + Unpin + Send,
+    R: tokio::io::AsyncRead + Unpin + Send,
+{
+    use crate::environment_host::{read_message, write_message};
+    use tilo_relay_protocol::environment::{
+        ENVIRONMENT_PROTOCOL_VERSION, LegacyFrame, Refusal, ServerFrame, WorkerStreamOpen,
+    };
+    let Some(open) = read_message::<_, WorkerStreamOpen>(receive).await? else {
+        return Ok(());
+    };
+    match open {
+        WorkerStreamOpen::Environment {
+            version,
+            member,
+            request,
+            session,
+            ..
+        } => match environments.host {
+            Some(host) if version == ENVIRONMENT_PROTOCOL_VERSION => {
+                host.serve(member, session, request, send, receive).await
+            }
+            _ => {
+                write_message(
+                    send,
+                    &ServerFrame::Refused {
+                        reason: Refusal::NoWorker,
+                        detail: "this worker runs no environments".into(),
+                    },
+                )
+                .await
+            }
+        },
+        WorkerStreamOpen::Legacy {
+            version,
+            member,
+            launch,
+            request,
+            ..
+        } => match environments.legacy {
+            Some(legacy) if version == ENVIRONMENT_PROTOCOL_VERSION => {
+                legacy.serve(member, launch, request, send, receive).await
+            }
+            _ => {
+                write_message(
+                    send,
+                    &LegacyFrame::Refused {
+                        reason: Refusal::NoWorker,
+                        detail: "this worker runs no legacy apps".into(),
+                    },
+                )
+                .await
+            }
+        },
+    }
 }
 
 struct WorkerHealth {
@@ -182,7 +296,7 @@ struct WorkerHealth {
 pub async fn run_production_compute_worker(
     config: ProductionComputeWorkerConfig,
 ) -> Result<(), ComputeWorkerError> {
-    let health = inspect_health()?;
+    let health = inspect_health(config.environments.hosts_anything())?;
     if config.workspaces.is_empty() {
         return Err(ComputeWorkerError::Health(
             "worker has no configured workspace".into(),
@@ -234,9 +348,20 @@ pub async fn run_production_compute_worker(
     let mut health_tick = tokio::time::interval(HEALTH_INTERVAL);
     health_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     health_tick.tick().await;
+    let _reaper = config
+        .environments
+        .host
+        .as_ref()
+        .map(|host| AbortOnDrop(host.spawn_reaper()));
+    let connection = client.connection();
 
     loop {
         tokio::select! {
+            stream = connection.accept_bi() => {
+                let stream = stream
+                    .map_err(|error| ComputeSessionError::Connection(error.to_string()))?;
+                spawn_worker_stream(config.environments.clone(), stream);
+            }
             delivery = client.receive() => {
                 let delivery = delivery?;
                 handle_delivery(
@@ -258,7 +383,7 @@ pub async fn run_production_compute_worker(
                 advertise_all(&mut client, &config, &health, active.len()).await?;
             }
             _ = health_tick.tick() => {
-                let refreshed = inspect_health()?;
+                let refreshed = inspect_health(config.environments.hosts_anything())?;
                 if !health_unchanged(&health, &refreshed) {
                     return Err(ComputeWorkerError::Health(
                         "worker catalogue or power health changed; withdrawing before re-advertising".into(),
@@ -505,6 +630,7 @@ async fn advertise_all(
 ) -> Result<(), ComputeWorkerError> {
     let issued_at_ms = unix_now_ms();
     let active_assignments = u32::try_from(active_assignments).unwrap_or(u32::MAX);
+    let (environment_capacity, active_environments) = config.environments.capacity();
     for workspace_id in &config.workspaces {
         client
             .send(&ComputeEnvelope::Advertise {
@@ -514,9 +640,11 @@ async fn advertise_all(
                     worker: config.device_cert.device_public_key,
                     workspace_id: *workspace_id,
                     apps: health.apps.clone(),
-                    gpu: false,
+                    accelerators: config.environments.accelerators(),
                     assignment_capacity: DEFAULT_ASSIGNMENT_CAPACITY,
                     active_assignments,
+                    environment_capacity,
+                    active_environments,
                     power: health.power,
                     energy_saver: false,
                     issued_at_ms,
@@ -542,7 +670,7 @@ fn server_advertisement(
         },
         workspaces: config.workspaces.clone(),
         apps: health.apps.clone(),
-        accelerators: BTreeSet::<ComputeAccelerator>::new(),
+        accelerators: config.environments.accelerators(),
         priority: 0,
         latency_ms: 0,
         power: health.power,
@@ -553,7 +681,7 @@ fn server_advertisement(
     }
 }
 
-fn inspect_health() -> Result<WorkerHealth, ComputeWorkerError> {
+fn inspect_health(hosts_environments: bool) -> Result<WorkerHealth, ComputeWorkerError> {
     if !bubblewrap_available() {
         return Err(ComputeWorkerError::Health(
             "bubblewrap launcher is unavailable".into(),
@@ -589,7 +717,7 @@ fn inspect_health() -> Result<WorkerHealth, ComputeWorkerError> {
             apps.insert(package.id);
         }
     }
-    if apps.is_empty() {
+    if apps.is_empty() && !hosts_environments {
         return Err(ComputeWorkerError::Health(
             "no intact signed package exposes a CLI compute entrypoint".into(),
         ));
@@ -635,6 +763,14 @@ fn bounded_log(mut bytes: Vec<u8>) -> Vec<u8> {
         bytes.drain(..bytes.len().saturating_sub(MAX_COMPUTE_LOG_BYTES));
     }
     bytes
+}
+
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 struct ReadinessGuard(Arc<AtomicBool>);

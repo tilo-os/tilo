@@ -25,6 +25,11 @@ use serde::{Deserialize, Serialize};
 pub const ALPN: &[u8] = b"tilo-relay/1";
 /// Authenticated one-shot discovery of direct filesystem endpoints.
 pub const DISCOVERY_ALPN: &[u8] = b"tilo-relay-discovery/2";
+
+/// ALPN of the compute session: personal-mesh compute jobs on its control
+/// stream, members' environment sessions and legacy windows on further
+/// streams ([`crate::environment`]).
+pub const COMPUTE_ALPN: &[u8] = b"tilo-personal-compute/1";
 /// Authenticated owner-only health and lifecycle management protocol.
 pub const MANAGEMENT_ALPN: &[u8] = b"tilo-home-peer-management/1";
 
