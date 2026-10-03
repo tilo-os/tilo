@@ -461,6 +461,76 @@ impl CanvasSurface {
         ))
     }
 
+    /// The two versions a diff compares; `to` is now when absent.
+    fn versions(
+        doc: &mut AutoCommit,
+        now: &Artwork,
+        diff: &crate::resource::Diff,
+    ) -> Result<view_ops::Versions, String> {
+        let (before, _, from) = Self::at_version(doc, Some(&diff.from))?;
+        let (after, to) = match &diff.to {
+            Some(to) => {
+                let (after, _, to) = Self::at_version(doc, Some(to))?;
+                (after, to)
+            }
+            None => (now.clone(), None),
+        };
+        Ok(view_ops::Versions {
+            before,
+            after,
+            from: from.unwrap_or_default(),
+            to: to.unwrap_or_else(|| "now".into()),
+        })
+    }
+
+    fn export_svg(&mut self, art: &Artwork, revision: &str) -> Result<ActionOutput, String> {
+        let text = self.look_text.get_or_insert_with(TextRenderer::new);
+        let renderer = &mut self.renderer;
+        let svg = crate::svg::export(art, |layer| {
+            let options = Options {
+                layers: Some(vec![layer.id.clone()]),
+                bare: true,
+                ..Options::default()
+            };
+            view_ops::render(renderer, text, art, (art.bounds(), 1.0), &options, false)
+                .ok()
+                .map(|picture| picture.bytes)
+        });
+        let address = crate::resource::store(svg.as_bytes())?;
+        let mut value = json!({
+            "format": "svg",
+            "bytes": svg.len(),
+            "content": address,
+            "revision": revision,
+        });
+        if svg.len() <= MAX_INLINE_SVG
+            && let Value::Object(fields) = &mut value
+        {
+            fields.insert("svg".into(), svg.into());
+        }
+        Ok(ActionOutput {
+            value: Some(value),
+            resources: vec![address],
+        })
+    }
+
+    /// The reference picture as `inspect` reports it, when there is one.
+    fn reference_info(&mut self, art: &Artwork) -> Option<Value> {
+        let reference = art.reference.as_ref()?;
+        let frame = self.renderer.reference_frame(art);
+        let pixels = self
+            .renderer
+            .reference_image(art)
+            .map(|image| [image.width, image.height]);
+        Some(json!({
+            "image": reference.image,
+            "frame": frame.map(|frame| [frame.x0, frame.y0, frame.width(), frame.height()]),
+            "pixels": pixels,
+            "opacity": reference.opacity,
+            "visible": reference.visible,
+        }))
+    }
+
     fn answer(&mut self, op: &ViewOp, doc: &mut AutoCommit) -> Result<ActionOutput, String> {
         let version = match op {
             ViewOp::Look(look) => look.version.as_deref(),
@@ -513,20 +583,7 @@ impl CanvasSurface {
                 export,
             ))),
             ViewOp::Diff(diff) => {
-                let (before, _, from) = Self::at_version(doc, Some(&diff.from))?;
-                let (after, to) = match &diff.to {
-                    Some(to) => {
-                        let (after, _, to) = Self::at_version(doc, Some(to))?;
-                        (after, to)
-                    }
-                    None => (art.clone(), None),
-                };
-                let versions = view_ops::Versions {
-                    before,
-                    after,
-                    from: from.unwrap_or_default(),
-                    to: to.unwrap_or_else(|| "now".into()),
-                };
+                let versions = Self::versions(doc, &art, diff)?;
                 let look = diff.look.unwrap_or(false);
                 picture(view_ops::diff(&mut self.renderer, text, &versions, look))
             }
@@ -536,35 +593,7 @@ impl CanvasSurface {
                 &art,
                 compare,
             ))),
-            ViewOp::ExportSvg => {
-                let renderer = &mut self.renderer;
-                let svg = crate::svg::export(&art, |layer| {
-                    let options = Options {
-                        layers: Some(vec![layer.id.clone()]),
-                        bare: true,
-                        ..Options::default()
-                    };
-                    view_ops::render(renderer, text, &art, (art.bounds(), 1.0), &options, false)
-                        .ok()
-                        .map(|picture| picture.bytes)
-                });
-                let address = crate::resource::store(svg.as_bytes())?;
-                let mut value = json!({
-                    "format": "svg",
-                    "bytes": svg.len(),
-                    "content": address,
-                    "revision": revision,
-                });
-                if svg.len() <= MAX_INLINE_SVG
-                    && let Value::Object(fields) = &mut value
-                {
-                    fields.insert("svg".into(), svg.into());
-                }
-                Ok(ActionOutput {
-                    value: Some(value),
-                    resources: vec![address],
-                })
-            }
+            ViewOp::ExportSvg => self.export_svg(&art, &revision),
             ViewOp::Inspect(inspect) => {
                 let mut value = view_ops::inspect(&art, inspect)?;
                 stamp(&mut value);
@@ -572,22 +601,8 @@ impl CanvasSurface {
                     && shown.is_none()
                 {
                     fields.insert("selected".into(), json!(self.selection));
-                    if let Some(reference) = &art.reference {
-                        let frame = self.renderer.reference_frame(&art);
-                        let pixels = self
-                            .renderer
-                            .reference_image(&art)
-                            .map(|image| [image.width, image.height]);
-                        fields.insert(
-                            "reference".into(),
-                            json!({
-                                "image": reference.image,
-                                "frame": frame.map(|frame| [frame.x0, frame.y0, frame.width(), frame.height()]),
-                                "pixels": pixels,
-                                "opacity": reference.opacity,
-                                "visible": reference.visible,
-                            }),
-                        );
+                    if let Some(reference) = self.reference_info(&art) {
+                        fields.insert("reference".into(), reference);
                     }
                 }
                 Ok(ActionOutput {

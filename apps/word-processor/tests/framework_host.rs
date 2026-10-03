@@ -331,6 +331,19 @@ fn action_ids(resource: &tilo_actions::Resource, out: &mut Vec<String>) {
     }
 }
 
+fn history_labels(resource: &tilo_actions::Resource, out: &mut Vec<String>) {
+    out.extend(
+        resource
+            .actions
+            .iter()
+            .filter(|action| action.id == "history")
+            .map(|action| action.label.clone()),
+    );
+    for child in &resource.children {
+        history_labels(child, out);
+    }
+}
+
 /// Open History and select the change whose result is `version`.
 fn select_version(app: &mut TestApp<WordProcessorApp>, version: &[automerge::ChangeHash]) {
     let [hash] = version else {
@@ -402,8 +415,13 @@ fn history_previews_a_version_and_restores_it_like_a_revert() {
         action_ids(&resource, &mut actions);
     }
     assert!(actions.iter().any(|id| id == "outline"), "{actions:?}");
-    assert!(
-        !actions.iter().any(|id| id == "history"),
+    let mut labels = Vec::new();
+    for resource in app.harness().resources() {
+        history_labels(&resource, &mut labels);
+    }
+    assert_eq!(
+        labels,
+        ["History"],
         "the editor's own version strip is not offered beside the shared History"
     );
     assert!(app.harness().targets().contains_key("history-open"));
