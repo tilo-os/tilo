@@ -17,34 +17,19 @@ use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::ColorCompat;
 use ui::chart_palette::ChartPalette;
 use ui::paint::PaintCtx;
+use ui::surface::Region;
 use ui::text_edit::{EditCore, Motion};
-use ui::text_render::{TextRenderer, TextStyle, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
+use ui::tokens::TextRole;
 use ui::tokens::colors::ON_FILL_MIN_CONTRAST;
+use ui::widget::ControlSize;
+use ui::widget::scrollbar::{ScrollMetrics, Scrollbar};
 
 use crate::model::{Addr, CellFormat, CellValue, addr_to_a1, format_value};
 
-pub const ROW_HEADER_W: f64 = 56.0;
-pub const COL_HEADER_H: f64 = 28.0;
-pub const DEFAULT_COL_W: f64 = 108.0;
-pub const DEFAULT_ROW_H: f64 = 26.0;
-const MIN_COL_W: f64 = 40.0;
-const MIN_ROW_H: f64 = 18.0;
-const RESIZE_GRAB: f64 = 4.0;
-const CELL_PAD_X: f64 = 6.0;
-/// Side length of the fill handle square drawn at the selection's bottom-right
-/// corner, and the extra grab margin around it for pointer hit-testing.
-const FILL_HANDLE_SIZE: f64 = 8.0;
-const FILL_HANDLE_GRAB: f64 = 3.0;
-/// Upper bound for an auto-fitted column so one very long value can't blow the
-/// column out to an unreadable width (it clips past this, like Excel).
-const MAX_AUTOFIT_W: f64 = DEFAULT_COL_W * 3.0;
-/// Always-visible, touch-friendly grid scrollbar rail/target thickness.
-const SCROLLBAR_THICKNESS: f64 = 16.0;
-const SCROLLBAR_MIN_THUMB: f64 = 28.0;
 /// Assistive technology receives only the on-screen virtual window. This
 /// keeps the semantic tree proportional to a frame, even for a full-size
 /// workbook, while the row/column positions below still describe its place in
@@ -205,12 +190,6 @@ enum ScrollAxis {
     Vertical,
 }
 
-struct ScrollDrag {
-    axis: ScrollAxis,
-    pointer_origin: f64,
-    scroll_origin: f64,
-}
-
 /// An in-flight fill-handle drag. The selection at grab time is the source
 /// *pattern*; `target` is the cell currently under the pointer, projected onto
 /// the dominant forward axis (down or right) to a fill region.
@@ -222,92 +201,155 @@ struct FillDrag {
     target: Addr,
 }
 
-/// Text and band metrics for the grid, resolved from the renderer that paints
-/// it.
+/// Text and band metrics for the grid, resolved from the theme and the
+/// renderer that paints it.
 ///
-/// Theme typography tokens already carry the accessibility text scale and the
-/// renderer multiplies its input by that scale once more, so the app converts
-/// each token through [`TextRenderer::renderer_input_style`] exactly once and
-/// hands the grid the result. The column-header height, the row-header width
-/// and the *default* row height then derive from the measured line box of
-/// those styles, so layout, paint and hit-testing share one metric. Manual row
-/// heights and column widths are never touched. At 1× the floors reproduce the
-/// classic 26 px row / 28 px header / 56 px row-header density exactly.
+/// Cells are `Body`, the row and column headers `Caption` (tabular figures),
+/// so every band, row and header derives from a measured role line box plus
+/// a spacing token or the small control height, and layout, paint and
+/// hit-testing share one metric. Manual row heights and column widths are
+/// never touched.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GridMetrics {
     /// Accessibility text scale used to grow authored interaction floors.
     pub scale: f64,
-    /// Renderer-input size for cell text (theme `base` ÷ renderer scale).
-    pub cell_size: f32,
-    /// Renderer-input size for header labels (theme `sm` ÷ renderer scale).
-    pub header_size: f32,
-    /// Measured line box of `cell_size` text, in final pixels.
+    /// Measured line box of the cell text (`Body`), in final pixels.
     pub cell_line_h: f64,
-    /// Measured line box of `header_size` text, in final pixels.
+    /// Measured line box of the header labels (`Caption`), in final pixels.
     pub header_line_h: f64,
-    /// Measured width of a four-digit row label at `header_size`.
+    /// Measured width of a four-digit row label in the header role.
     pub row_label_w: f64,
-    /// Theme spacing tokens the bands pad with (`s2`, `s3`).
+    /// Theme spacing the bands pad with (`s2`, `s3`).
     pub pad: f64,
     pub header_pad: f64,
+    /// Height of the smallest control: the floor of a row and of the header.
+    pub control_h: f64,
+    /// Spacing steps the column geometry is built from.
+    pub s1: f64,
+    pub s2: f64,
+    pub s8: f64,
+    pub s12: f64,
+    pub s16: f64,
+    /// Room a scroll view keeps on its trailing edge for its bar.
+    pub gutter: f64,
 }
 
 impl GridMetrics {
     /// Resolve the grid metrics for `theme` against `tr`, the renderer that
     /// will paint the grid.
     pub fn resolve(tr: &mut TextRenderer, theme: &Theme) -> Self {
-        let scale = &theme.tokens.typography.scale;
-        let cell = tr.renderer_input_style(&TextStyle::new(scale.base));
-        let header = tr.renderer_input_style(&TextStyle::new(scale.sm));
-        let (_, cell_line_h) = tr.measure_style("Ag", None, &cell);
-        let (row_label_w, header_line_h) = tr.measure_style("9999", None, &header);
+        let (_, cell_line_h) = tr.measure_style("Ag", None, &theme.text(TextRole::Body));
+        let (row_label_w, header_line_h) =
+            tr.measure_style("9999", None, &theme.text(TextRole::Caption).numeric());
+        let sp = &theme.tokens.spacing;
         Self {
             scale: f64::from(theme.text_scale),
-            cell_size: cell.size,
-            header_size: header.size,
             cell_line_h: f64::from(cell_line_h),
             header_line_h: f64::from(header_line_h),
             row_label_w: f64::from(row_label_w),
-            pad: f64::from(theme.tokens.spacing.s2),
-            header_pad: f64::from(theme.tokens.spacing.s3),
+            pad: f64::from(sp.s2),
+            header_pad: f64::from(sp.s3),
+            control_h: ControlSize::Small.height(theme),
+            s1: f64::from(sp.s1),
+            s2: f64::from(sp.s2),
+            s8: f64::from(sp.s8),
+            s12: f64::from(sp.s12),
+            s16: f64::from(sp.s16),
+            gutter: f64::from(theme.tokens.metrics.scrollbar_gutter),
         }
     }
 
-    /// The 1× metrics used before the first draw has a renderer; every band
-    /// lands on its classic floor.
+    /// The metrics used before the first draw has a renderer, from the
+    /// stock theme's spacing; every band lands on its floor.
     #[must_use]
     pub fn fallback() -> Self {
+        let theme = Theme::dark();
+        let sp = &theme.tokens.spacing;
         Self {
             scale: 1.0,
-            cell_size: 14.0,
-            header_size: 12.0,
-            cell_line_h: 17.5,
-            header_line_h: 15.0,
+            cell_line_h: 20.0,
+            header_line_h: 16.0,
             row_label_w: 28.0,
-            pad: 8.0,
-            header_pad: 12.0,
+            pad: f64::from(sp.s2),
+            header_pad: f64::from(sp.s3),
+            control_h: ControlSize::Small.height(&theme),
+            s1: f64::from(sp.s1),
+            s2: f64::from(sp.s2),
+            s8: f64::from(sp.s8),
+            s12: f64::from(sp.s12),
+            s16: f64::from(sp.s16),
+            gutter: f64::from(theme.tokens.metrics.scrollbar_gutter),
         }
     }
 
     /// Height of an automatically sized row: the cell line box plus `s2`,
-    /// never below the classic 26 px.
+    /// never below the small control height.
     #[must_use]
     pub fn default_row_h(&self) -> f64 {
-        (self.cell_line_h + self.pad).max(DEFAULT_ROW_H * self.scale)
+        (self.cell_line_h + self.pad).max(self.control_h)
     }
 
     /// Height of the column-header strip: the header line box plus `s3`,
-    /// never below the classic 28 px.
+    /// never below the small control height.
     #[must_use]
     pub fn col_header_h(&self) -> f64 {
-        (self.header_line_h + self.header_pad).max(COL_HEADER_H * self.scale)
+        (self.header_line_h + self.header_pad).max(self.control_h)
     }
 
     /// Width of the row-header strip: a four-digit label plus `s2` each side,
-    /// never below the classic 56 px.
+    /// never below `s12 + s2`.
     #[must_use]
     pub fn row_header_w(&self) -> f64 {
-        (self.row_label_w + 2.0 * self.pad).max(ROW_HEADER_W * self.scale)
+        (self.row_label_w + 2.0 * self.pad).max((self.s12 + self.s2) * self.scale)
+    }
+
+    /// Width of a column nobody sized: `s16 + s12`.
+    #[must_use]
+    pub fn default_col_w(&self) -> f64 {
+        (self.s16 + self.s12) * self.scale
+    }
+
+    /// Widest an auto-fitted column grows, so one very long value cannot
+    /// blow a column out to an unreadable width.
+    #[must_use]
+    pub fn max_autofit_w(&self) -> f64 {
+        self.default_col_w() * 3.0
+    }
+
+    /// Narrowest a column can be dragged to.
+    #[must_use]
+    pub fn min_col_w(&self) -> f64 {
+        self.s12 * self.scale
+    }
+
+    /// Shortest a row can be dragged to.
+    #[must_use]
+    pub fn min_row_h(&self) -> f64 {
+        (self.s8 - self.s2) * self.scale
+    }
+
+    /// Horizontal inset of a cell's text.
+    #[must_use]
+    pub fn cell_pad(&self) -> f64 {
+        self.pad * self.scale
+    }
+
+    /// How far a header edge's resize grab reaches either side.
+    #[must_use]
+    pub fn resize_grab(&self) -> f64 {
+        self.s1 * self.scale
+    }
+
+    /// Side of the fill handle square at the selection's corner.
+    #[must_use]
+    pub fn fill_handle(&self) -> f64 {
+        self.s2 * self.scale
+    }
+
+    /// Margin round a scrollbar's thumb inside its gutter.
+    #[must_use]
+    pub fn bar_margin(&self) -> f64 {
+        self.s1 / 2.0
     }
 }
 
@@ -335,7 +377,7 @@ pub struct Grid {
     col_widths: HashMap<u32, f64>,
     /// Widths derived by fitting a column to its content (see
     /// `autofit_columns`). A manual `col_widths` entry always overrides this;
-    /// columns with neither fall back to `DEFAULT_COL_W`.
+    /// columns with neither fall back to the default column width.
     auto_col_w: HashMap<u32, f64>,
     row_heights: HashMap<u32, f64>,
     n_cols: u32,
@@ -361,7 +403,9 @@ pub struct Grid {
     bold: HashSet<Addr>,
     last_cursor: Point,
     resize: Option<ResizeDrag>,
-    scroll_drag: Option<ScrollDrag>,
+    /// The library scroll bars' interaction state, one per axis.
+    hbar: Scrollbar,
+    vbar: Scrollbar,
     /// An in-flight fill-handle drag (grab the selection's bottom-right corner
     /// and drag down/right to extend the pattern).
     fill_drag: Option<FillDrag>,
@@ -422,7 +466,8 @@ impl Grid {
             bold: HashSet::new(),
             last_cursor: Point::ZERO,
             resize: None,
-            scroll_drag: None,
+            hbar: Scrollbar::horizontal(),
+            vbar: Scrollbar::vertical(),
             fill_drag: None,
             pending_fill: None,
             selecting: false,
@@ -476,11 +521,11 @@ impl Grid {
         self.metrics
     }
 
-    /// Thickness of the always-visible scrollbar rails along the body's right
-    /// and bottom edges, so chrome floated over the grid can stay clear of them.
+    /// Room the scroll bars keep along the body's right and bottom edges, so
+    /// chrome floated over the grid can stay clear of them.
     #[must_use]
-    pub fn scrollbar_thickness() -> f64 {
-        SCROLLBAR_THICKNESS
+    pub fn scrollbar_thickness(&self) -> f64 {
+        self.metrics.gutter
     }
 
     /// Recompute the column/row offset prefix sums. Cheap (a single pass over
@@ -814,6 +859,23 @@ impl Grid {
         ((c0, r0), (c1, r1))
     }
 
+    /// Every selected range as `(top_left, bottom_right)`, inclusive and
+    /// normalized: what a style applies to, one rectangle at a time.
+    pub fn selection_ranges(&self) -> Vec<(Addr, Addr)> {
+        self.all_ranges()
+            .into_iter()
+            .map(|range| {
+                let (c0, r0, c1, r1) = range.bounds();
+                ((c0, r0), (c1, r1))
+            })
+            .collect()
+    }
+
+    /// Whether a cell's text is bold.
+    pub fn cell_is_bold(&self, addr: Addr) -> bool {
+        self.bold.contains(&addr)
+    }
+
     /// The stored raw input for a cell (empty when unset). Used by copy/cut.
     pub fn cell_raw_at(&self, addr: Addr) -> String {
         self.raw.get(&addr).cloned().unwrap_or_default()
@@ -892,13 +954,12 @@ impl Grid {
         self.auto_col_w
             .get(&c)
             .copied()
-            .unwrap_or(DEFAULT_COL_W * self.text_scale)
+            .unwrap_or_else(|| self.metrics.default_col_w())
     }
     fn row_h(&self, r: u32) -> f64 {
         self.row_heights
             .get(&r)
-            .copied()
-            .unwrap_or_else(|| self.metrics.default_row_h())
+            .map_or_else(|| self.metrics.default_row_h(), |h| *h * self.text_scale)
     }
 
     /// Content-space x (before scroll) of column `c`'s left edge. O(1) via
@@ -908,7 +969,7 @@ impl Grid {
             x
         } else {
             let last = self.col_x.last().copied().unwrap_or(0.0);
-            last + f64::from(c.saturating_sub(self.n_cols)) * DEFAULT_COL_W * self.text_scale
+            last + f64::from(c.saturating_sub(self.n_cols)) * self.metrics.default_col_w()
         }
     }
     fn row_top(&self, r: u32) -> f64 {
@@ -920,12 +981,14 @@ impl Grid {
         }
     }
 
+    /// The cell area: inside the headers and the scroll bar gutters, so the
+    /// last row and the last column are never covered by a bar.
     fn body_rect(&self) -> Rect {
         Rect::new(
             self.grid_x0(),
             self.grid_y0(),
-            self.rect.x1 - SCROLLBAR_THICKNESS,
-            self.rect.y1 - SCROLLBAR_THICKNESS,
+            self.rect.x1 - self.metrics.gutter,
+            self.rect.y1 - self.metrics.gutter,
         )
     }
 
@@ -937,66 +1000,75 @@ impl Grid {
         (self.total_height() - self.body_rect().height()).max(0.0)
     }
 
-    fn horizontal_scrollbar_rect(&self) -> Rect {
+    /// The gutter a bar lives in: where a press pages or grabs.
+    fn bar_gutter(&self, axis: ScrollAxis) -> Rect {
         let body = self.body_rect();
-        Rect::new(body.x0, body.y1, body.x1, self.rect.y1)
+        match axis {
+            ScrollAxis::Horizontal => Rect::new(body.x0, body.y1, body.x1, self.rect.y1),
+            ScrollAxis::Vertical => Rect::new(body.x1, body.y0, self.rect.x1, body.y1),
+        }
     }
 
-    fn vertical_scrollbar_rect(&self) -> Rect {
-        let body = self.body_rect();
-        Rect::new(body.x1, body.y0, self.rect.x1, body.y1)
+    /// The thumb's track: the gutter less a margin each side across the bar.
+    fn bar_track(&self, axis: ScrollAxis) -> Rect {
+        let margin = self.metrics.bar_margin();
+        let gutter = self.bar_gutter(axis);
+        match axis {
+            ScrollAxis::Horizontal => gutter.inset((0.0, -margin)),
+            ScrollAxis::Vertical => gutter.inset((-margin, 0.0)),
+        }
     }
 
-    fn scrollbar_thumb(&self, axis: ScrollAxis) -> Rect {
-        let (rail, content, viewport, scroll) = match axis {
-            ScrollAxis::Horizontal => (
-                self.horizontal_scrollbar_rect(),
-                self.total_width(),
-                self.body_rect().width(),
-                self.scroll_x,
-            ),
-            ScrollAxis::Vertical => (
-                self.vertical_scrollbar_rect(),
+    fn bar_metrics(&self, axis: ScrollAxis) -> ScrollMetrics {
+        match axis {
+            ScrollAxis::Horizontal => {
+                ScrollMetrics::new(self.total_width(), self.body_rect().width(), self.scroll_x)
+            }
+            ScrollAxis::Vertical => ScrollMetrics::new(
                 self.total_height(),
                 self.body_rect().height(),
                 self.scroll_y,
             ),
-        };
-        let length = match axis {
-            ScrollAxis::Horizontal => rail.width(),
-            ScrollAxis::Vertical => rail.height(),
-        };
-        let cross = match axis {
-            ScrollAxis::Horizontal => rail.height(),
-            ScrollAxis::Vertical => rail.width(),
-        };
-        let thumb = if content <= viewport {
-            length
-        } else {
-            (length * viewport / content)
-                .max(SCROLLBAR_MIN_THUMB * self.text_scale)
-                .min(length)
-        };
-        let max_scroll = (content - viewport).max(0.0);
-        let offset = if max_scroll <= 0.0 {
-            0.0
-        } else {
-            (length - thumb) * scroll / max_scroll
-        };
-        match axis {
-            ScrollAxis::Horizontal => Rect::new(
-                rail.x0 + offset,
-                rail.y0 + 2.0,
-                rail.x0 + offset + thumb,
-                rail.y0 + cross - 2.0,
-            ),
-            ScrollAxis::Vertical => Rect::new(
-                rail.x0 + 2.0,
-                rail.y0 + offset,
-                rail.x0 + cross - 2.0,
-                rail.y0 + offset + thumb,
-            ),
         }
+    }
+
+    fn bar(&self, axis: ScrollAxis) -> &Scrollbar {
+        match axis {
+            ScrollAxis::Horizontal => &self.hbar,
+            ScrollAxis::Vertical => &self.vbar,
+        }
+    }
+
+    fn bar_mut(&mut self, axis: ScrollAxis) -> &mut Scrollbar {
+        match axis {
+            ScrollAxis::Horizontal => &mut self.hbar,
+            ScrollAxis::Vertical => &mut self.vbar,
+        }
+    }
+
+    fn set_scroll(&mut self, axis: ScrollAxis, offset: f64) {
+        match axis {
+            ScrollAxis::Horizontal => self.scroll_x = offset,
+            ScrollAxis::Vertical => self.scroll_y = offset,
+        }
+        self.clamp_scroll();
+        self.dirty = true;
+    }
+
+    /// A bar shows only while its content overflows the body.
+    fn bar_shown(&self, axis: ScrollAxis) -> bool {
+        self.bar_metrics(axis).overflows()
+    }
+
+    /// The thumb of an overflowing bar, for tests.
+    #[cfg(test)]
+    fn scrollbar_thumb(&self, axis: ScrollAxis) -> Option<Rect> {
+        self.bar_shown(axis)
+            .then(|| {
+                self.bar(axis)
+                    .thumb_rect(self.bar_track(axis), self.bar_metrics(axis))
+            })
+            .flatten()
     }
 
     fn grid_x0(&self) -> f64 {
@@ -1025,11 +1097,11 @@ impl Grid {
         let cell = self.cell_screen_rect(c1, r1);
         let (cx, cy) = (cell.x1, cell.y1);
         let body = self.body_rect();
-        let m = FILL_HANDLE_SIZE * self.text_scale;
+        let m = self.metrics.fill_handle();
         if cx < body.x0 - m || cx > body.x1 + m || cy < body.y0 - m || cy > body.y1 + m {
             return None;
         }
-        let h = FILL_HANDLE_SIZE * self.text_scale / 2.0;
+        let h = m / 2.0;
         Some(Rect::new(cx - h, cy - h, cx + h, cy + h))
     }
 
@@ -1143,7 +1215,7 @@ impl Grid {
             let mut x = self.grid_x0() - self.scroll_x;
             for c in 0..self.n_cols {
                 x += self.col_w(c);
-                if (p.x - x).abs() <= RESIZE_GRAB * self.text_scale {
+                if (p.x - x).abs() <= self.metrics.resize_grab() {
                     return Some(ResizeTarget::Col(c));
                 }
                 if x > self.rect.x1 {
@@ -1156,7 +1228,7 @@ impl Grid {
             let mut y = self.grid_y0() - self.scroll_y;
             for r in 0..self.n_rows {
                 y += self.row_h(r);
-                if (p.y - y).abs() <= RESIZE_GRAB * self.text_scale {
+                if (p.y - y).abs() <= self.metrics.resize_grab() {
                     return Some(ResizeTarget::Row(r));
                 }
                 if y > self.rect.y1 {
@@ -1419,62 +1491,17 @@ impl Grid {
     }
 
     fn try_start_scrollbar_drag(&mut self, p: Point) -> bool {
+        use ui::widget::scrollbar::PressOutcome;
         for axis in [ScrollAxis::Horizontal, ScrollAxis::Vertical] {
-            let rail = match axis {
-                ScrollAxis::Horizontal => self.horizontal_scrollbar_rect(),
-                ScrollAxis::Vertical => self.vertical_scrollbar_rect(),
-            };
-            if !rail.contains(p) {
+            if !self.bar_shown(axis) || !self.bar_gutter(axis).contains(p) {
                 continue;
             }
-            let thumb = self.scrollbar_thumb(axis);
-            let pointer = match axis {
-                ScrollAxis::Horizontal => p.x,
-                ScrollAxis::Vertical => p.y,
-            };
-            let thumb_start = match axis {
-                ScrollAxis::Horizontal => thumb.x0,
-                ScrollAxis::Vertical => thumb.y0,
-            };
-            let thumb_end = match axis {
-                ScrollAxis::Horizontal => thumb.x1,
-                ScrollAxis::Vertical => thumb.y1,
-            };
-            let origin = if pointer < thumb_start || pointer > thumb_end {
-                let rail_start = match axis {
-                    ScrollAxis::Horizontal => rail.x0,
-                    ScrollAxis::Vertical => rail.y0,
-                };
-                let rail_len = match axis {
-                    ScrollAxis::Horizontal => rail.width(),
-                    ScrollAxis::Vertical => rail.height(),
-                };
-                let thumb_len = thumb_end - thumb_start;
-                let max_scroll = match axis {
-                    ScrollAxis::Horizontal => self.max_scroll_x(),
-                    ScrollAxis::Vertical => self.max_scroll_y(),
-                };
-                let next = ((pointer - rail_start - thumb_len / 2.0)
-                    / (rail_len - thumb_len).max(1.0)
-                    * max_scroll)
-                    .clamp(0.0, max_scroll);
-                match axis {
-                    ScrollAxis::Horizontal => self.scroll_x = next,
-                    ScrollAxis::Vertical => self.scroll_y = next,
-                }
-                pointer
-            } else {
-                pointer
-            };
-            self.scroll_drag = Some(ScrollDrag {
-                axis,
-                pointer_origin: origin,
-                scroll_origin: match axis {
-                    ScrollAxis::Horizontal => self.scroll_x,
-                    ScrollAxis::Vertical => self.scroll_y,
-                },
-            });
-            self.dirty = true;
+            let (gutter, metrics) = (self.bar_gutter(axis), self.bar_metrics(axis));
+            match self.bar_mut(axis).press(gutter, metrics, p) {
+                PressOutcome::Miss => continue,
+                PressOutcome::Thumb => self.dirty = true,
+                PressOutcome::Page(offset) => self.set_scroll(axis, offset),
+            }
             return true;
         }
         false
@@ -1528,7 +1555,7 @@ impl Grid {
     /// than a new selection.
     fn try_start_fill_drag(&mut self, p: Point, out: &mut Vec<GridCmd>) -> bool {
         if let Some(hr) = self.fill_handle_rect() {
-            let grab = hr.inflate(FILL_HANDLE_GRAB, FILL_HANDLE_GRAB);
+            let grab = hr.inflate(self.metrics.s1, self.metrics.s1);
             if grab.contains(p) {
                 self.commit_edit(out);
                 let (c0, r0, c1, r1) = self.current_range().bounds();
@@ -1641,37 +1668,25 @@ impl Grid {
 
     pub fn pointer_move(&mut self, p: Point) -> bool {
         self.last_cursor = p;
-        if let Some(drag) = &self.scroll_drag {
-            let rail = match drag.axis {
-                ScrollAxis::Horizontal => self.horizontal_scrollbar_rect(),
-                ScrollAxis::Vertical => self.vertical_scrollbar_rect(),
-            };
-            let thumb = self.scrollbar_thumb(drag.axis);
-            let rail_len = match drag.axis {
-                ScrollAxis::Horizontal => rail.width(),
-                ScrollAxis::Vertical => rail.height(),
-            };
-            let thumb_len = match drag.axis {
-                ScrollAxis::Horizontal => thumb.width(),
-                ScrollAxis::Vertical => thumb.height(),
-            };
-            let pointer = match drag.axis {
-                ScrollAxis::Horizontal => p.x,
-                ScrollAxis::Vertical => p.y,
-            };
-            let max_scroll = match drag.axis {
-                ScrollAxis::Horizontal => self.max_scroll_x(),
-                ScrollAxis::Vertical => self.max_scroll_y(),
-            };
-            let next = drag.scroll_origin
-                + (pointer - drag.pointer_origin) * max_scroll / (rail_len - thumb_len).max(1.0);
-            match drag.axis {
-                ScrollAxis::Horizontal => self.scroll_x = next,
-                ScrollAxis::Vertical => self.scroll_y = next,
+        for axis in [ScrollAxis::Horizontal, ScrollAxis::Vertical] {
+            if self.bar(axis).is_dragging() {
+                let (gutter, metrics) = (self.bar_gutter(axis), self.bar_metrics(axis));
+                if let Some(offset) = self.bar(axis).drag_to(gutter, metrics, p) {
+                    self.set_scroll(axis, offset);
+                }
+                return true;
             }
-            self.clamp_scroll();
-            self.dirty = true;
-            return true;
+        }
+        for axis in [ScrollAxis::Horizontal, ScrollAxis::Vertical] {
+            let (gutter, metrics) = (self.bar_gutter(axis), self.bar_metrics(axis));
+            let over = self.bar_shown(axis)
+                && self
+                    .bar(axis)
+                    .thumb_rect(gutter, metrics)
+                    .is_some_and(|t| t.contains(p));
+            if self.bar_mut(axis).set_hover(over) {
+                self.dirty = true;
+            }
         }
         // A held fill-handle drag tracks the pointer; the projected region is
         // recomputed (and previewed) each frame.
@@ -1695,13 +1710,13 @@ impl Grid {
         if let Some(drag) = &self.resize {
             match drag.target {
                 ResizeTarget::Col(c) => {
-                    let w = (drag.origin_size + (p.x - drag.origin_px))
-                        .max(MIN_COL_W * self.text_scale);
+                    let w =
+                        (drag.origin_size + (p.x - drag.origin_px)).max(self.metrics.min_col_w());
                     self.col_widths.insert(c, w / self.text_scale);
                 }
                 ResizeTarget::Row(r) => {
-                    let h = (drag.origin_size + (p.y - drag.origin_px))
-                        .max(MIN_ROW_H * self.text_scale);
+                    let h =
+                        (drag.origin_size + (p.y - drag.origin_px)).max(self.metrics.min_row_h());
                     self.row_heights.insert(r, h / self.text_scale);
                 }
             }
@@ -1723,7 +1738,8 @@ impl Grid {
 
     pub fn pointer_up(&mut self) {
         self.resize = None;
-        self.scroll_drag = None;
+        self.hbar.release();
+        self.vbar.release();
         self.selecting = false;
         // Keep `point_anchor` so the next click replaces the just-inserted
         // reference (Excel keeps a click-inserted ref "hot" until you type);
@@ -2045,14 +2061,32 @@ impl Grid {
 
     // --- rendering ----------------------------------------------------------
 
+    /// The role a cell is set in: `Body`, or `Code` while formulas show as
+    /// the source they were typed as. A number takes tabular figures and a
+    /// bold cell the strong weight of its role.
+    fn cell_style(&self, theme: &Theme, addr: Addr, numeric: bool) -> TextStyle {
+        let mut style = if self.show_formulas {
+            theme.text(TextRole::Code)
+        } else {
+            theme.text(TextRole::Body)
+        };
+        if numeric && !self.show_formulas {
+            style = style.numeric();
+        }
+        if self.bold.contains(&addr) {
+            style = style.strong();
+        }
+        style
+    }
+
     /// Fit each column to the width of its widest rendered cell so long labels
     /// (e.g. a row title in column A) aren't clipped when the neighbouring cell
     /// is occupied — matching the spreadsheet convention of auto-sizing a
     /// column to its content. A column the user has manually resized keeps its
-    /// width; the rest grow to fit, clamped to `[DEFAULT_COL_W, MAX_AUTOFIT_W]`
-    /// so they never shrink below the default nor run away for an extreme
-    /// value. Measured with the same font size the cells are drawn at.
-    fn autofit_columns(&mut self, tr: &mut TextRenderer, size: f32) {
+    /// width; the rest grow to fit, clamped to the default and the autofit
+    /// ceiling so they never shrink below the default nor run away for an
+    /// extreme value. Measured in the same style the cells are drawn in.
+    fn autofit_columns(&mut self, tr: &mut TextRenderer, theme: &Theme) {
         self.auto_col_w.clear();
         let mut widest: HashMap<u32, f64> = HashMap::new();
         for (&(c, r), val) in &self.values {
@@ -2074,20 +2108,19 @@ impl Grid {
             if text.is_empty() {
                 continue;
             }
-            let (tw, _) = tr.measure(&text, size, None);
-            let want = f64::from(tw) + CELL_PAD_X * self.text_scale * 2.0;
+            let style = self.cell_style(theme, (c, r), val.is_numeric());
+            let (tw, _) = tr.measure_style(&text, None, &style);
+            let want = f64::from(tw) + self.metrics.cell_pad() * 2.0;
             let entry = widest.entry(c).or_insert(0.0);
             if want > *entry {
                 *entry = want;
             }
         }
+        let default = self.metrics.default_col_w();
         for (c, want) in widest {
-            let fitted = want.clamp(
-                DEFAULT_COL_W * self.text_scale,
-                MAX_AUTOFIT_W * self.text_scale,
-            );
+            let fitted = want.clamp(default, self.metrics.max_autofit_w());
             // Only record a widening; narrower columns fall back to the default.
-            if fitted > DEFAULT_COL_W * self.text_scale {
+            if fitted > default {
                 self.auto_col_w.insert(c, fitted);
             }
         }
@@ -2103,8 +2136,7 @@ impl Grid {
         // Refit columns to their content before laying anything out, so long
         // labels aren't truncated by an occupied neighbour.
         if self.needs_autofit {
-            let cell_size = self.metrics.cell_size;
-            self.autofit_columns(tr, cell_size);
+            self.autofit_columns(tr, theme);
             self.rebuild_geom();
             self.needs_autofit = false;
         }
@@ -2112,32 +2144,26 @@ impl Grid {
         let cols = self.visible_cols();
         let rows = self.visible_rows();
 
-        // Body background.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &self.rect,
-        );
+        // The cells stand on the window's own ground; the washes (selection,
+        // referenced ranges) go under the text, the outlines over it.
         self.draw_selection_fill(scene, transform, theme, body);
-
-        // --- cells + text (clipped to the body) ---
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &body);
-        self.draw_cells(scene, transform, tr, theme, &cols, &rows);
+        self.draw_reference_washes(scene, transform, theme, body);
+        self.draw_cells(
+            &mut PaintCtx::new(scene, transform, tr, theme),
+            &cols,
+            &rows,
+            body,
+        );
         self.draw_grid_lines(scene, transform, theme, &cols, &rows, body);
         self.draw_active_highlight(scene, transform, theme, body);
         self.draw_fill_handle(scene, transform, theme, body);
-        self.draw_reference_highlights(scene, transform, theme, body);
+        self.draw_reference_outlines(scene, transform, theme, body);
         scene.pop_layer();
 
         // --- headers (painted on top, never clipped by the body) ---
         self.draw_headers(scene, transform, tr, theme, &cols, &rows);
 
-        // Visible rails make both axes discoverable, and their 16px targets
-        // remain usable with a mouse, touchpad-generated pointer drag, or a
-        // high-contrast palette. The thumb position is derived solely from
-        // the same scroll offsets the viewport uses.
         self.draw_scrollbars(scene, transform, theme);
 
         // --- in-cell editor overlay ---
@@ -2146,31 +2172,27 @@ impl Grid {
         }
     }
 
+    /// The library's thumbs, one per overflowing axis; the gutter itself is
+    /// bare ground.
     fn draw_scrollbars(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        let rail = theme.tokens.colors.surfaces.raised;
-        let thumb = theme.tokens.colors.accent[7];
         for axis in [ScrollAxis::Horizontal, ScrollAxis::Vertical] {
-            let track = match axis {
-                ScrollAxis::Horizontal => self.horizontal_scrollbar_rect(),
-                ScrollAxis::Vertical => self.vertical_scrollbar_rect(),
-            };
-            scene.fill(Fill::NonZero, transform, rail, None, &track);
-            // The thumb's edge is derived against the thumb itself, so it
-            // stays a crisp inset hairline on every accent (HIG §9.5).
-            ui::surface::card(scene, transform, self.scrollbar_thumb(axis), 0.0, thumb);
+            if self.bar_shown(axis) {
+                self.bar(axis).draw(
+                    scene,
+                    transform,
+                    self.bar_track(axis),
+                    self.bar_metrics(axis),
+                    theme,
+                    false,
+                );
+            }
         }
-        let body = self.body_rect();
-        let corner = Rect::new(body.x1, body.y1, self.rect.x1, self.rect.y1);
-        scene.fill(Fill::NonZero, transform, rail, None, &corner);
     }
 
-    /// Selection ranges (translucent accent fill) under the cells. Every
-    /// discontiguous range paints; overlaps just deepen slightly. Iterate
-    /// without allocating a ranges vector on the per-frame draw path.
-    /// Read the accent from the theme so the selection wash tracks the OS
-    /// palette / high-contrast, matching the name-box + tab accents nearby.
+    /// Selection ranges (a lift of the ground) under the cells. Every
+    /// discontiguous range paints; overlaps are the same lift.
     fn draw_selection_fill(&self, scene: &mut Scene, transform: Affine, theme: &Theme, body: Rect) {
-        let fill = theme.tokens.colors.accent[5].with_alpha_factor(0.15);
+        let fill = theme.tokens.colors.intent.selection;
         for range in self
             .extra_ranges
             .iter()
@@ -2184,18 +2206,11 @@ impl Grid {
         }
     }
 
-    /// Paint each visible cell's value/formula text.
-    fn draw_cells(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        cols: &[u32],
-        rows: &[u32],
-    ) {
+    /// Paint each visible cell's value/formula text, elided with an ellipsis
+    /// where it does not fit the cell or the edge of the body.
+    fn draw_cells(&self, ctx: &mut PaintCtx<'_>, cols: &[u32], rows: &[u32], body: Rect) {
+        let theme = ctx.theme;
         let colors = &theme.tokens.colors;
-        let mut ctx = PaintCtx::new(scene, transform, tr, theme);
         for &r in rows {
             for &c in cols {
                 let cell = self.cell_screen_rect(c, r);
@@ -2206,19 +2221,14 @@ impl Grid {
                 {
                     continue;
                 }
-                // Formula view: show the raw input verbatim (formulas as
-                // typed), left-aligned in the accent colour so it reads as
-                // "source" rather than a result.
+                // Formula view: show the raw input verbatim, set as code, so
+                // it reads as "source" rather than a result.
                 if self.show_formulas
                     && let Some(raw) = self.raw.get(&(c, r))
                     && !raw.is_empty()
                 {
-                    let color = if raw.starts_with('=') {
-                        colors.accent[5]
-                    } else {
-                        colors.text_primary
-                    };
-                    self.draw_cell_text(&mut ctx, raw, color, cell, false, TextWeight::Regular);
+                    let style = self.cell_style(theme, (c, r), false);
+                    self.draw_cell_text(ctx, raw, &style, colors.text_primary, (cell, body), false);
                     continue;
                 }
                 if let Some(val) = self.values.get(&(c, r)) {
@@ -2236,19 +2246,16 @@ impl Grid {
                         colors.text_primary
                     };
                     let right_align = val.is_numeric() && fmt != CellFormat::Text;
-                    let weight = if self.bold.contains(&(c, r)) {
-                        TextWeight::Bold
-                    } else {
-                        TextWeight::Regular
-                    };
-                    self.draw_cell_text(&mut ctx, &text, color, cell, right_align, weight);
+                    let style = self.cell_style(theme, (c, r), val.is_numeric());
+                    self.draw_cell_text(ctx, &text, &style, color, (cell, body), right_align);
                 }
             }
         }
     }
 
     /// Grid line strokes for the visible rows/columns, plus the trailing
-    /// right/bottom edges when they fall within `body`.
+    /// right/bottom edges when they fall within `body`. The line is the
+    /// ground's own derived hairline, so it registers on every theme.
     fn draw_grid_lines(
         &self,
         scene: &mut Scene,
@@ -2258,7 +2265,7 @@ impl Grid {
         rows: &[u32],
         body: Rect,
     ) {
-        let line_color = theme.tokens.colors.border_standard.with_alpha_factor(0.5);
+        let line_color = ui::surface::edge_on(theme.tokens.colors.surfaces.content);
         let stroke = Stroke::new(1.0);
         // verticals
         for &c in cols {
@@ -2312,7 +2319,7 @@ impl Grid {
         }
     }
 
-    /// Active-cell highlight border.
+    /// Active-cell highlight border, in your colour.
     fn draw_active_highlight(
         &self,
         scene: &mut Scene,
@@ -2324,7 +2331,7 @@ impl Grid {
             scene.stroke(
                 &Stroke::new(2.0),
                 transform,
-                theme.tokens.colors.accent[5],
+                theme.tokens.colors.intent.you,
                 None,
                 &ar,
             );
@@ -2333,7 +2340,7 @@ impl Grid {
 
     /// Fill handle + drag preview. While dragging, a dashed outline shows
     /// the region the pattern will extend into; at rest, a small solid
-    /// square sits on the selection's bottom-right corner (Excel's handle).
+    /// square sits on the selection's bottom-right corner.
     fn draw_fill_handle(&self, scene: &mut Scene, transform: Affine, theme: &Theme, body: Rect) {
         let colors = &theme.tokens.colors;
         if let Some(fd) = self.fill_drag {
@@ -2342,54 +2349,84 @@ impl Grid {
                 let br = self.cell_screen_rect(dbr.0, dbr.1);
                 if let Some(cr) = intersect(Rect::new(tl.x0, tl.y0, br.x1, br.y1), body) {
                     let dashed = Stroke::new(1.5).with_dashes(0.0, [4.0, 3.0]);
-                    scene.stroke(&dashed, transform, colors.accent[5], None, &cr);
+                    scene.stroke(&dashed, transform, colors.intent.you, None, &cr);
                 }
             }
         } else if let Some(hr) = self.fill_handle_rect()
             && let Some(cr) = intersect(hr, body)
         {
-            // A thin base-coloured ring keeps the accent square legible on
-            // any cell fill underneath.
+            // A thin ground-coloured ring keeps the square legible on any
+            // cell fill underneath.
             scene.stroke(
                 &Stroke::new(2.0),
                 transform,
-                colors.surfaces.base,
+                colors.surfaces.content,
                 None,
                 &hr,
             );
-            scene.fill(Fill::NonZero, transform, colors.accent[5], None, &cr);
+            scene.fill(Fill::NonZero, transform, colors.intent.you, None, &cr);
         }
     }
 
-    /// Referenced ranges of the formula being edited — coloured outlines
-    /// matching the tinted references in the formula text, so it's clear
-    /// which cells feed the result (and, in point mode, which range a click
-    /// just inserted).
-    fn draw_reference_highlights(
+    /// The ranges the formula being edited refers to, each with its colour:
+    /// the same colour tints the reference in the formula text, so it is
+    /// clear which cells feed the result (and, in point mode, which range a
+    /// click just inserted).
+    fn referenced_ranges(&self, theme: &Theme) -> Vec<(Rect, Color)> {
+        let Some(body_text) = self.highlight_formula_body() else {
+            return Vec::new();
+        };
+        let spans = crate::formula::references(&body_text);
+        let slots = crate::formula::ref_color_slots(&spans);
+        spans
+            .iter()
+            .zip(&slots)
+            .map(|(span, slot)| {
+                let tl = self.cell_screen_rect(span.tl.0, span.tl.1);
+                let br = self.cell_screen_rect(span.br.0, span.br.1);
+                (
+                    Rect::new(tl.x0, tl.y0, br.x1, br.y1),
+                    reference_color(theme, *slot),
+                )
+            })
+            .collect()
+    }
+
+    /// A faint wash of each reference's colour over its cells, under the text.
+    fn draw_reference_washes(
         &self,
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
         body: Rect,
     ) {
-        if let Some(body_text) = self.highlight_formula_body() {
-            let spans = crate::formula::references(&body_text);
-            let slots = crate::formula::ref_color_slots(&spans);
-            for (span, slot) in spans.iter().zip(&slots) {
-                let color = reference_color(theme, *slot);
-                let tl = self.cell_screen_rect(span.tl.0, span.tl.1);
-                let br = self.cell_screen_rect(span.br.0, span.br.1);
-                let rr = Rect::new(tl.x0, tl.y0, br.x1, br.y1);
-                if let Some(cr) = intersect(rr, body) {
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        color.with_alpha_factor(0.12),
-                        None,
-                        &cr,
-                    );
-                    scene.stroke(&Stroke::new(1.5), transform, color, None, &cr);
-                }
+        let colors = &theme.tokens.colors;
+        for (range, color) in self.referenced_ranges(theme) {
+            if let Some(cr) = intersect(range, body) {
+                let wash = colors
+                    .tinted_chip_on(
+                        colors.surfaces.content,
+                        color,
+                        0.18,
+                        ui::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
+                    )
+                    .fill;
+                scene.fill(Fill::NonZero, transform, wash, None, &cr);
+            }
+        }
+    }
+
+    /// The outline of each referenced range, over the cells.
+    fn draw_reference_outlines(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        body: Rect,
+    ) {
+        for (range, color) in self.referenced_ranges(theme) {
+            if let Some(cr) = intersect(range, body) {
+                scene.stroke(&Stroke::new(1.5), transform, color, None, &cr);
             }
         }
     }
@@ -2403,47 +2440,43 @@ impl Grid {
         Rect::new(tl.x0, tl.y0, br.x1, br.y1)
     }
 
+    /// One cell's text, elided with an ellipsis at the cell's edge — or at
+    /// the body's, where the cell is cut by it — and centred on its measured
+    /// line box so a cell and its row header share one baseline. `place` is
+    /// the cell's rect and the body's.
     fn draw_cell_text(
         &self,
         ctx: &mut PaintCtx<'_>,
         text: &str,
+        style: &TextStyle,
         color: Color,
-        cell: Rect,
+        place: (Rect, Rect),
         right_align: bool,
-        weight: TextWeight,
     ) {
-        let PaintCtx {
-            scene,
-            transform,
-            text: tr,
-            ..
-        } = ctx.reborrow();
-        let size = self.metrics.cell_size;
-        let line_h = self.metrics.cell_line_h;
-        let inner = Rect::new(cell.x0 + 1.0, cell.y0, cell.x1 - 1.0, cell.y1);
-        if inner.width() <= 2.0 {
+        let (cell, body) = place;
+        let pad = self.metrics.cell_pad();
+        let cut = cell.x1 > body.x1;
+        let left = cell.x0 + pad;
+        let right = if cut { body.x1 } else { cell.x1 - pad };
+        // A right-aligned number stays whole: it is anchored to the cell, and
+        // a cell cut by the body shows only what the clip leaves of it.
+        let room = if right_align {
+            cell.width() - 2.0 * pad
+        } else {
+            right - left
+        };
+        if room <= 1.0 {
             return;
         }
-        let (tw, _) = tr.measure_weighted(text, size, None, weight);
-        // Centre the measured line box, not the nominal font size, so a cell
-        // and its row header share one baseline at every text scale.
-        let ty = cell.y0 + (cell.height() - line_h) / 2.0;
+        let shown = ctx.text.elide_to_width_style(text, room as f32, style);
+        let (tw, th) = ctx.text.measure_style(&shown, None, style);
+        let ty = cell.y0 + (cell.height() - f64::from(th)) / 2.0;
         let tx = if right_align {
-            cell.x1 - CELL_PAD_X - f64::from(tw)
+            cell.x1 - pad - f64::from(tw)
         } else {
-            cell.x0 + CELL_PAD_X * self.text_scale
+            left
         };
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &inner);
-        tr.draw_text_weighted(
-            scene,
-            text,
-            size,
-            color,
-            transform * Affine::translate((tx, ty)),
-            None,
-            weight,
-        );
-        scene.pop_layer();
+        ctx.text(&shown, style, color, Point::new(tx, ty), None);
     }
 
     fn draw_headers(
@@ -2459,18 +2492,42 @@ impl Grid {
         self.draw_row_headers(scene, transform, tr, theme, rows);
 
         // Corner box.
-        let colors = &theme.tokens.colors;
         let corner = Rect::new(self.rect.x0, self.rect.y0, self.grid_x0(), self.grid_y0());
+        ui::surface::region(scene, transform, corner, Region::Sidebar, theme);
+        self.header_rules(scene, transform, theme);
+    }
+
+    /// The headers' two hairlines, on the strips' own ground: under the
+    /// column labels and beside the row labels.
+    fn header_rules(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        let rule = ui::surface::edge_on(theme.region(Region::Sidebar));
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.surfaces.raised,
+            rule,
             None,
-            &corner,
+            &Rect::new(
+                self.rect.x0,
+                self.grid_y0() - 1.0,
+                self.rect.x1,
+                self.grid_y0(),
+            ),
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            rule,
+            None,
+            &Rect::new(
+                self.grid_x0() - 1.0,
+                self.rect.y0,
+                self.grid_x0(),
+                self.rect.y1,
+            ),
         );
     }
 
-    /// Column header strip: letters, selection tint, bottom border.
+    /// Column header strip: letters and the selection lift.
     fn draw_col_headers(
         &self,
         scene: &mut Scene,
@@ -2480,17 +2537,10 @@ impl Grid {
         cols: &[u32],
     ) {
         let colors = &theme.tokens.colors;
-        let size = self.metrics.header_size;
-        let line_h = self.metrics.header_line_h;
+        let style = theme.text(TextRole::Caption).numeric();
 
         let col_strip = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, self.grid_y0());
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.raised,
-            None,
-            &col_strip,
-        );
+        let ground = ui::surface::region(scene, transform, col_strip, Region::Sidebar, theme);
         scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
@@ -2507,48 +2557,33 @@ impl Grid {
                 scene.fill(
                     Fill::NonZero,
                     transform,
-                    colors.accent[5].with_alpha_factor(0.30),
+                    colors.lift_on(ground, 1.0),
                     None,
                     &hrect,
                 );
             }
             let label = crate::model::col_to_letters(c);
-            let (lw, _) = tr.measure(&label, size, None);
+            let (lw, lh) = tr.measure_style(&label, None, &style);
             let tx = hrect.center().x - f64::from(lw) / 2.0;
-            let ty = hrect.y0 + (hrect.height() - line_h) / 2.0;
+            let ty = hrect.y0 + (hrect.height() - f64::from(lh)) / 2.0;
             let color = if selected {
                 colors.text_primary
             } else {
                 colors.text_dim
             };
-            tr.draw_text(
+            tr.draw_style(
                 scene,
                 &label,
-                size,
                 color,
                 transform * Affine::translate((tx, ty)),
                 None,
+                &style,
             );
         }
         scene.pop_layer();
-        // Bottom edge of the column strip: the strip's own derived edge on
-        // its last pixel row — `border_standard` is within a shade of the
-        // dark raised strip and vanished there.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            ui::surface::edge_on(colors.surfaces.raised),
-            None,
-            &Rect::new(
-                self.rect.x0,
-                self.grid_y0() - 1.0,
-                self.rect.x1,
-                self.grid_y0(),
-            ),
-        );
     }
 
-    /// Row header strip: numbers, selection tint, right border.
+    /// Row header strip: numbers and the selection lift.
     fn draw_row_headers(
         &self,
         scene: &mut Scene,
@@ -2558,17 +2593,10 @@ impl Grid {
         rows: &[u32],
     ) {
         let colors = &theme.tokens.colors;
-        let size = self.metrics.header_size;
-        let line_h = self.metrics.header_line_h;
+        let style = theme.text(TextRole::Caption).numeric();
 
         let row_strip = Rect::new(self.rect.x0, self.grid_y0(), self.grid_x0(), self.rect.y1);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.raised,
-            None,
-            &row_strip,
-        );
+        let ground = ui::surface::region(scene, transform, row_strip, Region::Sidebar, theme);
         scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
@@ -2585,43 +2613,30 @@ impl Grid {
                 scene.fill(
                     Fill::NonZero,
                     transform,
-                    colors.accent[5].with_alpha_factor(0.30),
+                    colors.lift_on(ground, 1.0),
                     None,
                     &hrect,
                 );
             }
             let label = format!("{}", r + 1);
-            let (lw, _) = tr.measure(&label, size, None);
+            let (lw, lh) = tr.measure_style(&label, None, &style);
             let tx = hrect.center().x - f64::from(lw) / 2.0;
-            let ty = hy + (self.row_h(r) - line_h) / 2.0;
+            let ty = hy + (self.row_h(r) - f64::from(lh)) / 2.0;
             let color = if selected {
                 colors.text_primary
             } else {
                 colors.text_dim
             };
-            tr.draw_text(
+            tr.draw_style(
                 scene,
                 &label,
-                size,
                 color,
                 transform * Affine::translate((tx, ty)),
                 None,
+                &style,
             );
         }
         scene.pop_layer();
-        // Right edge of the row strip: its derived edge on its last column.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            ui::surface::edge_on(colors.surfaces.raised),
-            None,
-            &Rect::new(
-                self.grid_x0() - 1.0,
-                self.rect.y0,
-                self.grid_x0(),
-                self.rect.y1,
-            ),
-        );
     }
 
     /// Is a cell non-empty in the current data? Used to decide how far the
@@ -2634,11 +2649,11 @@ impl Grid {
     }
 
     /// The width the editor wants to display its text comfortably.
-    fn editor_desired_width(&self, text: &str, tr: &mut TextRenderer, size: f32) -> f64 {
-        let (tw, _) = tr.measure(text, size, None);
+    fn editor_desired_width(&self, text: &str, tr: &mut TextRenderer, style: &TextStyle) -> f64 {
+        let (tw, _) = tr.measure_style(text, None, style);
         // Text width + padding on both sides + caret room, never narrower
         // than the cell itself.
-        (f64::from(tw) + CELL_PAD_X * self.text_scale * 2.0 + 8.0 * self.text_scale)
+        (f64::from(tw) + self.metrics.cell_pad() * 2.0 + self.metrics.fill_handle())
             .max(self.col_w(0))
     }
 
@@ -2663,7 +2678,7 @@ impl Grid {
         right.min(body_right).max(cell.x1.min(body_right))
     }
 
-    /// Like Excel: the active edit is a floating box aligned to the cell
+    /// Like Excel: the active edit is a floating field aligned to the cell
     /// that grows rightward into **empty** neighbours only, stopping at the
     /// first occupied cell or the grid's right edge. It is always clipped to
     /// the grid body so it never paints over the headers.
@@ -2685,9 +2700,9 @@ impl Grid {
             return;
         }
 
-        let size = self.metrics.cell_size;
+        let style = theme.text(TextRole::Body);
         let text = e.text();
-        let desired = self.editor_desired_width(&text, tr, size);
+        let desired = self.editor_desired_width(&text, tr, &style);
 
         // Grow rightward across empty neighbours until we have enough room or
         // we hit an occupied cell / the last column / the grid edge.
@@ -2698,27 +2713,29 @@ impl Grid {
         // grid even when it overflows past where data ends.
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &body);
 
-        // Solid backing so underlying empty cells/gridlines don't bleed
-        // through, then a crisp accent border — the "clean Excel" look.
+        // A field: its raised face, so the cells under it do not bleed
+        // through, ringed in your colour while it has focus.
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.surfaces.base,
+            colors.surfaces.raised,
             None,
             &edit_rect,
         );
         scene.stroke(
             &Stroke::new(2.0),
             transform,
-            colors.accent[5],
+            colors.intent.you,
             None,
             &edit_rect,
         );
 
         // Text + caret, clipped to the editor box. A formula draws each cell
         // reference in its own colour; anything else draws in the body colour.
-        let ty = edit_rect.y0 + (edit_rect.height() - self.metrics.cell_line_h) / 2.0;
-        let tx = edit_rect.x0 + CELL_PAD_X;
+        let (_, line_h) = tr.measure_style("Ag", None, &style);
+        let line_h = f64::from(line_h);
+        let ty = edit_rect.y0 + (edit_rect.height() - line_h) / 2.0;
+        let tx = edit_rect.x0 + self.metrics.cell_pad();
         scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
@@ -2726,78 +2743,121 @@ impl Grid {
             transform,
             &edit_rect,
         );
-        // Selection highlight behind the text.
-        if let Some((sel_s, sel_e)) = e.selection() {
-            let chars: Vec<char> = text.chars().collect();
-            let sel_s = sel_s.min(chars.len());
-            let sel_e = sel_e.min(chars.len());
-            let pre: String = chars.get(..sel_s).unwrap_or_default().iter().collect();
-            let mid: String = chars.get(sel_s..sel_e).unwrap_or_default().iter().collect();
-            let (x0w, _) = tr.measure(&pre, size, None);
-            let (midw, _) = tr.measure(&mid, size, None);
-            let sel_rect = Rect::new(
-                tx + f64::from(x0w),
-                edit_rect.y0 + 3.0,
-                tx + f64::from(x0w) + f64::from(midw),
-                edit_rect.y1 - 3.0,
-            );
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.accent[5].with_alpha_factor(0.30),
-                None,
-                &sel_rect,
-            );
-        }
-        let caret_x = draw_formula_line(
+        draw_edit_line(
             scene,
             transform,
             tr,
-            &text,
-            size,
             theme,
-            Point::new(tx, ty),
-            Some(e.caret()),
-        );
-        scene.stroke(
-            &Stroke::new(1.5),
-            transform,
-            colors.accent[5],
-            None,
-            &Line::new((caret_x, edit_rect.y0 + 4.0), (caret_x, edit_rect.y1 - 4.0)),
+            &style,
+            &EditLine {
+                text: &text,
+                origin: Point::new(tx, ty),
+                line_h,
+                selection: e.selection(),
+                caret: Some(e.caret()),
+            },
         );
         scene.pop_layer();
         scene.pop_layer();
     }
 }
 
+/// One line of formula or cell text being edited, for [`draw_edit_line`]:
+/// where its line box starts, how tall it is, and the selection and caret in
+/// character indices.
+pub(crate) struct EditLine<'a> {
+    pub text: &'a str,
+    pub origin: Point,
+    pub line_h: f64,
+    pub selection: Option<(usize, usize)>,
+    pub caret: Option<usize>,
+}
+
+/// Paint one editable line in `style`: the selection wash under the text, the
+/// text with every cell reference in its own colour, and the caret in your
+/// colour. The in-cell editor and the formula bar edit the same buffer, so
+/// they paint it through here.
+pub(crate) fn draw_edit_line(
+    scene: &mut Scene,
+    transform: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    style: &TextStyle,
+    line: &EditLine<'_>,
+) {
+    let colors = &theme.tokens.colors;
+    let (tx, ty) = (line.origin.x, line.origin.y);
+    if let Some((sel_s, sel_e)) = line.selection {
+        let chars: Vec<char> = line.text.chars().collect();
+        let sel_s = sel_s.min(chars.len());
+        let sel_e = sel_e.min(chars.len());
+        let pre: String = chars.get(..sel_s).unwrap_or_default().iter().collect();
+        let mid: String = chars.get(sel_s..sel_e).unwrap_or_default().iter().collect();
+        let (x0w, _) = tr.measure_style(&pre, None, style);
+        let (midw, _) = tr.measure_style(&mid, None, style);
+        let sel_rect = Rect::new(
+            tx + f64::from(x0w),
+            ty,
+            tx + f64::from(x0w) + f64::from(midw),
+            ty + line.line_h,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.intent.selection_tint,
+            None,
+            &sel_rect,
+        );
+    }
+    let caret_x = draw_formula_line(
+        scene,
+        transform,
+        tr,
+        line.text,
+        style,
+        theme,
+        line.origin,
+        line.caret,
+    );
+    if line.caret.is_some() {
+        scene.stroke(
+            &Stroke::new(1.5),
+            transform,
+            colors.intent.you,
+            None,
+            &Line::new((caret_x, ty), (caret_x, ty + line.line_h)),
+        );
+    }
+}
+
 /// The colour of the `slot`-th reference in a formula, so each referenced
 /// cell/range reads in its own colour both in the formula text and as an
 /// outline on the grid — the coloured-reference cue every desktop
-/// spreadsheet shows while editing a formula. The theme's chart series
-/// (accent plus semantic hues) is made legible as text on the field and
-/// cell surface both are drawn on.
+/// spreadsheet shows while editing a formula. The presence series is made
+/// legible as text on the field the formula is typed in, the lighter of the
+/// grounds the colour is drawn on.
 pub(crate) fn reference_color(theme: &Theme, slot: usize) -> Color {
     let colors = &theme.tokens.colors;
     colors.ink_on(
-        colors.surfaces.base,
+        colors.surfaces.raised,
         ChartPalette::from_theme(theme).categorical(slot),
         ON_FILL_MIN_CONTRAST,
     )
 }
 
-/// Draw a formula string with each cell/range reference tinted its assigned
-/// colour (the rest in `text_primary`), starting at `origin` (top-left of the
-/// text). When `caret` is `Some`, the returned value is the caret's x in
-/// scene space so the caller can draw a matching caret; otherwise the return
-/// is the x just past the text. Only strings beginning with `=` are scanned
-/// for references — a plain value is drawn entirely in `text_primary`.
+/// Draw a formula string in `style`, each cell/range reference tinted its
+/// assigned colour (the rest in `text_primary`), starting at `origin`
+/// (top-left of the text). When `caret` is `Some`, the returned value is the
+/// caret's x in scene space so the caller can draw a matching caret;
+/// otherwise the return is the x just past the text. Only strings beginning
+/// with `=` are scanned for references — a plain value is drawn entirely in
+/// `text_primary`.
 pub(crate) fn draw_formula_line(
     scene: &mut Scene,
     transform: Affine,
     tr: &mut TextRenderer,
     text: &str,
-    size: f32,
+    style: &TextStyle,
     theme: &Theme,
     origin: Point,
     caret: Option<usize>,
@@ -2835,19 +2895,19 @@ pub(crate) fn draw_formula_line(
             && c <= e
         {
             let prefix: String = chars.get(s..c).unwrap_or_default().iter().collect();
-            let (pw, _) = tr.measure(&prefix, size, None);
+            let (pw, _) = tr.measure_style(&prefix, None, style);
             caret_x = x + f64::from(pw);
         }
         let seg: String = chars.get(s..e).unwrap_or_default().iter().collect();
-        tr.draw_text(
+        tr.draw_style(
             scene,
             &seg,
-            size,
             color,
             transform * Affine::translate((x, origin.y)),
             None,
+            style,
         );
-        let (sw, _) = tr.measure(&seg, size, None);
+        let (sw, _) = tr.measure_style(&seg, None, style);
         x += f64::from(sw);
     }
     caret_x
@@ -2891,7 +2951,7 @@ mod tests {
     #[test]
     fn formula_reference_colours_follow_the_theme() {
         let dark = Theme::dark();
-        let other = Theme::named("Gruvbox").expect("Gruvbox is a shipped preset");
+        let other = Theme::light();
         let first = reference_color(&dark, 0);
         let second = reference_color(&dark, 1);
         assert_ne!(first, second, "consecutive references stay distinct");
@@ -2919,21 +2979,18 @@ mod tests {
         {
             let mut tr = TextRenderer::new();
             let one_x = GridMetrics::resolve(&mut tr, &Theme::dark());
+            let control = ControlSize::Small.height(&Theme::dark());
             assert!(
-                (one_x.default_row_h() - DEFAULT_ROW_H).abs() < 0.01,
-                "1x row"
+                one_x.default_row_h() >= control && one_x.default_row_h() < control + 2.0,
+                "1x row is the small control height or the cell line plus s2"
             );
             assert!(
-                (one_x.col_header_h() - COL_HEADER_H).abs() < 0.01,
-                "1x header"
+                (one_x.col_header_h() - control).abs() < 1.0,
+                "1x header is the small control height"
             );
             assert!(
-                (one_x.row_header_w() - ROW_HEADER_W).abs() < 0.01,
-                "1x row header"
-            );
-            assert!(
-                (one_x.cell_size - 14.0).abs() < 0.01,
-                "cell text is the base token"
+                (one_x.row_header_w() - (one_x.s12 + one_x.s2)).abs() < 0.01,
+                "1x row header is s12 + s2"
             );
 
             let mut g = Grid::new();
@@ -2944,9 +3001,7 @@ mod tests {
             let theme = Theme::dark().with_text_scale(2.0);
             tr.set_text_scale(2.0);
             let two_x = GridMetrics::resolve(&mut tr, &theme);
-            // The renderer scales its input once, so the input size is unchanged
-            // while the measured line box doubled.
-            assert!((two_x.cell_size - 14.0).abs() < 0.01);
+            // The role scales once, so the measured line box doubled.
             assert!(two_x.cell_line_h > one_x.cell_line_h * 1.9);
             assert!(two_x.default_row_h() >= two_x.cell_line_h + two_x.pad - 0.01);
             assert!(two_x.col_header_h() >= two_x.header_line_h + two_x.header_pad - 0.01);
@@ -2981,7 +3036,9 @@ mod tests {
             // viewport, so both rails expose a thumb and have scroll range.
             grid.rect = Rect::new(0.0, 0.0, 260.0, 180.0);
             let mut out = Vec::new();
-            let horizontal = grid.scrollbar_thumb(ScrollAxis::Horizontal);
+            let horizontal = grid
+                .scrollbar_thumb(ScrollAxis::Horizontal)
+                .expect("the wide sheet overflows the narrow viewport");
             assert!(grid.pointer_down(
                 Point::new(
                     horizontal.x0.midpoint(horizontal.x1),
@@ -2998,7 +3055,9 @@ mod tests {
             grid.pointer_up();
             assert!(grid.scroll_x > 0.0);
 
-            let vertical = grid.scrollbar_thumb(ScrollAxis::Vertical);
+            let vertical = grid
+                .scrollbar_thumb(ScrollAxis::Vertical)
+                .expect("the tall sheet overflows the short viewport");
             assert!(grid.pointer_down(
                 Point::new(
                     vertical.x0.midpoint(vertical.x1),
@@ -3018,13 +3077,14 @@ mod tests {
     }
 
     /// A grid with a known geometry: each column is the default width, the
-    /// body starts at `ROW_HEADER_W` / `COL_HEADER_H` and is wide enough for
-    /// many columns. No scroll.
+    /// body starts after the headers and is wide enough for many columns,
+    /// with the scroll bar gutters beside it. No scroll.
     fn grid_with(values: &[(Addr, CellValue)]) -> Grid {
         let mut g = Grid::new();
+        let m = g.metrics();
         // Body roughly 12 columns wide so overflow has room.
-        let width = ROW_HEADER_W + DEFAULT_COL_W * 12.0;
-        let height = COL_HEADER_H + DEFAULT_ROW_H * 12.0;
+        let width = m.row_header_w() + m.default_col_w() * 12.0 + m.gutter;
+        let height = m.col_header_h() + m.default_row_h() * 12.0 + m.gutter;
         g.rect = Rect::new(0.0, 0.0, width, height);
         let mut map = HashMap::new();
         for (addr, v) in values {
@@ -3061,26 +3121,28 @@ mod tests {
                 ((1, 0), CellValue::Number(2600.0)),
             ]);
             let mut tr = TextRenderer::new();
-            let size = 15.0;
-            let label_w = f64::from(tr.measure(label, size, None).0);
-            let want = label_w + CELL_PAD_X * 2.0;
+            let theme = Theme::dark();
+            let style = g.cell_style(&theme, (0, 0), false);
+            let label_w = f64::from(tr.measure_style(label, None, &style).0);
+            let want = label_w + g.metrics.cell_pad() * 2.0;
+            let default = g.metrics.default_col_w();
             // Precondition: this label really does overflow a default-width column.
-            assert!(
-                want > DEFAULT_COL_W,
-                "test label must exceed the default width"
-            );
+            assert!(want > default, "test label must exceed the default width");
 
-            g.autofit_columns(&mut tr, size);
+            g.autofit_columns(&mut tr, &theme);
 
             assert!(
                 g.col_w(0) + 0.5 >= want,
                 "col A width {} must fit the label (needs {want})",
                 g.col_w(0),
             );
-            assert!(g.col_w(0) <= MAX_AUTOFIT_W + 0.5, "auto-fit stays clamped");
+            assert!(
+                g.col_w(0) <= g.metrics.max_autofit_w() + 0.5,
+                "auto-fit stays clamped"
+            );
             assert_eq!(
                 g.col_w(1),
-                DEFAULT_COL_W,
+                default,
                 "short occupied neighbour is left alone"
             );
         }
@@ -3091,7 +3153,7 @@ mod tests {
             let mut g = grid_with(&[((0, 0), CellValue::Text("Monthly budget total".into()))]);
             g.col_widths.insert(0, 200.0);
             let mut tr = TextRenderer::new();
-            g.autofit_columns(&mut tr, 15.0);
+            g.autofit_columns(&mut tr, &Theme::dark());
             assert_eq!(g.col_w(0), 200.0, "manual width overrides auto-fit");
         }
     }
@@ -3107,13 +3169,13 @@ mod tests {
             let cell = g.cell_screen_rect(0, 0);
             let body_right = g.body_rect().x1;
             // Desired width spanning ~3 columns.
-            let desired = DEFAULT_COL_W * 3.0;
+            let desired = g.metrics.default_col_w() * 3.0;
             let right = g.editor_right_extent((0, 0), desired, body_right);
             // It should reach at least 3 columns wide (within the body).
             assert!(
-                right >= cell.x0 + DEFAULT_COL_W * 3.0 - 0.5,
+                right >= cell.x0 + g.metrics.default_col_w() * 3.0 - 0.5,
                 "right={right} expected >= {}",
-                cell.x0 + DEFAULT_COL_W * 3.0
+                cell.x0 + g.metrics.default_col_w() * 3.0
             );
             assert!(right <= body_right + 0.5);
         }
@@ -3125,7 +3187,7 @@ mod tests {
             let g = grid_with(&[((2, 0), CellValue::Text("blocker".into()))]);
             let _cell = g.cell_screen_rect(0, 0);
             let body_right = g.body_rect().x1;
-            let desired = DEFAULT_COL_W * 6.0; // wants a lot
+            let desired = g.metrics.default_col_w() * 6.0; // wants a lot
             let right = g.editor_right_extent((0, 0), desired, body_right);
             // Reaches the end of B0 (= start of C0) but not into C0.
             let c0_left = g.cell_screen_rect(2, 0).x0;
@@ -3141,7 +3203,7 @@ mod tests {
             let g = grid_with(&[((1, 0), CellValue::Number(1.0))]);
             let cell = g.cell_screen_rect(0, 0);
             let body_right = g.body_rect().x1;
-            let right = g.editor_right_extent((0, 0), DEFAULT_COL_W * 4.0, body_right);
+            let right = g.editor_right_extent((0, 0), g.metrics.default_col_w() * 4.0, body_right);
             assert!(
                 (right - cell.x1).abs() < 0.5,
                 "right={right} cell.x1={}",
@@ -3154,7 +3216,8 @@ mod tests {
             // Edit the last visible column with a huge desired width.
             let g = grid_with(&[]);
             let body_right = g.body_rect().x1;
-            let right = g.editor_right_extent((10, 0), DEFAULT_COL_W * 50.0, body_right);
+            let right =
+                g.editor_right_extent((10, 0), g.metrics.default_col_w() * 50.0, body_right);
             assert!(
                 right <= body_right + 0.5,
                 "right={right} body_right={body_right}"
