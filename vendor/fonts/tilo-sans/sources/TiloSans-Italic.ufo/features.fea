@@ -1,6 +1,7 @@
 include(features/languagesystems.fea);
 include(features/aalt.fea);
 include(features/ccmp.fea);
+include(features/vietnamese.fea);
 include(features/locl.fea);
 include(features/ordn.fea);
 include(features/pnum.fea);
