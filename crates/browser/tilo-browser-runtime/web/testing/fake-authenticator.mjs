@@ -27,7 +27,7 @@ export function fakeAuthenticator({prf = true, prfAtCreate = true, seed = 0} = {
     /** Forget a passkey, as if the person deleted it. */
     remove: id => passkeys.delete(base64url(id)),
     async create({publicKey}) {
-      log.push({op: 'create', rpId: publicKey.rp.id});
+      log.push({op: 'create', rpId: publicKey.rp.id, exclude: (publicKey.excludeCredentials ?? []).map(entry => base64url(toBytes(entry.id)))});
       const id = new Uint8Array(16).fill(seed).map((byte, index) => byte ^ index ^ (created * 37));
       created += 1;
       const secret = new Uint8Array(32).map((_, index) => (seed * 13 + created * 7 + index) & 0xff);

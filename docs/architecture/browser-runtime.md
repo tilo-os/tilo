@@ -442,9 +442,8 @@ proof of possession) to `POST /peer/v1/certify`, then long-polls
 - The host checks the certificate against the request and the browser
   policy (no `can_admit_devices`, no `can_act_as_host`, bounded expiry, not
   revoked), then hands it to the waiting browser.
-- The host never holds the root, and the browser never generates one.
-  Revocation is enforced at request, at issuance and at every later
-  handshake.
+- The host never holds the root. Revocation is enforced at request, at
+  issuance and at every later handshake.
 
 ### A browser-held root
 
@@ -466,16 +465,53 @@ reads and writes the same format natively. Unlocking unwraps straight into a
 non-extractable `CryptoKey`; the root never exists in the clear outside the
 page's memory.
 
+Everything below is exported by `root-identity.mjs` and re-exported by
+`peer.mjs`. The identity created or unlocked last is the page's current one
+and the default wherever an `identity` is taken.
+
 ```ts
-createIdentity({rpId, userName, userId, displayName?, passkey?: boolean})
+createIdentity({rpId, userName, userId, displayName?, passkey?: boolean, prfSalt?})
   : Promise<{envelope, recoveryKey: string, identity: RootIdentity}>;
-unlockIdentity(envelope, {passkey: true, rpId?} | {recoveryKey: string}): Promise<RootIdentity>;
-addPasskey(envelope, {identity, rpId, userName, userId}): Promise<envelope>;
-// RootIdentity: {kind, publicKey, userPublicKey, sign(bytes), addPasskey(envelope, opts), lock()}
+unlockIdentity(envelope, {passkey: true, rpId?} | {prfOutput, credentialId} | {recoveryKey: string})
+  : Promise<RootIdentity>;
+addPasskey(envelope, {identity?, rpId?, userName?, userId?}?): Promise<envelope>;
+// A native node that hosts and governs the person's workspaces: host, owns
+// and reads all workspaces, admits no devices, one year. Never the root.
+certifyDevice(nodeDevicePublicKey | {devicePublicKey, identity?, runtime?, label?, role?: 'node' | 'browser', encoding?: 'canonical' | 'json'})
+  : Promise<string /* canonical DeviceCert, base64 (what a native device keeps on disk); or JSON */>;
+installNodeCertificate({origin, certificate, installToken}): Promise<{device_public_key, user_public_key}>;
+// The page's own device, certified by the root itself against the host's
+// certificate (which must be a host of this root), no approver. Defaults:
+// a profile per identity, its device key, the page host's runtime.
+connectPeer({origin, identity, signal, …}): Promise<CertifiedPeer>;
+// Another person's workspace: what an invitation offers, then join it as
+// this identity (its own root certifies the device; the owner admits it).
+inspectInvitation(relayUrl, invitation): Promise<{workspaceName, role, room, workspaceId, expiresAtNs, inviter: undefined}>;
+joinWorkspace({origin, invitation, identity?, displayName, signal, onProgress?}): Promise<CertifiedPeer>;
+// onProgress({phase: 'asking' | 'waiting' | 'admitted'}); rejects when declined or refused
+// RootIdentity: {kind, publicKey, userPublicKey, sign(bytes), addPasskey(envelope, opts?), lock()}
 ```
 
 `createIdentity` refuses a passkey without PRF (`IdentityError` code
 `prf-unsupported`); `passkey: false` creates a recovery-key-only envelope.
+All of an identity's passkeys share one PRF input (`prf_salt`; random unless
+`prfSalt` is given), so a login that already asserted a passkey with
+`extensions.prf.eval` of it unlocks with `{prfOutput, credentialId}` and no
+second prompt. `addPasskey` excludes the envelope's existing credentials, so
+the new passkey lands on another authenticator instead of replacing one; its
+`userName`/`userId` default to those the identity was created with.
+
+A node provisioned without a certificate (`tilo-relay run --web …
+--install-token-file PATH`) creates its device key, prints
+`{"event": "awaiting_certificate", "devicePublicKey": …}` and serves only
+`POST /peer/v1/install` (the certificate as JSON or canonical bytes, the token in
+`x-tilo-install-token`; every other route answers `503`). Once a valid host
+certificate for its key is installed it starts as that identity's host on the
+same origin.
+
+Browsers accept a device as a room's governor when its certificate owns
+workspaces (`can_own_workspaces`), so such a node governs and stewards the
+person's rooms; a plain host certificate never does.
 
 ### Live layer interface
 
@@ -1014,7 +1050,7 @@ browser runtime. Parts that work on `main`'s APIs were ported, renamed
 |---|---|
 | `qos-desktop`, `desktop_host.rs` (8.7k), speculation, desktop navigation/activity, committed desktop, system search | The desktop comes from `main`'s `tilo-desktop-model` and the shell's desktop through `ui::app`; a second browser-only compositor would fork the desktop |
 | `peer*.rs`, `peer_delivery*`, `peer_journal`, `admission_health`, `admitted_records`, `peer_storage_batch`, `post_ready_repair` | A parallel HTTPS delivery/journal/admission stack. The browser peer uses `tilo-relay-client` over iroh (below) |
-| Browser identity issuance, root key generation, `root_secret`/`device_secret` in IndexedDB, `cloud-identity-custody.mjs`, `identity.rs`, Cloud enrollment state machine, `peer_cloud/mesh.rs` (`ALLOWED_ACTIONS`) | Root authority and mesh policy belong on the host. The browser holds only a device key (non-extractable WebCrypto, or wrapped) certified under the user's single root and answers host challenges |
+| `root_secret`/`device_secret` in IndexedDB, `cloud-identity-custody.mjs`, `identity.rs`, Cloud enrollment state machine, `peer_cloud/mesh.rs` (`ALLOWED_ACTIONS`) | Mesh policy belongs on the host. A page holds a device key (non-extractable WebCrypto, or wrapped) certified under the user's single root; a person with only a browser also holds that root, never stored unwrapped ([A browser-held root](#a-browser-held-root)) |
 | `tilo-relay-protocol` → `qos-peer-state` dependency, `qos-agent-control-protocol` | qOS-lineage state model and agent protocol; `main` has `tilo_actions::remote` |
 | `live_view`, `peer_live`, `peer_media`, MoQ (`media-*.mjs`, `moq-carrier.mjs`) | Deferred. Reusable later: `live-overlay.mjs` presence rendering, `media-audio*.mjs` worklets, `moq-carrier.mjs` WebTransport carrier |
 | `HostImageLoader::retry`/`loaded`, `probe_pixels`, `destroy_device`, component close-recovery custody | Depend on 541-only internals or are test hooks; asset retry answers `false` for now |

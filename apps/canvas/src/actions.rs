@@ -115,7 +115,9 @@ pub struct NewMark {
     pub cap: Option<String>,
     /// `miter`, `round` or `bevel`.
     pub join: Option<String>,
-    /// `multiply`, `screen`, `overlay`, … (see the refusal for all).
+    /// `normal`, `multiply`, `screen`, `overlay`, `darken`, `lighten`,
+    /// `color-dodge`, `color-burn`, `hard-light`, `soft-light`, `difference`,
+    /// `exclusion`, `hue`, `saturation`, `color` or `luminosity`.
     pub blend: Option<String>,
     pub shadow: Option<Shadow>,
     /// A group id: edits naming it change the members as one.
@@ -214,7 +216,7 @@ pub struct EditMarks {
     pub group: Option<String>,
     /// Cut to this mark's shape; empty uncuts.
     pub clip: Option<String>,
-    /// A colour, or `none`.
+    /// A colour (replacing a gradient), or `none`.
     pub fill: Option<String>,
     pub gradient: Option<Gradient>,
     /// A colour, or `none`.
@@ -253,8 +255,11 @@ pub struct RemoveMarks {
 #[serde(deny_unknown_fields)]
 pub struct Arrange {
     pub ids: Vec<String>,
-    /// `front`, `back`, `forward` or `backward`.
+    /// `front`, `back`, `forward`, `backward`, or `above`/`below` the mark or
+    /// group `of`.
     pub to: String,
+    /// The mark or group `above` and `below` are relative to.
+    pub of: Option<String>,
 }
 
 /// Save a medium in the artwork (or replace one saved before), so layers can
@@ -850,6 +855,9 @@ impl EditMarks {
                     mark.style.stroke = fill;
                 } else {
                     mark.style.fill = fill;
+                    // A gradient is drawn instead of the fill: a new fill
+                    // replaces it.
+                    mark.style.gradient = None;
                 }
             }
             if let ColourEdit::Set(stroke) = colour_patch(self.stroke.as_ref()) {
@@ -881,15 +889,43 @@ impl EditMarks {
 }
 
 /// Where `ids` go when moved `to` the front, back, forward or backward of
-/// the ordered `all`: new order keys for the moved entries.
+/// the ordered `all`, or directly `above` or `below` the entries `of`: new
+/// order keys for the moved entries.
 fn rearranged(
     all: &[(String, String)],
     ids: &[String],
     to: &str,
+    of: &[String],
 ) -> Result<Vec<(String, String)>, ActionError> {
     let moving: Vec<&(String, String)> = all.iter().filter(|(id, _)| ids.contains(id)).collect();
     let staying: Vec<&(String, String)> = all.iter().filter(|(id, _)| !ids.contains(id)).collect();
+    let anchor = || {
+        let first = staying.iter().position(|(id, _)| of.contains(id));
+        let last = staying.iter().rposition(|(id, _)| of.contains(id));
+        first.zip(last).ok_or_else(|| {
+            refuse("name the mark or group to go above or below in `of`, on the same layer and not among ids")
+        })
+    };
     let (low, high) = match to {
+        "above" => {
+            let (_, top) = anchor()?;
+            (
+                staying.get(top).map(|(_, order)| order.clone()),
+                staying
+                    .get(top.saturating_add(1))
+                    .map(|(_, order)| order.clone()),
+            )
+        }
+        "below" => {
+            let (bottom, _) = anchor()?;
+            (
+                bottom
+                    .checked_sub(1)
+                    .and_then(|before| staying.get(before))
+                    .map(|(_, order)| order.clone()),
+                staying.get(bottom).map(|(_, order)| order.clone()),
+            )
+        }
         "front" => (staying.last().map(|(_, order)| order.clone()), None),
         "back" => (None, staying.first().map(|(_, order)| order.clone())),
         "forward" | "backward" => {
@@ -929,7 +965,7 @@ fn rearranged(
         }
         other => {
             return Err(refuse(format!(
-                "to {other:?} must be front, back, forward or backward"
+                "to {other:?} must be front, back, forward, backward, above or below"
             )));
         }
     };
@@ -939,6 +975,50 @@ fn rearranged(
         .zip(orders)
         .map(|((id, _), order)| (id.clone(), order))
         .collect())
+}
+
+/// Move marks within their layer's stacking order.
+fn arrange_marks(doc: &mut Doc, art: &Artwork, arrange: &Arrange) -> Result<(), ActionError> {
+    let ids: Vec<String> = units(art, &arrange.ids)?
+        .into_iter()
+        .flatten()
+        .map(|mark| mark.id.clone())
+        .collect();
+    let Some(first) = ids.first().and_then(|id| art.mark(id)) else {
+        return Err(refuse("name existing marks in ids"));
+    };
+    if let Some(other) = ids
+        .iter()
+        .find(|id| art.mark(id).is_none_or(|mark| mark.layer != first.layer))
+    {
+        return Err(refuse(format!(
+            "{other:?} is not a mark on layer {:?}; arrange marks of one layer at a time",
+            first.layer
+        )));
+    }
+    let all: Vec<(String, String)> = art
+        .marks_of(&first.layer)
+        .map(|mark| (mark.id.clone(), mark.order.clone()))
+        .collect();
+    let of: Vec<String> = match &arrange.of {
+        Some(of) => units_of(art, of)?
+            .into_iter()
+            .map(|mark| mark.id.clone())
+            .collect(),
+        None => Vec::new(),
+    };
+    for (id, order) in rearranged(&all, &ids, &arrange.to, &of)? {
+        if let Some(mark) = art.mark(&id) {
+            doc::write_mark(
+                doc,
+                &Mark {
+                    order,
+                    ..mark.clone()
+                },
+            )?;
+        }
+    }
+    Ok(())
 }
 
 impl tilo_actions::Action for CanvasAction {
@@ -990,41 +1070,7 @@ impl tilo_actions::Action for CanvasAction {
                 }
                 Ok(())
             }
-            Self::Arrange(arrange) => {
-                let ids: Vec<String> = units(&art, &arrange.ids)?
-                    .into_iter()
-                    .flatten()
-                    .map(|mark| mark.id.clone())
-                    .collect();
-                let Some(first) = ids.first().and_then(|id| art.mark(id)) else {
-                    return Err(refuse("name existing marks in ids"));
-                };
-                if let Some(other) = ids
-                    .iter()
-                    .find(|id| art.mark(id).is_none_or(|mark| mark.layer != first.layer))
-                {
-                    return Err(refuse(format!(
-                        "{other:?} is not a mark on layer {:?}; arrange marks of one layer at a time",
-                        first.layer
-                    )));
-                }
-                let all: Vec<(String, String)> = art
-                    .marks_of(&first.layer)
-                    .map(|mark| (mark.id.clone(), mark.order.clone()))
-                    .collect();
-                for (id, order) in rearranged(&all, &ids, &arrange.to)? {
-                    if let Some(mark) = art.mark(&id) {
-                        doc::write_mark(
-                            doc,
-                            &Mark {
-                                order,
-                                ..mark.clone()
-                            },
-                        )?;
-                    }
-                }
-                Ok(())
-            }
+            Self::Arrange(arrange) => arrange_marks(doc, &art, arrange),
             Self::SaveMedium(save) => {
                 save.medium.validate().map_err(refuse)?;
                 doc::write_medium(doc, &save.medium)?;
@@ -1183,7 +1229,8 @@ fn edit_layer(doc: &mut Doc, art: &Artwork, edit: &EditLayer) -> Result<(), Acti
             .iter()
             .map(|layer| (layer.id.clone(), layer.order.clone()))
             .collect();
-        if let Some((_, order)) = rearranged(&all, std::slice::from_ref(&layer.id), to)?.pop() {
+        if let Some((_, order)) = rearranged(&all, std::slice::from_ref(&layer.id), to, &[])?.pop()
+        {
             layer.order = order;
         }
     }
