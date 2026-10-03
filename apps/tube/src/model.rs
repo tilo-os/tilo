@@ -403,9 +403,9 @@ impl Settings {
     }
 }
 
-/// Where the catalogue currently on screen came from. Drives the top-bar
-/// status pill ("Live" vs "Sample") so the user always knows whether they are
-/// looking at real `YouTube` data or the bundled offline sample.
+/// Where the catalogue currently on screen came from. Drives the header's
+/// status badge ("Offline", "Connecting"), shown whenever the catalogue is not
+/// live `YouTube` data.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DataSource {
     /// True once a live backend has returned data this session.
