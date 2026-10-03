@@ -27,6 +27,8 @@ on:
       - "tools/sdk/**"
       - "tools/web/**"
       - "vendor/**"
+      # Font sources (vendor/fonts/*/build.py) are no Cargo input.
+      - "!vendor/fonts/**"
   workflow_dispatch:
 
 concurrency:
@@ -76,7 +78,8 @@ jobs:
                       "Cargo.toml", "apps/*", "crates/*", "rust-toolchain.toml",
                       "tools/policy/app_capability*", "tools/policy/app_portability*",
                       "tools/policy/check_app_*", "tools/sdk/*", "tools/web/*", "vendor/*"]
-          hit = any(fnmatch.fnmatch(path.strip(), p) for path in sys.stdin for p in patterns)
+          hit = any(fnmatch.fnmatch(path.strip(), p) and not path.startswith("vendor/fonts/")
+                    for path in sys.stdin for p in patterns)
           print("relevant=" + ("true" if hit else "false"))' >> "$GITHUB_OUTPUT"
           cat "$GITHUB_OUTPUT"
       # Pull requests test the head merged onto main's current tip (a rerun
