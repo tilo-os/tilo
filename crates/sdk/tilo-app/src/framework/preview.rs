@@ -229,7 +229,6 @@ pub(crate) type DrawPast = fn(AutoCommit, Rect, &mut Scene, Affine, &Theme) -> R
 
 /// Lay out `A`'s view over `doc`, a frozen past version, in `bounds` and
 /// draw it: what `render` answers for a version.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn draw_past<A: ResourceApp>(
     doc: AutoCommit,
     bounds: Rect,

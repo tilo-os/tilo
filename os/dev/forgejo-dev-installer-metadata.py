@@ -18,7 +18,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         raise ValueError('Artifact endpoint redirected; refusing to forward credentials')
 
 
-def metadata(prefix):
+def metadata(prefix, *, with_offset=False):
     expected = {'source.txt', 'tilo-dev-installer-aarch64.qcow2.sha256',
                 'tilo-dev-installer-aarch64.qcow2.zst.sha256'}
     result = {}
@@ -46,7 +46,7 @@ def metadata(prefix):
         if packed != consumed or size != len(data) or crc != zlib.crc32(data):
             raise ValueError('Metadata ZIP CRC or length mismatch')
         result[name] = data
-    return result
+    return (result, offset) if with_offset else result
 
 
 def verify_medium(run_id):
