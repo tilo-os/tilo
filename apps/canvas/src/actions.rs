@@ -120,6 +120,8 @@ pub struct NewMark {
     pub group: Option<String>,
     /// Cut to this mark's shape (opacity 0 hides that mark).
     pub clip: Option<String>,
+    /// An affine `[a, b, c, d, e, f]` on the geometry, as `inspect` shows.
+    pub transform: Option<[f64; 6]>,
 }
 
 impl NewMark {
@@ -145,6 +147,7 @@ impl NewMark {
             shadow: None,
             group: None,
             clip: None,
+            transform: None,
         }
     }
 }
@@ -228,6 +231,9 @@ pub struct EditMarks {
     pub rotate: Option<f64>,
     /// Move the marks onto this layer, on top.
     pub layer: Option<String>,
+    /// An affine `[a, b, c, d, e, f]` in artwork units applied after the
+    /// rest, to all the marks as one: a stretch or turn about any point.
+    pub transform: Option<[f64; 6]>,
 }
 
 /// Remove marks by id, or every mark of a layer.
@@ -428,6 +434,23 @@ fn check_style(art: &Artwork, layer: &str, style: &Style) -> Result<(), ActionEr
     Ok(())
 }
 
+/// A transform must be finite and keep some area, so the mark can be found
+/// and turned back.
+fn check_transform(transform: [f64; 6]) -> Result<(), ActionError> {
+    let affine = ui::vello::kurbo::Affine::new(transform);
+    if transform
+        .iter()
+        .all(|value| value.is_finite() && value.abs() <= MAX_SIDE * 4.0)
+        && affine.determinant().abs() > 1e-6
+    {
+        Ok(())
+    } else {
+        Err(refuse(
+            "a transform is [a, b, c, d, e, f], finite, and must not flatten the mark",
+        ))
+    }
+}
+
 /// The marks `ids` address, as units that move, scale and rotate together:
 /// a mark id is that mark, a group id all of the group's members. A mark
 /// named twice (itself and through its group) counts once.
@@ -577,6 +600,9 @@ fn add_marks(
         if let Some(problem) = mark.shape.problem() {
             return Err(refuse(format!("mark {index}: {problem}")));
         }
+        if let Some(transform) = mark.transform {
+            check_transform(transform).map_err(problem)?;
+        }
         check_style(art, layer, &mark.style).map_err(problem)?;
         if !mark.group.is_empty() {
             check_group(art, &mark.group, &ids).map_err(problem)?;
@@ -659,6 +685,7 @@ impl Draw {
                 Mark {
                     group: mark.group.clone().unwrap_or_default(),
                     clip: mark.clip.clone().unwrap_or_default(),
+                    transform: mark.transform,
                     ..placed(
                         id,
                         mark.name.clone().unwrap_or_default(),
@@ -743,6 +770,9 @@ impl EditMarks {
         if let Some(group) = self.group.as_deref().filter(|group| !group.is_empty()) {
             check_group(art, group, &[])?;
         }
+        if let Some(transform) = self.transform {
+            check_transform(transform)?;
+        }
         for unit in units {
             let centre = extent(art, &unit).center() + ui::vello::kurbo::Vec2::new(dx, dy);
             let about = ui::vello::kurbo::Affine::translate(centre.to_vec2())
@@ -777,6 +807,9 @@ impl EditMarks {
                 }
                 if self.scale.is_some() || self.rotate.is_some() {
                     mark.transform = Some((about * mark.affine()).as_coeffs());
+                }
+                if let Some(transform) = self.transform {
+                    mark = mark.transformed(ui::vello::kurbo::Affine::new(transform));
                 }
                 check_style(art, &mark.layer, &mark.style)
                     .map_err(|error| refuse(format!("mark {:?}: {error}", mark.id)))?;
