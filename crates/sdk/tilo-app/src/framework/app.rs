@@ -22,7 +22,7 @@ use ui_core::widget::{Element, IconDescriptor};
 use {
     std::cell::RefCell,
     ui_core::application::{
-        ApplicationHost, ComponentRunnerInputs, NativeProcessHost, PreparedComponentInputs,
+        ApplicationHost, Capture, ComponentRunnerInputs, NativeProcessHost, PreparedComponentInputs,
     },
     ui_core::headless::FrameHarness,
     ui_core::launch::{LaunchArgs, LaunchSpec},
@@ -34,6 +34,7 @@ use super::dispatch::Dispatcher;
 use super::effect::Effects;
 use super::live::Live;
 use super::root::ResourceRoot;
+use super::scenario::{Fixture, Run};
 use super::stage::Stages;
 use super::view::{Updaters, ViewCx};
 
@@ -51,8 +52,6 @@ pub trait ResourceApp: 'static {
     const TITLE: &'static str;
     /// A named icon; defaults to the app id's last segment.
     const ICON: Option<&'static str> = None;
-    /// The `--shots` viewport.
-    const SHOT_VIEWPORT: (u32, u32) = (1024, 720);
     /// How every window hosting the app treats it: focus after a rebuild,
     /// live appearance, and whether captures withhold it. An app that shows
     /// secrets declares `capture_protected` here, so the live launch, the
@@ -79,9 +78,27 @@ pub trait ResourceApp: 'static {
         Vec::new()
     }
 
-    /// Named screenshot scenarios for `--shots --scenario NAME`.
+    /// Named screenshot scenarios for `--shots --scenario NAME`; `--shots-dir`
+    /// captures every one.
     fn scenarios() -> &'static [&'static str] {
         &[]
+    }
+
+    /// The viewport a capture of `scenario` (`None` for a plain `--shots`)
+    /// is drawn at, unless `--viewport` names one: a narrow scenario's
+    /// phone-sized window.
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        let _ = scenario;
+        (1024, 720)
+    }
+
+    /// Prepare what a capture of `fixture.scenario()` shows that its actions
+    /// cannot stage, before the view is built: typed stand-ins for live
+    /// sources, scratch files, content-store blobs, other people's versions
+    /// and collaborators. Runs only for a capture, whose views are built in
+    /// [`RunMode::Capture`](super::RunMode). See [`Fixture`](super::Fixture).
+    fn fixture(fixture: &mut super::Fixture<Self::Resource>) {
+        let _ = fixture;
     }
 
     /// The actions that stage the resource for a capture: `Some(name)` for
@@ -194,13 +211,14 @@ pub(crate) fn default_record<A: ResourceApp>() -> RecordCheckout {
     )
 }
 
-/// Who may edit the resource a root shows.
+/// Who may edit the resource a root shows, and what it is built for.
 pub(crate) enum Editing {
     /// The participant (`me`) and their permissions, followed while the app
-    /// runs.
+    /// runs, in a window someone uses or a capture.
     Live {
         permissions: LivePermissions,
         me: String,
+        run: Run,
     },
     /// Never: a past version in History mode.
     ReadOnly,
@@ -219,12 +237,16 @@ pub(crate) fn build_root<A: ResourceApp>(
     storage: AppStorage,
 ) -> ResourceRoot<A::Resource> {
     let scope = write_scope::<A>();
-    let (permissions, read_only, me) = match editing {
-        Editing::Live { permissions, me } => {
+    let (permissions, read_only, me, run) = match editing {
+        Editing::Live {
+            permissions,
+            me,
+            run,
+        } => {
             let read_only = !permissions.check(&scope);
-            (Some(permissions), read_only, Some(me))
+            (Some(permissions), read_only, Some(me), run)
         }
-        Editing::ReadOnly => (None, true, None),
+        Editing::ReadOnly => (None, true, None, Run::past()),
     };
     let label = A::label(reader.state());
     let resource_id = <A::Resource as Resource>::KIND;
@@ -236,12 +258,12 @@ pub(crate) fn build_root<A: ResourceApp>(
     let saved = ui_core::LocalState::new(ui_core::record::RecordSaveStatus::Saved);
     let stages = Stages::new();
     let storage = super::settings::ViewStorage::new(storage);
-    // Effects run in the live app only; History shows a past version.
-    let effects = permissions
-        .is_some()
+    // Effects and projection drains run in a window someone uses only:
+    // History shows a past version, and a capture reaches nothing outside.
+    let effects = (permissions.is_some() && run.mode.is_live())
         .then(|| Effects::live(dispatch.clone(), live.clone()));
     let mut cx = ViewCx::root(
-        live, updaters, &alive, dispatch, published, saved, stages, storage,
+        live, updaters, &alive, dispatch, published, saved, stages, run, storage,
     );
     if let Some(effects) = effects {
         cx.effects = effects;
@@ -328,19 +350,58 @@ fn create<A: ResourceApp>(
             )
             .map_err(LaunchError::Record)?;
     }
+    let run = match context.capture().cloned() {
+        Some(capture) => prepare_capture::<A>(&mut context, capture.scenario())?,
+        None => Run::live(context.content().cloned()),
+    };
     let permissions = context.live_permissions();
     let reader = context
         .read_record(Reader::<A::Resource>::read)
         .map_err(LaunchError::Record)?
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
     let me = context.author().0.clone();
-    let root = build_root::<A>(reader, Editing::Live { permissions, me }, context.storage());
+    let root = build_root::<A>(
+        reader,
+        Editing::Live {
+            permissions,
+            me,
+            run,
+        },
+        context.storage(),
+    );
     let mut component = AppComponent::new(context, Box::new(root), action_registry::<A>());
     component.set_behaviour(A::BEHAVIOUR);
     component
         .register_document_history(super::preview::history_definition::<A>())
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
     Ok(component)
+}
+
+/// Prepare a capture's scene before its view is built: the app's fixture,
+/// then the versions other people wrote, merged as their changes arrive.
+fn prepare_capture<A: ResourceApp>(
+    context: &mut HostContext,
+    scenario: Option<&str>,
+) -> Result<Run, LaunchError> {
+    let mut fixture = Fixture::<A::Resource>::new(scenario, context.content().cloned());
+    A::fixture(&mut fixture);
+    if context.content().is_none()
+        && let Some(content) = fixture.lent_content()
+    {
+        context.provide_content(content.clone());
+    }
+    if fixture.has_history() {
+        let mut peer = context
+            .read_record(|doc| doc.clone().fork())
+            .map_err(LaunchError::Record)?;
+        fixture
+            .write_history(&mut peer, &action_registry::<A>())
+            .map_err(LaunchError::Operation)?;
+        context
+            .merge_peer_document(peer.save())
+            .map_err(LaunchError::Operation)?;
+    }
+    Ok(fixture.into_run())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -422,15 +483,21 @@ fn prepare_definition(
             tilo_actions::ActionContext::default(),
             Rc::new(CaptureProfile(profile)),
         )?;
-        return host
-            .prepare_default(
-                definition,
-                CAPTURE_INSTANCE,
-                default_record_of(definition),
-                None,
-                inputs,
-            )
-            .map(|prepared| super::testing::with_settings_file(prepared, settings));
+        let mut prepared = host.prepare_default(
+            definition,
+            CAPTURE_INSTANCE,
+            default_record_of(definition),
+            None,
+            inputs,
+        )?;
+        // An audit and a headless drive certify and drive the app someone
+        // uses; only a screenshot is built from fixtures.
+        if args.shots.is_some() || args.responsive_matrix.is_some() {
+            prepared
+                .context
+                .provide_capture(Capture::new(args.scenario.clone()));
+        }
+        return Ok(super::testing::with_settings_file(prepared, settings));
     }
     if let Some(directory) = args.value("--data-dir") {
         let author = ui_core::collaboration::local_user_id();
@@ -474,8 +541,8 @@ fn capture<A: ResourceApp>(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn shot_viewport<A: ResourceApp>(_: &LaunchArgs) -> (u32, u32) {
-    A::SHOT_VIEWPORT
+fn shot_viewport<A: ResourceApp>(args: &LaunchArgs) -> (u32, u32) {
+    A::shot_viewport(args.scenario.as_deref())
 }
 
 #[cfg(tilo_native_runner)]

@@ -66,7 +66,9 @@ impl ResourceApp for RemoteShell {
     const ID: &'static str = "so.tilo.remote";
     const TITLE: &'static str = "Remote Desktop";
     const ICON: Option<&'static str> = Some("remote");
-    const SHOT_VIEWPORT: (u32, u32) = (1100, 720);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1100, 720)
+    }
 
     fn view(cx: &mut ViewCx<Remote>) -> Element {
         cx.surface(RemoteApp::new())

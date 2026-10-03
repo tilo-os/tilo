@@ -48,7 +48,9 @@ impl ResourceApp for App {
     type Resource = ArtworkResource;
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
 
     fn view(cx: &mut ViewCx<ArtworkResource>) -> Element {
         locales::install();

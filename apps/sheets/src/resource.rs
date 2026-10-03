@@ -323,7 +323,9 @@ impl ResourceApp for SheetsShell {
     const ID: &'static str = "so.tilo.sheets";
     const TITLE: &'static str = "Sheets";
     const ICON: Option<&'static str> = Some("sheets");
-    const SHOT_VIEWPORT: (u32, u32) = (1200, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1200, 800)
+    }
 
     fn view(cx: &mut ViewCx<SheetsWorkbook>) -> Element {
         cx.surface(SheetsApp::new())

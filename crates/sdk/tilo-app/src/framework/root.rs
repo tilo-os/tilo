@@ -9,9 +9,10 @@ use ui_core::widget::{AppModel, ModelPath};
 
 use tilo_resource::{Resource, SearchEntry};
 use tilo_search::{Document, FieldWeight, Matching, Page, SearchIndex};
+use ui_core::PresencePayload;
 use ui_core::automerge::AutoCommit;
 use ui_core::permissions::{LivePermissions, PermissionScope};
-use ui_core::presence::PresenceCtx;
+use ui_core::presence::{PresenceCtx, PresenceKey};
 use ui_core::record::RecordSaveStatus;
 use ui_core::search::{SearchProvider, SearchResult};
 use ui_core::text_render::TextRenderer;
@@ -23,6 +24,7 @@ use ui_core::{LocalState, Theme};
 use super::dispatch::Dispatcher;
 use super::effect::Effects;
 use super::live::Live;
+use super::scenario::Run;
 use super::stage::Stages;
 use super::view::{Updaters, ViewCx};
 
@@ -44,6 +46,8 @@ pub(crate) struct ResourceRoot<R: Resource> {
     write: Option<PermissionScope>,
     stages: Stages,
     feeds: super::history::HistoryFeeds,
+    /// What the view was built for, and the fixtures a capture's views read.
+    run: Run,
     /// The settings the view follows, re-read when their document changes.
     storage: Rc<super::settings::ViewStorage>,
     /// The effect handlers and projection drains the view registered.
@@ -155,6 +159,7 @@ impl<R: Resource> ResourceRoot<R> {
             write: None,
             stages: cx.stages,
             feeds: cx.feeds,
+            run: cx.run,
             storage: cx.storage,
             effects: cx.effects,
             content,
@@ -179,8 +184,21 @@ impl<R: Resource> ResourceRoot<R> {
     /// Stage a screenshot scenario's view state: every view's
     /// [`on_stage`](super::ViewCx::on_stage) callback runs now, and every
     /// hosted surface stages on its next sync.
-    pub(crate) fn stage(&self, scenario: Option<&str>) {
+    /// Stage the views' state for `scenario`, and answer the collaborators
+    /// the capture shows as the presence frames their windows would send.
+    pub(crate) fn stage(
+        &self,
+        scenario: Option<&str>,
+    ) -> Vec<(String, PresenceKey, PresencePayload)> {
         self.stages.run(scenario);
+        self.run
+            .collaborators()
+            .iter()
+            .map(|(name, at)| {
+                let (key, payload) = at.presence::<R>(self.dispatch.app_id());
+                (name.clone(), key, payload)
+            })
+            .collect()
     }
 
     /// Follow `permissions`: the resource is editable while they grant

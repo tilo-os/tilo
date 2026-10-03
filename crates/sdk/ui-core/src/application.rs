@@ -90,8 +90,31 @@ pub struct HostContext {
     retirement: Option<crate::semantic_document_read::retirement::MountRetirement>,
     content: Option<tilo_content::ContentStore>,
     open_file: Option<OpenFile>,
+    capture: Option<Capture>,
     settings: crate::storage::SettingsDocument,
 }
+
+/// What a host prepares an instance for when it renders a screenshot
+/// (`--shots`, `--shots-dir`, `--responsive-matrix`) rather than a window
+/// someone uses: the app shows a deterministic scene from fixtures and
+/// starts nothing that reaches outside the process.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Capture {
+    scenario: Option<String>,
+}
+
+impl Capture {
+    /// A capture of the named scenario; `None` is a plain `--shots`.
+    pub fn new(scenario: Option<String>) -> Self {
+        Self { scenario }
+    }
+
+    /// The scenario captured; `None` for a plain `--shots`.
+    pub fn scenario(&self) -> Option<&str> {
+        self.scenario.as_deref()
+    }
+}
+
 /// Presentation owned by a runner. Authority comes only from the component context.
 pub struct ComponentRunnerInputs {
     /// Effective snapshot, with scale metadata describing its baked values, as when
@@ -261,6 +284,7 @@ impl HostContext {
             retirement: None,
             content: None,
             open_file: None,
+            capture: None,
             settings: crate::storage::SettingsDocument::Session,
         })
     }
@@ -292,6 +316,15 @@ impl HostContext {
     /// The file the host handed over to open, once.
     pub fn take_open_file(&mut self) -> Option<OpenFile> {
         self.open_file.take()
+    }
+    /// Prepare the instance for a screenshot of `capture` instead of a
+    /// window someone uses.
+    pub fn provide_capture(&mut self, capture: Capture) {
+        self.capture = Some(capture);
+    }
+    /// The screenshot this instance is prepared for, if it is one.
+    pub fn capture(&self) -> Option<&Capture> {
+        self.capture.as_ref()
     }
     /// Explicit owner-bound producer capability, available before factory work.
     pub fn control_domain(&self) -> crate::ControlDomain {
@@ -377,6 +410,15 @@ impl HostContext {
         self.records
             .read(&self.record.id, read)
             .ok_or(RecordOpenError::MissingRecord)
+    }
+    /// Merge another participant's copy of the record, as their changes
+    /// arriving over sync are merged: validated first, attributed to them in
+    /// history, and never on this participant's undo stack. Returns whether
+    /// anything changed.
+    /// # Errors
+    /// The document is not a valid copy of this record, or it is not open.
+    pub fn merge_peer_document(&self, document: Vec<u8>) -> Result<bool, String> {
+        self.records.merge_peer_document(&self.record, document)
     }
     /// The unique owner transition from Reserved to Ready. Existing is never initialized.
     /// # Errors

@@ -120,11 +120,27 @@
 //!   — are drained with [`ViewCx::drain`]: the framework runs the drain in
 //!   the live app after every change, on every participant's device, and
 //!   the drain acknowledges each entry with an action.
-//! * **Screenshot scenarios** (`--shots --scenario NAME`) stage the resource
-//!   with actions ([`ResourceApp::scenario`]) and view state where it lives:
-//!   [`ViewCx::on_stage`] for a view's local state, `ResourceSurface::stage`
-//!   for a custom surface's. [`stage`] runs a scenario on any harness, so a
-//!   test composes the exact frame `--shots` writes.
+//! * **Run mode.** A view is built for a window someone uses, a past version
+//!   in History, or a screenshot ([`RunMode`], from [`ViewCx::mode`] and
+//!   [`SurfaceCx::mode`]). Only a live view starts work that reaches outside
+//!   the process (a mail engine, a socket, a journal reader, a hardware
+//!   probe): History rebuilds the view for every version it previews, and a
+//!   screenshot must come out the same on every machine.
+//! * **Screenshot scenarios** (`--shots --scenario NAME`, every one with
+//!   `--shots-dir DIR`, each at [`ResourceApp::shot_viewport`]) are prepared
+//!   in three parts. What the resource does not hold is the scenario's
+//!   [`Fixture`] ([`ResourceApp::fixture`]), prepared before the view is
+//!   built: typed stand-ins for live sources that views read with
+//!   [`ViewCx::fixture`] and surfaces with [`SurfaceCx::fixture`], scratch
+//!   files, content-store blobs, versions other people wrote at other times,
+//!   and collaborators shown where they are. The resource is staged with
+//!   actions ([`ResourceApp::scenario`]), and view state where it lives,
+//!   once the actions are laid out: [`ViewCx::on_stage`] for a view's local
+//!   state, `ResourceSurface::stage` for a custom surface's. The capture
+//!   then waits until no surface reports unfinished visual work (an async
+//!   page render, a decode). [`stage`] runs a scenario on any harness, and
+//!   [`TestApp::capture`](testing::HeadlessApp::capture) composes the exact
+//!   frame `--shots` writes in a test.
 
 mod app;
 mod controls;
@@ -139,6 +155,7 @@ pub mod history;
 mod live;
 mod preview;
 mod root;
+mod scenario;
 mod settings;
 mod stage;
 mod surface;
@@ -160,6 +177,7 @@ pub use each::Each;
 pub use effect::{EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, Progress};
 pub use live::Live;
 pub use preview::PastVersion;
+pub use scenario::{Fixture, RunMode};
 pub use settings::Setting;
 pub use stage::stage;
 pub use surface::{ResourceSelection, ResourceSurface, SurfaceCx};

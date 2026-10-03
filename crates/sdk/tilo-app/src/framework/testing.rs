@@ -11,7 +11,9 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use tilo_resource::{Effect, Invoke, Resource};
-use ui_core::application::{ApplicationHost, ComponentRunnerInputs, PreparedComponentInputs};
+use ui_core::application::{
+    ApplicationHost, Capture, ComponentRunnerInputs, PreparedComponentInputs,
+};
 use ui_core::bound_dispatch::BoundActionAddress;
 use ui_core::headless::FrameHarness;
 use ui_core::launch::LaunchError;
@@ -102,7 +104,34 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// Returns any launch, storage or construction failure.
     pub fn with_role(role: Role) -> Result<Self, LaunchError> {
         let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
-        Self::open(Profile::Temporary(profile), role)
+        Self::open(Profile::Temporary(profile), role, None)
+    }
+
+    /// The frame `--shots --scenario` writes for `scenario` (`None` for a
+    /// plain `--shots`): the app built for a capture on a fresh profile,
+    /// from the scenario's fixture, with its actions applied and its view
+    /// state staged, at the scenario's viewport.
+    ///
+    /// # Errors
+    /// Returns any launch failure, or the host's refusal of a scenario
+    /// action.
+    pub fn capture(scenario: Option<&str>) -> Result<Self, LaunchError> {
+        Self::capture_at(scenario, A::shot_viewport(scenario))
+    }
+
+    /// [`Self::capture`] at `viewport`, as `--shots --viewport` draws it.
+    ///
+    /// # Errors
+    /// As [`Self::capture`].
+    pub fn capture_at(scenario: Option<&str>, viewport: (u32, u32)) -> Result<Self, LaunchError> {
+        let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
+        let mut app = Self::open(
+            Profile::Temporary(profile),
+            Role::Owner,
+            Some((Capture::new(scenario.map(str::to_owned)), viewport)),
+        )?;
+        super::stage::stage::<A>(app.harness(), scenario)?;
+        Ok(app)
     }
 
     /// The app on the profile `--data-dir directory` opens, as its owner.
@@ -112,10 +141,14 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// # Errors
     /// Returns any launch, storage or construction failure.
     pub fn open_data_dir(directory: &std::path::Path) -> Result<Self, LaunchError> {
-        Self::open(Profile::DataDir(directory.to_path_buf()), Role::Owner)
+        Self::open(Profile::DataDir(directory.to_path_buf()), Role::Owner, None)
     }
 
-    fn open(profile: Profile, role: Role) -> Result<Self, LaunchError> {
+    fn open(
+        profile: Profile,
+        role: Role,
+        capture: Option<(Capture, (u32, u32))>,
+    ) -> Result<Self, LaunchError> {
         let author = UserId(AUTHOR.into());
         let permissions = role_permissions(AUTHOR, role);
         let (mut host, instance) = match &profile {
@@ -139,18 +172,24 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let definition = definition::<A>();
         let records = host.records_for(definition)?;
         let checkout = default_record::<A>();
-        let prepared = host.prepare_default(
+        let mut prepared = host.prepare_default(
             definition,
             instance,
             checkout.clone(),
             None,
             ComponentRunnerInputs::from_native_process(),
         )?;
+        let viewport = match capture {
+            Some((capture, viewport)) => {
+                prepared.context.provide_capture(capture);
+                viewport
+            }
+            None => A::shot_viewport(None),
+        };
         let prepared = with_settings_file(prepared, profile.settings());
         let component =
             definition.instantiate(prepared.context, prepared.target, prepared.restore)?;
-        let harness =
-            FrameHarness::from_component(component, A::SHOT_VIEWPORT, prepared.runner_inputs)?;
+        let harness = FrameHarness::from_component(component, viewport, prepared.runner_inputs)?;
         Ok(Self {
             harness: Some(harness),
             records,
@@ -195,7 +234,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let role = self.role;
         // Release this instance's record writer before the next one opens it.
         drop(self);
-        Self::open(profile, role)
+        Self::open(profile, role, None)
     }
 
     /// Make every edit so far durable, as closing the app does.
@@ -518,16 +557,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .unwrap_or_default()
     }
 
-    /// Stage a screenshot scenario (`None` for a plain `--shots`) exactly as
-    /// the launcher does before a capture: its actions, then its view state.
-    /// The harness then holds the frame `--shots --scenario` would write.
-    ///
-    /// # Errors
-    /// Returns the host's refusal of a scenario action.
-    pub fn stage(&mut self, scenario: Option<&str>) -> Result<(), LaunchError> {
-        super::stage::stage::<A>(self.harness(), scenario)
-    }
-
     /// The version at `heads` as History mode previews it: the app's own
     /// view, read-only, over the document as it was then.
     ///
@@ -542,7 +571,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .read(&self.checkout.id, |doc| doc.clone().fork_at(heads))
             .ok_or("the record is not open")?
             .map_err(|error| error.to_string())?;
-        super::preview::render_past::<A>(past, A::SHOT_VIEWPORT)
+        super::preview::render_past::<A>(past, A::shot_viewport(None))
     }
 
     /// A collaborator's edit arriving: `edit` writes on their own replica of

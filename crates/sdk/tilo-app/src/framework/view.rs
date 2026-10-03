@@ -17,6 +17,7 @@ use super::dispatch::Dispatcher;
 use super::each::Each;
 use super::effect::{EffectAnswer, EffectCx, EffectStatus, Effects};
 use super::live::Live;
+use super::scenario::{Run, RunMode};
 use super::settings::{Setting, ViewStorage};
 use super::stage::Stages;
 use super::surface::{ResourceSurface, SurfaceCx, SurfaceHost};
@@ -87,6 +88,7 @@ pub struct ViewCx<R: Resource, T: 'static = <R as Resource>::State> {
     pub(crate) saved: LocalState<RecordSaveStatus>,
     pub(crate) stages: Stages,
     pub(crate) feeds: super::history::HistoryFeeds,
+    pub(crate) run: Run,
     pub(crate) storage: Rc<ViewStorage>,
     pub(crate) effects: Effects<R>,
 }
@@ -100,6 +102,7 @@ impl<R: Resource> ViewCx<R> {
         published: tilo_actions::Resource,
         saved: LocalState<RecordSaveStatus>,
         stages: Stages,
+        run: Run,
         storage: Rc<ViewStorage>,
     ) -> Self {
         // The history verbs every app answers are bindable like its own.
@@ -121,6 +124,7 @@ impl<R: Resource> ViewCx<R> {
             saved,
             stages,
             feeds: super::history::HistoryFeeds::default(),
+            run,
             storage,
             effects: Effects::inert(),
         }
@@ -188,6 +192,26 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         self.live.with(|state| read((self.focus)(state)))
     }
 
+    /// What the view is built for: a window someone uses, a past version in
+    /// History, or a screenshot. Start work that reaches outside the process
+    /// (an engine, a socket, a probe) only when it [is live](RunMode::is_live).
+    pub fn mode(&self) -> RunMode {
+        self.run.mode
+    }
+
+    /// The capture's stand-in for a live source of type `V`
+    /// ([`Fixture::provide`](super::Fixture::provide)); `None` outside a
+    /// capture, or when the scenario provides none.
+    pub fn fixture<V: 'static>(&self) -> Option<Rc<V>> {
+        self.run.fixture::<V>()
+    }
+
+    /// The content store the host lent the app: opaque blobs by hash that
+    /// outlive it. A capture's holds the blobs its scenario put there.
+    pub fn content(&self) -> Option<tilo_content::ContentStore> {
+        self.run.content()
+    }
+
     /// The app's typed settings of type `S`, kept current while this scope
     /// lives. `S` declares whether they follow the person or stay on the
     /// device ([`Scope`](ui_core::storage::Scope)).
@@ -212,9 +236,10 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
 
     /// Stage view state for a screenshot scenario: `stage` runs with the
     /// scenario's name (`None` for a plain `--shots`) after the scenario's
-    /// actions applied and before the frame is captured. Set the
-    /// [`LocalState`]s a scenario shows — a selection, an open dialog — the
-    /// way the user's input would. It never runs in a live window.
+    /// actions applied and were laid out, and before the frame is captured.
+    /// Set the [`LocalState`]s a scenario shows — a selection, an open
+    /// dialog — the way the user's input would. It never runs in a live
+    /// window.
     pub fn on_stage(&self, stage: impl FnMut(Option<&str>) + 'static) {
         self.stages.push(self.alive.clone(), Box::new(stage));
     }
@@ -361,6 +386,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let saved = self.saved.clone();
         let stages = self.stages.clone();
         let feeds = self.feeds.clone();
+        let run = self.run.clone();
         let storage = Rc::clone(&self.storage);
         let effects = self.effects.clone();
         Each::new(
@@ -384,6 +410,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                     saved: saved.clone(),
                     stages: stages.clone(),
                     feeds: feeds.clone(),
+                    run: run.clone(),
                     storage: Rc::clone(&storage),
                     effects: effects.clone(),
                 };
@@ -449,6 +476,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let saved = self.saved.clone();
         let stages = self.stages.clone();
         let feeds = self.feeds.clone();
+        let run = self.run.clone();
         let storage = Rc::clone(&self.storage);
         let effects = self.effects.clone();
         Box::new(Switch::new(
@@ -467,6 +495,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                     saved: saved.clone(),
                     stages: stages.clone(),
                     feeds: feeds.clone(),
+                    run: run.clone(),
                     storage: Rc::clone(&storage),
                     effects: effects.clone(),
                 };
@@ -486,6 +515,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         surface.attach(SurfaceCx {
             dispatch: self.dispatch.clone(),
             live: self.live.clone(),
+            run: self.run.clone(),
             storage: Rc::clone(&self.storage),
             effects: self.effects.clone(),
             alive: self.alive.clone(),

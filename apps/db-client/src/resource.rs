@@ -106,7 +106,9 @@ impl ResourceApp for DbClientShell {
     const ID: &'static str = "so.tilo.db-client";
     const TITLE: &'static str = "Database Client";
     const ICON: Option<&'static str> = Some("db-client");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
 
     fn view(cx: &mut ViewCx<DbClient>) -> Element {
         cx.surface(DbClientApp::new())

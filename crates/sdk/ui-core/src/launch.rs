@@ -167,6 +167,9 @@ type CommandHandler = fn(&LaunchArgs) -> Result<bool, LaunchError>;
 #[derive(Clone, Debug)]
 pub struct LaunchArgs {
     pub shots: Option<PathBuf>,
+    /// `--shots-dir DIR`: one capture of every declared scenario, written to
+    /// `DIR/NN-name.png` in declaration order.
+    pub shots_dir: Option<PathBuf>,
     pub responsive_matrix: Option<PathBuf>,
     pub viewport: Option<(u32, u32)>,
     pub scenario: Option<String>,
@@ -186,6 +189,7 @@ impl LaunchArgs {
     pub fn component() -> Self {
         Self {
             shots: None,
+            shots_dir: None,
             responsive_matrix: None,
             viewport: None,
             scenario: None,
@@ -915,7 +919,7 @@ impl fmt::Display for LaunchError {
             Self::ConflictingModes => {
                 write!(
                     f,
-                    "choose only one of --shots, --responsive-matrix, --headless-drive, or --native-audit"
+                    "choose only one of --shots, --shots-dir, --responsive-matrix, --headless-drive, or --native-audit (--shots-dir captures every scenario, so it takes no --scenario)"
                 )
             }
             Self::ShotsOnly(arg) => write!(
@@ -1227,17 +1231,6 @@ fn run_with_args(spec: &LaunchSpec, raw_args: &[String]) -> Result<(), LaunchErr
     run_with_args_with_attachment(spec, raw_args, runtime_portal::native::ensure_attached)
 }
 
-#[allow(
-    clippy::exit,
-    reason = "the --headless-drive path reports the harness's pass/fail \
-              status as this process's exit code, exactly like --shots \
-              reports success by returning Ok — there is no caller to \
-              hand a status back to"
-)]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one ordered dispatch preserves legacy and prepared mode delivery"
-)]
 #[cfg(feature = "native")]
 fn run_with_args_with_attachment(
     spec: &LaunchSpec,
@@ -1264,7 +1257,69 @@ fn run_with_args_with_attachment(
     } else {
         crate::i18n::PseudoLocale::Off
     });
+    if let Some(directory) = &args.shots_dir {
+        return capture_every_scenario(spec, &args, directory);
+    }
+    run_parsed(spec, &args, attach)
+}
 
+/// `--shots-dir`: each declared scenario (or the plain capture, for an app
+/// that declares none) captured on its own, exactly as `--shots --scenario`
+/// captures it, into `NN-name.png` so a gallery keeps declaration order.
+#[cfg(feature = "native")]
+fn capture_every_scenario(
+    spec: &LaunchSpec,
+    args: &LaunchArgs,
+    directory: &std::path::Path,
+) -> Result<(), LaunchError> {
+    capture_directory(directory, "--shots-dir")?;
+    let scenarios: Vec<Option<&str>> = if spec.scenarios.is_empty() {
+        vec![None]
+    } else {
+        spec.scenarios.iter().copied().map(Some).collect()
+    };
+    for (index, scenario) in scenarios.into_iter().enumerate() {
+        let name = scenario.unwrap_or("default");
+        let out = directory.join(format!("{:02}-{name}.png", index.saturating_add(1)));
+        let mut capture = args.clone();
+        capture.shots_dir = None;
+        capture.shots = Some(out);
+        capture.scenario = scenario.map(str::to_owned);
+        // A capture never attaches to the runtime.
+        run_parsed(spec, &capture, |_| Ok(()))?;
+    }
+    Ok(())
+}
+
+/// Create the directory a capture mode (`option`) writes its PNGs into.
+#[cfg(feature = "native")]
+fn capture_directory(directory: &std::path::Path, option: &str) -> Result<(), LaunchError> {
+    std::fs::create_dir_all(directory).map_err(|error| {
+        LaunchError::Operation(format!(
+            "could not create the {option} directory {}: {error}",
+            directory.display()
+        ))
+    })
+}
+
+#[allow(
+    clippy::exit,
+    reason = "the --headless-drive path reports the harness's pass/fail \
+              status as this process's exit code, exactly like --shots \
+              reports success by returning Ok — there is no caller to \
+              hand a status back to"
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered dispatch preserves legacy and prepared mode delivery"
+)]
+#[cfg(feature = "native")]
+fn run_parsed(
+    spec: &LaunchSpec,
+    args: &LaunchArgs,
+    attach: impl FnOnce(&str) -> std::io::Result<()>,
+) -> Result<(), LaunchError> {
+    let args = args.clone();
     if spec.definition.is_some() {
         if args.headless.is_none()
             && args.shots.is_none()
@@ -1360,12 +1415,7 @@ fn run_with_args_with_attachment(
     }
 
     if let Some(out_dir) = &args.responsive_matrix {
-        std::fs::create_dir_all(out_dir).map_err(|error| {
-            LaunchError::Operation(format!(
-                "could not create responsive-matrix directory {}: {error}",
-                out_dir.display()
-            ))
-        })?;
+        capture_directory(out_dir, "--responsive-matrix")?;
         for (name, viewport) in RESPONSIVE_VIEWPORTS {
             let out = out_dir.join(format!("{}-{name}.png", spec.app_id));
             let mut matrix_args = args.clone();
@@ -2125,6 +2175,7 @@ fn parse_args_extended(
 ) -> Result<LaunchArgs, LaunchError> {
     let mut parsed = LaunchArgs {
         shots: None,
+        shots_dir: None,
         responsive_matrix: None,
         viewport: None,
         scenario: None,
@@ -2149,6 +2200,10 @@ fn parse_args_extended(
             "--responsive-matrix" => {
                 let value = take_value(args, &mut index, flag, inline)?;
                 set_once(&mut parsed.responsive_matrix, PathBuf::from(value), flag)?;
+            }
+            "--shots-dir" => {
+                let value = take_value(args, &mut index, flag, inline)?;
+                set_once(&mut parsed.shots_dir, PathBuf::from(value), flag)?;
             }
             "--pseudo-locale" if inline.is_none() => {
                 if parsed.pseudo_locale {
@@ -2216,13 +2271,22 @@ fn parse_args_extended(
         index = index.saturating_add(1);
     }
     let mode_count = usize::from(parsed.shots.is_some())
+        .saturating_add(usize::from(parsed.shots_dir.is_some()))
         .saturating_add(usize::from(parsed.responsive_matrix.is_some()))
         .saturating_add(usize::from(parsed.headless.is_some()))
         .saturating_add(usize::from(parsed.native_audit));
     if mode_count > 1 {
         return Err(LaunchError::ConflictingModes);
     }
-    if parsed.shots.is_none() && parsed.responsive_matrix.is_none() && !parsed.native_audit {
+    // Every scenario is captured; naming one is a single `--shots`.
+    if parsed.shots_dir.is_some() && parsed.scenario.is_some() {
+        return Err(LaunchError::ConflictingModes);
+    }
+    if parsed.shots.is_none()
+        && parsed.shots_dir.is_none()
+        && parsed.responsive_matrix.is_none()
+        && !parsed.native_audit
+    {
         if parsed.viewport.is_some() {
             return Err(LaunchError::ShotsOnly("--viewport".to_owned()));
         }
@@ -2734,6 +2798,27 @@ mod tests {
             assert!(parsed.pseudo_locale);
             assert_eq!(parsed.text_scale, Some(2.0));
             assert_eq!(parsed.scenario.as_deref(), Some("wide"));
+        }
+
+        // Case `shots_dir_captures_every_scenario_and_names_none`.
+        {
+            let parsed = parse_args(
+                &strings(&["app", "--shots-dir", "/tmp/gallery", "--viewport=640x480"]),
+                &[],
+                &[],
+            )
+            .unwrap();
+            assert_eq!(parsed.shots_dir, Some(PathBuf::from("/tmp/gallery")));
+            assert_eq!(parsed.viewport, Some((640, 480)));
+            for conflicting in [
+                &["app", "--shots-dir=/tmp/a", "--scenario=wide"][..],
+                &["app", "--shots-dir=/tmp/a", "--shots=/tmp/b.png"][..],
+            ] {
+                assert!(matches!(
+                    parse_args(&strings(conflicting), &[], &[]),
+                    Err(LaunchError::ConflictingModes)
+                ));
+            }
         }
 
         // Case `parses_headless_payload_without_process_exit`.
