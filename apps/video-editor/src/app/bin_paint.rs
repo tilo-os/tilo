@@ -173,7 +173,7 @@ impl VideoEditorApp {
         let name_style = ctx.theme.text(TextRole::Label);
         let sub_style = ctx.theme.text(TextRole::Caption);
         let meta_style = ctx.theme.text(TextRole::Caption).numeric();
-        let text_x = thumb.x1 + S3 * ctx.scale;
+        let text_x = thumb.x1 + S2 * ctx.scale;
         let right = rect.x1 - S2 * ctx.scale;
         let name_h = line_height(ctx.text, &name_style);
         let sub_h = line_height(ctx.text, &sub_style);
