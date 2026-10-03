@@ -37,8 +37,7 @@ use super::launch::{Command, LaunchInput};
 use super::live::Live;
 use super::root::ResourceRoot;
 use super::scenario::{Fixture, Run};
-use super::stage::Stages;
-use super::view::{Updaters, ViewCx};
+use super::view::ViewCx;
 
 /// A framework app: one resource type and a view of it.
 ///
@@ -285,19 +284,14 @@ pub(crate) fn build_root<A: ResourceApp>(
     let resource_id = <A::Resource as Resource>::KIND;
     let published = tilo_resource::publish::<A::Resource>(resource_id, &label, reader.state());
     let live = Live::new(reader);
-    let updaters = Updaters::new();
     let alive = Rc::new(());
     let dispatch = Dispatcher::new(A::ID, resource_id, read_only, me.as_deref());
-    let saved = ui_core::LocalState::new(ui_core::record::RecordSaveStatus::Saved);
-    let stages = Stages::new();
     let storage = super::settings::ViewStorage::new(storage);
     // Effects and projection drains run in a window someone uses only:
     // History shows a past version, and a capture reaches nothing outside.
     let effects = (permissions.is_some() && run.mode.is_live())
         .then(|| Effects::live(dispatch.clone(), live.clone()));
-    let mut cx = ViewCx::root(
-        live, updaters, &alive, dispatch, published, saved, stages, run, storage,
-    );
+    let mut cx = ViewCx::root(live, &alive, dispatch, published, run, storage);
     if let Some(effects) = effects {
         cx.effects = effects;
     }
