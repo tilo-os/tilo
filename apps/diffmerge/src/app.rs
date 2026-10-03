@@ -191,10 +191,10 @@ impl DiffMergeApp {
             Some("error") => {
                 self.load_sample();
                 self.set_mode(Mode::Diff);
-                self.load_error = Some(
-                    "/home/ada/Documents/release-notes.docx: stream did not contain valid UTF-8"
-                        .into(),
-                );
+                self.load_error = Some(t_args(
+                    "error-not-text",
+                    &[("name", text("release-notes.docx"))],
+                ));
             }
             _ => {
                 self.load_sample();
@@ -508,7 +508,9 @@ impl DiffMergeApp {
                             Some(file) => Pick::Opened(
                                 String::from_utf8(file.bytes)
                                     .map(|text| (file.name.clone(), text))
-                                    .map_err(|_| format!("{}: not UTF-8 text", file.name)),
+                                    .map_err(|_| {
+                                        t_args("error-not-text", &[("name", text(&file.name))])
+                                    }),
                             ),
                             None => Pick::Cancelled,
                         },
@@ -1040,7 +1042,13 @@ impl Widget for DiffMergeApp {
     ) {
         // The window ground is the framework's; reserve the status bar first
         // so the views are placed above the band this frame will paint.
-        let status_h = status_bar::height(theme);
+        // An error replaces the comparison and its status; no empty band is
+        // left behind.
+        let status_h = if self.load_error.is_some() {
+            0.0
+        } else {
+            status_bar::height(theme)
+        };
         #[expect(
             clippy::float_cmp,
             reason = "change detection against the cached measurement: any bit difference means the views must be re-placed"
@@ -1050,7 +1058,7 @@ impl Widget for DiffMergeApp {
             self.status_h = status_h;
             self.place_views();
         }
-        let (content, bar) = status_bar::split(self.rect, theme);
+        let content = self.content_rect();
         let compact = self.rect.width() < f64::from(theme.tokens.metrics.compact_breakpoint);
         if compact != self.compact {
             self.compact = compact;
@@ -1067,8 +1075,11 @@ impl Widget for DiffMergeApp {
             }
         }
 
-        let (left, right) = self.status_readouts();
-        status_bar::draw(scene, transform, tr, theme, bar, &left, &right);
+        if self.load_error.is_none() {
+            let (_, bar) = status_bar::split(self.rect, theme);
+            let (left, right) = self.status_readouts();
+            status_bar::draw(scene, transform, tr, theme, bar, &left, &right);
+        }
         self.dirty = false;
     }
 
@@ -1129,12 +1140,13 @@ impl Widget for DiffMergeApp {
         use ui::a11y::{AccessNode, Role};
 
         let mut children = Vec::new();
-        if let Some(content) = match self.mode {
-            Mode::Diff => self.diff.accessibility(),
-            Mode::Merge => self.merge.accessibility(),
-        } {
-            children.push(content);
-        }
+        // The active view is one of this widget's children and publishes
+        // itself; its controls are published here, where their actions are
+        // handled.
+        children.extend(match self.mode {
+            Mode::Diff => self.diff.access_controls(),
+            Mode::Merge => self.merge.access_controls(),
+        });
         if self.mode == Mode::Diff && self.diff.model().rows.is_empty() {
             children.push(
                 AccessNode::new(Role::Paragraph)
@@ -1189,6 +1201,13 @@ impl Widget for DiffMergeApp {
             }
             self.dirty = true;
             return true;
+        }
+        if let Some(tag) = target.strip_prefix(crate::merge_view::SOURCE_TARGET) {
+            return self.mode == Mode::Merge && {
+                let shown = self.merge.select_source_tagged(tag);
+                self.dirty |= shown;
+                shown
+            };
         }
         if let Some(show_right) = match target {
             "diffmerge.diff-source:left" => Some(false),
@@ -1430,11 +1449,18 @@ fn label_and_text(path: &Path) -> Result<(String, String), String> {
     Ok((label, read_text(path)?))
 }
 
+/// The text of the file at `path`, or a sentence that says which file could
+/// not be compared and why, by name only.
 fn read_text(path: &Path) -> Result<String, String> {
-    let failed = |error: &dyn std::fmt::Display| format!("{}: {error}", path.display());
-    let (dir, name) = tilo_files::file_at(path).map_err(|e| failed(&e))?;
-    let bytes = tilo_files::blocking::read(&dir, &name).map_err(|e| failed(&e))?;
-    String::from_utf8(bytes).map_err(|e| failed(&e))
+    let name = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    let unreadable =
+        |_: &dyn std::fmt::Display| t_args("error-unreadable", &[("name", text(&name))]);
+    let (dir, file) = tilo_files::file_at(path).map_err(|e| unreadable(&e))?;
+    let bytes = tilo_files::blocking::read(&dir, &file).map_err(|e| unreadable(&e))?;
+    String::from_utf8(bytes).map_err(|_| t_args("error-not-text", &[("name", text(&name))]))
 }
 
 #[cfg(test)]
@@ -1839,8 +1865,8 @@ mod tests {
     }
 
     fn selected_compact_source(app: &DiffMergeApp) -> String {
-        let node = Widget::accessibility(&app.merge).expect("merge is exposed to assistive tech");
-        node.children
+        app.merge
+            .access_controls()
             .iter()
             .find(|child| child.state.checked == Some(true))
             .and_then(|child| child.name.clone())
@@ -1887,10 +1913,9 @@ mod tests {
         }
         assert!(hits.windows(2).all(|pair| pair[0].0.x1 <= pair[1].0.x0));
 
-        let semantic = Widget::accessibility(&app.merge).expect("merge semantics");
         assert_eq!(
-            semantic
-                .children
+            app.merge
+                .access_controls()
                 .iter()
                 .filter(|child| child
                     .name
@@ -1906,18 +1931,12 @@ mod tests {
         // deliberately visible side by side.
         rerender_merge_frame(&mut app, (800.0, 760.0));
         assert!(app.merge.compact_source_hits().is_empty());
-        assert!(
-            Widget::accessibility(&app.merge)
-                .expect("merge semantics")
-                .children
-                .iter()
-                .all(|child| {
-                    !child
-                        .name
-                        .as_deref()
-                        .is_some_and(|name| name.starts_with("Show "))
-                })
-        );
+        assert!(app.merge.access_controls().iter().all(|child| {
+            !child
+                .name
+                .as_deref()
+                .is_some_and(|name| name.starts_with("Show "))
+        }));
     }
 
     /// Measured-text layout at 1x and 200%: the status bar, merge resolution
@@ -2126,11 +2145,10 @@ mod tests {
         assert!(handled);
         assert_eq!(selected_compact_source(app), "Show Ours source");
 
-        let theirs_key = ui::a11y::hash_key(&"diffmerge.source.theirs");
-        assert!(Widget::perform_action_at(
-            &mut app.merge,
+        assert!(Widget::perform_semantic_action(
+            app,
+            "diffmerge.merge-source:theirs",
             &ui::a11y::Action::Activate,
-            &[theirs_key],
             &mut state.doc,
             &state.root,
         ));
@@ -2249,18 +2267,8 @@ mod tests {
         let mut app = merge_frame(app, state, (390.0, 760.0));
         let (app, state) = Framed::split(&mut app);
         let root = Widget::accessibility(&*app).expect("diff semantics");
-        let diff = root
-            .children
-            .iter()
-            .find(|child| {
-                child
-                    .name
-                    .as_deref()
-                    .is_some_and(|name| name.starts_with("Diff between"))
-            })
-            .expect("active diff content");
         assert_eq!(
-            diff.children
+            root.children
                 .iter()
                 .filter(|child| child
                     .name
@@ -2325,15 +2333,15 @@ mod tests {
         let (app, state) = Framed::split(&mut app);
 
         let root = Widget::accessibility(&*app).expect("root semantics");
-        let merge = root
+        let target = root
             .children
             .iter()
-            .find(|child| child.name.as_deref() == Some("Three-way merge"))
-            .expect("active merge content is not hidden behind toolbar chrome");
-        let target = merge
-            .children
-            .iter()
-            .find_map(|child| child.action_target.clone())
+            .find_map(|child| {
+                child
+                    .action_target
+                    .clone()
+                    .filter(|target| target.starts_with("diffmerge.merge.resolve:"))
+            })
             .expect("one drawn resolution action is accessible");
         let before = crate::doc::MergeDoc::merged_text(&state.doc);
         assert!(Widget::perform_semantic_action(
