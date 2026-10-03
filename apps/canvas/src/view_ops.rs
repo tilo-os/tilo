@@ -16,7 +16,7 @@ use crate::media;
 use crate::model::Mark;
 use crate::model::{Artwork, Shape};
 use crate::render::{Options, Renderer};
-use crate::resource::{Export, Inspect, Look};
+use crate::resource::{Compare, Export, Inspect, Look};
 
 /// The default longest side of a look, in pixels: enough to judge a
 /// composition; a region look shows detail. A model pays for every pixel.
@@ -113,16 +113,9 @@ fn render_rgba(
     pixels_per_unit: f64,
     options: &Options,
 ) -> Result<(Vec<u8>, u32, u32), String> {
-    let width = side(region.width() * pixels_per_unit);
-    let height = side(region.height() * pixels_per_unit);
-    let mut scene = Scene::new();
-    let transform = Affine::scale(pixels_per_unit) * Affine::translate((-region.x0, -region.y0));
-    renderer.draw(art, &mut scene, transform, text, options);
-    let mut offscreen = ui::offscreen::OffscreenRenderer::try_new(width, height)
-        .map_err(|error| format!("no renderer for a {width}x{height} picture: {error}"))?;
-    let [r, g, b, a] = BACKDROP;
-    let rgba = offscreen.render(&scene, Color::from_rgba8(r, g, b, a));
-    Ok((rgba, width, height))
+    pixels(region, pixels_per_unit, options.bare, |scene, to| {
+        renderer.draw(art, scene, to, text, options);
+    })
 }
 
 /// Opaque RGBA8 as JPEG bytes; alpha is dropped.
@@ -139,6 +132,254 @@ pub fn encode_jpeg(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Stri
         .encode(&rgb, width, height, image::ExtendedColorType::Rgb8)
         .map_err(|error| error.to_string())?;
     Ok(jpeg)
+}
+
+/// What `paint` draws of `region`, as RGBA: over a neutral grey, or over
+/// transparency when `bare`.
+///
+/// # Errors
+/// Returns why nothing could be rendered.
+pub fn pixels(
+    region: Rect,
+    pixels_per_unit: f64,
+    bare: bool,
+    paint: impl FnOnce(&mut Scene, Affine),
+) -> Result<(Vec<u8>, u32, u32), String> {
+    let width = side(region.width() * pixels_per_unit);
+    let height = side(region.height() * pixels_per_unit);
+    let mut scene = Scene::new();
+    let transform = Affine::scale(pixels_per_unit) * Affine::translate((-region.x0, -region.y0));
+    paint(&mut scene, transform);
+    let mut offscreen = ui::offscreen::OffscreenRenderer::try_new(width, height)
+        .map_err(|error| format!("no renderer for a {width}x{height} picture: {error}"))?;
+    let backdrop = if bare {
+        Color::TRANSPARENT
+    } else {
+        let [r, g, b, a] = BACKDROP;
+        Color::from_rgba8(r, g, b, a)
+    };
+    Ok((offscreen.render(&scene, backdrop), width, height))
+}
+
+/// The cells `compare` scores the picture in, per side.
+const COMPARE_CELLS: u32 = 4;
+
+/// The artwork against its reference picture.
+///
+/// # Errors
+/// Returns that there is no reference, an invalid region, mode or size, or
+/// a render failure.
+pub fn compare(
+    renderer: &mut Renderer,
+    text: &mut TextRenderer,
+    art: &Artwork,
+    compare: &Compare,
+) -> Result<(Picture, Value), String> {
+    if art.reference.is_none() {
+        return Err("there is no reference picture; set-reference first".into());
+    }
+    let frame = renderer
+        .reference_frame(art)
+        .ok_or("the reference picture cannot be read")?;
+    let region = match compare.region {
+        Some(region) => region_rect(art, Some(region))?,
+        None => frame,
+    };
+    let mode = compare.mode.as_deref().unwrap_or("side-by-side");
+    if !matches!(mode, "side-by-side" | "overlay" | "difference") {
+        return Err(format!(
+            "mode {mode:?} must be side-by-side, overlay or difference"
+        ));
+    }
+    let size = compare.size.unwrap_or(640);
+    if !(64..=1024).contains(&size) {
+        return Err("size must be within 64..=1024".into());
+    }
+    let scale = f64::from(size) / region.width().max(region.height());
+    let (drawn, width, height) = pixels(region, scale, false, |scene, to| {
+        renderer.draw(art, scene, to, text, &Options::default());
+    })?;
+    let (reference, _, _) = pixels(region, scale, true, |scene, to| {
+        renderer.draw_reference(art, scene, to);
+    })?;
+    let ground = crate::render::colour(&art.ground.colour, &[])
+        .unwrap_or(Color::WHITE) // document colour
+        .to_rgba8();
+    let inside = Rect::new(
+        (frame.x0 - region.x0) * scale,
+        (frame.y0 - region.y0) * scale,
+        (frame.x1 - region.x0) * scale,
+        (frame.y1 - region.y0) * scale,
+    );
+    let reference = flatten(&reference, width, inside, [ground.r, ground.g, ground.b]);
+    let (score, cells) = difference(&drawn, &reference, width, height);
+    let combined = match mode {
+        "overlay" => blend_pixels(&drawn, &reference, |a, b, alpha| {
+            a * (1.0 - alpha * 0.5) + b * alpha * 0.5
+        }),
+        "difference" => blend_pixels(&drawn, &reference, |a, b, alpha| (a - b).abs() * alpha),
+        _ => beside(&drawn, &reference, width, height),
+    };
+    let out_width = if mode == "side-by-side" {
+        width.saturating_mul(2).saturating_add(GUTTER)
+    } else {
+        width
+    };
+    let cell_w = region.width() / f64::from(COMPARE_CELLS);
+    let cell_h = region.height() / f64::from(COMPARE_CELLS);
+    let mut worst: Vec<(u32, u32, f64)> = cells;
+    worst.sort_by(|a, b| b.2.total_cmp(&a.2));
+    let worst: Vec<Value> = worst
+        .iter()
+        .take(4)
+        .map(|(column, row, score)| {
+            json!({
+                "region": [
+                    round(region.x0 + f64::from(*column) * cell_w),
+                    round(region.y0 + f64::from(*row) * cell_h),
+                    round(cell_w),
+                    round(cell_h),
+                ],
+                "difference": (score * 1000.0).round() / 1000.0,
+            })
+        })
+        .collect();
+    let info = json!({
+        "mode": mode,
+        "width": out_width,
+        "height": height,
+        "region": [region.x0, region.y0, region.width(), region.height()],
+        "difference": (score * 1000.0).round() / 1000.0,
+        "worst_regions": worst,
+        "reading": "difference is the mean colour distance 0..1 within the reference's frame, its transparent parts read as the ground; lower is closer. side-by-side shows the artwork left, the reference right.",
+    });
+    Ok((encode(&combined, (out_width, height), true)?, info))
+}
+
+/// The gap between the two pictures side by side, in pixels.
+const GUTTER: u32 = 8;
+
+/// The reference as the artwork should look within its frame: opaque over
+/// the ground, so paint where the reference is empty counts against a
+/// match. Outside the frame it stays transparent and is not compared.
+fn flatten(reference: &[u8], width: u32, inside: Rect, ground: [u8; 3]) -> Vec<u8> {
+    let width = usize::try_from(width.max(1)).unwrap_or(1);
+    let mut out = Vec::with_capacity(reference.len());
+    for (index, pixel) in reference.chunks_exact(4).enumerate() {
+        let x = index % width;
+        let y = index / width;
+        let centre = ui::vello::kurbo::Point::new(count(x) + 0.5, count(y) + 0.5);
+        if !inside.contains(centre) {
+            out.extend_from_slice(&[0, 0, 0, 0]);
+            continue;
+        }
+        let alpha = f64::from(pixel.get(3).copied().unwrap_or(0)) / 255.0;
+        for (channel, under) in ground.iter().enumerate() {
+            let over = f64::from(pixel.get(channel).copied().unwrap_or(0));
+            out.push(byte(over * alpha + f64::from(*under) * (1.0 - alpha)));
+        }
+        out.push(255);
+    }
+    out
+}
+
+fn count(n: usize) -> f64 {
+    f64::from(u32::try_from(n).unwrap_or(u32::MAX))
+}
+
+/// The mean colour distance within the reference's frame, overall and per
+/// cell of a `COMPARE_CELLS` grid.
+fn difference(
+    drawn: &[u8],
+    reference: &[u8],
+    width: u32,
+    height: u32,
+) -> (f64, Vec<(u32, u32, f64)>) {
+    let cells = usize::try_from(COMPARE_CELLS * COMPARE_CELLS).unwrap_or(16);
+    let mut sums = vec![(0.0_f64, 0.0_f64); cells];
+    let (mut total, mut weight) = (0.0, 0.0);
+    for (index, (a, b)) in drawn
+        .chunks_exact(4)
+        .zip(reference.chunks_exact(4))
+        .enumerate()
+    {
+        let alpha = f64::from(b.get(3).copied().unwrap_or(0)) / 255.0;
+        if alpha <= 0.0 {
+            continue;
+        }
+        let distance = (0..3)
+            .map(|channel| {
+                (f64::from(a.get(channel).copied().unwrap_or(0))
+                    - f64::from(b.get(channel).copied().unwrap_or(0)))
+                .abs()
+            })
+            .sum::<f64>()
+            / (3.0 * 255.0);
+        total += distance * alpha;
+        weight += alpha;
+        let index = u32::try_from(index).unwrap_or(u32::MAX);
+        let (x, y) = (index % width.max(1), index / width.max(1));
+        let cell =
+            (y * COMPARE_CELLS / height.max(1)) * COMPARE_CELLS + x * COMPARE_CELLS / width.max(1);
+        if let Some(sum) = usize::try_from(cell)
+            .ok()
+            .and_then(|cell| sums.get_mut(cell))
+        {
+            sum.0 += distance * alpha;
+            sum.1 += alpha;
+        }
+    }
+    let per_cell = (0..COMPARE_CELLS * COMPARE_CELLS)
+        .zip(sums)
+        .filter(|(_, (_, weight))| *weight > 0.0)
+        .map(|(cell, (sum, weight))| (cell % COMPARE_CELLS, cell / COMPARE_CELLS, sum / weight))
+        .collect();
+    (if weight > 0.0 { total / weight } else { 1.0 }, per_cell)
+}
+
+/// `drawn` and `reference` combined channel by channel by `mix(a, b,
+/// reference alpha)`.
+fn blend_pixels(drawn: &[u8], reference: &[u8], mix: impl Fn(f64, f64, f64) -> f64) -> Vec<u8> {
+    let mut out = Vec::with_capacity(drawn.len());
+    for (a, b) in drawn.chunks_exact(4).zip(reference.chunks_exact(4)) {
+        let alpha = f64::from(b.get(3).copied().unwrap_or(0)) / 255.0;
+        for channel in 0..3 {
+            let value = mix(
+                f64::from(a.get(channel).copied().unwrap_or(0)),
+                f64::from(b.get(channel).copied().unwrap_or(0)),
+                alpha,
+            );
+            out.push(byte(value));
+        }
+        out.push(255);
+    }
+    out
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "clamped to a byte's range before the cast"
+)]
+fn byte(value: f64) -> u8 {
+    value.round().clamp(0.0, 255.0) as u8
+}
+
+/// The two pictures side by side with a gutter, the reference over grey.
+fn beside(drawn: &[u8], reference: &[u8], width: u32, height: u32) -> Vec<u8> {
+    let grey = blend_pixels(&vec![120; reference.len()], reference, |a, b, alpha| {
+        a * (1.0 - alpha) + b * alpha
+    });
+    let row = usize::try_from(width).unwrap_or(0) * 4;
+    let gutter = vec![120_u8; usize::try_from(GUTTER).unwrap_or(0) * 4];
+    let mut out = Vec::new();
+    for y in 0..usize::try_from(height).unwrap_or(0) {
+        let span = y * row..(y + 1) * row;
+        out.extend_from_slice(drawn.get(span.clone()).unwrap_or_default());
+        out.extend_from_slice(&gutter);
+        out.extend_from_slice(grey.get(span).unwrap_or_default());
+    }
+    out
 }
 
 /// RGBA8 as PNG bytes.
@@ -190,6 +431,12 @@ pub fn look(
         layers: look.layers.clone(),
         grid: look.grid.unwrap_or(false),
         view: Some(region),
+        reference: look.reference.unwrap_or_else(|| {
+            art.reference
+                .as_ref()
+                .is_some_and(|reference| reference.visible)
+        }),
+        bare: false,
     };
     let picture = render(renderer, text, art, (region, scale), &options, jpeg)?;
     let info = json!({
@@ -242,9 +489,9 @@ fn whole(value: f64) -> f64 {
 }
 
 /// One mark as `inspect` lists it; its layer only when the caller did not
-/// name one.
-fn mark_entry(mark: &crate::model::Mark, named_layer: bool) -> Value {
-    let bounds = mark.bounds();
+/// name one, and its shape, style and transform when `full`.
+fn mark_entry(art: &Artwork, mark: &Mark, named_layer: bool, full: bool) -> Value {
+    let bounds = art.visible_bounds(mark);
     let mut entry = json!({
         "id": mark.id,
         "kind": mark.shape.kind(),
@@ -268,6 +515,19 @@ fn mark_entry(mark: &crate::model::Mark, named_layer: bool) -> Value {
         }
         if let Shape::Stroke { size, .. } = &mark.shape {
             fields.insert("size".into(), round(*size).into());
+        }
+        if !mark.group.is_empty() {
+            fields.insert("group".into(), mark.group.clone().into());
+        }
+        if !mark.clip.is_empty() {
+            fields.insert("clip".into(), mark.clip.clone().into());
+        }
+        if full {
+            fields.insert("shape".into(), json!(mark.shape));
+            fields.insert("style".into(), json!(mark.style));
+            if let Some(transform) = mark.transform {
+                fields.insert("transform".into(), json!(transform));
+            }
         }
     }
     entry
@@ -296,7 +556,9 @@ pub fn inspect(art: &Artwork, inspect: &Inspect) -> Result<Value, String> {
                 .as_ref()
                 .is_none_or(|layer| mark.layer == *layer)
         })
-        .filter(|mark| region.is_none_or(|region| mark.bounds().intersect(region).area() > 0.0))
+        .filter(|mark| {
+            region.is_none_or(|region| art.visible_bounds(mark).intersect(region).area() > 0.0)
+        })
         .collect();
     let limit = inspect
         .limit
@@ -309,7 +571,14 @@ pub fn inspect(art: &Artwork, inspect: &Inspect) -> Result<Value, String> {
         .rev()
         .take(limit)
         .rev()
-        .map(|mark| mark_entry(mark, inspect.layer.is_some()))
+        .map(|mark| {
+            mark_entry(
+                art,
+                mark,
+                inspect.layer.is_some(),
+                inspect.full == Some(true),
+            )
+        })
         .collect();
     let layers: Vec<Value> = art
         .layers
@@ -342,6 +611,7 @@ pub fn inspect(art: &Artwork, inspect: &Inspect) -> Result<Value, String> {
             "ground_colour": art.ground.colour,
         },
         "layers_top_first": layers,
+        "groups": art.groups(),
         "marks_bottom_first": marks,
         "listed": marks.len(),
         "matching": matching.len(),

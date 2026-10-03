@@ -22,6 +22,7 @@ pub mod render;
 pub mod resource;
 pub mod sample;
 pub mod surface;
+pub mod svg;
 pub mod view_ops;
 
 pub use actions::CanvasAction;

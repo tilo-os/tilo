@@ -12,8 +12,8 @@ use ui::tilo_resource::{
 };
 
 use crate::actions::{
-    ACTION_TYPE, AddLayer, Arrange, CanvasAction, Draw, EditLayer, EditMarks, Paint, RemoveLayer,
-    RemoveMarks, RemoveMedium, SaveMedium, SetArtwork,
+    ACTION_TYPE, AddLayer, Align, Arrange, CanvasAction, Draw, EditLayer, EditMarks, Paint,
+    RemoveLayer, RemoveMarks, RemoveMedium, SaveMedium, SetArtwork, SetReference,
 };
 use crate::model::Artwork;
 
@@ -65,6 +65,8 @@ pub struct Look {
     pub layers: Option<Vec<String>>,
     /// A past version: a change id from history or a checkpoint name.
     pub version: Option<String>,
+    /// Show the reference picture over the artwork; as set when absent.
+    pub reference: Option<bool>,
 }
 
 /// List layers and marks with their ids, bounds and colours.
@@ -79,6 +81,21 @@ pub struct Inspect {
     pub limit: Option<u32>,
     /// A past version: a change id from history or a checkpoint name.
     pub version: Option<String>,
+    /// Also each mark's shape, style and transform, to edit exactly.
+    pub full: Option<bool>,
+}
+
+/// Render the artwork beside, over or against the reference picture, with
+/// how far apart they are.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Compare {
+    /// `[x, y, width, height]`; the reference's frame when absent.
+    pub region: Option<[f64; 4]>,
+    /// `side-by-side` (default), `overlay` or `difference`.
+    pub mode: Option<String>,
+    /// Longest side of each picture, 64 to 1024 (default 640).
+    pub size: Option<u32>,
 }
 
 /// Render the artwork at full size as a PNG.
@@ -98,6 +115,8 @@ pub enum ViewOp {
     Media,
     Export(Export),
     Diff(Diff),
+    ExportSvg,
+    Compare(Compare),
 }
 
 /// What changed between two versions of the artwork.
@@ -177,6 +196,39 @@ fn read_args<T: serde::de::DeserializeOwned>(
     serde_json::from_value(Value::Object(fields)).map_err(|error| error.to_string())
 }
 
+/// Read the picture at `path` where the action is authored and keep it in
+/// the content store, so the action names it by content and every replica
+/// shows the same picture.
+fn store_picture(path: &str) -> Result<String, String> {
+    let bytes = read_file(path, crate::render::MAX_REFERENCE_BYTES)?;
+    crate::render::decode_picture(&bytes)
+        .map_err(|error| format!("{path} is not a PNG or JPEG: {error}"))?;
+    store(&bytes)
+}
+
+/// The bytes of the file at `path`, at most `limit` of them.
+///
+/// # Errors
+/// Returns why the file cannot be read, or that it is too large.
+pub fn read_file(path: &str, limit: usize) -> Result<Vec<u8>, String> {
+    let bytes = std::fs::read(path).map_err(|error| format!("cannot read {path}: {error}"))?;
+    if bytes.len() > limit {
+        return Err(format!("{path} is over {limit} bytes"));
+    }
+    Ok(bytes)
+}
+
+/// Keep `bytes` in the app's content store; answers their address.
+///
+/// # Errors
+/// Returns the store's failure.
+pub fn store(bytes: &[u8]) -> Result<String, String> {
+    let hash = tilo_content::ContentStore::for_app()
+        .put(bytes)
+        .map_err(|error| format!("the content could not be stored: {error}"))?;
+    ui::tilo_actions::content_resource(&hash).ok_or_else(|| "the content has no address".to_owned())
+}
+
 /// A short random id, minted where an action is authored.
 fn minted(prefix: &str) -> String {
     let id = uuid::Uuid::new_v4().simple().to_string();
@@ -252,7 +304,7 @@ impl Resource for ArtworkResource {
                 "edit-marks",
                 "Edit marks",
                 "Change marks by id: colours, opacity, name, move_by [dx,dy], scale and rotate about their centre, or move them to another layer.",
-                CanvasAction::EditMarks,
+                CanvasAction::edit,
             ),
             decl::<RemoveMarks>(
                 "remove-marks",
@@ -304,6 +356,27 @@ impl Resource for ArtworkResource {
                 "Remove a medium saved in this artwork.",
                 CanvasAction::RemoveMedium,
             ),
+            decl::<Align>(
+                "align",
+                "Align marks",
+                "Align marks or groups to an edge or centre line, and/or distribute them with equal gaps, within their own extent, the artwork or another mark.",
+                CanvasAction::Align,
+            ),
+            ActionDecl::new("set-reference", "Set reference", params_of::<SetReference>(), |args, _now| {
+                let mut set: SetReference = read_args(args)?;
+                if let Some(image) = &set.image
+                    && image.starts_with('/')
+                {
+                    set.image = Some(store_picture(image)?);
+                }
+                Ok(CanvasAction::SetReference(set))
+            })
+            .describe("Set the reference picture to recreate or trace: shown over the artwork at its opacity, seen by look (reference: false hides it) and compare; never exported."),
+            ActionDecl::new("import-svg", "Import SVG", params_of::<crate::svg::ImportSvg>(), |args, _now| {
+                let request: crate::svg::ImportSvg = read_args(args)?;
+                crate::svg::import(&request).map(CanvasAction::Draw)
+            })
+            .describe("Import an SVG (markup, file path or content address) as one draw of path and text marks in a group: fills, gradients, outlines, opacity, blends and clip paths."),
         ]
     }
 
@@ -312,27 +385,8 @@ impl Resource for ArtworkResource {
     }
 
     fn local_operations() -> Vec<ActionSpec> {
-        let view = |id: &str,
-                    label: &str,
-                    params: Vec<ActionParam>,
-                    wrap: fn(&ui::tilo_actions::ActionArgs) -> ViewOp| {
-            ActionSpec::typed_operation(
-                id,
-                label,
-                label,
-                OperationKind::View,
-                VIEW_TYPE,
-                params,
-                move |args| {
-                    EncodedAction::encode_operation(VIEW_TYPE, &wrap(args)).unwrap_or_else(|_| {
-                        EncodedAction {
-                            type_id: VIEW_TYPE.into(),
-                            payload: Vec::new(),
-                        }
-                    })
-                },
-            )
-            .requiring(PermissionRequirement::Read)
+        let view = |id: &str, label: &str, params: Vec<ActionParam>, wrap: Wrap| {
+            operation(id, label, OperationKind::View, params, wrap)
         };
         let mut look = view("look", "Look at the artwork", params_of::<Look>(), |args| {
             ViewOp::Look(read_args(args).unwrap_or_default())
@@ -392,7 +446,8 @@ impl Resource for ArtworkResource {
         diff.contract.result = ResultSpec::Json {
             schema: serde_json::json!({"type": "object"}),
         };
-        vec![look, inspect, media, export, diff]
+        let [compare, svg] = vector_operations();
+        vec![look, inspect, media, export, diff, compare, svg]
     }
 
     fn search(art: &Artwork) -> Vec<SearchEntry> {
@@ -422,4 +477,51 @@ impl Resource for ArtworkResource {
         );
         entries
     }
+}
+
+/// How a view's arguments become the operation it asks for.
+type Wrap = fn(&ui::tilo_actions::ActionArgs) -> ViewOp;
+
+/// A read-only operation answered by the surface.
+fn operation(
+    id: &str,
+    label: &str,
+    kind: OperationKind,
+    params: Vec<ActionParam>,
+    wrap: Wrap,
+) -> ActionSpec {
+    ActionSpec::typed_operation(id, label, label, kind, VIEW_TYPE, params, move |args| {
+        EncodedAction::encode_operation(VIEW_TYPE, &wrap(args)).unwrap_or_else(|_| EncodedAction {
+            type_id: VIEW_TYPE.into(),
+            payload: Vec::new(),
+        })
+    })
+    .requiring(PermissionRequirement::Read)
+}
+
+/// The views that compare against the reference and export SVG.
+fn vector_operations() -> [ActionSpec; 2] {
+    let mut compare = operation("compare", "Compare with reference", OperationKind::View, params_of::<Compare>(), |args| {
+            ViewOp::Compare(read_args(args).unwrap_or_default())
+        })
+        .with_description(
+            "See the artwork beside (or over, or minus) the reference picture, with a difference score 0..1 and the regions that differ most, to iterate toward it.",
+        );
+    compare.contract.result = ResultSpec::Json {
+        schema: serde_json::json!({"type": "object"}),
+    };
+    let mut svg = operation(
+        "export-svg",
+        "Export SVG",
+        OperationKind::Effect,
+        Vec::new(),
+        |_| ViewOp::ExportSvg,
+    )
+        .with_description(
+            "Export the artwork as SVG: plain layers as exact vector art, painted layers as embedded pictures. Answers with its content address and, when small, the markup.",
+        );
+    svg.contract.result = ResultSpec::Json {
+        schema: serde_json::json!({"type": "object"}),
+    };
+    [compare, svg]
 }

@@ -77,6 +77,72 @@
   },
   {
     "resource": "canvas.artwork",
+    "action": "align",
+    "resource_kind": "canvas.artwork",
+    "label": "Align marks",
+    "description": "Align marks or groups to an edge or centre line, and/or distribute them with equal gaps, within their own extent, the artwork or another mark.",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "ids",
+        "ty": "array",
+        "required": true,
+        "description": "Marks or groups.",
+        "schema": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Marks or groups."
+        },
+        "nullable": false
+      },
+      {
+        "name": "edge",
+        "ty": "text",
+        "required": false,
+        "description": "`left`, `center`, `right`, `top`, `middle` or `bottom`.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`left`, `center`, `right`, `top`, `middle` or `bottom`."
+        },
+        "nullable": true
+      },
+      {
+        "name": "distribute",
+        "ty": "text",
+        "required": false,
+        "description": "`horizontal` or `vertical`: equal gaps.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`horizontal` or `vertical`: equal gaps."
+        },
+        "nullable": true
+      },
+      {
+        "name": "to",
+        "ty": "text",
+        "required": false,
+        "description": "`artwork` or a mark/group id; else their extent.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`artwork` or a mark/group id; else their extent."
+        },
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
     "action": "apply",
     "resource_kind": "canvas.artwork",
     "label": "Apply Artwork edit",
@@ -444,13 +510,53 @@
                               "size": {
                                 "type": "number"
                               },
+                              "font": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "`sans`, `serif`, `mono` or a family name."
+                              },
+                              "weight": {
+                                "type": [
+                                  "integer",
+                                  "null"
+                                ],
+                                "minimum": 0,
+                                "maximum": 65535,
+                                "description": "400 regular to 700 bold."
+                              },
+                              "italic": {
+                                "type": "boolean"
+                              },
+                              "align": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ],
+                                "description": "`start`, `center` or `end` at `x`."
+                              },
+                              "line_height": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ],
+                                "description": "Times size (1.2)."
+                              },
+                              "width": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ],
+                                "description": "Wrap width."
+                              },
                               "kind": {
                                 "type": "string",
                                 "const": "text"
                               }
                             },
                             "additionalProperties": false,
-                            "description": "Text with its baseline starting at `x, y`."
+                            "description": "Text, first baseline at `y`; `\\n` breaks lines."
                           },
                           {
                             "type": "object",
@@ -583,6 +689,80 @@
                           "null"
                         ],
                         "description": "Painted layers: medium parameter overrides (`{\"load\": 0.3}`)."
+                      },
+                      "dash": {
+                        "type": [
+                          "array",
+                          "null"
+                        ],
+                        "items": {
+                          "type": "number"
+                        },
+                        "description": "Outline dashes `[on, off, …]`."
+                      },
+                      "cap": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "`butt`, `round` or `square`."
+                      },
+                      "join": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "`miter`, `round` or `bevel`."
+                      },
+                      "blend": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "`multiply`, `screen`, `overlay`, … (see the refusal for all)."
+                      },
+                      "shadow": {
+                        "type": [
+                          "object",
+                          "null"
+                        ],
+                        "properties": {
+                          "offset": {
+                            "type": "array",
+                            "items": {
+                              "type": "number"
+                            },
+                            "minItems": 2,
+                            "maxItems": 2,
+                            "description": "`[dx, dy]` in units."
+                          },
+                          "blur": {
+                            "type": "number",
+                            "description": "Softness in units; 0 is hard."
+                          },
+                          "colour": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "additionalProperties": false,
+                        "description": "A soft shadow cast by a mark."
+                      },
+                      "group": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "A group id: edits naming it change the members as one."
+                      },
+                      "clip": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "Cut to this mark's shape (opacity 0 hides that mark)."
                       }
                     },
                     "additionalProperties": false,
@@ -695,13 +875,328 @@
                   "type": "array",
                   "items": {
                     "type": "string"
-                  }
+                  },
+                  "description": "Marks, or groups (all their members)."
                 },
                 "name": {
                   "type": [
                     "string",
                     "null"
                   ]
+                },
+                "shape": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "required": [
+                            "kind",
+                            "x",
+                            "y",
+                            "width",
+                            "height"
+                          ],
+                          "properties": {
+                            "x": {
+                              "type": "number"
+                            },
+                            "y": {
+                              "type": "number"
+                            },
+                            "width": {
+                              "type": "number"
+                            },
+                            "height": {
+                              "type": "number"
+                            },
+                            "radius": {
+                              "type": "number"
+                            },
+                            "kind": {
+                              "type": "string",
+                              "const": "rect"
+                            }
+                          },
+                          "additionalProperties": false,
+                          "description": "An axis-aligned rectangle; `radius` rounds its corners."
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "kind",
+                            "cx",
+                            "cy",
+                            "rx",
+                            "ry"
+                          ],
+                          "properties": {
+                            "cx": {
+                              "type": "number"
+                            },
+                            "cy": {
+                              "type": "number"
+                            },
+                            "rx": {
+                              "type": "number"
+                            },
+                            "ry": {
+                              "type": "number"
+                            },
+                            "kind": {
+                              "type": "string",
+                              "const": "ellipse"
+                            }
+                          },
+                          "additionalProperties": false,
+                          "description": "An ellipse around its centre."
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "kind",
+                            "points"
+                          ],
+                          "properties": {
+                            "points": {
+                              "type": "array",
+                              "items": {
+                                "type": "array",
+                                "items": {
+                                  "type": "number"
+                                },
+                                "minItems": 2,
+                                "maxItems": 2
+                              }
+                            },
+                            "kind": {
+                              "type": "string",
+                              "const": "polygon"
+                            }
+                          },
+                          "additionalProperties": false,
+                          "description": "A closed polygon through `points` (`[[x, y], …]`)."
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "kind",
+                            "points"
+                          ],
+                          "properties": {
+                            "points": {
+                              "type": "array",
+                              "items": {
+                                "type": "array",
+                                "items": {
+                                  "type": "number"
+                                },
+                                "minItems": 2,
+                                "maxItems": 2
+                              }
+                            },
+                            "kind": {
+                              "type": "string",
+                              "const": "line"
+                            }
+                          },
+                          "additionalProperties": false,
+                          "description": "An open polyline through `points`, drawn with the stroke colour."
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "kind",
+                            "d"
+                          ],
+                          "properties": {
+                            "d": {
+                              "type": "string"
+                            },
+                            "kind": {
+                              "type": "string",
+                              "const": "path"
+                            }
+                          },
+                          "additionalProperties": false,
+                          "description": "SVG path data (`M 10 10 C 20 0, 40 0, 50 10 Z`)."
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "kind",
+                            "x",
+                            "y",
+                            "text",
+                            "size"
+                          ],
+                          "properties": {
+                            "x": {
+                              "type": "number"
+                            },
+                            "y": {
+                              "type": "number"
+                            },
+                            "text": {
+                              "type": "string"
+                            },
+                            "size": {
+                              "type": "number"
+                            },
+                            "font": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "description": "`sans`, `serif`, `mono` or a family name."
+                            },
+                            "weight": {
+                              "type": [
+                                "integer",
+                                "null"
+                              ],
+                              "minimum": 0,
+                              "maximum": 65535,
+                              "description": "400 regular to 700 bold."
+                            },
+                            "italic": {
+                              "type": "boolean"
+                            },
+                            "align": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "description": "`start`, `center` or `end` at `x`."
+                            },
+                            "line_height": {
+                              "type": [
+                                "number",
+                                "null"
+                              ],
+                              "description": "Times size (1.2)."
+                            },
+                            "width": {
+                              "type": [
+                                "number",
+                                "null"
+                              ],
+                              "description": "Wrap width."
+                            },
+                            "kind": {
+                              "type": "string",
+                              "const": "text"
+                            }
+                          },
+                          "additionalProperties": false,
+                          "description": "Text, first baseline at `y`; `\\n` breaks lines."
+                        },
+                        {
+                          "type": "object",
+                          "required": [
+                            "kind",
+                            "points",
+                            "size"
+                          ],
+                          "properties": {
+                            "points": {
+                              "type": "array",
+                              "items": {
+                                "type": "array",
+                                "items": {
+                                  "type": "number"
+                                }
+                              }
+                            },
+                            "size": {
+                              "type": "number"
+                            },
+                            "kind": {
+                              "type": "string",
+                              "const": "stroke"
+                            }
+                          },
+                          "additionalProperties": false,
+                          "description": "A brush stroke: a smooth curve through `points`, `size` wide. Points are `[x, y]` or `[x, y, pressure]`; a handful of points is enough, the stroke is smoothed through them."
+                        }
+                      ]
+                    }
+                  ],
+                  "description": "Replace the geometry (e.g. edit a path's `d`)."
+                },
+                "dash": {
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "type": "number"
+                  },
+                  "description": "`[]` removes dashes."
+                },
+                "cap": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "join": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "blend": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "shadow": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "properties": {
+                    "offset": {
+                      "type": "array",
+                      "items": {
+                        "type": "number"
+                      },
+                      "minItems": 2,
+                      "maxItems": 2,
+                      "description": "`[dx, dy]` in units."
+                    },
+                    "blur": {
+                      "type": "number",
+                      "description": "Softness in units; 0 is hard."
+                    },
+                    "colour": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "additionalProperties": false,
+                  "description": "Zero offset and blur removes it."
+                },
+                "group": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Put into this group; empty takes out of any."
+                },
+                "clip": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Cut to this mark's shape; empty uncuts."
                 },
                 "fill": {
                   "type": [
@@ -815,14 +1310,14 @@
                     "number",
                     "null"
                   ],
-                  "description": "Scale about each mark's centre (`1.5` is half again as large)."
+                  "description": "Scale about each mark's or group's centre."
                 },
                 "rotate": {
                   "type": [
                     "number",
                     "null"
                   ],
-                  "description": "Rotate about each mark's centre, in degrees clockwise."
+                  "description": "Degrees clockwise about each centre."
                 },
                 "layer": {
                   "type": [
@@ -991,6 +1486,102 @@
               },
               "additionalProperties": false,
               "description": "Remove a medium saved in the artwork; layers using it paint plain."
+            },
+            {
+              "type": "object",
+              "required": [
+                "action",
+                "ids"
+              ],
+              "properties": {
+                "ids": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Marks or groups."
+                },
+                "edge": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "`left`, `center`, `right`, `top`, `middle` or `bottom`."
+                },
+                "distribute": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "`horizontal` or `vertical`: equal gaps."
+                },
+                "to": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "`artwork` or a mark/group id; else their extent."
+                },
+                "action": {
+                  "type": "string",
+                  "const": "align"
+                }
+              },
+              "additionalProperties": false,
+              "description": "Line marks up along an edge, or space them evenly. A group moves as one."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "image": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "A PNG or JPEG: an absolute file path or a content address."
+                },
+                "frame": {
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 4,
+                  "maxItems": 4,
+                  "description": "`[x, y, width, height]`; fitted to the artwork when absent."
+                },
+                "opacity": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "description": "`0..=1` (default 0.5)."
+                },
+                "visible": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "remove": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ],
+                  "description": "Remove the reference."
+                },
+                "action": {
+                  "type": "string",
+                  "const": "set-reference"
+                }
+              },
+              "additionalProperties": false,
+              "description": "Set the reference picture to work from: shown over the artwork like tracing paper, compared by `compare`, never exported.",
+              "required": [
+                "action"
+              ]
             }
           ],
           "description": "One edit of the artwork."
@@ -1047,6 +1638,65 @@
         "required": true,
         "description": "The name",
         "nullable": false
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "compare",
+    "resource_kind": "canvas.artwork",
+    "label": "Compare with reference",
+    "description": "See the artwork beside (or over, or minus) the reference picture, with a difference score 0..1 and the regions that differ most, to iterate toward it.",
+    "operation": "View",
+    "params": [
+      {
+        "name": "region",
+        "ty": "array",
+        "required": false,
+        "description": "`[x, y, width, height]`; the reference's frame when absent.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number"
+          },
+          "minItems": 4,
+          "maxItems": 4,
+          "description": "`[x, y, width, height]`; the reference's frame when absent."
+        },
+        "nullable": true
+      },
+      {
+        "name": "mode",
+        "ty": "text",
+        "required": false,
+        "description": "`side-by-side` (default), `overlay` or `difference`.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`side-by-side` (default), `overlay` or `difference`."
+        },
+        "nullable": true
+      },
+      {
+        "name": "size",
+        "ty": "integer",
+        "required": false,
+        "description": "Longest side of each picture, 64 to 1024 (default 640).",
+        "schema": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 4294967295,
+          "description": "Longest side of each picture, 64 to 1024 (default 640)."
+        },
+        "nullable": true
       }
     ]
   },
@@ -1304,13 +1954,53 @@
                       "size": {
                         "type": "number"
                       },
+                      "font": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "`sans`, `serif`, `mono` or a family name."
+                      },
+                      "weight": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "minimum": 0,
+                        "maximum": 65535,
+                        "description": "400 regular to 700 bold."
+                      },
+                      "italic": {
+                        "type": "boolean"
+                      },
+                      "align": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "`start`, `center` or `end` at `x`."
+                      },
+                      "line_height": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "Times size (1.2)."
+                      },
+                      "width": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "Wrap width."
+                      },
                       "kind": {
                         "type": "string",
                         "const": "text"
                       }
                     },
                     "additionalProperties": false,
-                    "description": "Text with its baseline starting at `x, y`."
+                    "description": "Text, first baseline at `y`; `\\n` breaks lines."
                   },
                   {
                     "type": "object",
@@ -1443,6 +2133,80 @@
                   "null"
                 ],
                 "description": "Painted layers: medium parameter overrides (`{\"load\": 0.3}`)."
+              },
+              "dash": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "number"
+                },
+                "description": "Outline dashes `[on, off, …]`."
+              },
+              "cap": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "`butt`, `round` or `square`."
+              },
+              "join": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "`miter`, `round` or `bevel`."
+              },
+              "blend": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "`multiply`, `screen`, `overlay`, … (see the refusal for all)."
+              },
+              "shadow": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "offset": {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    },
+                    "minItems": 2,
+                    "maxItems": 2,
+                    "description": "`[dx, dy]` in units."
+                  },
+                  "blur": {
+                    "type": "number",
+                    "description": "Softness in units; 0 is hard."
+                  },
+                  "colour": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "additionalProperties": false,
+                "description": "A soft shadow cast by a mark."
+              },
+              "group": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "A group id: edits naming it change the members as one."
+              },
+              "clip": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Cut to this mark's shape (opacity 0 hides that mark)."
               }
             },
             "additionalProperties": false,
@@ -1552,12 +2316,13 @@
         "name": "ids",
         "ty": "array",
         "required": true,
-        "description": "ids",
+        "description": "Marks, or groups (all their members).",
         "schema": {
           "type": "array",
           "items": {
             "type": "string"
-          }
+          },
+          "description": "Marks, or groups (all their members)."
         },
         "nullable": false
       },
@@ -1571,6 +2336,376 @@
             "string",
             "null"
           ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "shape",
+        "ty": "object",
+        "required": false,
+        "description": "Replace the geometry (e.g. edit a path's `d`).",
+        "schema": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "required": [
+                    "kind",
+                    "x",
+                    "y",
+                    "width",
+                    "height"
+                  ],
+                  "properties": {
+                    "x": {
+                      "type": "number"
+                    },
+                    "y": {
+                      "type": "number"
+                    },
+                    "width": {
+                      "type": "number"
+                    },
+                    "height": {
+                      "type": "number"
+                    },
+                    "radius": {
+                      "type": "number"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "const": "rect"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "description": "An axis-aligned rectangle; `radius` rounds its corners."
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "kind",
+                    "cx",
+                    "cy",
+                    "rx",
+                    "ry"
+                  ],
+                  "properties": {
+                    "cx": {
+                      "type": "number"
+                    },
+                    "cy": {
+                      "type": "number"
+                    },
+                    "rx": {
+                      "type": "number"
+                    },
+                    "ry": {
+                      "type": "number"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "const": "ellipse"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "description": "An ellipse around its centre."
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "kind",
+                    "points"
+                  ],
+                  "properties": {
+                    "points": {
+                      "type": "array",
+                      "items": {
+                        "type": "array",
+                        "items": {
+                          "type": "number"
+                        },
+                        "minItems": 2,
+                        "maxItems": 2
+                      }
+                    },
+                    "kind": {
+                      "type": "string",
+                      "const": "polygon"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "description": "A closed polygon through `points` (`[[x, y], …]`)."
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "kind",
+                    "points"
+                  ],
+                  "properties": {
+                    "points": {
+                      "type": "array",
+                      "items": {
+                        "type": "array",
+                        "items": {
+                          "type": "number"
+                        },
+                        "minItems": 2,
+                        "maxItems": 2
+                      }
+                    },
+                    "kind": {
+                      "type": "string",
+                      "const": "line"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "description": "An open polyline through `points`, drawn with the stroke colour."
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "kind",
+                    "d"
+                  ],
+                  "properties": {
+                    "d": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "const": "path"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "description": "SVG path data (`M 10 10 C 20 0, 40 0, 50 10 Z`)."
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "kind",
+                    "x",
+                    "y",
+                    "text",
+                    "size"
+                  ],
+                  "properties": {
+                    "x": {
+                      "type": "number"
+                    },
+                    "y": {
+                      "type": "number"
+                    },
+                    "text": {
+                      "type": "string"
+                    },
+                    "size": {
+                      "type": "number"
+                    },
+                    "font": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "`sans`, `serif`, `mono` or a family name."
+                    },
+                    "weight": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0,
+                      "maximum": 65535,
+                      "description": "400 regular to 700 bold."
+                    },
+                    "italic": {
+                      "type": "boolean"
+                    },
+                    "align": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "`start`, `center` or `end` at `x`."
+                    },
+                    "line_height": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "description": "Times size (1.2)."
+                    },
+                    "width": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "description": "Wrap width."
+                    },
+                    "kind": {
+                      "type": "string",
+                      "const": "text"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "description": "Text, first baseline at `y`; `\\n` breaks lines."
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "kind",
+                    "points",
+                    "size"
+                  ],
+                  "properties": {
+                    "points": {
+                      "type": "array",
+                      "items": {
+                        "type": "array",
+                        "items": {
+                          "type": "number"
+                        }
+                      }
+                    },
+                    "size": {
+                      "type": "number"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "const": "stroke"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "description": "A brush stroke: a smooth curve through `points`, `size` wide. Points are `[x, y]` or `[x, y, pressure]`; a handful of points is enough, the stroke is smoothed through them."
+                }
+              ]
+            }
+          ],
+          "description": "Replace the geometry (e.g. edit a path's `d`)."
+        },
+        "nullable": true
+      },
+      {
+        "name": "dash",
+        "ty": "array",
+        "required": false,
+        "description": "`[]` removes dashes.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number"
+          },
+          "description": "`[]` removes dashes."
+        },
+        "nullable": true
+      },
+      {
+        "name": "cap",
+        "ty": "text",
+        "required": false,
+        "description": "cap",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "join",
+        "ty": "text",
+        "required": false,
+        "description": "join",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "blend",
+        "ty": "text",
+        "required": false,
+        "description": "blend",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "shadow",
+        "ty": "object",
+        "required": false,
+        "description": "Zero offset and blur removes it.",
+        "schema": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "properties": {
+            "offset": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 2,
+              "maxItems": 2,
+              "description": "`[dx, dy]` in units."
+            },
+            "blur": {
+              "type": "number",
+              "description": "Softness in units; 0 is hard."
+            },
+            "colour": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "description": "Zero offset and blur removes it."
+        },
+        "nullable": true
+      },
+      {
+        "name": "group",
+        "ty": "text",
+        "required": false,
+        "description": "Put into this group; empty takes out of any.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Put into this group; empty takes out of any."
+        },
+        "nullable": true
+      },
+      {
+        "name": "clip",
+        "ty": "text",
+        "required": false,
+        "description": "Cut to this mark's shape; empty uncuts.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Cut to this mark's shape; empty uncuts."
         },
         "nullable": true
       },
@@ -1755,13 +2890,13 @@
         "name": "scale",
         "ty": "number",
         "required": false,
-        "description": "Scale about each mark's centre (`1.5` is half again as large).",
+        "description": "Scale about each mark's or group's centre.",
         "schema": {
           "type": [
             "number",
             "null"
           ],
-          "description": "Scale about each mark's centre (`1.5` is half again as large)."
+          "description": "Scale about each mark's or group's centre."
         },
         "nullable": true
       },
@@ -1769,13 +2904,13 @@
         "name": "rotate",
         "ty": "number",
         "required": false,
-        "description": "Rotate about each mark's centre, in degrees clockwise.",
+        "description": "Degrees clockwise about each centre.",
         "schema": {
           "type": [
             "number",
             "null"
           ],
-          "description": "Rotate about each mark's centre, in degrees clockwise."
+          "description": "Degrees clockwise about each centre."
         },
         "nullable": true
       },
@@ -1818,6 +2953,15 @@
         "nullable": true
       }
     ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "export-svg",
+    "resource_kind": "canvas.artwork",
+    "label": "Export SVG",
+    "description": "Export the artwork as SVG: plain layers as exact vector art, painted layers as embedded pictures. Answers with its content address and, when small, the markup.",
+    "operation": "Effect",
+    "params": []
   },
   {
     "resource": "canvas.artwork",
@@ -2135,13 +3279,53 @@
                                     "size": {
                                       "type": "number"
                                     },
+                                    "font": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ],
+                                      "description": "`sans`, `serif`, `mono` or a family name."
+                                    },
+                                    "weight": {
+                                      "type": [
+                                        "integer",
+                                        "null"
+                                      ],
+                                      "minimum": 0,
+                                      "maximum": 65535,
+                                      "description": "400 regular to 700 bold."
+                                    },
+                                    "italic": {
+                                      "type": "boolean"
+                                    },
+                                    "align": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ],
+                                      "description": "`start`, `center` or `end` at `x`."
+                                    },
+                                    "line_height": {
+                                      "type": [
+                                        "number",
+                                        "null"
+                                      ],
+                                      "description": "Times size (1.2)."
+                                    },
+                                    "width": {
+                                      "type": [
+                                        "number",
+                                        "null"
+                                      ],
+                                      "description": "Wrap width."
+                                    },
                                     "kind": {
                                       "type": "string",
                                       "const": "text"
                                     }
                                   },
                                   "additionalProperties": false,
-                                  "description": "Text with its baseline starting at `x, y`."
+                                  "description": "Text, first baseline at `y`; `\\n` breaks lines."
                                 },
                                 {
                                   "type": "object",
@@ -2274,6 +3458,80 @@
                                 "null"
                               ],
                               "description": "Painted layers: medium parameter overrides (`{\"load\": 0.3}`)."
+                            },
+                            "dash": {
+                              "type": [
+                                "array",
+                                "null"
+                              ],
+                              "items": {
+                                "type": "number"
+                              },
+                              "description": "Outline dashes `[on, off, …]`."
+                            },
+                            "cap": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "description": "`butt`, `round` or `square`."
+                            },
+                            "join": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "description": "`miter`, `round` or `bevel`."
+                            },
+                            "blend": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "description": "`multiply`, `screen`, `overlay`, … (see the refusal for all)."
+                            },
+                            "shadow": {
+                              "type": [
+                                "object",
+                                "null"
+                              ],
+                              "properties": {
+                                "offset": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "number"
+                                  },
+                                  "minItems": 2,
+                                  "maxItems": 2,
+                                  "description": "`[dx, dy]` in units."
+                                },
+                                "blur": {
+                                  "type": "number",
+                                  "description": "Softness in units; 0 is hard."
+                                },
+                                "colour": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "additionalProperties": false,
+                              "description": "A soft shadow cast by a mark."
+                            },
+                            "group": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "description": "A group id: edits naming it change the members as one."
+                            },
+                            "clip": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "description": "Cut to this mark's shape (opacity 0 hides that mark)."
                             }
                           },
                           "additionalProperties": false,
@@ -2310,7 +3568,7 @@
                         "items": {
                           "type": "string"
                         },
-                        "description": "ids"
+                        "description": "Marks, or groups (all their members)."
                       },
                       "name": {
                         "type": [
@@ -2318,6 +3576,331 @@
                           "null"
                         ],
                         "description": "name"
+                      },
+                      "shape": {
+                        "oneOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "oneOf": [
+                              {
+                                "type": "null"
+                              },
+                              {
+                                "oneOf": [
+                                  {
+                                    "type": "object",
+                                    "required": [
+                                      "kind",
+                                      "x",
+                                      "y",
+                                      "width",
+                                      "height"
+                                    ],
+                                    "properties": {
+                                      "x": {
+                                        "type": "number"
+                                      },
+                                      "y": {
+                                        "type": "number"
+                                      },
+                                      "width": {
+                                        "type": "number"
+                                      },
+                                      "height": {
+                                        "type": "number"
+                                      },
+                                      "radius": {
+                                        "type": "number"
+                                      },
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "rect"
+                                      }
+                                    },
+                                    "additionalProperties": false,
+                                    "description": "An axis-aligned rectangle; `radius` rounds its corners."
+                                  },
+                                  {
+                                    "type": "object",
+                                    "required": [
+                                      "kind",
+                                      "cx",
+                                      "cy",
+                                      "rx",
+                                      "ry"
+                                    ],
+                                    "properties": {
+                                      "cx": {
+                                        "type": "number"
+                                      },
+                                      "cy": {
+                                        "type": "number"
+                                      },
+                                      "rx": {
+                                        "type": "number"
+                                      },
+                                      "ry": {
+                                        "type": "number"
+                                      },
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "ellipse"
+                                      }
+                                    },
+                                    "additionalProperties": false,
+                                    "description": "An ellipse around its centre."
+                                  },
+                                  {
+                                    "type": "object",
+                                    "required": [
+                                      "kind",
+                                      "points"
+                                    ],
+                                    "properties": {
+                                      "points": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "number"
+                                          },
+                                          "minItems": 2,
+                                          "maxItems": 2
+                                        }
+                                      },
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "polygon"
+                                      }
+                                    },
+                                    "additionalProperties": false,
+                                    "description": "A closed polygon through `points` (`[[x, y], …]`)."
+                                  },
+                                  {
+                                    "type": "object",
+                                    "required": [
+                                      "kind",
+                                      "points"
+                                    ],
+                                    "properties": {
+                                      "points": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "number"
+                                          },
+                                          "minItems": 2,
+                                          "maxItems": 2
+                                        }
+                                      },
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "line"
+                                      }
+                                    },
+                                    "additionalProperties": false,
+                                    "description": "An open polyline through `points`, drawn with the stroke colour."
+                                  },
+                                  {
+                                    "type": "object",
+                                    "required": [
+                                      "kind",
+                                      "d"
+                                    ],
+                                    "properties": {
+                                      "d": {
+                                        "type": "string"
+                                      },
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "path"
+                                      }
+                                    },
+                                    "additionalProperties": false,
+                                    "description": "SVG path data (`M 10 10 C 20 0, 40 0, 50 10 Z`)."
+                                  },
+                                  {
+                                    "type": "object",
+                                    "required": [
+                                      "kind",
+                                      "x",
+                                      "y",
+                                      "text",
+                                      "size"
+                                    ],
+                                    "properties": {
+                                      "x": {
+                                        "type": "number"
+                                      },
+                                      "y": {
+                                        "type": "number"
+                                      },
+                                      "text": {
+                                        "type": "string"
+                                      },
+                                      "size": {
+                                        "type": "number"
+                                      },
+                                      "font": {
+                                        "type": [
+                                          "string",
+                                          "null"
+                                        ],
+                                        "description": "`sans`, `serif`, `mono` or a family name."
+                                      },
+                                      "weight": {
+                                        "type": [
+                                          "integer",
+                                          "null"
+                                        ],
+                                        "minimum": 0,
+                                        "maximum": 65535,
+                                        "description": "400 regular to 700 bold."
+                                      },
+                                      "italic": {
+                                        "type": "boolean"
+                                      },
+                                      "align": {
+                                        "type": [
+                                          "string",
+                                          "null"
+                                        ],
+                                        "description": "`start`, `center` or `end` at `x`."
+                                      },
+                                      "line_height": {
+                                        "type": [
+                                          "number",
+                                          "null"
+                                        ],
+                                        "description": "Times size (1.2)."
+                                      },
+                                      "width": {
+                                        "type": [
+                                          "number",
+                                          "null"
+                                        ],
+                                        "description": "Wrap width."
+                                      },
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "text"
+                                      }
+                                    },
+                                    "additionalProperties": false,
+                                    "description": "Text, first baseline at `y`; `\\n` breaks lines."
+                                  },
+                                  {
+                                    "type": "object",
+                                    "required": [
+                                      "kind",
+                                      "points",
+                                      "size"
+                                    ],
+                                    "properties": {
+                                      "points": {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "number"
+                                          }
+                                        }
+                                      },
+                                      "size": {
+                                        "type": "number"
+                                      },
+                                      "kind": {
+                                        "type": "string",
+                                        "const": "stroke"
+                                      }
+                                    },
+                                    "additionalProperties": false,
+                                    "description": "A brush stroke: a smooth curve through `points`, `size` wide. Points are `[x, y]` or `[x, y, pressure]`; a handful of points is enough, the stroke is smoothed through them."
+                                  }
+                                ]
+                              }
+                            ],
+                            "type": "object"
+                          }
+                        ],
+                        "description": "Replace the geometry (e.g. edit a path's `d`)."
+                      },
+                      "dash": {
+                        "type": [
+                          "array",
+                          "null"
+                        ],
+                        "items": {
+                          "type": "number"
+                        },
+                        "description": "`[]` removes dashes."
+                      },
+                      "cap": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "cap"
+                      },
+                      "join": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "join"
+                      },
+                      "blend": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "blend"
+                      },
+                      "shadow": {
+                        "type": [
+                          "object",
+                          "null"
+                        ],
+                        "properties": {
+                          "offset": {
+                            "type": "array",
+                            "items": {
+                              "type": "number"
+                            },
+                            "minItems": 2,
+                            "maxItems": 2,
+                            "description": "`[dx, dy]` in units."
+                          },
+                          "blur": {
+                            "type": "number",
+                            "description": "Softness in units; 0 is hard."
+                          },
+                          "colour": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "additionalProperties": false,
+                        "description": "Zero offset and blur removes it."
+                      },
+                      "group": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "Put into this group; empty takes out of any."
+                      },
+                      "clip": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "Cut to this mark's shape; empty uncuts."
                       },
                       "fill": {
                         "type": [
@@ -2437,14 +4020,14 @@
                           "number",
                           "null"
                         ],
-                        "description": "Scale about each mark's centre (`1.5` is half again as large)."
+                        "description": "Scale about each mark's or group's centre."
                       },
                       "rotate": {
                         "type": [
                           "number",
                           "null"
                         ],
-                        "description": "Rotate about each mark's centre, in degrees clockwise."
+                        "description": "Degrees clockwise about each centre."
                       },
                       "layer": {
                         "type": [
@@ -2869,6 +4452,175 @@
                 "properties": {
                   "action": {
                     "type": "string",
+                    "const": "align"
+                  },
+                  "args": {
+                    "type": "object",
+                    "required": [
+                      "ids"
+                    ],
+                    "properties": {
+                      "ids": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "description": "Marks or groups."
+                      },
+                      "edge": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "`left`, `center`, `right`, `top`, `middle` or `bottom`."
+                      },
+                      "distribute": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "`horizontal` or `vertical`: equal gaps."
+                      },
+                      "to": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "`artwork` or a mark/group id; else their extent."
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Align marks"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "action"
+                ],
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "const": "set-reference"
+                  },
+                  "args": {
+                    "type": [
+                      "object",
+                      "null"
+                    ],
+                    "properties": {
+                      "image": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "A PNG or JPEG: an absolute file path or a content address."
+                      },
+                      "frame": {
+                        "type": [
+                          "array",
+                          "null"
+                        ],
+                        "items": {
+                          "type": "number"
+                        },
+                        "minItems": 4,
+                        "maxItems": 4,
+                        "description": "`[x, y, width, height]`; fitted to the artwork when absent."
+                      },
+                      "opacity": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "`0..=1` (default 0.5)."
+                      },
+                      "visible": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ],
+                        "description": "visible"
+                      },
+                      "remove": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ],
+                        "description": "Remove the reference."
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Set reference"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "action",
+                  "args"
+                ],
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "const": "import-svg"
+                  },
+                  "args": {
+                    "type": "object",
+                    "required": [
+                      "svg"
+                    ],
+                    "properties": {
+                      "svg": {
+                        "type": "string",
+                        "description": "SVG markup, an absolute path to a `.svg`, or a content address."
+                      },
+                      "layer": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "The layer to draw on; the top layer when absent."
+                      },
+                      "group": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "The group the marks join (one is made when absent)."
+                      },
+                      "fit": {
+                        "type": [
+                          "array",
+                          "null"
+                        ],
+                        "items": {
+                          "type": "number"
+                        },
+                        "minItems": 4,
+                        "maxItems": 4,
+                        "description": "Fit into `[x, y, width, height]`, aspect kept; own size otherwise."
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false,
+                "description": "Import SVG"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "action",
+                  "args"
+                ],
+                "properties": {
+                  "action": {
+                    "type": "string",
                     "const": "apply"
                   },
                   "args": {
@@ -3212,6 +4964,41 @@
                                             "size": {
                                               "type": "number"
                                             },
+                                            "font": {
+                                              "type": [
+                                                "string",
+                                                "null"
+                                              ]
+                                            },
+                                            "weight": {
+                                              "type": [
+                                                "integer",
+                                                "null"
+                                              ],
+                                              "minimum": 0,
+                                              "maximum": 65535
+                                            },
+                                            "italic": {
+                                              "type": "boolean"
+                                            },
+                                            "align": {
+                                              "type": [
+                                                "string",
+                                                "null"
+                                              ]
+                                            },
+                                            "line_height": {
+                                              "type": [
+                                                "number",
+                                                "null"
+                                              ]
+                                            },
+                                            "width": {
+                                              "type": [
+                                                "number",
+                                                "null"
+                                              ]
+                                            },
                                             "kind": {
                                               "type": "string",
                                               "const": "text"
@@ -3337,6 +5124,71 @@
                                         "object",
                                         "null"
                                       ]
+                                    },
+                                    "dash": {
+                                      "type": [
+                                        "array",
+                                        "null"
+                                      ],
+                                      "items": {
+                                        "type": "number"
+                                      }
+                                    },
+                                    "cap": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    },
+                                    "join": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    },
+                                    "blend": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    },
+                                    "shadow": {
+                                      "type": [
+                                        "object",
+                                        "null"
+                                      ],
+                                      "properties": {
+                                        "offset": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "number"
+                                          },
+                                          "minItems": 2,
+                                          "maxItems": 2
+                                        },
+                                        "blur": {
+                                          "type": "number"
+                                        },
+                                        "colour": {
+                                          "type": [
+                                            "string",
+                                            "null"
+                                          ]
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    },
+                                    "group": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    },
+                                    "clip": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
                                     }
                                   },
                                   "additionalProperties": false
@@ -3442,6 +5294,301 @@
                                 }
                               },
                               "name": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "shape": {
+                                "oneOf": [
+                                  {
+                                    "type": "null"
+                                  },
+                                  {
+                                    "oneOf": [
+                                      {
+                                        "type": "object",
+                                        "required": [
+                                          "kind",
+                                          "x",
+                                          "y",
+                                          "width",
+                                          "height"
+                                        ],
+                                        "properties": {
+                                          "x": {
+                                            "type": "number"
+                                          },
+                                          "y": {
+                                            "type": "number"
+                                          },
+                                          "width": {
+                                            "type": "number"
+                                          },
+                                          "height": {
+                                            "type": "number"
+                                          },
+                                          "radius": {
+                                            "type": "number"
+                                          },
+                                          "kind": {
+                                            "type": "string",
+                                            "const": "rect"
+                                          }
+                                        },
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "required": [
+                                          "kind",
+                                          "cx",
+                                          "cy",
+                                          "rx",
+                                          "ry"
+                                        ],
+                                        "properties": {
+                                          "cx": {
+                                            "type": "number"
+                                          },
+                                          "cy": {
+                                            "type": "number"
+                                          },
+                                          "rx": {
+                                            "type": "number"
+                                          },
+                                          "ry": {
+                                            "type": "number"
+                                          },
+                                          "kind": {
+                                            "type": "string",
+                                            "const": "ellipse"
+                                          }
+                                        },
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "required": [
+                                          "kind",
+                                          "points"
+                                        ],
+                                        "properties": {
+                                          "points": {
+                                            "type": "array",
+                                            "items": {
+                                              "type": "array",
+                                              "items": {
+                                                "type": "number"
+                                              },
+                                              "minItems": 2,
+                                              "maxItems": 2
+                                            }
+                                          },
+                                          "kind": {
+                                            "type": "string",
+                                            "const": "polygon"
+                                          }
+                                        },
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "required": [
+                                          "kind",
+                                          "points"
+                                        ],
+                                        "properties": {
+                                          "points": {
+                                            "type": "array",
+                                            "items": {
+                                              "type": "array",
+                                              "items": {
+                                                "type": "number"
+                                              },
+                                              "minItems": 2,
+                                              "maxItems": 2
+                                            }
+                                          },
+                                          "kind": {
+                                            "type": "string",
+                                            "const": "line"
+                                          }
+                                        },
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "required": [
+                                          "kind",
+                                          "d"
+                                        ],
+                                        "properties": {
+                                          "d": {
+                                            "type": "string"
+                                          },
+                                          "kind": {
+                                            "type": "string",
+                                            "const": "path"
+                                          }
+                                        },
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "required": [
+                                          "kind",
+                                          "x",
+                                          "y",
+                                          "text",
+                                          "size"
+                                        ],
+                                        "properties": {
+                                          "x": {
+                                            "type": "number"
+                                          },
+                                          "y": {
+                                            "type": "number"
+                                          },
+                                          "text": {
+                                            "type": "string"
+                                          },
+                                          "size": {
+                                            "type": "number"
+                                          },
+                                          "font": {
+                                            "type": [
+                                              "string",
+                                              "null"
+                                            ]
+                                          },
+                                          "weight": {
+                                            "type": [
+                                              "integer",
+                                              "null"
+                                            ],
+                                            "minimum": 0,
+                                            "maximum": 65535
+                                          },
+                                          "italic": {
+                                            "type": "boolean"
+                                          },
+                                          "align": {
+                                            "type": [
+                                              "string",
+                                              "null"
+                                            ]
+                                          },
+                                          "line_height": {
+                                            "type": [
+                                              "number",
+                                              "null"
+                                            ]
+                                          },
+                                          "width": {
+                                            "type": [
+                                              "number",
+                                              "null"
+                                            ]
+                                          },
+                                          "kind": {
+                                            "type": "string",
+                                            "const": "text"
+                                          }
+                                        },
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "required": [
+                                          "kind",
+                                          "points",
+                                          "size"
+                                        ],
+                                        "properties": {
+                                          "points": {
+                                            "type": "array",
+                                            "items": {
+                                              "type": "array",
+                                              "items": {
+                                                "type": "number"
+                                              }
+                                            }
+                                          },
+                                          "size": {
+                                            "type": "number"
+                                          },
+                                          "kind": {
+                                            "type": "string",
+                                            "const": "stroke"
+                                          }
+                                        },
+                                        "additionalProperties": false
+                                      }
+                                    ]
+                                  }
+                                ]
+                              },
+                              "dash": {
+                                "type": [
+                                  "array",
+                                  "null"
+                                ],
+                                "items": {
+                                  "type": "number"
+                                }
+                              },
+                              "cap": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "join": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "blend": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "shadow": {
+                                "type": [
+                                  "object",
+                                  "null"
+                                ],
+                                "properties": {
+                                  "offset": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "number"
+                                    },
+                                    "minItems": 2,
+                                    "maxItems": 2
+                                  },
+                                  "blur": {
+                                    "type": "number"
+                                  },
+                                  "colour": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
+                                  }
+                                },
+                                "additionalProperties": false
+                              },
+                              "group": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "clip": {
                                 "type": [
                                   "string",
                                   "null"
@@ -3709,6 +5856,92 @@
                               }
                             },
                             "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "required": [
+                              "action",
+                              "ids"
+                            ],
+                            "properties": {
+                              "ids": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "edge": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "distribute": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "to": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "action": {
+                                "type": "string",
+                                "const": "align"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "image": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "frame": {
+                                "type": [
+                                  "array",
+                                  "null"
+                                ],
+                                "items": {
+                                  "type": "number"
+                                },
+                                "minItems": 4,
+                                "maxItems": 4
+                              },
+                              "opacity": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ]
+                              },
+                              "visible": {
+                                "type": [
+                                  "boolean",
+                                  "null"
+                                ]
+                              },
+                              "remove": {
+                                "type": [
+                                  "boolean",
+                                  "null"
+                                ]
+                              },
+                              "action": {
+                                "type": "string",
+                                "const": "set-reference"
+                              }
+                            },
+                            "additionalProperties": false,
+                            "required": [
+                              "action"
+                            ]
                           }
                         ]
                       }
@@ -3739,6 +5972,74 @@
         "ty": "integer",
         "required": false,
         "description": "How many recent versions (default 50)",
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "import-svg",
+    "resource_kind": "canvas.artwork",
+    "label": "Import SVG",
+    "description": "Import an SVG (markup, file path or content address) as one draw of path and text marks in a group: fills, gradients, outlines, opacity, blends and clip paths.",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "svg",
+        "ty": "text",
+        "required": true,
+        "description": "SVG markup, an absolute path to a `.svg`, or a content address.",
+        "schema": {
+          "type": "string",
+          "description": "SVG markup, an absolute path to a `.svg`, or a content address."
+        },
+        "nullable": false
+      },
+      {
+        "name": "layer",
+        "ty": "text",
+        "required": false,
+        "description": "The layer to draw on; the top layer when absent.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The layer to draw on; the top layer when absent."
+        },
+        "nullable": true
+      },
+      {
+        "name": "group",
+        "ty": "text",
+        "required": false,
+        "description": "The group the marks join (one is made when absent).",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The group the marks join (one is made when absent)."
+        },
+        "nullable": true
+      },
+      {
+        "name": "fit",
+        "ty": "array",
+        "required": false,
+        "description": "Fit into `[x, y, width, height]`, aspect kept; own size otherwise.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number"
+          },
+          "minItems": 4,
+          "maxItems": 4,
+          "description": "Fit into `[x, y, width, height]`, aspect kept; own size otherwise."
+        },
         "nullable": true
       }
     ]
@@ -3811,6 +6112,20 @@
             "null"
           ],
           "description": "A past version: a change id from history or a checkpoint name."
+        },
+        "nullable": true
+      },
+      {
+        "name": "full",
+        "ty": "boolean",
+        "required": false,
+        "description": "Also each mark's shape, style and transform, to edit exactly.",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Also each mark's shape, style and transform, to edit exactly."
         },
         "nullable": true
       }
@@ -3915,6 +6230,20 @@
             "null"
           ],
           "description": "A past version: a change id from history or a checkpoint name."
+        },
+        "nullable": true
+      },
+      {
+        "name": "reference",
+        "ty": "boolean",
+        "required": false,
+        "description": "Show the reference picture over the artwork; as set when absent.",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Show the reference picture over the artwork; as set when absent."
         },
         "nullable": true
       }
@@ -4331,6 +6660,90 @@
             "null"
           ],
           "description": "Ground colour, `#rrggbb`."
+        },
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "set-reference",
+    "resource_kind": "canvas.artwork",
+    "label": "Set reference",
+    "description": "Set the reference picture to recreate or trace: shown over the artwork at its opacity, seen by look (reference: false hides it) and compare; never exported.",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "image",
+        "ty": "text",
+        "required": false,
+        "description": "A PNG or JPEG: an absolute file path or a content address.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A PNG or JPEG: an absolute file path or a content address."
+        },
+        "nullable": true
+      },
+      {
+        "name": "frame",
+        "ty": "array",
+        "required": false,
+        "description": "`[x, y, width, height]`; fitted to the artwork when absent.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number"
+          },
+          "minItems": 4,
+          "maxItems": 4,
+          "description": "`[x, y, width, height]`; fitted to the artwork when absent."
+        },
+        "nullable": true
+      },
+      {
+        "name": "opacity",
+        "ty": "number",
+        "required": false,
+        "description": "`0..=1` (default 0.5).",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "`0..=1` (default 0.5)."
+        },
+        "nullable": true
+      },
+      {
+        "name": "visible",
+        "ty": "boolean",
+        "required": false,
+        "description": "visible",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "remove",
+        "ty": "boolean",
+        "required": false,
+        "description": "Remove the reference.",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Remove the reference."
         },
         "nullable": true
       }
