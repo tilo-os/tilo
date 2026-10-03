@@ -206,17 +206,27 @@ fn navigation_animation_frames_settle_without_restarting_and_allow_manual_naviga
     tree.active_group.insert(StripId(2), 4);
     let mut test = NavigationFrame::new(tree, 740);
     assert!(test.frame.frame_output().needs_animation_frame);
+    // However late each host frame comes, the ease only moves forward and
+    // goes quiet once it arrives: no frame restarts it.
     let start = test.surface().row(StripId(2)).unwrap().scroll_x();
-    std::thread::sleep(std::time::Duration::from_millis(35));
-    test.frame.poll_frame().unwrap();
-    let middle = test.surface().row(StripId(2)).unwrap().scroll_x();
-    assert!(
-        middle > start,
-        "a new host frame advances the existing ease"
-    );
-    std::thread::sleep(std::time::Duration::from_millis(35));
-    test.frame.poll_frame().unwrap();
-    assert!(test.surface().row(StripId(2)).unwrap().scroll_x() > middle);
+    let mut previous = start;
+    (0..400)
+        .find(|_| {
+            if !test.frame.frame_output().needs_animation_frame {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(16));
+            test.frame.poll_frame().unwrap();
+            let now = test.surface().row(StripId(2)).unwrap().scroll_x();
+            assert!(
+                now >= previous,
+                "the ease restarted: {now} after {previous}"
+            );
+            previous = now;
+            false
+        })
+        .expect("the ease settles");
+    assert!(previous > start, "host frames advance the existing ease");
     test.finish_pan();
     test.assert_visible(StripId(2), 4);
     // An explicit viewport navigation away from the selected group must survive

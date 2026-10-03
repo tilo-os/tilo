@@ -314,6 +314,17 @@ impl Widget for Column {
                 // the start so surplus block space does not inflate the
                 // requested gap between them.
                 align_content: self.intrinsic_height.then_some(taffy::AlignContent::Start),
+                // The one column is the Column's own width, never wider: an
+                // `auto` track grows to its widest child's content and pushes
+                // a padded child past the Column's edge.
+                grid_template_columns: if self.intrinsic_height {
+                    vec![taffy::style_helpers::minmax(
+                        length(0.0_f32),
+                        taffy::style_helpers::fr(1.0_f32),
+                    )]
+                } else {
+                    Vec::new()
+                },
                 flex_shrink: 0.0, // Prevent vertical squashing
                 gap: taffy::Size {
                     width: length(0.0_f32),

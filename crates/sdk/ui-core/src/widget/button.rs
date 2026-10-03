@@ -103,6 +103,22 @@ pub struct Button {
     cache_rect: Rect,
     /// Snapshot the cache was emitted from; any change invalidates it.
     last_state: (bool, bool, bool, bool), // (hovered, pressed, focused, enabled)
+    /// The theme's look the cache was painted in: its face colours, radius
+    /// and text scale. A theme switched under a live tree (dark to light)
+    /// repaints the face instead of keeping the old theme's ink.
+    last_look: Option<ButtonLook>,
+}
+
+/// What a theme decides of a button's cached face.
+#[derive(Clone, Copy, PartialEq)]
+struct ButtonLook {
+    colors: (
+        vello::peniko::Color,
+        Option<vello::peniko::Color>,
+        vello::peniko::Color,
+    ),
+    radius: f32,
+    text_scale: f32,
 }
 
 impl Button {
@@ -147,6 +163,7 @@ impl Button {
             interaction: crate::interaction::InteractionEnvironment::default(),
             cache_rect: Rect::ZERO,
             last_state: (false, false, false, true),
+            last_look: None,
         }
     }
 
@@ -214,17 +231,21 @@ impl Button {
     ) -> Self {
         const TYPE_ID: &str = "tilo.ui.control.invoke";
         let resource_id = format!("tilo.control:{}", self.id);
-        let mut spec = tilo_actions::ActionSpec::operation(
-            "invoke",
-            self.label.clone(),
-            kind,
-            TYPE_ID,
-            &self.id,
-        )
-        .expect("a control id is always JSON serializable");
+        // An icon-only button is named by what a screen reader announces.
+        let label = if self.label.is_empty() {
+            self.accessible_name
+                .clone()
+                .or_else(|| self.tooltip.clone())
+                .unwrap_or_default()
+        } else {
+            self.label.clone()
+        };
+        let mut spec =
+            tilo_actions::ActionSpec::operation("invoke", label.clone(), kind, TYPE_ID, &self.id)
+                .expect("a control id is always JSON serializable");
         spec.contract.discovery = tilo_actions::DiscoveryScope::Launchable;
-        let resource = tilo_actions::Resource::new(resource_id, "tilo.control", self.label.clone())
-            .with_action(spec);
+        let resource =
+            tilo_actions::Resource::new(resource_id, "tilo.control", label).with_action(spec);
         let binding = tilo_actions::ActionBinding::unit_for(&resource, "invoke")
             .expect("the synthesized invoke action is nullary");
         self = self.on_action(binding);
@@ -1279,6 +1300,15 @@ impl Widget for Button {
                 FIT_MIN_WIDTH
             })
             .max(self.interaction.minimum_target());
+        // A button given its size is that wide, whatever its label would
+        // ask for: its intrinsic width must not spill past the box it is
+        // laid out in and widen the row it ends.
+        let intrinsic_width = match self.size {
+            Some((width, _)) if !self.fit_content && !self.content_sized && !self.fill_width => {
+                width.max(self.interaction.minimum_target())
+            }
+            _ => intrinsic_width,
+        };
         if self.fit_content {
             // Capture the real width even when a stretching parent supplies
             // a known width. The shared solver pins it before geometry lands.
@@ -1386,6 +1416,24 @@ impl Widget for Button {
         if current_state != self.last_state {
             self.dirty = true;
             self.last_state = current_state;
+        }
+        let look = Some(ButtonLook {
+            colors: face_colors(
+                theme,
+                self.style,
+                ButtonInteract {
+                    hovered: self.is_hovered,
+                    pressed: self.is_pressed,
+                    focused: self.is_focused,
+                    disabled: !current_state.3,
+                },
+            ),
+            radius: theme.tokens.radii.md,
+            text_scale: theme.text_scale,
+        });
+        if look != self.last_look {
+            self.dirty = true;
+            self.last_look = look;
         }
         let needs_emit = self.dirty || self.cache_rect == Rect::ZERO;
         if !needs_emit {
@@ -2628,6 +2676,47 @@ mod tests {
         action_mode_suppresses_raw_mutation_and_callback();
         action_availability_revokes_and_restores_without_overriding_authored_state();
         legacy_button_paths_are_explicit_in_inventory();
+    }
+
+    /// A button given its size reports that width as its content, so a
+    /// row ending in a compact icon button is no wider than its children.
+    #[test]
+    fn a_sized_button_measures_its_own_width() {
+        let mut button = Button::new("remove", "", None)
+            .with_icon(crate::icons::Icon::Trash2)
+            .with_size(32.0, 32.0);
+        let size = Widget::measure(
+            &mut button,
+            Size {
+                width: None,
+                height: None,
+            },
+            Size {
+                width: taffy::AvailableSpace::MaxContent,
+                height: taffy::AvailableSpace::MaxContent,
+            },
+            &mut TextRenderer::new(),
+        );
+        let target = button.interaction.minimum_target();
+        assert!((size.width - 32.0_f32.max(target)).abs() < 0.5, "{size:?}");
+    }
+
+    /// A theme switched under a live tree repaints a ghost button's face
+    /// in the new theme's ink, rather than keeping the cached dark-theme
+    /// grey that all but vanishes on a light ground.
+    #[test]
+    fn a_cached_face_follows_a_theme_switch() {
+        let mut button = Button::new("ghost", "Undo", None).ghost();
+        button.rect = Rect::new(0.0, 0.0, 80.0, 32.0);
+        let presence = crate::presence::PresenceCtx::default();
+        let mut text = TextRenderer::new();
+        let mut scene = Scene::new();
+        for theme in [Theme::dark(), Theme::light()] {
+            button.draw(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+            let ink = button.last_look.map(|look| look.colors.2);
+            let expected = face_colors(&theme, ButtonStyle::Ghost, ButtonInteract::default()).2;
+            assert_eq!(ink, Some(expected), "the face is painted in {}", theme.name);
+        }
     }
 
     #[test]
