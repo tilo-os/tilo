@@ -3801,7 +3801,7 @@ fn agent_window(
             agent_refusal(
                 "unknown_window",
                 &format!(
-                    "no window of {app_id} is open; open windows: [{}] (omit window to act on the whole screen)",
+                    "no window of {app_id} is open; open windows: [{}] (or none, for the whole screen)",
                     open.join(", ")
                 ),
             )
