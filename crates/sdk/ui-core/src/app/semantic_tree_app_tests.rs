@@ -1544,8 +1544,9 @@ fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
                     Vec::new()
                 }
             });
-        let nav =
-            crate::widget::NavShell::new(Box::new(search), Box::new(crate::widget::Column::new()));
+        let nav = crate::widget::NavShell::new()
+            .overview(Box::new(search))
+            .content(Box::new(crate::widget::Column::new()));
         let mut app = App::new(State::new(), Box::new(nav));
         app.init_layout();
         let update = app.build_a11y_tree_update(1.0);

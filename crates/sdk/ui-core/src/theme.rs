@@ -592,14 +592,13 @@ impl Theme {
     /// The one factor the responsive shells multiply an authored,
     /// text-sized breakpoint or pane width by: `ui_scale × text_growth()`.
     ///
-    /// An app authors its shell inputs at 1× (`with_breakpoint(760.0)`,
-    /// `with_sidebar_width(260.0)`) and the shell resolves them against the
-    /// theme in `build_layout`, so at 200 % text a 760 px breakpoint pushes
-    /// at 1520 px — the window that has the room a 760 px window has at 1× —
-    /// without the app multiplying anything. `1.0` on a stock theme, so 1×
-    /// geometry is untouched. A width sized by icons rather than text (a
-    /// rail) follows [`Theme::ui_scale`] alone; the shells expose an
-    /// `icon_*` builder for it.
+    /// `NavShell` grows its metric widths by it, and a painted app's
+    /// `SidebarDrawer` its authored ones (`breakpoint(760.0)`), so at 200 %
+    /// text a 760 px breakpoint pushes at 1520 px — the window that has the
+    /// room a 760 px window has at 1× — without the app multiplying
+    /// anything. `1.0` on a stock theme, so 1× geometry is untouched. A width
+    /// sized by icons rather than text (a rail) follows [`Theme::ui_scale`]
+    /// alone.
     #[must_use]
     pub fn responsive_scale(&self) -> f64 {
         f64::from(self.ui_scale) * f64::from(self.text_growth())
