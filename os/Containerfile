@@ -1149,26 +1149,29 @@ COPY \
     /usr/share/doc/tilo/
 COPY --chmod=0755 os/tests/recovery-boot-check.sh /usr/libexec/tilo-recovery-boot-check
 
-# The opt-in additional codecs pack: a helper that, only when the owner asks,
-# downloads RPM Fusion and Cisco OpenH264 packages on the device, verifies them
-# against the pinned keys below and builds local system extensions. The image
-# itself carries no codec payload. See os/usr/share/doc/tilo/codec-pack.md.
-FROM scratch AS codec-pack-files
-COPY --chmod=0755 os/usr/libexec/tilo-codec-pack /usr/libexec/tilo-codec-pack
+# Downloaded Tilo extensions: a helper that, only when the owner asks, downloads
+# the artifacts a Tilo-signed manifest pins (for the media codecs: RPM Fusion's
+# and Cisco's packages, from their own servers), verifies them and builds local
+# system extensions. Which extensions exist, which hosts their bytes may come
+# from and which key signs their manifests is decided by the image itself
+# (/usr/share/tilo/system-extensions/sysext.d, /usr/share/tilo/cosign.pub). The
+# image carries no extension payload. See
+# /usr/share/tilo/system-extensions/README.md.
+FROM scratch AS extension-files
+COPY --chmod=0755 os/usr/libexec/tilo-extension /usr/libexec/tilo-extension
 # Starts the deferred install the moment NetworkManager reports internet
 # connectivity, for an owner who opted in while offline.
-COPY --chmod=0755 os/usr/lib/NetworkManager/dispatcher.d/90-tilo-codec-pack \
-    /usr/lib/NetworkManager/dispatcher.d/90-tilo-codec-pack
-COPY os/usr/share/tilo/codec-pack /usr/share/tilo/codec-pack
+COPY --chmod=0755 os/usr/lib/NetworkManager/dispatcher.d/90-tilo-extension \
+    /usr/lib/NetworkManager/dispatcher.d/90-tilo-extension
 COPY \
-    os/usr/lib/systemd/system/tilo-codec-pack@.service \
-    os/usr/lib/systemd/system/tilo-codec-pack-guard.service \
-    os/usr/lib/systemd/system/tilo-codec-pack-refresh.timer \
+    os/usr/lib/systemd/system/tilo-extension@.service \
+    os/usr/lib/systemd/system/tilo-extension-activate.service \
+    os/usr/lib/systemd/system/tilo-extension-refresh.timer \
     /usr/lib/systemd/system/
-COPY os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-codec-pack.conf \
-    /usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-codec-pack.conf
-COPY os/usr/lib/tmpfiles.d/tilo-codec-pack.conf /usr/lib/tmpfiles.d/tilo-codec-pack.conf
-COPY os/etc/polkit-1/rules.d/49-tilo-codec-pack.rules /etc/polkit-1/rules.d/49-tilo-codec-pack.rules
+COPY os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf \
+    /usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/40-tilo-extension.conf
+COPY os/usr/lib/tmpfiles.d/tilo-extension.conf /usr/lib/tmpfiles.d/tilo-extension.conf
+COPY os/etc/polkit-1/rules.d/49-tilo-extension.rules /etc/polkit-1/rules.d/49-tilo-extension.rules
 COPY os/usr/share/doc/tilo/codec-pack.md /usr/share/doc/tilo/codec-pack.md
 
 
@@ -2333,10 +2336,10 @@ RUN chmod 0755 /usr/libexec/tilo-rollback-common /usr/libexec/tilo-rollback-conf
 # through the polkit-authorised unit from a desktop session, and saying to use
 # sudo rather than failing with a permission error from three layers down.
 COPY --from=recovery-files / /
-# The codec-pack units are enabled with the other system units below. Both are
-# inert until the owner opts in: the guard is conditioned on the opt-in marker
-# and the helper's refresh is a no-op without it.
-COPY --from=codec-pack-files / /
+# The extension units are enabled with the other system units below. Both are
+# inert until the owner opts in: the guard runs only when something is merged
+# or opted in, and the helper's refresh is a no-op without an opt-in.
+COPY --from=extension-files / /
 # The narrow polkit grant that makes Settings' rollback control and its automatic
 # -updates switch able to do what they say. See the rule for how narrow.
 # The boot-side check, bundled so it can be re-run on a live machine. It is the
@@ -2447,7 +2450,7 @@ RUN systemctl enable greetd.service && \
     systemctl enable tilo-boot-entries.timer tilo-boot-health.service && \
     systemctl enable bootc-fetch-apply-updates.timer && \
     systemctl enable tilo-network-start.timer && \
-    systemctl enable tilo-codec-pack-guard.service tilo-codec-pack-refresh.timer && \
+    systemctl enable tilo-extension-activate.service tilo-extension-refresh.timer && \
     systemctl enable NetworkManager-dispatcher.service
 
 # Boot-time prune. These units sit on the critical chain but their work

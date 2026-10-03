@@ -2,7 +2,7 @@
 """The early-boot units this repository ships close no ordering cycle.
 
 systemd breaks a cycle by deleting one job in it and booting on, so the only
-symptom is a unit that silently never ran. tilo-codec-pack-guard once sat
+symptom is a unit that silently never ran. An early unit once sat
 before systemd-sysext while PrivateTmp=yes ordered it after
 systemd-tmpfiles-setup, which systemd-sysext itself precedes: the boot dropped
 tmpfiles or sysext at random. The image build runs `systemd-analyze verify`
@@ -207,20 +207,28 @@ def cycles(after: dict[str, set[str]]) -> list[list[str]]:
 class BootOrdering(unittest.TestCase):
     def test_the_shipped_units_close_no_ordering_cycle(self):
         units = shipped_units()
-        self.assertIn("tilo-codec-pack-guard.service", units,
+        self.assertIn("tilo-store-loop.service", units,
                       "the unit scan found none of the shipped early-boot units")
         self.assertEqual(cycles(after_graph(units)), [])
 
     def test_the_model_sees_the_cycle_private_tmp_once_closed(self):
         units = shipped_units()
-        guard = units["tilo-codec-pack-guard.service"]
-        self.assertIn("PrivateTmp=disconnected", guard)
-        units["tilo-codec-pack-guard.service"] = guard.replace(
-            "PrivateTmp=disconnected", "PrivateTmp=yes")
+        early = ("[Unit]\nDefaultDependencies=no\nAfter=local-fs.target\n"
+                 "Before=systemd-sysext.service sysinit.target\n[Service]\n")
+        units["early-before-sysext.service"] = early + "PrivateTmp=disconnected\n"
+        self.assertEqual(cycles(after_graph(units)), [])
+        units["early-before-sysext.service"] = early + "PrivateTmp=yes\n"
         found = cycles(after_graph(units))
         self.assertTrue(
-            any({"tilo-codec-pack-guard.service", "systemd-sysext.service",
+            any({"early-before-sysext.service", "systemd-sysext.service",
                  "systemd-tmpfiles-setup.service"} <= set(c) for c in found), found)
+
+    def test_extension_activation_is_not_an_early_boot_unit(self):
+        # It rebuilds parts from /var and merges them on purpose, after sysinit;
+        # the masked systemd-sysext.service never merges /var by itself.
+        unit = parse(shipped_units()["tilo-extension-activate.service"])
+        self.assertNotIn("DefaultDependencies", unit["Unit"])
+        self.assertNotIn("systemd-sysext.service", words(unit["Unit"], "Before"))
 
     def test_nothing_before_tmpfiles_setup_is_ordered_after_it(self):
         after = after_graph(shipped_units())

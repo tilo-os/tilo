@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "id": "media-codecs",
+  "kind": "media-codecs",
+  "manifest": "https://code.tilo.so/api/packages/tilo/generic/tilo-extension-media-codecs/{arch}-{base}/manifest.json",
+  "hosts": [
+    "download1.rpmfusion.org",
+    "download.fedoraproject.org",
+    "dl.fedoraproject.org",
+    "codecs.fedoraproject.org",
+    "ciscobinary.openh264.org"
+  ],
+  "parts": ["tilo-codecs", "tilo-codecs-mesa"]
+}
