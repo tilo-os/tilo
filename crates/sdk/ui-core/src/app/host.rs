@@ -166,6 +166,13 @@ fn draw_visible_tooltip(
     scale_factor: f32,
 ) {
     app.input.tooltip_host.tick(crate::time::now());
+    // The widget under a shown tooltip may have been rebuilt since the
+    // pointer settled (a toggle that now reads "Show" instead of "Hide"):
+    // read its tooltip again rather than showing the old one.
+    if let Some((_, anchor)) = app.input.tooltip_host.visible() {
+        let current = app.tooltip_target_at(anchor.center());
+        app.input.tooltip_host.refresh(current);
+    }
     let Some((text, anchor)) = app
         .input
         .tooltip_host

@@ -7,9 +7,13 @@
 //! per-item controls are not offered to agents one by one as UI controls:
 //! each is one of the artwork's actions, which an agent already has.
 
+pub mod gradient;
+pub mod header;
 pub mod history;
 pub mod inspector;
 pub mod layers;
+pub mod pane;
+pub mod well;
 
 use ui::icons::Icon;
 use ui::prelude::*;
@@ -17,21 +21,11 @@ use ui::prelude::*;
 use crate::resource::ArtworkResource;
 
 /// The side of an icon button in a panel row.
-pub(crate) const ICON_BUTTON: f32 = 30.0; // a compact icon button's face; the toolkit keeps its pointer target
+pub(crate) const ICON_BUTTON: f32 = 32.0; // a compact icon button's face; the toolkit keeps its pointer target
 
 /// Small dimmed text beside a value.
 pub(crate) fn caption(text: &str) -> Element {
     Box::new(Text::new(text).with_role(TextRole::Caption).dimmed())
-}
-
-/// Room that pushes the items after it in a row to the far end.
-pub(crate) fn filler() -> Element {
-    Box::new(
-        Container::new()
-            .with_no_padding()
-            .with_flex_grow()
-            .with_min_width(0.0),
-    )
 }
 
 /// A section's heading.

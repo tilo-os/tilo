@@ -62,7 +62,7 @@ pub fn panel(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
         if ids.is_empty() {
             brush_and_artwork(cx, &tools)
         } else {
-            selection(cx, ids.clone())
+            selection(cx, ids.clone(), &tools)
         }
     })
 }
@@ -110,7 +110,7 @@ fn labelled(label: &str, value: Element) -> Element {
             .no_wrap()
             .with_align_items(ui::taffy::AlignItems::Center)
             .push(Box::new(Text::new(label).with_role(TextRole::Label)))
-            .push(super::filler())
+            .push(Box::new(Spacer::new()))
             .push(value),
     )
 }
@@ -186,7 +186,7 @@ fn brush(cx: &ViewCx<ArtworkResource>, tools: &Tools, layer: &str) -> Element {
             .no_wrap()
             .with_align_items(ui::taffy::AlignItems::Center)
             .push(heading("canvas-brush"))
-            .push(super::filler())
+            .push(Box::new(Spacer::new()))
             .push(caption(&title)),
     )];
     let palette = brush_palette(tools, &pigments);
@@ -292,12 +292,6 @@ fn brush_palette(tools: &Tools, pigments: &[crate::media::PigmentSpec]) -> Color
 
 /// The artwork's title, size and ground.
 fn artwork(cx: &ViewCx<ArtworkResource>) -> Element {
-    let title = cx
-        .input(
-            |art: &Artwork| art.title.clone(),
-            ArtworkResource::SET_TITLE,
-        )
-        .with_placeholder(&ui::i18n::I18nManager::lookup_plain("canvas-untitled"));
     let side = |read: fn(&Artwork) -> f64, action, name: &str| {
         cx.control(
             |state| {
@@ -354,7 +348,6 @@ fn artwork(cx: &ViewCx<ArtworkResource>) -> Element {
         });
     section(vec![
         heading("canvas-artwork"),
-        Box::new(title),
         field(
             &ui::i18n::I18nManager::lookup_plain("canvas-artwork-width"),
             Box::new(width),
@@ -373,16 +366,21 @@ fn artwork(cx: &ViewCx<ArtworkResource>) -> Element {
 
 /// The selected marks, read again whenever one of them changes so every
 /// control starts from what is there now.
-fn selection(cx: &ViewCx<ArtworkResource>, ids: Vec<String>) -> Element {
+fn selection(cx: &ViewCx<ArtworkResource>, ids: Vec<String>, tools: &Tools) -> Element {
     let marks = cx.value(move |art: &Artwork| {
         ids.iter()
             .filter_map(|id| art.mark(id).cloned())
             .collect::<Vec<Mark>>()
     });
-    cx.switch(&marks, |cx, marks| marks_inspector(cx, marks))
+    let stop = tools.stop.clone();
+    cx.switch(&marks, move |cx, marks| marks_inspector(cx, marks, &stop))
 }
 
-fn marks_inspector(cx: &ViewCx<ArtworkResource>, marks: &[Mark]) -> Element {
+fn marks_inspector(
+    cx: &ViewCx<ArtworkResource>,
+    marks: &[Mark],
+    stop: &LocalState<usize>,
+) -> Element {
     let Some(first) = marks.first() else {
         return Box::new(Spacer::fixed(0.0));
     };
@@ -409,30 +407,47 @@ fn marks_inspector(cx: &ViewCx<ArtworkResource>, marks: &[Mark]) -> Element {
             .no_wrap()
             .with_align_items(ui::taffy::AlignItems::Center)
             .push(heading("canvas-selection"))
-            .push(super::filler())
+            .push(Box::new(Spacer::new()))
             .push(caption(&summary)),
     )];
     let lines_only = matches!(first.shape, Shape::Line { .. } | Shape::Stroke { .. });
     if !lines_only {
-        let mut fill = vec![heading("canvas-fill")];
-        if let Some(gradient) = &style.gradient {
-            fill.push(caption(&ui::i18n::I18nManager::format(
-                "canvas-gradient",
-                &[("stops", gradient.stops.len().into())],
-            )));
+        let mut fill = vec![
+            heading("canvas-fill"),
+            super::gradient::editor(cx, &ids, first, stop),
+        ];
+        match &style.gradient {
+            // The swatches recolour the chosen stop, built again when
+            // another stop is chosen so they show its colour.
+            Some(gradient) => {
+                let gradient = gradient.clone();
+                let ids = ids.clone();
+                let palette = palette.clone();
+                fill.push(cx.switch(stop, move |cx, index| {
+                    let index = (*index).min(gradient.stops.len().saturating_sub(1));
+                    let current = gradient.stops.get(index).map(|stop| stop.1.clone());
+                    paints(
+                        cx,
+                        &ids,
+                        current.as_deref(),
+                        &palette,
+                        &Paint::Stop(gradient.clone(), index),
+                    )
+                }));
+            }
+            None => fill.push(paints(
+                cx,
+                &ids,
+                style.fill.as_deref(),
+                &palette,
+                &Paint::Fill,
+            )),
         }
-        fill.push(paints(
-            cx,
-            &ids,
-            style.fill.as_deref(),
-            &palette,
-            Paint::Fill,
-        ));
         parts.push(section(fill));
     }
     parts.push(section(vec![
         heading("canvas-stroke"),
-        paints(cx, &ids, style.stroke.as_deref(), &palette, Paint::Stroke),
+        paints(cx, &ids, style.stroke.as_deref(), &palette, &Paint::Stroke),
         stroke_style(cx, &ids, first),
     ]));
     parts.push(appearance(cx, &ids, first));
@@ -443,10 +458,38 @@ fn marks_inspector(cx: &ViewCx<ArtworkResource>, marks: &[Mark]) -> Element {
     spaced(parts)
 }
 
-#[derive(Clone, Copy)]
+/// What a row of swatches paints.
+#[derive(Clone)]
 enum Paint {
     Fill,
     Stroke,
+    /// One stop of the fill's gradient, by index.
+    Stop(crate::model::Gradient, usize),
+}
+
+impl Paint {
+    fn id(&self) -> &'static str {
+        match self {
+            Self::Fill => "canvas-fill",
+            Self::Stroke => "canvas-stroke",
+            Self::Stop(..) => "canvas-gradient-stop",
+        }
+    }
+
+    /// `value` painted by the marks `ids`, as one invocation.
+    fn invoke(&self, ids: &[String], value: String) -> Invoke<ArtworkResource> {
+        match self {
+            Self::Fill => ArtworkResource::SET_FILL.with((ids.to_vec(), value)),
+            Self::Stroke => ArtworkResource::SET_STROKE.with((ids.to_vec(), value)),
+            Self::Stop(gradient, index) => {
+                let mut gradient = gradient.clone();
+                if let Some(stop) = gradient.stops.get_mut(*index) {
+                    stop.1 = value;
+                }
+                ArtworkResource::SET_GRADIENT.with((ids.to_vec(), gradient))
+            }
+        }
+    }
 }
 
 /// Swatches of the layer's paints (or inks) and the colour as text.
@@ -455,12 +498,8 @@ fn paints(
     ids: &[String],
     current: Option<&str>,
     palette: &[tilo_wet_media::Pigment],
-    paint: Paint,
+    paint: &Paint,
 ) -> Element {
-    let action = match paint {
-        Paint::Fill => ArtworkResource::SET_FILL,
-        Paint::Stroke => ArtworkResource::SET_STROKE,
-    };
     // A painted layer's pigments by name, else inks by colour.
     let (values, colours, names): (Vec<String>, Vec<u32>, Vec<String>) =
         if palette.len() <= 15 && !palette.is_empty() {
@@ -486,6 +525,7 @@ fn paints(
     let targets = ids.to_vec();
     let chosen = values;
     let columns = if colours.len() > 14 { 8 } else { 7 };
+    let picked = paint.clone();
     let swatches = ColorSwatchPicker::with_palette(colours, columns)
         .with_accessible_labels(names)
         .with_cell(SWATCH)
@@ -493,26 +533,45 @@ fn paints(
         .selecting(selected)
         .on_change(move |index| {
             if let Some(value) = chosen.get(index) {
-                dispatch.invoke(action.with((targets.clone(), value.clone())));
+                dispatch.invoke(picked.invoke(&targets, value.clone()));
             }
         });
     let text = LocalState::new(current.unwrap_or("none").to_owned());
-    let field = cx.actions().bind(
-        TextInput::from_state(&text)
-            .with_id(match paint {
-                Paint::Fill => "canvas-fill",
-                Paint::Stroke => "canvas-stroke",
-            })
-            .with_accessible_name(ui::i18n::I18nManager::lookup_plain(match paint {
-                Paint::Fill => "canvas-fill",
-                Paint::Stroke => "canvas-stroke",
-            })),
-        action.map({
-            let ids = ids.to_vec();
-            move |value: String| (ids.clone(), value)
-        }),
-    );
-    section(vec![Box::new(swatches), Box::new(field)])
+    let input = TextInput::from_state(&text)
+        .with_id(paint.id())
+        .with_accessible_name(ui::i18n::I18nManager::lookup_plain(paint.id()));
+    let field: Element = match paint {
+        Paint::Fill => Box::new(cx.actions().bind(
+            input,
+            ArtworkResource::SET_FILL.map({
+                let ids = ids.to_vec();
+                move |value: String| (ids.clone(), value)
+            }),
+        )),
+        Paint::Stroke => Box::new(cx.actions().bind(
+            input,
+            ArtworkResource::SET_STROKE.map({
+                let ids = ids.to_vec();
+                move |value: String| (ids.clone(), value)
+            }),
+        )),
+        Paint::Stop(gradient, index) => Box::new(cx.actions().bind(
+            input,
+            ArtworkResource::SET_GRADIENT.map({
+                let ids = ids.to_vec();
+                let gradient = gradient.clone();
+                let index = *index;
+                move |value: String| {
+                    let mut gradient = gradient.clone();
+                    if let Some(stop) = gradient.stops.get_mut(index) {
+                        stop.1 = value;
+                    }
+                    (ids.clone(), gradient)
+                }
+            }),
+        )),
+    };
+    section(vec![Box::new(swatches), field])
 }
 
 /// The outline's width, dashes, ends and corners.
@@ -818,7 +877,7 @@ fn arrange(cx: &ViewCx<ArtworkResource>, ids: &[String]) -> Element {
             .push(to(Icon::ArrowDown, "canvas-backward", "backward"))
             .push(to(Icon::ChevronUp, "canvas-front", "front"))
             .push(to(Icon::ChevronDown, "canvas-back", "back"))
-            .push(super::filler())
+            .push(Box::new(Spacer::new()))
             .push(Box::new(icon_button(
                 cx,
                 Icon::Trash2,

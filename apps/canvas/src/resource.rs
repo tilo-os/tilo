@@ -46,9 +46,10 @@ impl ArtworkResource {
     /// `arrange`: marks, then `front`, `back`, `forward` or `backward`.
     pub const ARRANGE: ActionRef<Self, (Vec<String>, String)> =
         ActionRef::new("arrange", &["ids", "to"]);
-    /// `add-layer` with a medium, above another layer.
-    pub const ADD_LAYER_ABOVE: ActionRef<Self, (String, String, String)> =
-        ActionRef::new("add-layer", &["name", "medium", "above"]);
+    /// `add-layer` with its id, name and medium, above another layer or on
+    /// top.
+    pub const ADD_LAYER_NAMED: ActionRef<Self, (String, String, String, Option<String>)> =
+        ActionRef::new("add-layer", &["id", "name", "medium", "above"]);
     /// `edit-layer` renaming a layer.
     pub const RENAME_LAYER: ActionRef<Self, (String, String)> =
         ActionRef::new("edit-layer", &["id", "name"]);
@@ -64,6 +65,9 @@ impl ArtworkResource {
     /// `edit-marks` setting the fill.
     pub const SET_FILL: ActionRef<Self, (Vec<String>, String)> =
         ActionRef::new("edit-marks", &["ids", "fill"]);
+    /// `edit-marks` setting a gradient fill.
+    pub const SET_GRADIENT: ActionRef<Self, (Vec<String>, crate::model::Gradient)> =
+        ActionRef::new("edit-marks", &["ids", "gradient"]);
     /// `edit-marks` setting the outline colour.
     pub const SET_STROKE: ActionRef<Self, (Vec<String>, String)> =
         ActionRef::new("edit-marks", &["ids", "stroke"]);
