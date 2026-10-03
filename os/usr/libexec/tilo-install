@@ -1658,10 +1658,10 @@ if [ -d "${TILO_INSTALLER_PROFILE_OUT_DIR:-/run/tilo-installer}/setup-handoff" ]
   HANDOFF_VAR="$(find "$MNT/state/os" "$MNT/ostree/deploy" -mindepth 2 -maxdepth 2 -type d -name var -print -quit 2>/dev/null || true)"
   [ -n "$HANDOFF_VAR" ] || die "setup handoff is present but the installed /var was not found"
   if [ -d "$HANDOFF_SRC/etc" ]; then
-    cp -a "$HANDOFF_SRC/etc/." "$DEPLOY_ETC/"
+    python3 /usr/libexec/tilo-install-handoff-copy.py "$HANDOFF_SRC/etc" "$DEPLOY_ETC"
   fi
   if [ -d "$HANDOFF_SRC/var" ]; then
-    cp -a "$HANDOFF_SRC/var/." "$HANDOFF_VAR/"
+    python3 /usr/libexec/tilo-install-handoff-copy.py "$HANDOFF_SRC/var" "$HANDOFF_VAR"
   fi
   key="$HANDOFF_VAR/lib/tilo/device-private/keypair.bin"
   if [ -f "$key" ]; then
@@ -1670,8 +1670,8 @@ if [ -d "${TILO_INSTALLER_PROFILE_OUT_DIR:-/run/tilo-installer}/setup-handoff" ]
   fi
   if [ -d "$DEPLOY_ETC/NetworkManager/system-connections" ]; then
     find "$DEPLOY_ETC/NetworkManager/system-connections" -type f -name 'tilo-setup.nmconnection' -exec chmod 0600 {} +
-    # cp -a preserves the handoff's transient /run label. NetworkManager must
-    # read this profile before OOBE, under the installed /etc policy context.
+    # Label new request files with their installed policy paths so
+    # NetworkManager can read this profile before OOBE.
     label_installed_tilo_path "$DEPLOY_ETC/NetworkManager/system-connections" /etc/NetworkManager/system-connections
     if [ -f "$DEPLOY_ETC/NetworkManager/system-connections/tilo-setup.nmconnection" ]; then
       label_installed_tilo_path "$DEPLOY_ETC/NetworkManager/system-connections/tilo-setup.nmconnection" /etc/NetworkManager/system-connections/tilo-setup.nmconnection
