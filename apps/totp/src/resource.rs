@@ -5,12 +5,13 @@ use automerge::AutoCommit;
 use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::icons::Icon;
 use ui::search::SearchRequest;
-use ui::tilo_actions::ActionSpec;
+use ui::tilo_actions::{ActionBinding, ActionSpec};
 use ui::tilo_resource::{Doc, ModelError, Resource, SearchEntry};
 use ui::widget::{Button, ButtonRole, Element, NavShell, history_button};
 
 use crate::actions::{
-    TOTP_ACTION_TYPE, TotpAction, account_resource_id, add_account_view, register,
+    ADD_ACCOUNT_OPERATION, TOTP_ACTION_TYPE, TotpAction, account_resource_id, add_account_view,
+    register,
 };
 use crate::app::AuthenticatorApp;
 use crate::doc::AuthDoc;
@@ -70,6 +71,24 @@ impl Resource for Totp {
     }
 }
 
+/// The header's primary action: the vault's own "Add account" operation, the
+/// one the palette and agents invoke, which the content answers by opening the
+/// add sheet.
+fn add_button() -> Button {
+    let button = Button::new("totp-add", "Add account", None)
+        .with_icon(Icon::Plus)
+        .role(ButtonRole::Primary);
+    let vault = tilo_actions::Resource::new(Totp::KIND, Totp::KIND, Totp::LABEL)
+        .with_action(add_account_view());
+    match ActionBinding::unit_for(&vault, ADD_ACCOUNT_OPERATION) {
+        Ok(binding) => button.on_action(binding),
+        Err(error) => {
+            tracing::warn!(%error, "authenticator: the add operation is not bindable");
+            button
+        }
+    }
+}
+
 /// The capture scenarios: the list, and each state the app has a screen for.
 const SCENARIOS: &[&str] = &[
     "list",
@@ -95,21 +114,17 @@ impl ResourceApp for TotpShell {
     const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
 
     fn view(cx: &mut ViewCx<Totp>) -> Element {
-        // The header's add button counts its presses; the content opens the
-        // add sheet whenever the count moves.
-        let add_requests = cx.local(0_u64);
-        let presses = add_requests.clone();
-        let add = Button::new("totp-add", "Add account", None)
-            .with_icon(Icon::Plus)
-            .role(ButtonRole::Primary)
-            .on_click(move || presses.update(|count| *count += 1));
         let search = cx.search_button(SearchRequest::this_app());
         Box::new(
             NavShell::new()
-                .content(cx.surface(AuthenticatorApp::new().with_add_requests(add_requests)))
+                .content(cx.surface(AuthenticatorApp::new()))
                 .content_header(
                     "Accounts",
-                    vec![Box::new(history_button()), Box::new(search), Box::new(add)],
+                    vec![
+                        Box::new(history_button()),
+                        Box::new(search),
+                        Box::new(add_button()),
+                    ],
                 ),
         )
     }

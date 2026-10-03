@@ -28,7 +28,6 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::LocalState;
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Politeness, Role};
 use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
@@ -98,10 +97,6 @@ pub struct AuthenticatorApp {
     /// frame in [`Widget::sync`]. `None` when no picker is in flight — the app
     /// never draws its own picker (HIG §5).
     portal_rx: Option<PortalChannel>,
-    /// The header's "Add account" button counts its presses here; the app
-    /// opens the sheet whenever the count moves.
-    add_requests: Option<LocalState<u64>>,
-    seen_add_requests: u64,
 
     rect: Rect,
     /// The readable column the banner and rows stand in, from the last paint.
@@ -214,8 +209,6 @@ impl AuthenticatorApp {
             list: AccountList::new(),
             add_panel: AddAccountPanel::new(),
             portal_rx: None,
-            add_requests: None,
-            seen_add_requests: 0,
             rect: Rect::ZERO,
             column: Rect::ZERO,
             banner_rect: Rect::ZERO,
@@ -237,15 +230,6 @@ impl AuthenticatorApp {
             persistence_message: None,
             actions: crate::resource::ActionSink::default(),
         }
-    }
-
-    /// Open the sheet whenever `requests` moves: the header button counts its
-    /// presses there.
-    #[must_use]
-    pub fn with_add_requests(mut self, requests: LocalState<u64>) -> Self {
-        self.seen_add_requests = requests.with(|count| *count);
-        self.add_requests = Some(requests);
-        self
     }
 
     /// Populate the initial vault. The live app loads the user's persisted
@@ -1158,16 +1142,6 @@ impl Widget for AuthenticatorApp {
         // Sheets that left the tree last frame can go now.
         if self.add_panel.reap() {
             self.structure_dirty = true;
-        }
-        // The header's add button asked for the sheet.
-        if let Some(requests) = &self.add_requests {
-            let count = requests.with(|count| *count);
-            if count != self.seen_add_requests {
-                self.seen_add_requests = count;
-                if !self.add_panel.is_open() {
-                    self.open_add();
-                }
-            }
         }
         self.drain_add_panel(state);
         if let Some(sheet) = self.add_panel.widget_mut() {

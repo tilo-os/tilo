@@ -923,25 +923,29 @@ fn the_sheet_takes_clicks_typing_tab_enter_and_escape() {
     );
 }
 
-/// The header's add button and the empty list's action open the sheet.
+/// The vault's add operation and the empty list's action open the sheet.
 #[test]
-fn add_requests_and_the_empty_action_open_the_sheet() {
-    // Case `the_header_button_counts_presses_and_the_content_opens_the_sheet`.
+fn the_add_operation_and_the_empty_action_open_the_sheet() {
+    // Case `the_add_operation_the_header_button_is_bound_to_opens_the_sheet`.
     {
-        let requests = LocalState::new(0_u64);
-        let mut app = AuthenticatorApp::demo().with_add_requests(requests.clone());
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
+        let (mut app, mut state) = app_with_state();
         assert!(!app.add_panel.is_open());
-        requests.update(|count| *count += 1);
-        app.sync(&mut state.doc, &state.root);
-        assert!(app.add_panel.is_open(), "a press opens the sheet");
-        app.add_panel.close();
-        app.sync(&mut state.doc, &state.root);
+        let payload = serde_json::to_vec(&crate::actions::TotpOperation::OpenAddAccount).unwrap();
         assert!(
-            !app.add_panel.is_open(),
-            "the same press does not reopen it"
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    OperationKind::View,
+                    crate::actions::TOTP_OPERATION_TYPE,
+                    &payload
+                ),
+                &mut state.doc,
+                &state.root
+            )
+            .map(|started| started.is_some())
+            .unwrap()
         );
+        assert!(app.add_panel.is_open(), "the operation opens the sheet");
     }
 
     // Case `the_empty_state_action_opens_the_sheet`.
