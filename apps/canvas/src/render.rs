@@ -19,12 +19,13 @@ use tilo_wet_media::{
 };
 use ui::TextRenderer;
 use ui::vello::Scene;
-use ui::vello::kurbo::{Affine, BezPath, Cap, Join, PathEl, Point, Rect, Stroke};
+use ui::vello::kurbo::{Affine, BezPath, Cap, Join, PathEl, Point, Rect, Shape as _, Stroke};
 use ui::vello::peniko::{
     BlendMode, Blob, Color, ColorStop, Compose, Extend, Fill, Gradient as PenikoGradient,
     ImageAlphaType, ImageBrush, ImageData, ImageFormat, Mix,
 };
 
+use crate::detail::{self, Detail, LayerLevel, Mips, Request, Tiles, Work};
 use crate::media;
 use crate::model::{Artwork, Gradient, Layer, Mark, Shape};
 
@@ -75,6 +76,10 @@ struct PaintedLayer {
     painter: LayerPainter,
     key: blake3::Hash,
     image: Option<ImageData>,
+    /// The picture's halvings, for a view farther than its scale.
+    mips: Mips,
+    /// The marks at the finer level a close view simulates.
+    level: Option<LayerLevel>,
 }
 
 /// Keeps what is expensive between frames: the lit ground, each painted
@@ -86,6 +91,10 @@ pub struct Renderer {
     reference: Option<(String, Option<ImageData>)>,
     wet: Option<WetPreview>,
     tooth: Option<(String, ImageData)>,
+    /// The ground's halvings, for a view farther than its scale.
+    ground_mips: Mips,
+    /// Tiles of a close view, simulated finer than the whole layer.
+    tiles: Tiles,
 }
 
 /// The last picture of a stroke still being painted, and what it cost, so
@@ -119,6 +128,10 @@ pub struct Options {
     pub wet: Option<Mark>,
     /// Only these marks of plain layers, when given.
     pub marks: Option<Vec<String>>,
+    /// How closely the artwork is shown: closer than a painted layer's
+    /// simulation, the part shown is simulated finer; farther, its picture
+    /// is drawn from halved copies.
+    pub detail: Option<Detail>,
 }
 
 /// The largest reference picture, in bytes.
@@ -166,8 +179,9 @@ impl Renderer {
         options: &Options,
     ) {
         let board = art.bounds();
+        self.tiles.begin();
         if !options.bare {
-            self.draw_ground(art, scene, transform);
+            self.draw_ground(art, scene, transform, options.detail.as_ref());
         }
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &board);
         let live: Vec<String> = art.layers.iter().map(|layer| layer.id.clone()).collect();
@@ -187,7 +201,13 @@ impl Renderer {
                     continue;
                 }
                 let wet = options.wet.as_ref().filter(|wet| wet.layer == layer.id);
-                self.draw_painted(art, (layer, wet), &medium, scene, transform, text);
+                self.draw_painted(
+                    art,
+                    (layer, wet),
+                    &medium,
+                    (scene, transform, options.detail.as_ref()),
+                    text,
+                );
             } else {
                 let palette = media::palette_for(art, &layer.id);
                 scene.push_layer(
@@ -234,6 +254,13 @@ impl Renderer {
         if options.grid {
             draw_grid(art, options.view.unwrap_or(board), scene, transform, text);
         }
+        self.tiles.end();
+    }
+
+    /// Whether a close view's finer tiles are still being simulated, so the
+    /// view should be drawn again soon.
+    pub fn detail_pending(&self) -> bool {
+        self.tiles.pending()
     }
 
     /// The colour of the paint at `at`: the topmost shown layer's there,
@@ -330,7 +357,13 @@ impl Renderer {
         );
     }
 
-    fn draw_ground(&mut self, art: &Artwork, scene: &mut Scene, transform: Affine) {
+    fn draw_ground(
+        &mut self,
+        art: &Artwork,
+        scene: &mut Scene,
+        transform: Affine,
+        detail: Option<&Detail>,
+    ) {
         let board = art.bounds();
         let base = colour(&art.ground.colour, &[]).unwrap_or(BLANK_GROUND);
         let texture = Texture::parse(&art.ground.texture).unwrap_or_default();
@@ -340,13 +373,49 @@ impl Renderer {
         }
         let image = self.ground(art).2.clone();
         let scale = cell_scale(art);
+        let halvings = detail.map_or(0, |detail| detail::mip(scale, detail.pixels_per_unit));
+        let (image, factor) = self.ground_mips.get(&image, halvings);
         scene.fill(
             Fill::NonZero,
             transform,
             &ImageBrush::new(image),
-            Some(Affine::scale(1.0 / scale)),
+            Some(Affine::scale(factor / scale)),
             &board,
         );
+        // Closer, the tooth is lit again from the ground itself, finer: it
+        // is opaque, so it simply covers the coarse ground where it is ready.
+        let Some(detail) = detail else {
+            return;
+        };
+        let Some(finer) = detail::level(scale, detail.pixels_per_unit) else {
+            return;
+        };
+        let lit = tilo_wet_media::parse_paint(&art.ground.colour, &[])
+            .map_or(tilo_wet_media::Rgb::WHITE, |paint| paint.colour);
+        let mut key = blake3::Hasher::new();
+        key.update(b"ground");
+        key.update(texture.name().as_bytes());
+        key.update(art.ground.colour.as_bytes());
+        key.update(&finer.to_le_bytes());
+        let level = LayerLevel::new(key.finalize(), finer, Vec::new());
+        let request = Request {
+            slot: "ground",
+            work: Work::Ground {
+                texture,
+                colour: lit,
+            },
+            level: &level,
+            grid: level_grid(art, finer),
+        };
+        if let Some(mosaic) = self.tiles.mosaic(&request, detail) {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                &ImageBrush::new(mosaic.image),
+                Some(mosaic.to_units),
+                &mosaic.rect.intersect(board),
+            );
+        }
     }
 
     /// The ground's tooth as light and shade a plain layer's marks are
@@ -405,8 +474,7 @@ impl Renderer {
         art: &Artwork,
         (layer, wet): (&Layer, Option<&Mark>),
         medium: &media::MediumSpec,
-        scene: &mut Scene,
-        transform: Affine,
+        (scene, transform, detail): (&mut Scene, Affine, Option<&Detail>),
         text: &mut TextRenderer,
     ) {
         let engines = Engines::builtin();
@@ -415,12 +483,7 @@ impl Renderer {
         };
         let scale = cell_scale(art);
         let ground = Arc::clone(&self.ground(art).1);
-        let canvas = Canvas {
-            width: ground.width,
-            height: ground.height,
-            scale: narrow(scale),
-            ground,
-        };
+        let canvas = Canvas::whole(narrow(scale), ground);
         let preset = medium.to_preset();
         let settings = Settings::new(engine.parameters(), &preset.params);
         let palette = preset.palette;
@@ -442,9 +505,12 @@ impl Renderer {
                 painter: LayerPainter::new(Arc::clone(&engine), canvas.clone(), settings.clone()),
                 key,
                 image: None,
+                mips: Mips::default(),
+                level: None,
             });
         if !entry.painter.matches(engine.id(), &canvas, &settings) {
-            entry.painter = LayerPainter::new(Arc::clone(&engine), canvas.clone(), settings);
+            entry.painter =
+                LayerPainter::new(Arc::clone(&engine), canvas.clone(), settings.clone());
             entry.image = None;
         }
         if entry.image.is_none() || entry.key != key {
@@ -491,15 +557,16 @@ impl Renderer {
             transform,
             &board,
         );
-        if let Some(image) = shown {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                &ImageBrush::new(image),
-                Some(Affine::scale(1.0 / scale)),
-                &board,
-            );
-        }
+        // Closer than the layer is simulated, the part shown is simulated
+        // finer; a stroke still being painted shows coarse until it is laid.
+        let mosaic = detail
+            .filter(|_| wet.is_none())
+            .and_then(|detail| self.finer(art, layer, (&engine, &settings, &palette, key), detail));
+        self.draw_layer_picture(
+            (art, layer, wet.is_some()),
+            (shown, mosaic),
+            (scene, transform, detail),
+        );
         // Lettering is not paint: it stays crisp on a painted layer.
         for mark in art.marks_of(&layer.id) {
             if matches!(mark.shape, Shape::Text { .. }) {
@@ -508,6 +575,117 @@ impl Renderer {
         }
         scene.pop_layer();
     }
+
+    /// The tiles of `layer`'s part shown, simulated at a finer level than
+    /// the whole layer; `None` when the view is not that close.
+    fn finer(
+        &mut self,
+        art: &Artwork,
+        layer: &Layer,
+        (engine, settings, palette, key): (
+            &Arc<dyn tilo_wet_media::MediumEngine>,
+            &Settings,
+            &[Pigment],
+            blake3::Hash,
+        ),
+        detail: &Detail,
+    ) -> Option<detail::Mosaic> {
+        let finer = detail::level(cell_scale(art), detail.pixels_per_unit)?;
+        let mut level_key = blake3::Hasher::new();
+        level_key.update(key.as_bytes());
+        level_key.update(art.ground.texture.as_bytes());
+        level_key.update(&finer.to_le_bytes());
+        let level_key = level_key.finalize();
+        let entry = self.painted.get_mut(&layer.id)?;
+        if entry
+            .level
+            .as_ref()
+            .is_none_or(|level| level.key != level_key)
+        {
+            let marks = art
+                .marks_of(&layer.id)
+                .flat_map(|mark| wet_marks(mark, art.clip_of(mark), palette, finer))
+                .collect();
+            entry.level = Some(LayerLevel::new(level_key, finer, marks));
+        }
+        let level = entry.level.as_ref()?;
+        let request = Request {
+            slot: &layer.id,
+            work: Work::Paint {
+                engine: Arc::clone(engine),
+                settings: settings.clone(),
+                texture: Texture::parse(&art.ground.texture).unwrap_or_default(),
+                marks: Arc::clone(&level.marks),
+                margin: level.margin,
+            },
+            level,
+            grid: level_grid(art, finer),
+        };
+        self.tiles.mosaic(&request, detail)
+    }
+
+    /// A painted layer's picture: the finer tiles where they are ready, the
+    /// whole layer's coarser picture (or a halving of it, from afar)
+    /// elsewhere.
+    fn draw_layer_picture(
+        &mut self,
+        (art, layer, wet): (&Artwork, &Layer, bool),
+        (shown, mosaic): (Option<ImageData>, Option<detail::Mosaic>),
+        (scene, transform, detail): (&mut Scene, Affine, Option<&Detail>),
+    ) {
+        let board = art.bounds();
+        let scale = cell_scale(art);
+        if let Some(image) = shown {
+            let halvings = match (detail, &mosaic) {
+                (Some(detail), None) => detail::mip(scale, detail.pixels_per_unit),
+                _ => 0,
+            };
+            let (image, factor) = match self.painted.get_mut(&layer.id) {
+                Some(entry) if !wet => entry.mips.get(&image, halvings),
+                _ => (image, 1.0),
+            };
+            // Where the finer tiles are ready, they alone show the paint.
+            let area = match &mosaic {
+                Some(mosaic) => {
+                    let mut holes = BezPath::new();
+                    for hole in &mosaic.missing {
+                        holes.extend(hole.intersect(board).path_elements(0.1));
+                    }
+                    holes
+                }
+                None => board.to_path(0.1),
+            };
+            if !area.elements().is_empty() {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    &ImageBrush::new(image),
+                    Some(Affine::scale(factor / scale)),
+                    &area,
+                );
+            }
+        }
+        if let Some(mosaic) = mosaic {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                &ImageBrush::new(mosaic.image),
+                Some(mosaic.to_units),
+                &mosaic.rect.intersect(board),
+            );
+        }
+    }
+}
+
+/// The whole grid of a painted layer at `scale` cells per unit.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "artwork sides are positive and bounded"
+)]
+fn level_grid(art: &Artwork, scale: f64) -> (usize, usize) {
+    let side = |units: f64| (units * scale).round().max(1.0) as usize;
+    (side(art.width), side(art.height))
 }
 
 /// The straight-alpha pixel of `image` at `at` (pixel coordinates).

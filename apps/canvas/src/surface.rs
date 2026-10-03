@@ -2036,6 +2036,14 @@ impl Widget for CanvasSurface {
                 .as_ref()
                 .is_some_and(|reference| reference.visible),
             wet: self.wet(),
+            detail: Some(crate::detail::Detail {
+                visible: to_screen
+                    .inverse()
+                    .transform_rect_bbox(transform.transform_rect_bbox(self.rect))
+                    .intersect(board),
+                pixels_per_unit: to_screen.determinant().abs().sqrt(),
+                wait: false,
+            }),
             ..Options::default()
         };
         if let Some(shown) = self.shown() {
@@ -2227,8 +2235,9 @@ impl Widget for CanvasSurface {
 
     fn needs_animation_frame(&self) -> bool {
         // A slow medium previews the stroke behind the pointer: keep
-        // drawing until it has caught up.
-        self.wet().is_some()
+        // drawing until it has caught up. Close up, the finer tiles of a
+        // painted layer arrive as they are simulated.
+        self.wet().is_some() || self.tools.renderer.borrow().detail_pending()
     }
 
     fn cursor_shape(&self, point: Point) -> Option<CursorIcon> {

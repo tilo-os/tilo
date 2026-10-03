@@ -14,6 +14,7 @@ pub const APP_ID: &str = "so.tilo.canvas";
 pub const APP_TITLE: &str = "Canvas";
 
 pub mod actions;
+pub mod detail;
 pub mod doc;
 pub mod fonts;
 pub mod gesture;

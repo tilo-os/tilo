@@ -5,12 +5,7 @@ use crate::grid::float;
 use crate::*;
 
 fn canvas(texture: Texture) -> Canvas {
-    Canvas {
-        width: 160,
-        height: 120,
-        scale: 1.0,
-        ground: Arc::new(Heightfield::new(160, 120, texture, 1.0, 7)),
-    }
+    Canvas::whole(1.0, Arc::new(Heightfield::new(160, 120, texture, 1.0, 7)))
 }
 
 fn paint(hex: &str) -> Paint {
@@ -117,6 +112,70 @@ fn engines_are_deterministic_and_incremental_painting_equals_replay() {
         assert_eq!(
             edited[1].seed, marks[1].seed,
             "an edit keeps the mark's character"
+        );
+    }
+}
+
+/// A window of the grid paints what the whole grid paints there: the
+/// ground, the mottling and the brushwork follow whole-grid cells, so
+/// windows of a painting meet without seams and a zoomed view can
+/// simulate only what it shows. Marks that end outside the window, or dry
+/// the wash elsewhere, still count.
+#[test]
+fn a_window_paints_what_the_whole_grid_paints_there() {
+    for (engine, texture) in [("oil", Texture::Linen), ("watercolour", Texture::ColdPress)] {
+        let marks = marks();
+        let whole = painter(engine, texture).paint(&marks).to_vec();
+        let engines = Engines::builtin();
+        let medium = engines.get(engine).unwrap();
+        let settings = Settings::new(medium.parameters(), &BTreeMap::new());
+        let window = |origin: (usize, usize), (width, height): (usize, usize)| {
+            let ground = Arc::new(Heightfield::window(origin, width, height, texture, 1.0, 7));
+            let canvas = Canvas::window(1.0, ground, origin);
+            let mut painter = LayerPainter::new(Arc::clone(&medium), canvas, settings.clone());
+            painter
+                .paint(&windowed(&marks, origin, width, height))
+                .to_vec()
+        };
+        // A window a little inside the grid paints its middle alike; only
+        // its rim, where marks run out of it, may differ.
+        let (origin, size) = ((4, 6), (152, 110));
+        let inner = window(origin, size);
+        assert_eq!(inner, window(origin, size), "{engine}: deterministic");
+        let mut differ = 0_usize;
+        let mut worst = 0_u8;
+        for y in 12..size.1 - 12 {
+            for x in 12..size.0 - 12 {
+                let a = &inner[(y * size.0 + x) * 4..][..4];
+                let b = &whole[((y + origin.1) * 160 + x + origin.0) * 4..][..4];
+                let gap = a.iter().zip(b).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+                worst = worst.max(gap);
+                differ += usize::from(gap > 8);
+            }
+        }
+        assert!(
+            differ * 1000 < size.0 * size.1,
+            "{engine}: {differ} cells differ, worst by {worst}"
+        );
+        // A small window inside the painting, cut through its marks, keeps
+        // its middle as the whole grid paints it there.
+        let (origin, size) = ((50, 30), (60, 50));
+        let part = window(origin, size);
+        let margin = 16;
+        let mut differ = 0_usize;
+        let mut cells = 0_usize;
+        for y in margin..size.1 - margin {
+            for x in margin..size.0 - margin {
+                let a = &part[(y * size.0 + x) * 4..][..4];
+                let b = &whole[((y + origin.1) * 160 + x + origin.0) * 4..][..4];
+                let gap = a.iter().zip(b).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+                differ += usize::from(gap > 24);
+                cells += 1;
+            }
+        }
+        assert!(
+            differ * 50 < cells,
+            "{engine}: {differ} of {cells} cells differ"
         );
     }
 }

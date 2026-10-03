@@ -313,12 +313,7 @@ fn render(preset: &Preset, engines: &Engines, marks: Vec<Mark>) -> Vec<u8> {
     let engine = engines.get(&preset.engine).expect("built-in engine");
     let texture = preset.ground.unwrap_or_default();
     let ground = Arc::new(Heightfield::new(WIDTH, HEIGHT, texture, 1.0, 1));
-    let canvas = Canvas {
-        width: WIDTH,
-        height: HEIGHT,
-        scale: 1.0,
-        ground: Arc::clone(&ground),
-    };
+    let canvas = Canvas::whole(1.0, Arc::clone(&ground));
     let settings = Settings::new(engine.parameters(), &preset.params);
     let mut painter = LayerPainter::new(Arc::clone(&engine), canvas, settings);
     let marks: Vec<Painted> = marks
