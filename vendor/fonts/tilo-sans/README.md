@@ -238,6 +238,47 @@ Glyphs.app's UFO import), as do scripts with
 coordinates integral. `glyphsLib.filters.eraseOpenCorners` runs at build time, so
 Glyphs-style open corners are fine.
 
+## Cyrillic
+
+Coverage: Russian, Ukrainian (Ґ Є І Ї), Belarusian (Ў), Bulgarian, Serbian and
+Macedonian (Ђ Ѓ Ѕ Ј Љ Њ Ћ Ќ Ѝ Џ, Ѐ), Kazakh (Ә Ғ Қ Ң Ө Ұ Ү Һ) and №, upright
+and italic, in all eight masters (134 glyphs). `proof.py --set cyrillic`
+shows all of them.
+
+- **Shared forms** are components of the Latin glyphs: А В Е К М Н О Р С Т Х,
+  а е о р с у х, Ѕ І Ј Ү, ѕ і ј һ, and Ё Ѐ Ї ё ѐ ї reuse the Latin
+  composites' offsets.
+- **Native forms** are built by `scripts/cyrillic/construct.py` from the same
+  master's Latin drawings, never by plain scaling: strokes are moved or
+  zone-mapped so stems, bars and curve tension stay Instrument's. Б Ь Ъ Ы Љ Њ
+  use the P bowl, И Я mirrored N and R, З the 3, Э Є the C, Ю Ф Ө the O,
+  Ч ч u's bowl, Ж ж K's and k's arms, Д Л Љ д л љ straight legs with A's
+  weight, У the Y arms, Ц Щ Џ Қ Ң д tails to −160, б a level flag on 6's bowl;
+  в з ь ъ ы я are the capitals zone-mapped to x-height with lowercase bars.
+  Italic masters are slanted back upright (13° about y = 251), constructed and
+  slanted again. Running the script rewrites those glyphs (and the Cyrillic
+  kerning), so refine a glyph in the script, or stop passing it to the script
+  once it is edited by hand.
+- **Italic** uses the cursive forms: и й ѝ п т = u ŭ ù n m, ц ш щ on u,
+  д = ∂.
+- **`locl`** (`features/cyrillic.fea`): Bulgarian (`BGR`) д ж з и й ѝ к л п т
+  ц ш щ ю (`*.loclBGR`: g-shaped д, ascending ж and ю, ʒ-shaped з, u n m
+  shapes, Λ л); Serbian and Macedonian (`SRB`, `MKD`) б г д п т
+  (`*.loclSRB`), which differ only in the italic (δ-shaped б, ī, g-shaped д,
+  n̄, m̄). The same file makes і and ј lose their dot under a top mark.
+- **Anchors**: every native letter has `top` and `bottom`, so stress marks
+  (а́ е́ и́ …) and the precomposed letters attach through `mark`.
+- **Kerning**: look-alikes sit in their Latin base glyph's groups; other
+  Cyrillic sides join the Latin group with the same profile (Г Ґ Ѓ in `KO_T`,
+  У Ў in `KO_Y`, Ж in `KO_K`/`KO_X`, …). Sides without a Latin counterpart use
+  Cyrillic groups whose values are taken, per master, from a Latin row or
+  column: `KO_n-cy` (left stems after Т Г У, from `n`), `KO_El-cy`/`KO_el-cy`
+  (Д Л Љ д л љ, 0.45 × `KO_A`), `KO_te-cy` and `KO_de-cy` (т д, whose italic
+  forms differ: r/t upright, n/o/e italic).
+
+The fallback check is `proof.py --set cyrillic --fallback onest` (Onest with
+`ss02`). Native readers have not reviewed these yet.
+
 ## Rebasing on a newer upstream
 
 `scripts/import_upstream.py --force` regenerates `sources/` from
