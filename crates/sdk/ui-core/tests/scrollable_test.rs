@@ -147,8 +147,10 @@ fn writing_surface_fills_the_viewport_and_settles_across_changes() {
                 let targets = driver.targets();
                 let editor = targets.get("editor").unwrap();
                 let footer = targets.get("footer").unwrap();
+                // The surface fills the viewport up to the bar's gutter.
+                let gutter = f64::from(Theme::dark().tokens.metrics.scrollbar_gutter);
                 assert!(
-                    (editor.width() - f64::from(width)).abs() < 1.0,
+                    (editor.width() - (f64::from(width) - gutter)).abs() < 1.0,
                     "{editor:?}"
                 );
                 if long {
