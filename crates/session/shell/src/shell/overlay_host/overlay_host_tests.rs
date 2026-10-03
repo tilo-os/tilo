@@ -2747,3 +2747,90 @@ fn pick_group_at_hits_only_containing_non_empty_rects() {
     pick_group_at_none_outside_all_rects();
     pick_group_at_skips_zero_area_rects();
 }
+
+/// First login in one session: the desktop's Home workspace exists before the
+/// identity does, so it is owned by the account name. Finishing setup must make
+/// the minted identity its owner, or every app opened next is refused its
+/// collaboration route and exits before drawing.
+#[test]
+fn first_login_setup_then_an_app_joins_the_home_workspace_in_the_same_session() {
+    use crate::onboarding_view::{
+        KEY_BACKUP_CONTINUE, KEY_BACKUP_SKIP_ACKNOWLEDGED, KEY_BEGIN, KEY_CREATE, KEY_FINISH,
+        KEY_UNDERSTOOD,
+    };
+    use crate::shell::state::{CapRole, Workspace, WorkspaceId};
+
+    let home = tempfile::tempdir().expect("home");
+    let identity_root = home.path().join("identity-root");
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("HOME", home.path());
+    env.set("XDG_CONFIG_HOME", home.path().join(".config"));
+    env.set("TILO_IDENTITY_ROOT", &identity_root);
+    env.set("USER", "quickuser");
+    env.remove("TILO_USER_ID");
+
+    let mut tree = WorkspaceTree::default();
+    let mut workspace = Workspace::new(WorkspaceId(1), "Home");
+    workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
+    let room = workspace.room;
+    tree.desktop.workspaces.push(workspace);
+    let chrome = ChromeState::new(tree);
+    assert_eq!(
+        chrome.borrow().tree().desktop.workspaces[0]
+            .owner
+            .as_deref(),
+        Some("quickuser"),
+        "before setup the session acts as the account"
+    );
+
+    // The ceremony mints the root key; provisioning records its public half
+    // where the session reads its own principal.
+    let root_key = ed25519_dalek::SigningKey::from_bytes(&[7; 32])
+        .verifying_key()
+        .to_bytes();
+    let paths = tilo_user_identity::persist::IdentityPaths::under(&identity_root);
+    let record_dir = home.path().join("identity");
+    let view = crate::onboarding_view::OnboardingView::with_minter(Box::new(move || {
+        std::fs::create_dir_all(paths.user_pubkey.parent().expect("parent")).expect("dir");
+        std::fs::write(&paths.user_pubkey, root_key).expect("user public key");
+        Ok(crate::onboarding::MintedIdentity {
+            fingerprint: hex::encode(root_key),
+            path: record_dir.join("primary.json"),
+        })
+    }));
+    let mut host = ShellOverlayHost::new(Box::new(StubContent::new())).with_chrome(chrome.clone());
+    host.onboarding = Some(view);
+
+    let mut doc = AutoCommit::new();
+    for key in [
+        KEY_BEGIN,
+        KEY_UNDERSTOOD,
+        KEY_CREATE,
+        KEY_BACKUP_SKIP_ACKNOWLEDGED,
+        KEY_BACKUP_CONTINUE,
+        KEY_FINISH,
+    ] {
+        let _ = automerge::transaction::Transactable::put(
+            &mut doc,
+            &automerge::ROOT,
+            key,
+            ScalarValue::Boolean(true),
+        );
+        host.sync(&mut doc, &automerge::ROOT);
+    }
+    assert!(!host.onboarding_active(), "setup released the desktop");
+
+    // What the collaboration broker admits an app's join by.
+    let principal = tilo_action_broker::collab_broker_capnp::principal_id_for_root(root_key);
+    let state = chrome.borrow();
+    let tree = state.tree();
+    let home = tree
+        .desktop
+        .workspaces
+        .iter()
+        .find(|w| w.room == room)
+        .expect("home");
+    assert_eq!(home.role_of_at(&principal, 0), Some(CapRole::Owner));
+    assert_eq!(home.role_of_at(&"quickuser".to_string(), 0), None);
+    assert_eq!(state.local_user_id, principal);
+}
