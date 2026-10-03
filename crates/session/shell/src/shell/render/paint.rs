@@ -4277,6 +4277,22 @@ impl VelloDrmBridge {
         self.target.renderer.sparse_segment_row_mask_available()
     }
 
+    /// Render with a fixed per-tile segment order, so repeated paints of one
+    /// scene are bit-identical. For exact-pixel oracles.
+    ///
+    /// # Errors
+    /// Returns [`BridgeError::Renderer`] if the shader set fails to compile.
+    #[doc(hidden)]
+    pub fn enable_canonical_segment_order(&mut self) -> Result<(), BridgeError> {
+        self.invalidate_retained();
+        let RetainedGpuTarget {
+            device, renderer, ..
+        } = &mut self.target;
+        renderer
+            .enable_canonical_segment_order(device)
+            .map_err(|e| BridgeError::Renderer(format!("{e:?}")))
+    }
+
     /// Whether canonical segment ordering was requested for this renderer.
     #[doc(hidden)]
     pub fn canonical_segment_order_requested(&self) -> bool {

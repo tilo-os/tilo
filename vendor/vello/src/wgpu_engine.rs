@@ -1601,9 +1601,13 @@ impl WgpuEngine {
         self.sparse_segment_row_mask_enabled = true;
     }
 
+    pub(crate) fn enable_canonical_segment_order(&mut self) {
+        self.canonical_segment_order_enabled = true;
+    }
+
     #[cfg(test)]
     pub(crate) fn enable_canonical_segment_order_fixture(&mut self) {
-        self.canonical_segment_order_enabled = true;
+        self.enable_canonical_segment_order();
     }
 
     pub fn set_sparse_fine_enabled(&mut self, enabled: bool) {
