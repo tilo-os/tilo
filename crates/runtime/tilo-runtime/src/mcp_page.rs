@@ -13,8 +13,9 @@ use tilo_actions::{ActionDescriptor, ActionParam, Availability, ParamType, RiskL
 
 /// Marks a cursor that is not printable text and so travels as base64.
 const BASE64_CURSOR: &str = "b64:";
-/// Longest action description a compact signature carries.
-const DESCRIPTION_CHARS: usize = 120;
+/// Longest first sentence a compact signature carries whole. Apps keep
+/// first sentences short; one past this is cut at a clause boundary.
+const DESCRIPTION_CHARS: usize = 240;
 /// Resource ids up to this long are shown as they are: `sheets.workbook`
 /// reads better than a handle and costs about as much.
 const SHORT_ID_BYTES: usize = 24;
@@ -136,19 +137,26 @@ impl Handles {
 
 /// `page` with its rows grouped by resource and each action reduced to a
 /// signature: `{"save-as": "Save document as (path?)"}`. With `handles`,
-/// long resource ids are named by their session handles. Descriptions are
-/// included; an `open` reply leaves them out, because that reply is read
-/// again on every later turn.
-pub fn compact_page(page: &CataloguePage, handles: Option<&mut Handles>) -> Value {
-    compact_described(page, handles, true)
-}
-
-/// [`compact_page`], omitting each action's description when `describe` is
-/// false. The label, parameters and risk stay: that is what a call needs.
+/// long resource ids are named by their session handles. With `describe`
+/// false each action's description is left out (an `open` reply, read again
+/// on every later turn); the label, parameters and risk stay: that is what a
+/// call needs.
 pub fn compact_described(
     page: &CataloguePage,
-    mut handles: Option<&mut Handles>,
+    handles: Option<&mut Handles>,
     describe: bool,
+) -> Value {
+    compact_first_described(page, handles, if describe { usize::MAX } else { 0 })
+}
+
+/// [`compact_described`] describing only the first `described` rows: the ones a
+/// needle matched. The rest of a matched resource's actions follow as bare
+/// signatures, so finding one action shows the others without paying for
+/// every description again.
+pub fn compact_first_described(
+    page: &CataloguePage,
+    mut handles: Option<&mut Handles>,
+    described: usize,
 ) -> Value {
     /// One resource of the page: its head and its actions, in page order.
     struct Group {
@@ -157,7 +165,7 @@ pub fn compact_described(
         actions: Map<String, Value>,
     }
     let mut groups: Vec<Group> = Vec::new();
-    for row in &page.rows {
+    for (index, row) in page.rows.iter().enumerate() {
         if !groups.iter().any(|group| group.id == row.resource.id) {
             groups.push(Group {
                 id: row.resource.id.clone(),
@@ -174,7 +182,7 @@ pub fn compact_described(
         if let Some(action) = &row.action {
             group.actions.insert(
                 action.address.action.clone(),
-                signature(action, describe).into(),
+                signature(action, index < described).into(),
             );
         }
     }
@@ -314,7 +322,9 @@ const fn risk_label(risk: RiskLevel) -> &'static str {
     }
 }
 
-/// The first sentence of `text`, cut at a word boundary if it is long.
+/// The first sentence of `text`, whole unless it is pathologically long;
+/// then cut at the last clause boundary (`;`, `:`, `,`) or word before the
+/// cap.
 fn first_sentence(text: &str) -> String {
     let sentence = text
         .split_once(". ")
@@ -324,8 +334,14 @@ fn first_sentence(text: &str) -> String {
         return sentence.to_owned();
     }
     let cut: String = sentence.chars().take(DESCRIPTION_CHARS).collect();
-    let cut = cut.rsplit_once(' ').map_or(cut.as_str(), |(head, _)| head);
-    format!("{cut}…")
+    let clause = cut
+        .rfind([';', ':', ','])
+        .filter(|at| *at >= DESCRIPTION_CHARS / 2);
+    let head = clause.map_or_else(
+        || cut.rsplit_once(' ').map_or(cut.as_str(), |(head, _)| head),
+        |at| cut.get(..at).unwrap_or(cut.as_str()),
+    );
+    format!("{}…", head.trim_end())
 }
 
 /// The running app `name` means: its exact id, else the one id among
