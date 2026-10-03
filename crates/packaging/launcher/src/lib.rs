@@ -62,6 +62,7 @@ pub mod provider_sandbox;
 pub mod run;
 #[cfg(target_os = "linux")]
 pub mod sandbox;
+pub mod scope;
 pub mod seccomp;
 pub mod services;
 
