@@ -67,6 +67,26 @@ Inverse Automerge patches remain correct for pure CRDT actions with no outside
 consequence (a text splice). A shared file write and a calendar create are document
 actions, so they are undoable — including the compensating remote queue entry.
 
+### Who did it, and what is an undo step
+
+Every action knows its author: the participant that invoked it, pinned with the action
+like its time, so every replica's `apply` reads the same one (`ActionCx::author`). A
+view knows its reader (`ViewCx::me`). Resource state is the same for everyone; "your
+message" is a view comparing the recorded author with `me`, never a reader baked into
+the state or an author carried in the payload.
+
+A record's genesis (`Resource::initialize`) is the same change on every device, so two
+people creating the same record before they sync converge on one. What a new record
+starts with that depends on who creates it or where — the creator as owner, an import
+of settings that already exist — is the app's seed: actions applied once after the
+genesis, by the creator, and nobody's undo step.
+
+An action declares what it is to the people sharing the document (`change_kind`):
+content, housekeeping about it (a read marker), or content from outside (fetched rows,
+a process's output). All three sync and stay in history; only content is an undo step.
+Edits that continue one another (`Resource::coalesces`: a word typed, a slider dragged)
+are one step until the gesture ends.
+
 ### Views
 
 A resource can name more than one view (editor, reader) with a stable id. That catalogue
