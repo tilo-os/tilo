@@ -95,7 +95,7 @@ fn drive_id(index: usize) -> String {
 pub(crate) fn rescan_button(intents: &Intents) -> Button {
     let intents = intents.clone();
     Button::icon_only("disks-rescan", Icon::Refresh, "Rescan drives")
-        .on_click(move || intents.push(Intent::Rescan))
+        .on_effect(move || intents.push(Intent::Rescan))
 }
 
 /// Nothing to show: the system reported no block devices.
@@ -227,8 +227,14 @@ fn actions(model: &DetailModel<'_>, intents: &Intents) -> Section {
                 ButtonRole::Secondary
             })
             .with_enabled(enabled)
-            .tooltip(kind.describe())
-            .on_click(move || intents.push(Intent::Run(kind)));
+            .tooltip(kind.describe());
+        // Format only opens the confirm sheet; the others act on the machine.
+        let request = move || intents.push(Intent::Run(kind));
+        let button = if kind.destructive() {
+            button.on_view(request)
+        } else {
+            button.on_effect(request)
+        };
         row = row.push(Box::new(button));
     }
     Section::new(vec![
@@ -250,8 +256,7 @@ fn tabs(selected: Tab, intents: &Intents) -> ToggleGroup {
         index,
     )
     .with_style(SegmentedStyle::Tabs)
-    .with_id("disks-tabs")
-    .on_change(move |i| {
+    .on_view("disks-tabs", move |i| {
         if let Some(tab) = Tab::all().get(i) {
             intents.push(Intent::SetTab(*tab));
         }
