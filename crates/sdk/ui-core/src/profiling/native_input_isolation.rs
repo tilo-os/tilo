@@ -24,6 +24,7 @@ pub(super) fn dispatch(
                 | WindowEvent::CursorEntered { .. }
                 | WindowEvent::CursorLeft { .. }
                 | WindowEvent::MouseInput { .. }
+                | WindowEvent::PenSample { .. }
                 | WindowEvent::MouseWheel { .. }
                 | WindowEvent::KeyboardInput { .. }
                 | WindowEvent::ModifiersChanged(_)
