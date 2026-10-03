@@ -52,7 +52,7 @@ fn host_door_edits_publish_resources_and_undo_as_one_action() {
         let last = app.versions().pop().unwrap();
         assert!(
             last.summary()
-                .is_some_and(|summary| summary.contains("Project")),
+                .is_some_and(|summary| summary.contains("Add project marker")),
             "{last:?}"
         );
         assert!(app.undo());
