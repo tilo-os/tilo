@@ -462,6 +462,89 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         }
         self.handles().full(&name)
     }
+    /// The resource `target` means when its resource names none: a
+    /// resource of the provider's whose kind or label it is (`canvas.artwork`,
+    /// `Canvas`), or, shaped like a handle another connection issued, what
+    /// to name instead. `None` when it is neither.
+    async fn named_resource(&self, target: &RemoteActionTarget) -> Option<Result<String, String>> {
+        let name = &target.address.resource;
+        if name.is_empty()
+            || name.len() > RESOURCE_NAME_BYTES
+            || tilo_actions::remote::workspace_provider_room(&target.provider).is_some()
+        {
+            return None;
+        }
+        let rows = self.top_resources(&target.provider).await.ok()?;
+        match page::resource_named(name, &rows) {
+            Some(Ok(id)) if id == *name => None,
+            Some(found) => Some(found),
+            None if page::looks_like_handle(name) => Some(Err(format!(
+                "{name} is no handle of this connection (handles last one connection); name the resource by its kind or label instead: {}",
+                resource_list(&rows)
+            ))),
+            None => None,
+        }
+    }
+    /// The resources `provider` lists at its top level.
+    async fn top_resources(&self, provider: &str) -> Result<Vec<CatalogueRow>, String> {
+        Ok(self
+            .ask(CatalogueQuery {
+                provider: Some(provider.to_owned()),
+                max_results: 128,
+                ..CatalogueQuery::default()
+            })
+            .await?
+            .rows)
+    }
+    /// Why `target` is not offered, in terms the caller can act on: the
+    /// actions its resource has, or the resources there are. Only what the
+    /// caller's own directory lists is named.
+    async fn not_offered(&self, target: &RemoteActionTarget) -> String {
+        let address = &target.address;
+        let listed = self
+            .ask(CatalogueQuery {
+                provider: Some(target.provider.clone()),
+                parent_resource: Some(address.resource.clone()),
+                max_results: 128,
+                ..CatalogueQuery::default()
+            })
+            .await
+            .map(|page| page.rows)
+            .unwrap_or_default();
+        let actions = listed
+            .iter()
+            .filter(|row| row.resource.id == address.resource)
+            .filter_map(|row| {
+                row.action
+                    .as_ref()
+                    .map(|action| action.address.action.as_str())
+            })
+            .collect::<Vec<_>>();
+        let handle = self.handles().short(&address.resource);
+        let named = listed
+            .iter()
+            .find(|row| row.resource.id == address.resource)
+            .map_or_else(
+                || handle.clone(),
+                |row| format!("{} ({handle})", row.resource.label),
+            );
+        if !actions.is_empty() {
+            return format!(
+                "{named} has no action {}; its actions: {}",
+                address.action,
+                actions.join(", ")
+            );
+        }
+        let rows = self
+            .top_resources(&target.provider)
+            .await
+            .unwrap_or_default();
+        format!(
+            "no resource {named} offers {} here; name one of: {}",
+            address.action,
+            resource_list(&rows)
+        )
+    }
     /// `page` compact. An app instance's resource ids are opaque and long,
     /// and named by handles; the workspace's (`app.<app_id>`, its permission
     /// roles) are names that partners' provisioning and prompts spell out.
@@ -762,14 +845,20 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                 Ok(peer.to_string())
             }
             // The newest instance: the one an `open` in the same turn started.
-            (None, Some(app_id), false) => self
-                .peers_of(app_id)
-                .await?
-                .last()
-                .map(ToString::to_string)
-                .ok_or_else(|| {
-                    format!("{app_id} is not running; open it through the workspace first")
-                }),
+            (None, Some(app_id), false) => {
+                let (_, running) = self.instances().await?;
+                let ids = running
+                    .iter()
+                    .filter_map(|(_, app)| app["app_id"].as_str())
+                    .collect::<Vec<_>>();
+                let app_id = page::app_named(app_id, &ids)?;
+                running
+                    .iter()
+                    .rev()
+                    .find(|(_, app)| app["app_id"].as_str() == Some(app_id.as_str()))
+                    .map(|(peer, _)| peer.to_string())
+                    .ok_or_else(|| page::not_running(&app_id, &ids))
+            }
             _ => Err("name exactly one of peer_id, app_id or workspace: true".into()),
         }
     }
@@ -1028,18 +1117,27 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                     .provider(a.peer_id, a.app_id.as_deref(), a.workspace)
                     .await?;
                 let (revision, _) = self.revision_for(&provider, a.revision).await?;
-                let target = RemoteActionTarget {
+                let mut target = RemoteActionTarget {
                     provider,
                     address: tilo_actions::ActionAddress::new(self.full_id(a.resource), a.action),
                 };
-                let page = self.ask(CatalogueQuery::resolve(&target, revision)).await?;
+                let mut page = self
+                    .ask(CatalogueQuery::resolve(&target, revision.clone()))
+                    .await?;
+                if page.rows.is_empty()
+                    && !page.stale_cursor
+                    && let Some(named) = self.named_resource(&target).await
+                {
+                    target.address.resource = named?;
+                    page = self.ask(CatalogueQuery::resolve(&target, revision)).await?;
+                }
                 if page.stale_cursor {
                     return Err("StaleRevision".into());
                 }
-                page.rows
-                    .first()
-                    .map(|row| json!({"row":resolved_row_json(row)}))
-                    .ok_or_else(|| "NotFound".into())
+                match page.rows.first() {
+                    Some(row) => Ok(json!({"row":resolved_row_json(row)})),
+                    None => Err(self.not_offered(&target).await),
+                }
             }
             "tilo_invoke" => self.invoke(parse(args)?).await,
             "tilo_status" => {
@@ -1124,6 +1222,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                 Err(_) => true,
             };
             results.push(match value {
+                Ok(value) if !failed => succeeded_step(value),
                 Ok(value) => value,
                 Err(error) => json!({ "error": error }),
             });
@@ -1185,7 +1284,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             .map_or_else(|| Ok(tilo_actions::InvocationId::new()), invocation_id)?;
         let wait =
             std::time::Duration::from_millis(a.wait_ms.unwrap_or(DEFAULT_WAIT_MS).min(MAX_WAIT_MS));
-        let target = RemoteActionTarget {
+        let mut target = RemoteActionTarget {
             provider,
             address: tilo_actions::ActionAddress::new(self.full_id(a.resource), a.action),
         };
@@ -1195,9 +1294,35 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             .ok()
             .zip(opened_file(&target.address.action, &a.arguments).map(str::to_owned));
         self.record_producer(invocation, &target.provider).await;
-        let mut value = self
-            .run_with_handles(target, a.arguments, invocation, a.revision, wait)
-            .await?;
+        let not_offered = tilo_actions::remote::ActionHostError::UnknownAction.to_string();
+        let mut value = match self
+            .run_with_handles(
+                target.clone(),
+                a.arguments.clone(),
+                invocation,
+                a.revision.clone(),
+                wait,
+            )
+            .await
+        {
+            // Nothing ran: the resource may be named by its kind or label.
+            Err(error) if error.contains(&not_offered) => {
+                let Some(named) = self.named_resource(&target).await else {
+                    return Err(self.not_offered(&target).await);
+                };
+                target.address.resource = named?;
+                match self
+                    .run_with_handles(target.clone(), a.arguments, invocation, a.revision, wait)
+                    .await
+                {
+                    Err(error) if error.contains(&not_offered) => {
+                        return Err(self.not_offered(&target).await);
+                    }
+                    ran => ran?,
+                }
+            }
+            ran => ran?,
+        };
         self.attach_images(invocation, &mut value, false).await;
         if let Some((peer, path)) = file.filter(|_| may_have_opened(&value)) {
             self.open_files.record(&path, peer);
@@ -1887,6 +2012,10 @@ const MAX_CALLS: usize = 32;
 const SETTLE_POLL: std::time::Duration = std::time::Duration::from_millis(25);
 /// What the host says when a target changed since the revision named.
 const STALE: &str = "changed since that revision";
+/// Longer names are resource ids, never a kind or a label.
+const RESOURCE_NAME_BYTES: usize = 64;
+/// How many resources an error names before it stops.
+const LISTED_RESOURCES: usize = 16;
 /// The numeric argument a failed update refused as outside its range, with
 /// the bound the refusal named (`argument `pageSize` must be at most 64`).
 fn out_of_range(
@@ -1919,6 +2048,63 @@ fn empty_object() -> Value {
 }
 /// Whether a finished call should stop a batch: it did not succeed, it is
 /// still running, or the file it tried to open did not.
+/// A batch step that succeeded, said once: its output (`value`, `resources`)
+/// and any note on it, without the invocation id and update wrapping every
+/// step repeats. Every step before `stopped` succeeded, so the state needs
+/// no saying; a step that did not keeps its whole update.
+fn succeeded_step(mut value: Value) -> Value {
+    let Some(fields) = value.as_object_mut() else {
+        return value;
+    };
+    fields.remove("invocation_id");
+    if let Some(Value::Object(output)) = fields
+        .remove("update")
+        .and_then(|mut update| update.get_mut("output").map(Value::take))
+    {
+        for (key, item) in output {
+            fields.entry(key).or_insert(item);
+        }
+    }
+    // Content the value already names (`"content": "tilo.content:…"`)
+    // need not be listed twice.
+    let said = fields
+        .get("value")
+        .map(Value::to_string)
+        .unwrap_or_default();
+    if fields
+        .get("resources")
+        .and_then(Value::as_array)
+        .is_some_and(|listed| {
+            listed
+                .iter()
+                .all(|item| item.as_str().is_some_and(|item| said.contains(item)))
+        })
+    {
+        fields.remove("resources");
+    }
+    value
+}
+/// `rows`' resources as `label (kind)`, each once.
+fn resource_list(rows: &[CatalogueRow]) -> String {
+    let mut seen = Vec::<&str>::new();
+    let mut listed = Vec::<String>::new();
+    for row in rows {
+        if seen.contains(&row.resource.id.as_str()) {
+            continue;
+        }
+        seen.push(&row.resource.id);
+        if listed.len() == LISTED_RESOURCES {
+            listed.push("…".into());
+            break;
+        }
+        listed.push(format!("{} ({})", row.resource.label, row.resource.kind));
+    }
+    if listed.is_empty() {
+        "it lists none".into()
+    } else {
+        listed.join(", ")
+    }
+}
 fn call_failed(value: &Value) -> bool {
     if value.get("pending").is_some() || value.pointer("/opened/error").is_some() {
         return true;
@@ -2044,8 +2230,32 @@ fn resolved_row_json(row: &CatalogueRow) -> Value {
                 descriptor.remove(key);
             }
         }
+        if let Some(Value::Array(params)) = descriptor.get_mut("params") {
+            params.iter_mut().for_each(param_said_once);
+        }
+        descriptor.retain(|_, item| !item.is_null());
     }
+    fields.retain(|_, item| !item.is_null());
     value
+}
+/// A parameter whose schema says it all: its type, nullability and
+/// description stand in the schema, so the copies beside it go, and a
+/// description that only repeats the name says nothing.
+fn param_said_once(param: &mut Value) {
+    let Some(fields) = param.as_object_mut() else {
+        return;
+    };
+    let Some(schema) = fields.get("schema").filter(|schema| schema.is_object()) else {
+        return;
+    };
+    let repeated = fields.get("description").is_some_and(|description| {
+        Some(description) == schema.get("description") || Some(description) == fields.get("name")
+    });
+    if repeated {
+        fields.remove("description");
+    }
+    fields.remove("ty");
+    fields.remove("nullable");
 }
 fn row_json(row: &CatalogueRow) -> Value {
     let descriptor = row.action.as_ref().map(|action| {
@@ -2070,8 +2280,7 @@ fn tool_definitions() -> Vec<Value> {
     let integer = json!({"type":"integer"});
     let string = json!({"type":"string"});
     let boolean = json!({"type":"boolean"});
-    let app_id =
-        json!({"type":"string","description":"Instead of peer_id: that app's newest instance"});
+    let app_id = json!({"type":"string","description":"Instead of peer_id: that app's newest instance; its id or last part (canvas)"});
     let target = json!({"peer_id":integer,"app_id":app_id,"workspace":boolean,"revision":string,"resource":string,"action":string});
     let mut invoke = target.clone();
     if let Some(properties) = invoke.as_object_mut() {
@@ -2096,7 +2305,7 @@ fn tool_definitions() -> Vec<Value> {
     let read = json!({"readOnlyHint":true,"openWorldHint":false});
     let mut tools: Vec<Value> = [
         ("tilo_list_apps","Running apps (peer_id, app_id). workspace: true in the other tools addresses the workspace instead: tilo_query it for installed apps, tilo_invoke {workspace: true, resource: \"app.<app_id>\", action: \"open\", arguments: {path?}} starts one, opens path in it, and returns its peer_id, directory (its resources and all their actions, so no tilo_query is needed) and, for a path, content: the document's first page as the app reads it (so no read is needed); app.host:<desktop-id> opens a host application, such as a browser, driven with the computer tool",json!({"after_peer":integer,"max_results":integer}),json!([]),read.clone()),
-        ("tilo_query","Find actions. needle: words in an action or resource name, e.g. \"save as\"; rows matching every word, else those matching most (partial_match). Each resource found lists all its actions as id: \"Label (params)\" (p? optional, p:type, a|b choices, 1..64 range, p* schema via tilo_resolve). An app's long resource ids appear as handles such as r3, accepted wherever a resource is named. parent_resource lists a resource's children; pass next_cursor to continue; detail: \"full\" gives whole contracts",json!({"peer_id":integer,"app_id":app_id,"workspace":boolean,"needle":string,"parent_resource":string,"cursor":string,"revision":string,"max_results":integer,"detail":{"enum":["compact","full"]}}),json!([]),read.clone()),
+        ("tilo_query","Find actions. needle: words in an action or resource name, e.g. \"save as\"; rows matching every word, else those matching most (partial_match). Each resource found lists all its actions as id: \"Label (params)\" (p? optional, p:type, a|b choices, 1..64 range, p* schema via tilo_resolve). An app's long resource ids appear as handles such as r3 for this connection; a resource's kind or label works too. parent_resource lists a resource's children; pass next_cursor to continue; detail: \"full\" gives whole contracts",json!({"peer_id":integer,"app_id":app_id,"workspace":boolean,"needle":string,"parent_resource":string,"cursor":string,"revision":string,"max_results":integer,"detail":{"enum":["compact","full"]}}),json!([]),read.clone()),
         ("tilo_resolve","An action's full contract and parameter schemas",target,json!(["resource","action"]),read.clone()),
         ("tilo_invoke","One action (resource, action, arguments), or calls: [{resource, action, arguments}, …] in order, stopping at the first failure (results; stopped is that index): batch the steps you already know, e.g. several edits and then a look, into one call. Waits wait_ms (default 5000); if still running, poll tilo_status. Omit revision. Same invocation_id never runs twice. Calling confirms, destructive ones included. An image this session was already shown is not sent again: unchanged names the invocation that showed it",invoke,json!([]),json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true})),
         ("tilo_status","An invocation's latest update",json!({"invocation_id":string}),json!(["invocation_id"]),read),
