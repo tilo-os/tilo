@@ -11501,6 +11501,7 @@ name = "registry-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "app-cli",
  "app-registry",
  "blake3",
  "bytes",
@@ -11514,6 +11515,7 @@ dependencies = [
  "hyper-util",
  "registry-client",
  "registry-types",
+ "registry-web",
  "reqwest",
  "serde",
  "serde_json",
@@ -11525,6 +11527,7 @@ dependencies = [
  "tilo-files",
  "tilo-net",
  "tilo-rt",
+ "tilo-test-env",
  "tilo-xdg-paths",
  "tokio",
  "toml 1.0.6+spec-1.1.0",
