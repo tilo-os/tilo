@@ -1062,9 +1062,11 @@ mod tests {
             runner.poll(invocation, true, &mut ()),
             Some(InvocationUpdate::Cancelled { .. })
         ));
-        observed
-            .recv_timeout(std::time::Duration::from_secs(30))
-            .unwrap();
+        // The worker stops, or never starts when cancelled first.
+        assert!(!matches!(
+            observed.recv_timeout(std::time::Duration::from_secs(30)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
         assert!(
             runner.poll(invocation, false, &mut ()).is_none(),
             "a cancelled job's result is dropped"

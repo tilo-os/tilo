@@ -614,10 +614,7 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
         {
             resource = resource.with_action(render_spec());
         }
-        for spec in super::history::specs()
-            .into_iter()
-            .chain(self.effects.specs())
-        {
+        for spec in super::history::specs() {
             if !resource
                 .actions
                 .iter()
@@ -625,6 +622,18 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
             {
                 resource = resource.with_action(spec);
             }
+        }
+        for spec in self.effects.specs() {
+            let shadowed = resource
+                .actions
+                .iter()
+                .any(|existing| existing.id == spec.id);
+            debug_assert!(!shadowed, "effect `{}` shadows an action", spec.id);
+            if shadowed {
+                tracing::warn!(effect = spec.id, "effect shadows an action; not published");
+                continue;
+            }
+            resource = resource.with_action(spec);
         }
         let mut resources = vec![resource];
         resources.extend(ui_core::resources::resources_for(
