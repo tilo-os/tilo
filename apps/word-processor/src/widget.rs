@@ -2797,6 +2797,12 @@ impl WordProcessorWidget {
         self.lifecycle.dirty = true;
     }
 
+    /// Ask whether to save before a new document replaces this one, as
+    /// choosing a template with unsaved changes does.
+    pub fn stage_unsaved_changes_for_shot(&mut self) {
+        self.stage_replacement(PendingReplacement::Template(crate::Template::Report));
+    }
+
     /// Stage the template picker for the next headless overlay pass.
     pub fn stage_template_picker_for_shot(&mut self) {
         self.staged.template_picker = true;

@@ -1,6 +1,6 @@
 # Word processor — source locale (en-US).
 #
-# Keys are grouped by UI surface. Single-glyph icon faces (B/I/U, ✓/✗, arrows)
+# Keys are grouped by UI surface. Single-letter toolbar faces (B/I/U)
 # stay as literals in code and are NOT keyed here. Interpolating messages use
 # Fluent placeables ({ $name }); see editor/src/i18n.rs (t_args).
 
@@ -104,7 +104,7 @@ menu-copy = Copy
 menu-paste = Paste
 menu-select-all = Select all
 
-## Templates (New ▾ menu)
+## Templates (the New menu)
 template-blank = Blank
 template-letter = Letter
 template-report = Report
