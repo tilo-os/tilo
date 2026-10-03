@@ -3489,7 +3489,7 @@ impl CaptureStudio {
             self.draw_screenshot_receipt(scene, transform, text_renderer, theme);
             if let Some(menu) = self.send_menu.as_mut() {
                 menu.layout_within(text_renderer, theme);
-                menu.draw(
+                menu.draw_overlay(
                     scene,
                     transform,
                     text_renderer,
