@@ -1270,10 +1270,9 @@ fn units_of<'a>(art: &'a Artwork, id: &str) -> Result<Vec<&'a Mark>, ActionError
 
 fn set_reference(doc: &mut Doc, art: &Artwork, set: &SetReference) -> Result<(), ActionError> {
     if set.remove == Some(true) {
-        if art.reference.is_none() {
-            return Err(refuse("there is no reference to remove"));
+        if art.reference.is_some() {
+            doc::write_reference(doc, None)?;
         }
-        doc::write_reference(doc, None)?;
         return Ok(());
     }
     let mut reference = match (&art.reference, &set.image) {
