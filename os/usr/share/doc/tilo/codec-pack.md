@@ -58,7 +58,10 @@ freeworld builds put a same-soname library (`libgallium-<version>.so`,
 in `/etc/ld.so.conf.d`. An extension cannot change `/etc`, so the helper moves
 those libraries to the base's own path in `/usr/lib64`, where the extension
 shadows the base's copy: the same effect, with no change to `/etc` or
-`ld.so.cache`. The VA drivers stay in `/usr/lib64/dri-freeworld`, which
+`ld.so.cache`. OpenH264 needs no move: the image carries Fedora's
+`noopenh264` stub (`libopenh264.so.8`, which `libavcodec-free` links), never
+Cisco's binary, and Cisco's `openh264` installs its library at the stub's
+exact path, so the extension shadows the stub directly. The VA drivers stay in `/usr/lib64/dri-freeworld`, which
 Fedora's libva searches before `/usr/lib64/dri`. Each part records what it was
 built from in `/usr/share/tilo-extension/<part>.json`; the packages' licence
 texts come along in `/usr/share/licenses`.

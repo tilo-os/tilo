@@ -178,32 +178,106 @@ def overlap(a, b) -> float:
 
 
 # -- the session's frame trace (TILO_FRAME_TRACE, set by tilo-session) ---------
+#
+# One row per loop tick. The recorder buffers rows and writes them out on the first
+# tick that ends a second or more after its last write, and a tick's row is only
+# written once its park ends. Read straight after a transition, the file lacks the
+# transition's tail; read before one, its last row names a moment long gone. So a
+# window is cut by `seq` between two synced reads, never by a guessed clock.
 
 TRACE = "$HOME/.local/state/tilo/session-logs/frame-trace.csv"
+TRACE_FLUSH_S = 1.05
 
 
-def read_trace(ctx) -> list[dict]:
-    text = ctx.vm.exec(f'cat "{TRACE}"', timeout=60)
+def _parse_trace(text: str) -> tuple[list[dict], str]:
     lines = [l for l in text.splitlines() if l and not l.startswith("receipt:")]
     if not lines or not lines[0].startswith("seq,"):
         raise Unobservable("the session has no frame trace (TILO_FRAME_TRACE)")
     header = lines[0].split(",")
-    rows = []
+    rows, last = [], ""
     for line in lines[1:]:
-        cells = line.split(",")
-        if len(cells) != len(header):
+        if line.startswith("LASTSEQ:"):
+            last = line[len("LASTSEQ:"):]
             continue
-        rows.append({k: (int(v) if v.isdigit() else v) for k, v in zip(header, cells)})
+        cells = line.split(",")
+        if len(cells) == len(header):
+            rows.append({k: (int(v) if v.isdigit() else v) for k, v in zip(header, cells)})
+    return rows, last
+
+
+def read_trace(ctx, after_seq: int = -1) -> list[dict]:
+    """Rows with seq > `after_seq`, complete lines only (a buffered write can end
+    mid-line). A trace that started over under the window fails it as unobservable."""
+    script = (f'f="{TRACE}"; [ -s "$f" ] || exit 0; head -n1 "$f"; part=$(tail -c1 "$f"); '
+              f'awk -F, -v m={int(after_seq)} -v part="$part" '
+              "'NR>1 {before=seq; seq=$1} NR>1 && $1+0>m {if (have) print prev; prev=$0; have=1} "
+              "END {if (have && part==\"\") print prev; print \"LASTSEQ:\" (part==\"\" ? seq : before)}' \"$f\"")
+    rows, last = _parse_trace(ctx.vm.exec(script, timeout=60))
+    if after_seq >= 0 and last.isdigit() and int(last) < after_seq:
+        raise Unobservable("the compositor restarted inside the measured window "
+                           f"(its frame trace started over, now at seq {last})")
     return rows
 
 
-def trace_since(rows: list[dict], start_us: int) -> list[dict]:
-    return [r for r in rows if r["start_us"] >= start_us]
+def trace_csv(rows: list[dict]) -> str:
+    """Rows back as CSV, with their header, for evidence."""
+    if not rows:
+        return ""
+    return "\n".join([",".join(rows[0])] + [",".join(str(v) for v in r.values()) for r in rows]) + "\n"
 
 
-def trace_now_us(ctx) -> int:
-    rows = read_trace(ctx)
-    return rows[-1]["start_us"] if rows else 0
+def sync_trace(ctx) -> None:
+    """Get every tick that began before this call onto disk: wake the loop through the
+    control socket, wait out the flush interval, wake it twice more. The second wake's
+    tick began a flush interval after the first, so the third wake, which ends it,
+    writes everything out."""
+    ctx.vm.state()
+    time.sleep(TRACE_FLUSH_S)
+    ctx.vm.state()
+    ctx.vm.state()
+
+
+def trace_mark(ctx) -> int:
+    """The seq a window starts after: the newest row of the synced trace."""
+    sync_trace(ctx)
+    script = f'f="{TRACE}"; [ -s "$f" ] || exit 0; head -n1 "$f"; tail -n4 "$f" | head -n3'
+    rows, _ = _parse_trace(ctx.vm.exec(script, timeout=60))
+    return rows[-1]["seq"] if rows else -1
+
+
+def trace_after(ctx, mark: int) -> list[dict]:
+    """Every tick after `mark`, synced first; the sync's own wakes add two or three
+    unpainted ticks at the end."""
+    sync_trace(ctx)
+    return read_trace(ctx, mark)
+
+
+def demanding(r: dict) -> bool:
+    """The compositor had a frame to show on this tick: it painted one, or the
+    presenter still held earlier ones (backpressured)."""
+    return r.get("painted") == 1 or r.get("backpressured") == 1
+
+
+def trace_until_quiet(ctx, mark: int, quiet_ms: float = 500,
+                      timeout_s: float = 20) -> tuple[list[dict], bool]:
+    """Ticks after `mark` once the compositor has asked for no frame for `quiet_ms` of
+    its own time. While it animates the control socket is left alone (a state dump
+    costs the loop tens of milliseconds): the file grows by a write a second while
+    frames flow, and stops growing when the loop parks. Returns the rows and whether
+    the compositor went quiet before `timeout_s`."""
+    deadline = time.monotonic() + timeout_s
+    while True:
+        seen, still = None, 0.0
+        while time.monotonic() < deadline and still < 1.2:
+            n = len(read_trace(ctx, mark))
+            still = still + 0.4 if n == seen else 0.0
+            seen = n
+            time.sleep(0.4)
+        rows = trace_after(ctx, mark)
+        want = [r for r in rows if demanding(r)]
+        quiet = bool(rows) and (not want or rows[-1]["start_us"] - want[-1]["start_us"] >= quiet_ms * 1000)
+        if quiet or time.monotonic() >= deadline:
+            return rows, quiet
 
 
 def percentile(values: list, pct: float):
@@ -214,60 +288,130 @@ def percentile(values: list, pct: float):
     return s[k]
 
 
+def _ms(v):
+    return None if v is None else round(v / 1000, 2)
+
+
+def has_cpu(rows: list[dict]) -> bool:
+    """Whether the trace carries the loop thread's CPU time per tick."""
+    return any(isinstance(r.get("cpu_us"), int) for r in rows)
+
+
+def _tick_walls(rows: list[dict]):
+    """(tick, wall time outside its park) for each tick with a successor: a row's
+    `period_us` runs from the previous tick's start, so it holds the previous tick's
+    work and park."""
+    for a, b in zip(rows, rows[1:]):
+        yield a, max(0, b["period_us"] - a["sleep_us"])
+
+
 def frame_stats(rows: list[dict]) -> dict:
-    """Paint cadence and CPU work of the painted ticks in `rows`."""
+    """Paint cadence and work of the painted ticks in `rows`.
+
+    `cpu_ms_*` is the CPU the loop thread spent on a painted tick: the compositor's
+    own work, whatever the host or the display does meanwhile. `work_ms_*` is the
+    same tick's wall time outside the park; the difference is time the thread was
+    descheduled or blocked."""
     painted = [r for r in rows if r.get("painted") == 1]
-    work = []
-    prev_sleep = None
-    for r in rows:
-        if prev_sleep is not None and r.get("painted") == 1:
-            work.append(max(0, r["period_us"] - prev_sleep))
-        prev_sleep = r["sleep_us"]
+    work = [wall for r, wall in _tick_walls(rows) if r.get("painted") == 1]
+    cpu = [r["cpu_us"] for r in painted if isinstance(r.get("cpu_us"), int)]
     periods = [r["period_us"] for r in painted if r["period_us"] > 0]
     latency = [r["input_latency_us"] for r in rows if isinstance(r.get("input_latency_us"), int)]
-    ms = lambda v: None if v is None else round(v / 1000, 2)  # noqa: E731
+    blocked = [r for r in rows if r.get("backpressured") == 1]
     return {
         "ticks": len(rows),
         "painted": len(painted),
-        "work_ms_p50": ms(percentile(work, 50)),
-        "work_ms_p95": ms(percentile(work, 95)),
-        "work_ms_p99": ms(percentile(work, 99)),
-        "paint_period_ms_p50": ms(percentile(periods, 50)),
-        "paint_period_ms_p95": ms(percentile(periods, 95)),
-        "paint_period_ms_max": ms(max(periods) if periods else None),
-        "input_to_submit_ms_p50": ms(percentile(latency, 50)),
-        "input_to_submit_ms_p95": ms(percentile(latency, 95)),
-        "backpressured": sum(1 for r in rows if r.get("backpressured") == 1),
+        "cpu_ms_p50": _ms(percentile(cpu, 50)),
+        "cpu_ms_p95": _ms(percentile(cpu, 95)),
+        "cpu_ms_p99": _ms(percentile(cpu, 99)),
+        "cpu_ms_max": _ms(max(cpu) if cpu else None),
+        "work_ms_p50": _ms(percentile(work, 50)),
+        "work_ms_p95": _ms(percentile(work, 95)),
+        "work_ms_p99": _ms(percentile(work, 99)),
+        "paint_period_ms_p50": _ms(percentile(periods, 50)),
+        "paint_period_ms_p95": _ms(percentile(periods, 95)),
+        "paint_period_ms_max": _ms(max(periods) if periods else None),
+        "input_to_submit_ms_p50": _ms(percentile(latency, 50)),
+        "input_to_submit_ms_p95": _ms(percentile(latency, 95)),
+        "backpressured": len(blocked),
+        "display_wait_ms": _ms(sum(r["sleep_us"] for r in blocked)),
     }
 
 
-def burst_stats(rows: list[dict], window_ms: float, idle_ms: float = 250.0) -> dict:
-    """Pacing inside animations: a burst starts at the first painted frame after at least
-    `idle_ms` without one and spans `window_ms` (the animation's length). Intervals are
-    painted-to-painted, so the idle park before a burst never counts as a stall."""
-    painted = [r["start_us"] for r in rows if r.get("painted") == 1]
-    late = [r["deadline_late_us"] for r in rows
-            if r.get("painted") == 1 and isinstance(r.get("deadline_late_us"), int)]
-    bursts, cur, start, prev = [], [], None, None
-    for t in painted:
-        if prev is None or t - prev > idle_ms * 1000:
-            if cur:
-                bursts.append(cur)
-            cur, start = [t], t
-        elif t - start <= window_ms * 1000:
-            cur.append(t)
-        prev = t
-    if cur:
-        bursts.append(cur)
-    gaps = [b - a for burst in bursts for a, b in zip(burst, burst[1:])]
-    ms = lambda v: None if v is None else round(v / 1000, 2)  # noqa: E731
+def _to_submit_us(r: dict) -> int:
+    """How far into its tick a frame was submitted."""
+    return sum(r.get(k) or 0 for k in ("input_us", "pump_us", "layout_us", "scene_us", "submit_us")
+               if isinstance(r.get(k), int))
+
+
+def transition_stats(rows: list[dict]) -> dict:
+    """One transition, from the first tick that wanted a frame to the last.
+
+    The compositor's side: how many frames it painted (a transition held while the
+    presenter is full paints every step, however slowly the display takes them), how
+    late each was against its own deadline, the CPU each tick took, and how long the
+    first frame took after the input once time spent waiting on a full presenter is
+    taken out. The display's side: painted-to-painted intervals and the time frames
+    waited for it."""
+    first = next((i for i, r in enumerate(rows) if demanding(r)), None)
+    rows = rows[first:] if first is not None else []
+    last = max((i for i, r in enumerate(rows) if demanding(r)), default=-1)
+    # One tick past the last, which closes the last tick's period.
+    walls = list(_tick_walls(rows[:last + 2]))
+    rows = rows[:last + 1]
+    painted = [r for r in rows if r.get("painted") == 1]
+    blocked = [r for r in rows if r.get("backpressured") == 1]
+    gaps = [b["start_us"] - a["start_us"] for a, b in zip(painted, painted[1:])]
+    # Lateness against the compositor's own deadline, but never counted from before the
+    # frame could be made: the clock moves on when the display retires a frame, so a
+    # frame painted before that carries a deadline from before the previous frame. From
+    # whichever is later, the previous submit or the end of the last park behind a full
+    # presenter, the rest is the compositor's. The first frame is judged as input latency.
+    late = []
+    prev_submit, ready = None, None
+    for x, nxt in zip(rows, rows[1:] + [None]):
+        if x.get("painted") == 1 and isinstance(x.get("deadline_late_us"), int):
+            submit = x["start_us"] + _to_submit_us(x)
+            if prev_submit is not None:
+                late.append(max(0, min(x["deadline_late_us"], submit - max(prev_submit, ready or 0))))
+            prev_submit, ready = submit, None
+        elif x.get("backpressured") == 1 and nxt is not None:
+            ready = nxt["start_us"]
+    cpu = [r["cpu_us"] for r in rows if isinstance(r.get("cpu_us"), int)]
+    # The longest tick by wall time outside its park, and how much of that was CPU.
+    longest = max(((wall, r) for r, wall in walls), key=lambda t: t[0], default=(None, {}))
+    input_ms = input_compositor_ms = None
+    for i, r in enumerate(rows):
+        if r.get("painted") == 1 and isinstance(r.get("input_latency_us"), int):
+            # Parks behind a full presenter between the input and this frame's submit; a
+            # tick's park ends where the next tick starts.
+            submitted = r["start_us"] + _to_submit_us(r)
+            arrived = submitted - r["input_latency_us"]
+            waited = 0
+            for x, nxt in zip(rows[:i], rows[1:i + 1]):
+                if x.get("backpressured") == 1:
+                    end = nxt["start_us"]
+                    waited += max(0, min(end, submitted) - max(end - x["sleep_us"], arrived))
+            input_ms = _ms(r["input_latency_us"])
+            input_compositor_ms = _ms(max(0, r["input_latency_us"] - waited))
+            break
     return {
-        "bursts": len(bursts),
-        "frames_per_burst": [len(b) for b in bursts],
-        "interval_ms_p50": ms(percentile(gaps, 50)),
-        "interval_ms_p95": ms(percentile(gaps, 95)),
-        "interval_ms_max": ms(max(gaps) if gaps else None),
-        "deadline_late_ms_p95": ms(percentile(late, 95)),
+        "frames": len(painted),
+        "blocked_ticks": len(blocked),
+        "span_ms": _ms(painted[-1]["start_us"] - painted[0]["start_us"]) if painted else None,
+        "late_judged": len(late),
+        "late_ms_p95": _ms(percentile(late, 95)),
+        "late_ms_max": _ms(max(late) if late else None),
+        "cpu_ms_p95": _ms(percentile(cpu, 95)),
+        "cpu_ms_max": _ms(max(cpu) if cpu else None),
+        "longest_tick_ms": _ms(longest[0]),
+        "longest_tick_cpu_ms": _ms(longest[1].get("cpu_us") if isinstance(longest[1].get("cpu_us"), int) else None),
+        "input_to_first_frame_ms": input_ms,
+        "input_to_first_frame_compositor_ms": input_compositor_ms,
+        "present_interval_ms_p50": _ms(percentile(gaps, 50)),
+        "present_interval_ms_p95": _ms(percentile(gaps, 95)),
+        "present_interval_ms_max": _ms(max(gaps) if gaps else None),
+        "display_wait_ms": _ms(sum(r["sleep_us"] for r in blocked)),
     }
 
 

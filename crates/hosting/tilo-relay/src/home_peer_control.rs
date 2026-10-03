@@ -393,6 +393,7 @@ fn invoking_uid() -> anyhow::Result<u32> {
 
 #[derive(Debug, PartialEq, Eq)]
 struct Account {
+    name: String,
     gid: u32,
     home: PathBuf,
 }
@@ -400,13 +401,14 @@ struct Account {
 fn account_from_passwd(passwd: &str, uid: u32) -> Option<Account> {
     passwd.lines().find_map(|line| {
         let mut fields = line.split(':');
-        let _name = fields.next()?;
+        let name = fields.next()?;
         let _password = fields.next()?;
         let record_uid = fields.next()?.parse::<u32>().ok()?;
         let gid = fields.next()?.parse::<u32>().ok()?;
         let _gecos = fields.next()?;
         let home = fields.next()?;
         (record_uid == uid).then(|| Account {
+            name: name.to_owned(),
             gid,
             home: PathBuf::from(home),
         })
@@ -434,6 +436,70 @@ fn run_enrollment_as_identity_owner(
         // the privileged helper's ambient root groups.
         command.gid(gid).uid(uid);
     }
+}
+
+/// Every group `account` belongs to, the way a login gives them to it.
+fn account_groups(account: &Account) -> anyhow::Result<Vec<libc::gid_t>> {
+    let name = std::ffi::CString::new(account.name.as_str())?;
+    let mut capacity: libc::c_int = 64;
+    loop {
+        let mut groups = vec![0; usize::try_from(capacity)?];
+        let mut count = capacity;
+        // SAFETY: `name` is NUL-terminated and `groups` has room for `count`
+        // entries; getgrouplist writes at most that many and reports the
+        // number it needs in `count`.
+        let found = unsafe {
+            libc::getgrouplist(
+                name.as_ptr(),
+                account.gid,
+                groups.as_mut_ptr(),
+                &raw mut count,
+            )
+        };
+        if found >= 0 {
+            groups.truncate(usize::try_from(count)?);
+            return Ok(groups);
+        }
+        if count <= capacity || count > 65_536 {
+            bail!("requesting user's groups could not be listed");
+        }
+        capacity = count;
+    }
+}
+
+/// Run `command` with the invoking person's own credentials: their uid,
+/// primary group and supplementary groups, and the session directories their
+/// secret store answers on. Approving a device signs with the person's
+/// identity record, which only its owner can open.
+fn run_as_invoking_person(
+    command: &mut Command,
+    uid: u32,
+    account: &Account,
+) -> anyhow::Result<()> {
+    let groups = account_groups(account)?;
+    let gid = account.gid;
+    let runtime_dir = PathBuf::from(format!("/run/user/{uid}"));
+    command
+        .env("HOME", &account.home)
+        .env("XDG_RUNTIME_DIR", &runtime_dir)
+        .env(
+            "DBUS_SESSION_BUS_ADDRESS",
+            format!("unix:path={}", runtime_dir.join("bus").display()),
+        );
+    // SAFETY: the closure runs in the forked child before exec and calls only
+    // async-signal-safe credential syscalls on data prepared before the fork.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::setgroups(groups.len(), groups.as_ptr()) != 0
+                || libc::setgid(gid) != 0
+                || libc::setuid(uid) != 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Ok(())
 }
 
 fn validate_identity_root(identity_root: &Path, uid: u32, home: &Path) -> anyhow::Result<PathBuf> {
@@ -558,7 +624,17 @@ fn personal_device_command(
         .arg("--identity-dir")
         .arg(identity_dir);
     extra(&mut command);
-    run_enrollment_as_identity_owner(&mut command, &identity_root, uid, account.gid);
+    // A seed under the identity root is opened by whoever owns that root, as
+    // before. Without one the approval signs with the person's record.
+    if operation == "approve-device"
+        && !tilo_user_identity::IdentityPaths::under(&identity_root)
+            .user_privkey
+            .exists()
+    {
+        run_as_invoking_person(&mut command, uid, &account)?;
+    } else {
+        run_enrollment_as_identity_owner(&mut command, &identity_root, uid, account.gid);
+    }
     let output =
         bounded_command::run_prepared(command, None, 1024 * 1024, Duration::from_secs(600))?;
     enrollment_command_result(&output, "personal-device enrollment was not completed")
@@ -643,6 +719,7 @@ mod tests {
             assert_eq!(
                 account_from_passwd(passwd, 42_424),
                 Some(Account {
+                    name: "tilouser".into(),
                     gid: 31_337,
                     home: PathBuf::from("/home/tilouser"),
                 })
