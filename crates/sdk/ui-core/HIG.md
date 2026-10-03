@@ -412,6 +412,48 @@ A theme's density (`ThemeDocument::density.spacing`) is built inside
 whole scale is proportional to it, and half the scale would put `s1` at two
 pixels.
 
+### 7c. Overlays, status and captures
+
+**One modal, one popover, one top layer.** A modal is a `ModalDialog`; an
+anchored transient (an option menu, a small form next to its control) is a
+`Popover`. Both are floating Panels (§9.1) and both paint only in the window's
+top layer (`Widget::draw_overlay`), which the host runs after the app *and*
+after the window's own chrome. So a modal's `surfaces.scrim` scrim covers the
+whole window, the History bar and the sidebars included, wherever the dialog
+is mounted, and a popover is never clipped by the pane it was opened from. A
+modal sheet's height follows its content, its title is a `Title`, and its
+actions are Regular buttons anchored to its footer in the platform's order.
+Immediate-mode hosts use the same chrome through `modal_dialog::layout`,
+`paint_backdrop` and `paint_actions`.
+
+**Status has two homes.** What a person reads while working and expects to
+stay put (Ln/Col, a word count, unresolved conflicts) is persistent status in
+`chrome::status_bar`, which reserves its band (`status_bar::split`) so it
+never covers content. A change worth noticing once (a page turn, "Saved") is
+the transient `StatusBubble`: it shows on change, hides by itself and floats
+in its area's bottom-trailing corner. An error the person must act on is a
+`Banner` (persistent, in the flow) or a `Toast` (transient, with an icon close
+button).
+
+**Chrome over media uses the material on the media.** Video controls are a
+floating Panel over the picture; text drawn straight onto media sits on
+`overlay::scrim::vertical_fade` in `colors.media.ink`; a letterbox is
+`colors.media.letterbox` in every theme. No stepped bands, no theme surface
+behind a frame.
+
+**The History bar is the window's, unless the app owns the button.** It sits
+on the content region with one hairline under it and shows the History
+button only. An app that places `ui::widget::history_button()` in its own
+toolbar gets the same action and no separate bar.
+
+**Captures are the live window, exactly.** `--shots` writes the frame on
+`surfaces.content` after it has settled (`FrameHarness::settle_for_capture`:
+animations finished, image loads drained, within a bound), with the wall
+clock pinned to 30 June 2026, 10:42 local (`ui::clock::local_now`). Stage a
+state through the framework scenario hooks (`ResourceApp::scenario`,
+`scenario_viewport`, `ResourceSurface::stage`), never through a separate
+capture root.
+
 ---
 
 ## 8. Never hand-roll an interactive primitive
@@ -450,7 +492,8 @@ This generalises §3 (text editing) to **all** interactive primitives. Concretel
   a `String` on `Key::Character` / `Backspace`.
 - Clickable → `Button`. Never `draw_*_button` + a `contains()` hit-test.
 - Confirm / prompt / sheet → `ModalDialog` (scrim, focus capture, Esc, a11y are
-  built in). Never paint your own overlay + scrim rect.
+  built in; it is presented in the window's top layer, §7c). Never paint your
+  own overlay + scrim rect.
 - Select / choice → `Dropdown`; on/off → `Toggle` / `Checkbox`; range →
   `Slider` / `NumberInput`; peer views → `TabBar` / `ToggleGroup`; right-click →
   `ContextMenu`; hover help → `tooltip`; anchored transient → `Popover`.
@@ -592,7 +635,7 @@ one ground:
   paints it in every path an app can be seen through: the native runner
   clears to it, `ResourceRoot` fills it under the view, `TileHost` fills it
   under a hosted tile, and `--shots` captures land on it
-  (`FrameHarness::render_window_png`). An app that paints nothing (a clock, a
+  (`FrameHarness::render_png`). An app that paints nothing (a clock, a
   print queue) stands on it; floating surfaces stay transparent around their
   material.
 - **Sidebar** (navigation, leading edge) and **Inspector** (detail,
@@ -803,7 +846,9 @@ focus is `border_focus` (your colour); disabled is the rest face under
 | Button Neutral / Disabled, Dropdown field | `surfaces.raised` | `edge_on(raised)` |
 | Card / Container / ContentCard (objects only) | as today | `edge_on(fill)`; a section inside a card gets space, not a second edge |
 | TextInput / NumberInput / SearchField | field fill | `edge_on(fill)`; focus `border_focus` |
-| Dropdown list, ContextMenu, Popover, SlashMenu, Autocomplete, LinkPopover, CommandPalette, FilePicker, PermissionPrompt, Toast, ModalDialog, ModalFrame | `panel_ground` (or `surfaces.overlay` where already used) | `panel_border`, `floating_edge` on dark; separators `separator(.., s3, ..)`, never full-bleed |
+| Popover, ModalDialog, Toast, StatusBubble, video controls | the floating Panel body (`widget::floating_surface::paint`): `radii.panel`, the blurred material, `elevation.floating` | `panel_border`, `floating_edge` on dark |
+| Dropdown list, ContextMenu, SlashMenu, Autocomplete, LinkPopover, CommandPalette, FilePicker, PermissionPrompt | `panel_ground` (or `surfaces.overlay` where already used) | `panel_border`, `floating_edge` on dark; separators `separator(.., s3, ..)`, never full-bleed |
+| Banner, ConflictBanner | `surfaces.raised` | `edge_on(raised)`; the severity is the icon's colour, never a tinted wash |
 | Tooltip | as today | `edge_on(fill)` |
 | Segmented / ToggleGroup track | `surfaces.raised` | `edge_on(track)`; active segment a lift of the track |
 | Chip quiet | `surfaces.raised` | `edge_on(raised)`; selected is a lift, no edge |
@@ -813,7 +858,8 @@ focus is `border_focus` (your colour); disabled is the rest face under
 | Table / DataTable rules | — | `edge_on(table_fill)`, never into a rounded corner |
 | TreeView / NavList / VirtualList rows | transparent | none; selection is a lift inside the `s2` inset at `radii.item` (`paint_row_selection`) |
 | Divider | — | `border_standard` only between two equal surfaces; `Divider::on(surface)` elsewhere |
-| App chrome Toolbar / StatusBar | as today | `chrome_hairline` |
+| App chrome Toolbar | as today | `chrome_hairline` |
+| StatusBar, History bar | none: the region's ground | `edge_on(ground)` where the bar meets the content |
 | Selectors (tab pills, tray pill, scope chip) | idle none | none (`glass_selector`) |
 
 A declared border or ramp token (`border_standard`, `border_strong`,

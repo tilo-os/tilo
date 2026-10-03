@@ -1,18 +1,23 @@
-//! A transient floating **status bubble** — a small overlay pill that appears
-//! on a state change (a page turn, a zoom step) or while the pointer hovers
-//! its anchor, then quietly fades away, so a reader/editor surface need not
-//! spend a permanent strip of chrome on status it only occasionally needs.
+//! A transient floating **status bubble**: a small floating Panel that
+//! appears when a status changes (a page turn, a zoom step, a sync that
+//! finished) or while the pointer rests on its corner, then fades away.
 //!
-//! App-agnostic like [`crate::widget::TooltipHost`]: the app owns *what* it
-//! says and *where* it floats; the controller owns *when* it is visible and
-//! its fade, on an injected wall clock so it is unit-testable without an
-//! event loop.
+//! Transient by contract: it is shown on change and hides on its own. What a
+//! person needs to read at any time (the cursor's line and column, a word
+//! count, conflict counts) is persistent status and belongs in
+//! [`crate::chrome::status_bar`], which reserves its band. A capture never
+//! forces the bubble open; only a screenshot scenario that stages the change
+//! shows it.
+//!
+//! The bubble floats in the bottom-trailing corner of the area it reports
+//! on, one gutter in, clear of the content's leading edge. It owns its text,
+//! its timing and its paint; the app says what changed.
 
 use crate::time::{Duration, Instant};
 
 use vello::Scene;
-use vello::kurbo::{Affine, Rect, Stroke, Vec2};
-use vello::peniko::Color;
+use vello::kurbo::{Affine, Point, Rect, Vec2};
+use vello::peniko::{BlendMode, Fill};
 
 use crate::text_metrics::centered_text_top;
 use crate::text_render::{TextRenderer, TextStyle};
@@ -34,6 +39,8 @@ pub struct StatusBubble {
     /// `None` while the pointer pins the bubble open.
     shown_at: Option<Instant>,
     hovered: bool,
+    /// What the bubble says; [`Self::show`] pokes when it changes.
+    text: String,
 }
 
 impl Default for StatusBubble {
@@ -48,6 +55,7 @@ impl StatusBubble {
             linger: DEFAULT_LINGER,
             shown_at: None,
             hovered: false,
+            text: String::new(),
         }
     }
 
@@ -106,6 +114,82 @@ impl StatusBubble {
         }
     }
 
+    /// Report the status. A change shows the bubble (and restarts its
+    /// linger); the same text again does nothing, so calling this every
+    /// frame is fine. Returns whether visibility changed.
+    pub fn show(&mut self, text: &str, now: Instant) -> bool {
+        if self.text == text {
+            return false;
+        }
+        text.clone_into(&mut self.text);
+        self.poke(now)
+    }
+
+    /// What the bubble says.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// The bubble's rect when it floats in `area`: the bottom-trailing
+    /// corner, `spacing.s4` in.
+    pub fn rect_in(&self, area: Rect, tr: &mut TextRenderer, theme: &Theme) -> Rect {
+        let (w, h) = pill_size(&self.text, tr, theme, 0.0);
+        let gutter = f64::from(theme.tokens.spacing.s4);
+        let x1 = area.x1 - gutter;
+        let y1 = area.y1 - gutter;
+        Rect::new((x1 - w).max(area.x0), (y1 - h).max(area.y0), x1, y1)
+    }
+
+    /// The pointer moved to `p`: resting on the bubble's corner (the
+    /// bubble plus a gutter around it) pins it open, leaving starts its
+    /// linger. Returns whether visibility changed.
+    pub fn pointer_moved(
+        &mut self,
+        area: Rect,
+        p: Point,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        now: Instant,
+    ) -> bool {
+        let gutter = f64::from(theme.tokens.spacing.s6);
+        let zone = self.rect_in(area, tr, theme).inflate(gutter, gutter);
+        self.set_hover(!self.text.is_empty() && zone.contains(p), now)
+    }
+
+    /// Paint the bubble in `area` at its current opacity; nothing while it
+    /// is hidden. Returns the painted rect.
+    pub fn paint(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+        now: Instant,
+    ) -> Option<Rect> {
+        let alpha = self.alpha(now);
+        if alpha <= 0.0 || self.text.is_empty() {
+            return None;
+        }
+        let rect = self.rect_in(area, tr, theme);
+        let faded = alpha < 1.0;
+        if faded {
+            let reach = f64::from(theme.tokens.elevation.floating.blur) * 2.0;
+            scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                alpha,
+                transform,
+                &rect.inflate(reach, reach),
+            );
+        }
+        draw_pill(scene, transform, tr, theme, rect, &self.text);
+        if faded {
+            scene.pop_layer();
+        }
+        Some(rect)
+    }
+
     /// Hovered/hidden states need no frames.
     pub fn needs_frame(&self, now: Instant) -> bool {
         !self.hovered
@@ -120,25 +204,32 @@ fn pill_style(theme: &Theme) -> TextStyle {
     theme.text(TextRole::Label)
 }
 
-/// The pill's size for `text`. `control` is a leading+trailing glyph slot in
-/// px each (`0.0` for a plain label).
+/// The pill's size for `text`. `control` is a leading+trailing slot in px
+/// each for a control inside the pill (`0.0` for a plain label).
 pub fn pill_size(text: &str, tr: &mut TextRenderer, theme: &Theme, control: f64) -> (f64, f64) {
     let (tw, th) = tr.measure_style(text, None, &pill_style(theme));
-    let pad_x = 14.0;
+    let pad_x = f64::from(theme.tokens.spacing.s3);
     let w = f64::from(tw) + 2.0 * pad_x + 2.0 * control;
-    let h = pill_height(theme).max(f64::from(th) + 12.0);
+    let h = pill_height(theme).max(f64::from(th) + 2.0 * pad_y(theme));
     (w, h)
 }
 
-/// Height shared by layout reservations and the rendered status pill: the
-/// label's line box plus the pill's vertical padding. Free of a renderer,
-/// so a layout pass reserves exactly the line box the draw pass needs.
-pub fn pill_height(theme: &Theme) -> f64 {
-    f64::from(pill_style(theme).line_height_px() + 12.0).max(30.0)
+/// Vertical padding of the pill's label.
+fn pad_y(theme: &Theme) -> f64 {
+    f64::from(theme.tokens.spacing.s1) * 1.5
 }
 
-/// The caller sets opacity by wrapping this in a `scene.push_layer(...
-/// alpha ...)` using [`StatusBubble::alpha`].
+/// Height shared by layout reservations and the rendered pill: the label's
+/// line box plus the pill's vertical padding, never below a Small control.
+pub fn pill_height(theme: &Theme) -> f64 {
+    (f64::from(pill_style(theme).line_height_px()) + 2.0 * pad_y(theme))
+        .max(f64::from(theme.tokens.metrics.bar_control_height))
+}
+
+/// Paint a bubble with `text` in `rect`: a floating Panel (the blurred
+/// material, one soft shadow) with the label centred. For a bubble that
+/// hosts controls beside its label; a plain status uses
+/// [`StatusBubble::paint`].
 pub fn draw_pill(
     scene: &mut Scene,
     transform: Affine,
@@ -147,28 +238,13 @@ pub fn draw_pill(
     rect: Rect,
     text: &str,
 ) {
-    let radius = rect.height() / 2.0;
-
-    crate::surface::shadow(
-        scene,
-        transform,
-        rect,
-        radius,
-        &theme.tokens.elevation.floating,
-    );
-
-    // Overlay fill under a rest edge derived from it (HIG §9.5): the
-    // declared `border_standard` this replaces is one fixed colour per theme
-    // and lands within rounding distance of the dark preset's overlay.
-    crate::surface::card(
-        scene,
-        transform,
-        rect,
-        radius,
-        theme.tokens.colors.surfaces.overlay,
-    );
-
+    crate::widget::floating_surface::paint(scene, transform, rect, theme);
     let style = pill_style(theme);
+    let ink = theme
+        .on_ground(crate::chrome::panel_ground(theme))
+        .tokens
+        .colors
+        .text_primary;
     let (tw, th) = tr.measure_style(text, None, &style);
     let tx = rect.x0 + (rect.width() - f64::from(tw)) / 2.0;
     // Centre the measured line box, not the font size.
@@ -176,30 +252,11 @@ pub fn draw_pill(
     tr.draw_style(
         scene,
         text,
-        theme.tokens.colors.text_primary,
+        ink,
         transform.pre_translate(Vec2::new(tx, ty)),
         None,
         &style,
     );
-}
-
-pub fn draw_chevron(scene: &mut Scene, transform: Affine, r: Rect, color: Color, left: bool) {
-    use vello::kurbo::BezPath;
-    let cx = f64::midpoint(r.x0, r.x1);
-    let cy = f64::midpoint(r.y0, r.y1);
-    let dx = 3.5;
-    let dy = 5.0;
-    let mut p = BezPath::new();
-    if left {
-        p.move_to((cx + dx, cy - dy));
-        p.line_to((cx - dx, cy));
-        p.line_to((cx + dx, cy + dy));
-    } else {
-        p.move_to((cx - dx, cy - dy));
-        p.line_to((cx + dx, cy));
-        p.line_to((cx - dx, cy + dy));
-    }
-    scene.stroke(&Stroke::new(1.8), transform, color, None, &p);
 }
 
 #[cfg(test)]
@@ -221,8 +278,44 @@ mod tests {
                     "layout reservation must equal draw geometry at {scale}x"
                 );
             }
-            assert_eq!(pill_height(&Theme::dark()), 30.0);
-            assert!(pill_height(&Theme::dark().with_text_scale(2.0)) > 30.0);
+            let small = f64::from(Theme::dark().tokens.metrics.bar_control_height);
+            assert!(pill_height(&Theme::dark()) >= small);
+            assert!(pill_height(&Theme::dark().with_text_scale(2.0)) > pill_height(&Theme::dark()));
+        }
+
+        // Case `show_reveals_on_a_change_only_and_floats_in_the_trailing_corner`.
+        {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let mut b = StatusBubble::new().with_linger(Duration::from_secs(1));
+            let t0 = crate::time::now();
+            assert!(b.show("Saved", t0), "a new status shows the bubble");
+            let later = t0 + Duration::from_millis(1500);
+            assert!(!b.is_visible(later));
+            assert!(!b.show("Saved", later), "the same status does not reshow");
+            assert!(!b.is_visible(later));
+            assert!(b.show("Synced", later), "a change does");
+            let area = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let r = b.rect_in(area, &mut tr, &theme);
+            let gutter = f64::from(theme.tokens.spacing.s4);
+            assert!((r.x1 - (area.x1 - gutter)).abs() < 1e-9);
+            assert!((r.y1 - (area.y1 - gutter)).abs() < 1e-9);
+            let mut scene = Scene::new();
+            assert_eq!(
+                b.paint(&mut scene, Affine::IDENTITY, &mut tr, &theme, area, later),
+                Some(r)
+            );
+            let hidden = later + Duration::from_secs(5);
+            assert_eq!(
+                b.paint(&mut scene, Affine::IDENTITY, &mut tr, &theme, area, hidden),
+                None,
+                "a faded bubble paints nothing"
+            );
+            assert!(b.pointer_moved(area, r.center(), &mut tr, &theme, hidden));
+            assert!(
+                b.is_visible(hidden + Duration::from_secs(60)),
+                "hover pins it"
+            );
         }
 
         // Case `poke_reveals_then_fades_after_linger`.
