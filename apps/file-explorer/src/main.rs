@@ -133,7 +133,6 @@ fn standalone_launch_spec() -> LaunchSpec {
             "places",
             "remote-account",
             "rename",
-            "reorder",
             "select",
             "status",
             "sync",
@@ -165,12 +164,23 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
         }
         _ => None,
     };
+    // Every capture without a folder of its own shows the same everyday home
+    // folder, so the default shot is a populated folder rather than whatever
+    // the capturing machine's home happens to hold.
+    let demo_home = (demo_dir.is_none() && args.value("--path").is_none()).then(seed_demo_home);
     // Keep screenshot state independent of persisted zoom and Places ordering.
-    let mut widget = FileExplorerWidget::with_persistence(None, tilo_paths::home());
+    let mut widget = match &demo_home {
+        Some(home) => FileExplorerWidget::with_persistence_dirs(
+            None,
+            Some(home.clone()),
+            file_explorer::favorites::UserDirs::default(),
+        ),
+        None => FileExplorerWidget::with_persistence(None, tilo_paths::home()),
+    };
     // Optional `--path <dir>` starts the shot in a specific directory
     // (e.g. to capture a deep breadcrumb trail), else the default
     // cold-start location is used.
-    if let Some(d) = demo_dir {
+    if let Some(d) = demo_dir.or(demo_home) {
         widget.navigate(d);
     } else if let Some(p) = args.value("--path") {
         widget.navigate(std::path::PathBuf::from(p));
@@ -185,11 +195,11 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
             widget.debug_select(&[7, 8]);
             // Surface the floating status bubble for the still (count + N
             // selected), since a single headless frame can't hover it.
-            widget.arm_status_bubble_for_shots();
+            widget.debug_show_status_bubble();
         }
         // Just the floating status bubble (item count) over the cold-start
         // view, with nothing selected.
-        Some("status") => widget.arm_status_bubble_for_shots(),
+        Some("status") => widget.debug_show_status_bubble(),
         // Begin an inline rename before the first sync so the in-place
         // editor is drawn over the row with its local name selected.
         Some("rename") => {
@@ -219,6 +229,10 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
         Some("error") => widget.debug_show_error_state(),
         Some("undo-trash") => widget.debug_arm_trash_undo(),
         _ => {}
+    }
+    // A capture shows the status bubble only when its scenario stages one.
+    if !matches!(scenario, Some("select" | "status")) {
+        widget.debug_quiet_status_bubble();
     }
     render_shot_to_png(
         widget,
@@ -313,6 +327,59 @@ fn read_received_share_stdin(args: &[String]) -> Option<Result<String, String>> 
     } else {
         Ok(uri.to_owned())
     })
+}
+
+/// Seed the everyday home folder every default capture shows: the person's
+/// folders and files with fixed sizes and modification times, dated against the
+/// pinned capture clock (30 June 2026, 10:42). Sizes are real (sparse) file
+/// lengths, so the listing is the genuine path, not a mock.
+fn seed_demo_home() -> std::path::PathBuf {
+    use chrono::TimeZone;
+    let dir = std::env::temp_dir().join("tilo-files-demo-home");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::create_dir_all(&dir);
+    let now = chrono::Utc
+        .with_ymd_and_hms(2026, 6, 30, 10, 42, 0)
+        .single()
+        .map_or(std::time::UNIX_EPOCH, std::time::SystemTime::from);
+    let ago = |hours: u64| {
+        now.checked_sub(std::time::Duration::from_secs(hours * 3600))
+            .unwrap_or(std::time::UNIX_EPOCH)
+    };
+    for (name, hours) in [
+        ("Documents", 5),
+        ("Downloads", 1),
+        ("Music", 24 * 40),
+        ("Notes", 24 * 3),
+        ("Pictures", 24 * 9),
+        ("Projects", 26),
+        ("Videos", 24 * 75),
+    ] {
+        let path = dir.join(name);
+        let _ = std::fs::create_dir_all(&path);
+        if let Ok(handle) = std::fs::File::open(&path) {
+            let _ = handle.set_modified(ago(hours));
+        }
+    }
+    for (name, bytes, hours) in [
+        ("Quarterly report.pdf", 2_400_000_u64, 3),
+        ("Household budget.xlsx", 184_000, 30),
+        ("Meeting notes.md", 6_200, 2),
+        ("Trip itinerary.docx", 96_000, 24 * 6),
+        ("Holiday photos.zip", 48_300_000, 24 * 12),
+        ("Recipe collection.epub", 1_800_000, 24 * 21),
+        ("Wedding invitation.pdf", 540_000, 24 * 33),
+        ("To do.txt", 1_100, 8),
+        ("Podcast episode 12.mp3", 38_000_000, 24 * 4),
+        ("Site redesign.fig", 12_700_000, 24 * 2),
+    ] {
+        let path = dir.join(name);
+        if let Ok(handle) = std::fs::File::create(&path) {
+            let _ = handle.set_len(bytes);
+            let _ = handle.set_modified(ago(hours));
+        }
+    }
+    dir
 }
 
 /// Seed a demo workspace directory whose files carry real `user.tilo.sync`
@@ -769,10 +836,6 @@ fn apply_post_layout_scenario(
                     taffy,
                 },
             );
-        }
-        Some("reorder") => {
-            // Grab a favourite and lift it two rows up — mid-drag.
-            widget.debug_begin_favorite_drag(4, 1);
         }
         Some("pindrag") => {
             // Carry a folder out of the list toward the sidebar — mid-drag, so

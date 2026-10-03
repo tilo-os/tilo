@@ -15,7 +15,7 @@ use crate::history_panel::HistoryPanel;
 use crate::i18n::{arg, t, t_args};
 use crate::metadata_refresh;
 use crate::model::{Entry, SortBy, SortOrder, ViewMode, initial_path, read_dir_sync, sort_entries};
-use crate::places_sidebar::{self, FavStore, PlacesSidebar};
+use crate::places_sidebar::{self, FavStore, Places};
 use crate::views::file_view::{FileView, ThumbCtx};
 use crate::{config, favorites, fileops, templates};
 use host_fs::attributes as xattr;
@@ -37,22 +37,18 @@ use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
     Button, Collaborative, Column, EmptyState, EmptyStateContent, NavShell, ResourceOperation,
-    ScrollAxis, Scrollable, ShellMode, Spacer, Spinner, Text, TextInput, Widget,
+    ScrollAxis, Scrollable, SidebarPlacement, Spacer, Spinner, TextInput, Widget,
 };
 use ui::{AppKind, AppWidget, IconDescriptor, SelectionModel};
 use vello::kurbo::Point;
 use vello::peniko::ImageData as PenikoImage;
 
-/// Width (logical px) at/above which the places list docks beside the file
-/// view; below it the places list becomes an overlay drawer *over* the file
-/// view, summoned by the hamburger chip. The file list is the content either
-/// way — the places list is navigation, so it never takes the window from it
-/// (`crates/sdk/ui-core/HIG.md` §1a).
-const BODY_BREAKPOINT_PX: f64 = 640.0;
 /// Space kept clear at the bottom of the file viewport for the transient
 /// item/status pill. The pill includes its hover shadow, so this is larger
 /// than its measured text capsule: no file label or target may sit beneath it.
-pub const STATUS_BUBBLE_SAFE_INSET_PX: f32 = 64.0;
+pub fn status_bubble_safe_inset(theme: &ui::Theme) -> f32 {
+    theme.tokens.spacing.s16
+}
 /// Long absolute paths clip at narrow widths and obscure the recovery action.
 /// Preserve the recognisable tail here; the full location stays in the path bar
 /// and the root accessibility description.
@@ -206,7 +202,7 @@ pub(crate) fn folder_palette_operations() -> Vec<ActionSpec> {
             "new-folder",
             "New folder",
             "Folder name",
-            "New Folder",
+            "New folder",
             OperationKind::Effect,
             "files.new-folder",
             |name| {
@@ -243,10 +239,10 @@ pub(crate) fn folder_palette_operations() -> Vec<ActionSpec> {
         }
     }
     for (id, label, verb) in [
-        ("add-favorite", "Add to Favourites", "add-favorite"),
+        ("add-favorite", "Add to Favorites", "add-favorite"),
         (
             "remove-favorite",
-            "Remove from Favourites",
+            "Remove from Favorites",
             "remove-favorite",
         ),
     ] {
@@ -609,7 +605,7 @@ impl HostedFileServices {
 pub struct HostedFileServices {
     pub thumbnails: Option<Arc<ThumbnailService>>,
     pub document_opener: DocumentOpenRoute,
-    /// Lists and launches "Open With" applications; absent means the
+    /// Lists and launches "Open with" applications; absent means the
     /// submenu offers nothing rather than guessing.
     pub open_with: Option<crate::open_with::SharedOpenWithRoute>,
 }
@@ -680,28 +676,24 @@ pub struct FileExplorerWidget {
     /// whole name (typing then replaces it, Finder-style).
     rename_select_pending: bool,
     rect: vello::kurbo::Rect,
-    /// The responsive body: `[ places | file view ]`. Held persistently (NOT
-    /// rebuilt inside `build_layout`) so its docked/push state and eased
-    /// reveal survive the per-structure-change rebuild of the panes — the two
-    /// panes are swapped in via `NavShell::set_sidebar` / `set_content` each
-    /// rebuild. Wide docks the places list beside the file view; narrow shows
-    /// one at a time (places → tap a place → the file view pushes in with a
-    /// Back arrow). See the module note on live child swap in `ui::NavShell`.
+    /// The window shell: `[ places | file view ]` under one header row.
+    /// Held persistently (NOT rebuilt inside `build_layout`) so its docked
+    /// state and eased reveal survive the per-structure-change rebuild of the
+    /// panes — the two panes are swapped in via `NavShell::set_sidebar` /
+    /// `set_content` each rebuild. A narrow window turns the places list into
+    /// a drawer the shell summons.
     nav: NavShell,
-    /// The single top bar: nav cluster + the editable path bar + view/sort/menu
-    /// controls. Held **persistently** (not rebuilt each frame) because the path
-    /// bar carries live edit state — the in-progress typed path and its
-    /// completion popover — that must survive the per-structure-change rebuild.
-    toolbar: crate::toolbar::FileToolbar,
+    /// The app's side of the toolbar the shell's content header owns: the nav
+    /// cluster, the editable path bar and the view / sort controls. The toolbar
+    /// itself lives for the window's lifetime (the path bar carries live edit
+    /// state — the in-progress typed path and its completion popover), and
+    /// this handle feeds it the context and reads its control rects back.
+    toolbar: crate::toolbar::ToolbarHandle,
     /// Transient floating status bubble (bottom-right) — the item count /
     /// operation status + selection summary, surfaced on a real change or on
     /// hover then faded, in place of a permanent bottom footer strip so the
     /// file list spans to the window bottom.
     status_bubble: ui::StatusBubble,
-    /// Last label the bubble showed, so it is re-poked only on a real change.
-    last_status_label: String,
-    /// `--shots` forces the bubble fully visible so a still frame captures it.
-    shots_status: bool,
     /// Shared indeterminate progress indicator for the loading state. Its
     /// reduced-motion behaviour and frame scheduling come from `Spinner`.
     state_spinner: Spinner,
@@ -741,7 +733,6 @@ pub struct FileExplorerWidget {
     /// Set while draining commands from a right-press when the press landed on
     /// a sidebar favourite, so the right-press handler opens the favourite menu
     /// (not the file context menu) at the cursor. Consumed each right-press.
-    pending_fav_menu: Option<PathBuf>,
     /// Last cursor position in logical coords (for menu placement + the
     /// context-menu hit-test).
     last_cursor: Point,
@@ -807,6 +798,8 @@ pub struct FileExplorerWidget {
     /// projections. `None` means no sheet is open.
     collab_panel: Option<CollabPanel>,
     collab_panel_focused: bool,
+    /// Where the sheet's parts landed at the last paint.
+    collab_layout: Option<ui::widget::ModalLayout>,
     /// Single background share request, run on the app runtime. It never
     /// touches widget state; update/paint/event polling adopts its bounded
     /// result on the UI thread.
@@ -863,10 +856,10 @@ pub struct FileExplorerWidget {
     /// a scrolling grid never rebuilds the GPU blob per frame.
     /// Recently opened or changed files, newest first.
     recent: crate::recent::RecentFiles,
-    /// "Open With" candidates per file type, asked of the host once per
+    /// "Open with" candidates per file type, asked of the host once per
     /// listing rather than once per row.
     open_with_cache: RefCell<HashMap<String, crate::open_with::OpenWithCandidates>>,
-    /// The shared searchable picker behind "Other Application…"; its rows are
+    /// The shared searchable picker behind "Other application…"; its rows are
     /// the published open-with actions of [`Self::app_chooser_target`].
     app_chooser: ui::widget::command_palette::CommandPalette,
     app_chooser_target: Option<PathBuf>,
@@ -1057,7 +1050,7 @@ impl FileExplorerWidget {
             format!("{} files", account.label)
         };
         let mut lines = vec![
-            format!("{} · {}", account.kind.label(), account.host),
+            format!("{} at {}", account.kind.label(), account.host),
             format!("Status: {}", account.health.label()),
             account.health.unavailable_reason().to_string(),
         ];
@@ -1188,6 +1181,13 @@ impl FileExplorerWidget {
         }
         sort_entries(SortBy::Name, SortOrder::Ascending, &mut entries);
         let cmds = new_sink();
+        // The places list and the file view are swapped in on the first
+        // `build_layout`; the toolbar is the content header's one action and
+        // stays for the window's lifetime.
+        let (toolbar_widget, toolbar) = crate::toolbar::FileToolbar::new(cmds.clone());
+        let nav = NavShell::new()
+            .with_id("files.shell")
+            .content_header("", vec![Box::new(toolbar_widget)]);
         let thumbs = match &services {
             FileServices::Legacy => build_thumb_service(config_dir.as_deref()).map(Arc::new),
             FileServices::Hosted(hosted) => hosted.thumbnails.clone(),
@@ -1234,21 +1234,9 @@ impl FileExplorerWidget {
             // when wide, an overlay drawer over it when narrow. Sidebar width
             // matches the historical fixed sidebar so the docked layout is
             // pixel-stable.
-            nav: NavShell::sidebar_over_content(Box::new(Text::new("")), Box::new(Text::new("")))
-                .with_sidebar_width(places_sidebar::SIDEBAR_WIDTH)
-                // A narrow drawer should read as navigation, not leave a
-                // sliver of obscured list columns competing for attention.
-                // Keep the compact 200px desktop dock, but give phone-width
-                // places enough room for labels and touch targets.
-                .with_narrow_sidebar_width(320.0)
-                .with_breakpoint(BODY_BREAKPOINT_PX)
-                // The docked places list is permanent — no in-sidebar collapse chip;
-                // the hamburger still summons the drawer when narrow.
-                .hide_toggle_when_docked(),
-            toolbar: crate::toolbar::FileToolbar::new(cmds.clone()),
+            nav,
+            toolbar,
             status_bubble: ui::StatusBubble::new(),
-            last_status_label: String::new(),
-            shots_status: false,
             state_spinner: Spinner::with_size(28.0),
             state_retry: Button::new("files.retry", &t("files-try-again"), None).on_effect({
                 let sink = cmds.clone();
@@ -1265,7 +1253,6 @@ impl FileExplorerWidget {
             menu_commands: Vec::new(),
             submenu: ContextMenu::new(),
             submenu_commands: Vec::new(),
-            pending_fav_menu: None,
             last_cursor: Point::ZERO,
             favs: places_sidebar::new_store(favorites),
             config_dir,
@@ -1291,6 +1278,7 @@ impl FileExplorerWidget {
             shortcut_menu: crate::shortcut_menu::ShortcutMenuState::default(),
             collab_panel: None,
             collab_panel_focused: false,
+            collab_layout: None,
             share_result: ui::LatestRequest::new(),
             share_pending_path: None,
             received_share: ui::LatestRequest::new(),
@@ -1490,7 +1478,7 @@ impl FileExplorerWidget {
 
     /// Refresh the persistent top bar with the current navigation context
     /// (path, history availability, view mode) before it is laid out.
-    fn update_toolbar(&mut self) {
+    fn update_toolbar(&self) {
         let nav = crate::toolbar::NavAvailability {
             back: !self.history.is_empty(),
             forward: !self.forward.is_empty(),
@@ -1508,18 +1496,11 @@ impl FileExplorerWidget {
         );
     }
 
-    /// The **places** pane (the responsive body's master / overview): the
-    /// modern Favourites / Places list. A single widget that owns
-    /// drag-to-reorder for the favourites (via the shared, persistent
-    /// `FavStore`) so a reorder survives the per-frame rebuild.
+    /// The **places** pane (the window's sidebar): the Favorites and
+    /// locations list. The favourites live in the shared `FavStore`, so a
+    /// reorder or removal survives the rebuild of the list.
     fn build_places_pane(&self) -> Box<dyn Widget> {
-        Box::new(
-            PlacesSidebar::new(
-                self.favs.clone(),
-                self.current_path.clone(),
-                self.cmds.clone(),
-            )
-            .with_cursor(self.last_cursor)
+        let places = Places::new(&self.favs, self.current_path.clone())
             .with_workspaces(self.workspace_roots.clone())
             .with_remote_accounts(
                 self.remote_account_snapshot()
@@ -1532,8 +1513,8 @@ impl FileExplorerWidget {
                         account.mount.map(|mount| (account.label, mount, badge))
                     })
                     .collect(),
-            ),
-        )
+            );
+        Box::new(places.nav_list(&self.cmds))
     }
 
     /// The **content** pane (the responsive body's detail): the file list or
@@ -1549,14 +1530,13 @@ impl FileExplorerWidget {
         }
         let displayed = self.displayed_entries();
         let scale = self.zoom_scale();
-        let text_scale = theme.text_scale;
         // `renaming` marks the item edited in place, publishing its label rect
         // into `rename_rect` for the host to draw the shared editor over. The
         // cursor seeds the view's pointer position so a press hit-tests
         // correctly on the frame it is rebuilt (see `FileView::with_cursor`).
         let view = FileView::new(&displayed, &self.selection, &self.cmds)
             .with_scale(scale)
-            .with_text_scale(text_scale)
+            .with_theme(theme)
             .with_rename(self.renaming, self.rename_rect.clone())
             .with_cursor(self.last_cursor)
             .with_drop_targets(self.drop_targets.clone())
@@ -1567,22 +1547,10 @@ impl FileExplorerWidget {
             }
             ViewMode::Grid => crate::views::grid_view::build_grid(view),
         };
-        // The hamburger chip that summons the places drawer floats over this
-        // pane's top-left in the narrow layout. `NavShell` reserves that band
-        // itself, in the pass that positions the chip — reserving it here
-        // instead would mean asking the shell how wide it was on the *previous*
-        // frame, which is how the list used to be built 44px lower than it was
-        // laid out and then jump the first time anything rebuilt it.
-        // A plain (percent-height) column: this pane is the root of `NavShell`'s
-        // inner layout, sized to the content rect, so it must FILL that rect
-        // (`percent(1.0)` height). `with_fill_remaining_height` (flex-grow from
-        // zero) needs a flex parent to distribute space and would collapse to
-        // its content height here — leaving the `Scrollable` zero-height. Inside
-        // this bounded column the `Scrollable` grows to take the space under the
-        // optional error row.
-        let mut view_col = Column::new()
-            .with_vertical_padding(sp.s1)
-            .with_horizontal_padding(sp.s3, sp.s3);
+        // A plain (percent-height) column: this pane is the content column of
+        // the shell, so it must FILL that rect (`percent(1.0)` height). Inside
+        // this bounded column the `Scrollable` grows to take the space left.
+        let mut view_col = Column::new().with_vertical_padding(sp.s1);
         // The list/grid scrolls: pin the scroll viewport to the *remaining*
         // height of the content column (grow-from-zero) rather than letting it
         // claim `percent(1.0)`. `fill_parent_height` takes exactly the space
@@ -1597,7 +1565,7 @@ impl FileExplorerWidget {
                 // interactive viewport. Besides making the count easy to
                 // scan, that means it cannot obscure a file name, target, or
                 // keyboard focus ring at the bottom of a compact grid.
-                .with_bottom_content_inset(STATUS_BUBBLE_SAFE_INSET_PX)
+                .with_bottom_content_inset(status_bubble_safe_inset(theme))
                 .with_child(view_child),
         ));
         Box::new(view_col)
@@ -1608,6 +1576,11 @@ impl FileExplorerWidget {
     /// current path is shown ONCE — in the path bar at the top — so it is
     /// deliberately not repeated here. Empty string means nothing to surface.
     fn footer_label(&self) -> String {
+        // A folder that did not open, or is still opening, has no count to
+        // report: the state surface says what is happening.
+        if self.error.is_some() || self.is_loading {
+            return String::new();
+        }
         let count = self.entries.len();
         let left = self
             .status
@@ -1709,7 +1682,7 @@ impl FileExplorerWidget {
         let Some((title, detail, can_retry)) = self.state_surface_copy() else {
             return;
         };
-        let rect = self.nav.overview_content_rect();
+        let rect = self.content_body_rect();
         if rect.width() <= 1.0 || rect.height() <= 1.0 {
             return;
         }
@@ -1730,6 +1703,8 @@ impl FileExplorerWidget {
                     title: &title,
                     message: Some(&detail),
                     action_label: Some(&t("files-try-again")),
+                    error: true,
+                    ..EmptyStateContent::new(&title)
                 },
                 Point::new(-1.0, -1.0),
             );
@@ -1749,17 +1724,21 @@ impl FileExplorerWidget {
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 rect,
                 &EmptyStateContent {
-                    icon: None,
                     title: &title,
                     message: Some(&detail),
-                    action_label: None,
+                    ..EmptyStateContent::new(&title)
                 },
                 self.last_cursor,
             );
             let center = rect.center();
+            let side = f64::from(theme.tokens.metrics.icon_lg) + f64::from(theme.tokens.spacing.s1);
             let spinner_rect = vello::kurbo::Rect::from_center_size(
-                Point::new(center.x, center.y - 62.0),
-                (28.0, 28.0),
+                Point::new(
+                    center.x,
+                    center.y - f64::from(theme.tokens.spacing.s16)
+                        + f64::from(theme.tokens.spacing.s1),
+                ),
+                (side, side),
             );
             self.state_spinner.set_rect(spinner_rect);
             self.state_spinner
@@ -1790,15 +1769,21 @@ impl FileExplorerWidget {
             lines: [
                 "files-shortcuts-primary",
                 "files-shortcuts-navigate",
+                "files-shortcuts-range",
                 "files-shortcuts-grid",
                 "files-shortcuts-open",
+                "files-shortcuts-rename",
+                "files-shortcuts-trash",
                 "files-shortcuts-location",
+                "files-shortcuts-refresh",
                 "files-shortcuts-new-folder",
                 "files-shortcuts-edit",
                 "files-shortcuts-hidden",
                 "files-shortcuts-size",
+                "files-shortcuts-size-reset",
                 "files-shortcuts-context",
                 "files-shortcuts-close",
+                "files-shortcuts-dismiss",
             ]
             .into_iter()
             .map(t)
@@ -1897,17 +1882,30 @@ impl FileExplorerWidget {
         self.footer_label()
     }
 
-    /// `--shots`: force the status bubble fully visible so a single headless
-    /// frame captures the floating chip.
-    pub fn arm_status_bubble_for_shots(&mut self) {
-        self.shots_status = true;
-        self.status_bubble.poke(ui::time::now());
+    /// `--shots`: stage the status bubble the way a change would, resting on
+    /// it, so a single headless frame captures the floating chip.
+    pub fn debug_show_status_bubble(&mut self) {
+        let now = ui::time::now();
+        let label = self.footer_label();
+        self.status_bubble.show(&label, now);
+        self.status_bubble.set_hover(true, now);
     }
 
-    /// Draw the transient floating status bubble at the window's bottom-right —
-    /// the reclaimed home of the old footer strip. It surfaces on a real change
-    /// (dir load, selection, an operation result) or while the pointer hovers
-    /// the bottom-right band, then fades. Colours come from the theme.
+    /// `--shots`: let the status bubble that the first load would raise be
+    /// the one that already faded, so a capture shows it only when its
+    /// scenario stages it.
+    pub fn debug_quiet_status_bubble(&mut self) {
+        let long_ago = ui::time::now().checked_sub(Duration::from_secs(60));
+        if let Some(then) = long_ago {
+            let label = self.footer_label();
+            self.status_bubble.show(&label, then);
+        }
+    }
+
+    /// Paint the transient floating status bubble at the window's
+    /// bottom-right, the reclaimed home of the old footer strip. It surfaces
+    /// on a real change (dir load, selection, an operation result) or while the
+    /// pointer rests on its corner, then fades.
     fn draw_status_bubble(
         &mut self,
         scene: &mut vello::Scene,
@@ -1917,83 +1915,40 @@ impl FileExplorerWidget {
     ) {
         let now = ui::time::now();
         let label = self.footer_label();
-        if label != self.last_status_label {
-            label.clone_into(&mut self.last_status_label);
-            self.status_bubble.poke(now);
-        }
-        if label.is_empty() {
-            return;
-        }
-        // `pill_size` / `draw_pill` hand the size to a scaling renderer, so
-        // unscale the theme token once or the bubble paints at 4× at 200 %.
-        let text_size = theme.tokens.typography.scale.sm / tr.text_scale();
-        let (w, h) = ui::status_bubble::pill_size(&label, tr, text_size, 0.0);
-        let margin = f64::from(theme.tokens.spacing.s4);
-        let rect = vello::kurbo::Rect::new(
-            self.rect.x1 - margin - w,
-            self.rect.y1 - margin - h,
-            self.rect.x1 - margin,
-            self.rect.y1 - margin,
-        );
-        let zone =
-            vello::kurbo::Rect::new(rect.x0 - 40.0, rect.y0 - 24.0, self.rect.x1, self.rect.y1);
+        self.status_bubble.show(&label, now);
         // Archive browsing is deliberately read-only. Unlike transient file
         // operation feedback, that fact remains visible for the whole visit.
-        let archive_read_only = crate::archive::location(&self.current_path).is_some();
-        let over = self.shots_status || archive_read_only || zone.contains(self.last_cursor);
-        self.status_bubble.set_hover(over, now);
-        // A status change is still useful with reduced motion; only its
-        // opacity animation is removed. The next normal paint will settle it
-        // to hidden after its linger instead of asking the host for a fade
-        // frame loop.
-        let alpha = if theme.reduce_motion {
-            if self.status_bubble.is_visible(now) {
-                1.0
-            } else {
-                0.0
-            }
+        if crate::archive::location(&self.current_path).is_some() {
+            self.status_bubble.set_hover(true, now);
         } else {
-            self.status_bubble.alpha(now)
-        };
-        if alpha <= 0.0 {
-            return;
+            self.status_bubble
+                .pointer_moved(self.rect, self.last_cursor, tr, theme, now);
         }
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            alpha,
-            transform,
-            &rect.inflate(12.0, 14.0),
-        );
-        ui::status_bubble::draw_pill(scene, transform, tr, theme, rect, &label, text_size);
-        scene.pop_layer();
+        self.status_bubble
+            .paint(scene, transform, tr, theme, self.rect, now);
     }
 
-    /// An open Places drawer is modal. Replace the translucent right-hand
-    /// scrim with an opaque app-surface continuation so enlarged filenames
-    /// cannot protrude as clipped fragments at the drawer boundary. The
-    /// drawer itself remains fully visible and the same rect remains the
-    /// click-to-dismiss target owned by `NavShell`.
-    fn draw_places_modal_backdrop(
-        &self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        theme: &ui::Theme,
-    ) {
-        if self.nav.mode() != ui::widget::ShellMode::Narrow || !self.nav.is_sidebar_open() {
-            return;
-        }
-        let drawer = self.nav.sidebar_rect();
-        let content = self.nav.overview_rect();
-        if drawer.x1 < content.x1 {
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                theme.bg_primary,
-                None,
-                &vello::kurbo::Rect::new(drawer.x1, content.y0, content.x1, content.y1),
-            );
-        }
+    /// Whether `point` is over the places list (docked or drawn as a drawer).
+    fn in_places_list(&self, point: Point) -> bool {
+        self.nav.is_sidebar_open() && self.nav.geometry().sidebar_column.contains(point)
+    }
+
+    /// Whether the places list is open as a drawer over the file view.
+    fn places_drawer_open(&self) -> bool {
+        self.nav.geometry().sidebar == SidebarPlacement::Drawer && self.nav.is_sidebar_open()
+    }
+
+    /// The content column below the shell's header row: where the file view
+    /// and the empty, loading and error surfaces stand.
+    fn content_body_rect(&self) -> vello::kurbo::Rect {
+        let geometry = self.nav.geometry();
+        let column = geometry.content_column;
+        vello::kurbo::Rect::new(
+            column.x0,
+            column.y0 + geometry.header_height,
+            column.x1,
+            column.y1,
+        )
     }
 
     /// A narrow places drawer is a modal flap: the file view and every one of
@@ -2001,7 +1956,7 @@ impl FileExplorerWidget {
     /// this app (rather than by `NavShell`), so make that ownership boundary
     /// explicit instead of accidentally painting it over the flap.
     fn status_bubble_is_occluded_by_places_drawer(&self) -> bool {
-        self.nav.mode() == ShellMode::Narrow && self.nav.is_sidebar_open()
+        self.places_drawer_open()
     }
 
     pub fn current_path(&self) -> PathBuf {
@@ -2161,7 +2116,7 @@ impl FileExplorerWidget {
             }
         }
         // Always record the path we attempted, even on error, so a Refresh
-        // ("Try Again") retries the same target rather than reloading the
+        // ("Try again") retries the same target rather than reloading the
         // previous valid directory and silently clearing the error.
         self.current_path = path;
         if self.error.is_none() && crate::archive::location(&self.current_path).is_some() {
@@ -3168,7 +3123,7 @@ impl FileExplorerWidget {
                         timestamp: UNIX_EPOCH
                             .checked_add(Duration::from_millis(version.timestamp_ms))
                             .unwrap_or(UNIX_EPOCH),
-                        summary: format!("{action} · {resource_label}"),
+                        summary: format!("{action}: {resource_label}"),
                         text_delta: None,
                         diff_payload: None,
                         redaction: None,
@@ -3439,7 +3394,6 @@ impl FileExplorerWidget {
                 true
             }
             FileCommand::SetSortOrder(order) => self.apply_set_sort_order(order),
-            FileCommand::OpenFavoriteMenu(path) => self.apply_open_favorite_menu(path),
         }
     }
 
@@ -4010,14 +3964,6 @@ impl FileExplorerWidget {
         true
     }
 
-    /// `FileCommand::OpenFavoriteMenu` — remember the target; the
-    /// right-press handler opens the menu at the cursor once this event's
-    /// commands are drained.
-    fn apply_open_favorite_menu(&mut self, path: PathBuf) -> bool {
-        self.pending_fav_menu = Some(path);
-        false
-    }
-
     /// Set the zoom level (clamped) and persist it.
     fn set_zoom(&mut self, level: i32) {
         let level = config::clamp_zoom(level);
@@ -4093,14 +4039,6 @@ impl FileExplorerWidget {
         self.open_view_menu();
     }
 
-    /// Begin an active favourite drag from `from` toward `to`, for a mid-drag
-    /// screenshot. Requires the sidebar to have been laid out first (so the
-    /// favourites band geometry is published).
-    #[doc(hidden)]
-    pub fn debug_begin_favorite_drag(&mut self, from: usize, to: usize) -> bool {
-        crate::places_sidebar::debug_begin_drag(&self.favs, from, to)
-    }
-
     /// Open the places drawer over the file view (the narrow layout's
     /// hamburger action), settled deterministically for a headless
     /// screenshot. In the wide layout the places list is already docked.
@@ -4120,13 +4058,13 @@ impl FileExplorerWidget {
     /// prove the file list is actually on screen.
     #[doc(hidden)]
     pub fn debug_content_rect(&self) -> vello::kurbo::Rect {
-        self.nav.overview_rect()
+        self.nav.geometry().content_column
     }
 
     /// The docked sidebar's resolved rect — the drag-to-pin drop target.
     #[doc(hidden)]
     pub fn debug_sidebar_rect(&self) -> vello::kurbo::Rect {
-        self.nav.sidebar_rect()
+        self.nav.geometry().sidebar_column
     }
 
     /// Whether a drag-to-pin is currently in flight (a folder is being carried
@@ -4186,11 +4124,12 @@ impl FileExplorerWidget {
         self.toolbar.up_button_rect()
     }
 
-    /// The responsive body's current mode (docked-wide vs push-narrow) — for
-    /// tests asserting the sidebar reflows with the window width.
+    /// Where the places list is (docked beside the file view, or a drawer
+    /// over it) — for tests asserting the sidebar reflows with the window
+    /// width.
     #[doc(hidden)]
-    pub fn debug_body_mode(&self) -> ShellMode {
-        self.nav.mode()
+    pub fn debug_body_mode(&self) -> SidebarPlacement {
+        self.nav.geometry().sidebar
     }
 
     /// Select the given displayed-entry indices (headless shots demo).
@@ -4282,8 +4221,12 @@ impl FileExplorerWidget {
     fn finish_drag(&mut self) {
         crate::external_drag::end();
         let target = self.folder_target_at(self.last_cursor);
-        let over_sidebar =
-            self.nav.is_sidebar_open() && self.nav.sidebar_rect().contains(self.last_cursor);
+        let over_sidebar = self.nav.is_sidebar_open()
+            && self
+                .nav
+                .geometry()
+                .sidebar_column
+                .contains(self.last_cursor);
         let paths = std::mem::take(&mut self.drag_paths);
         let origin = self.pin_drag.take();
         self.drag_hover = None;
@@ -4619,22 +4562,9 @@ impl FileExplorerWidget {
     /// Paint the app background and lazily build the composition if it is
     /// missing (a tab activated after boot never ran `build_layout`). Shared
     /// by [`Widget::draw`] and [`Widget::draw_with_presence`].
-    fn paint_background(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        theme: &ui::Theme,
-    ) {
-        // Paint the app background so the explorer is self-contained (light
-        // text reads on it, and it looks right over any compositor surface).
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &self.rect,
-        );
-        // The chrome + body panes are normally built inside `build_layout`.
+    fn paint_background(&mut self, theme: &ui::Theme) {
+        // The window ground is the framework's; this only notices that the
+        // chrome + body panes are normally built inside `build_layout`.
         // When this widget is hosted inside a shell's TabBar (e.g. the Files
         // tab on a Tilo shell that boots Notes-active), `build_layout` doesn't
         // run for inactive tabs — so switching to Files later produces a widget
@@ -4648,10 +4578,10 @@ impl FileExplorerWidget {
         }
     }
 
-    /// Draw a centred empty-state in the file area when the current directory
-    /// has no entries (and isn't showing an error) — so an empty folder, and
-    /// especially an empty Trash, reads as intentionally empty rather than
-    /// broken. A muted icon over a short, context-aware line.
+    /// Draw the shared empty state in the file area when the current
+    /// directory has no entries (and isn't showing an error) — so an empty
+    /// folder, and especially an empty Trash, reads as intentionally empty
+    /// rather than broken. A muted icon over one context-aware sentence.
     fn draw_empty_state(
         &self,
         scene: &mut vello::Scene,
@@ -4662,214 +4592,138 @@ impl FileExplorerWidget {
         if !self.entries.is_empty() || self.error.is_some() || self.is_loading {
             return;
         }
-        let rect = self.nav.overview_rect();
+        let rect = self.content_body_rect();
         if rect.width() <= 1.0 || rect.height() <= 1.0 {
             return;
         }
-        let (icon, msg) = if self.is_recent_view() {
-            (ui::icons::Icon::History, self.empty_state_message())
+        let icon = if self.is_recent_view() {
+            ui::icons::Icon::History
         } else if self.is_trash_view() {
-            (ui::icons::Icon::Trash2, self.empty_state_message())
+            ui::icons::Icon::Trash2
         } else {
-            (ui::icons::Icon::Folder, self.empty_state_message())
+            ui::icons::Icon::Folder
         };
-        let tokens = &theme.tokens;
-        let dim = tokens.colors.text_dim;
-        let icon_px = 40.0_f64;
-        // The theme token is already text-scaled and the renderer scales
-        // again, so hand it the nominal size (one scale rule, see
-        // `crate::text_layout`).
-        let text_scale = text_renderer.text_scale();
-        let size = tokens.typography.scale.base / text_scale;
-        let (tw, _) = text_renderer.measure(&msg, size, None);
-        let cx = rect.x0 + rect.width() / 2.0;
-        let cy = rect.y0 + rect.height() / 2.0;
-        // Icon centred above the line.
-        let ix = cx - icon_px / 2.0;
-        let iy = cy - icon_px - 10.0;
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            vello::kurbo::Rect::new(ix, iy, ix + icon_px, iy + icon_px),
-            icon,
-            dim,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-        let ty = crate::text_layout::centered_text_y(
-            cy,
-            f64::from(size) * f64::from(text_scale),
-            size,
-            text_scale,
-        );
-        text_renderer.draw_text(
-            scene,
-            &msg,
-            size,
-            dim,
-            transform * vello::kurbo::Affine::translate((cx - f64::from(tw) / 2.0, ty)),
-            None,
+        let message = self.empty_state_message();
+        EmptyState::paint(
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
+            rect,
+            &EmptyStateContent {
+                icon: Some(icon),
+                ..EmptyStateContent::new(&message)
+            },
+            Point::new(-1.0, -1.0),
         );
     }
 
-    fn collab_panel_rect(&self) -> vello::kurbo::Rect {
-        let line_count = self
-            .collab_panel
-            .as_ref()
-            .map_or(1, |panel| panel.lines.len().clamp(1, 14));
-        let width = self.rect.width().clamp(320.0, 680.0) - 32.0;
-        let action_height = if self
-            .collab_panel
-            .as_ref()
-            .is_some_and(|panel| panel.action.is_some())
-        {
-            58.0
-        } else {
-            0.0
-        };
-        let height = (116.0 + line_count as f64 * 27.0 + action_height)
-            .min(self.rect.height() - 32.0)
-            .max(180.0);
-        let x0 = self.rect.x0 + (self.rect.width() - width) / 2.0;
-        let y0 = self.rect.y0 + (self.rect.height() - height) / 2.0;
-        vello::kurbo::Rect::new(x0, y0, x0 + width, y0 + height)
+    /// The sheet's spec: the title, a close control and, when the panel
+    /// proposes something, its one action.
+    fn collab_panel_spec<'a>(
+        title: &'a str,
+        actions: &'a [ui::widget::ModalAction<'a>],
+        body_height: f64,
+    ) -> ui::widget::ModalSpec<'a> {
+        ui::widget::ModalSpec::new(title)
+            .actions(actions)
+            .body_height(body_height)
     }
 
-    fn collab_panel_action_rect(&self) -> Option<vello::kurbo::Rect> {
-        self.collab_panel.as_ref()?.action.as_ref()?;
-        let panel = self.collab_panel_rect();
-        Some(vello::kurbo::Rect::new(
-            panel.x0 + 24.0,
-            panel.y1 - 50.0,
-            panel.x1 - 24.0,
-            panel.y1 - 14.0,
-        ))
+    /// Height the sheet's body wants at `width`: the summary, then each line
+    /// in its own row.
+    fn collab_panel_body_height(
+        panel: &CollabPanel,
+        tr: &mut ui::text_render::TextRenderer,
+        theme: &ui::Theme,
+    ) -> f64 {
+        let mut height = 0.0;
+        let rhythm = &theme.tokens.spacing.rhythm;
+        let (_, summary) = tr.measure_style("Ag", None, &theme.text(ui::TextRole::Body));
+        height += f64::from(summary);
+        let (_, line) = tr.measure_style("Ag", None, &theme.text(ui::TextRole::Body));
+        let lines = panel.lines.iter().take(20).count();
+        if lines > 0 {
+            height += f64::from(rhythm.group) + lines as f64 * f64::from(line);
+            height += lines.saturating_sub(1) as f64 * f64::from(rhythm.related);
+        }
+        height
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "modal painting keeps scene, transform, text and theme together while deriving geometry and hit targets in one pass"
-    )]
-    // Drawing the modal as one routine keeps geometry, focus, and action hit
-    // targets derived from the same bounded panel state.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "modal painting derives geometry, focus, and hit targets from one bounded panel state"
-    )]
+    /// Draw the sheet: the shared modal over its scrim, the panel's summary
+    /// and lines as its body, and the one action in its footer. Records the
+    /// sheet's layout so the event path hit-tests what was painted.
     fn draw_collab_panel(
-        &self,
+        &mut self,
         scene: &mut vello::Scene,
         transform: vello::kurbo::Affine,
         text_renderer: &mut ui::text_render::TextRenderer,
         theme: &ui::Theme,
     ) {
-        use ui::ColorCompat;
-        use vello::kurbo::{Affine, Rect, RoundedRect, Stroke};
-        use vello::peniko::Fill;
+        use ui::widget::modal_dialog;
         let Some(panel) = &self.collab_panel else {
+            self.collab_layout = None;
             return;
         };
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base.with_alpha_factor(0.72),
-            None,
-            &self.rect,
+        let action_label = self.collab_panel_action_label();
+        let hovered = |rect: vello::kurbo::Rect| rect.contains(self.last_cursor);
+        let emphasis_safe = matches!(
+            panel.action.as_ref(),
+            Some(
+                CollabPanelAction::ApplySafeMerge { .. }
+                    | CollabPanelAction::ChooseNearbyDestination { .. }
+                    | CollabPanelAction::RetryNearby { .. }
+            )
         );
-        let rect = self.collab_panel_rect();
-        // Panel role (HIG §9.1/§9.5): the sheet is the same material as every
-        // other floating Panel — `panel_ground` under the derived Panel
-        // border, with its elevation — not a raised slot stroked with a
-        // declared border that vanishes on the dark preset.
-        let radius = ui::chrome::ChromeRole::Panel.radius(theme, rect.height());
-        let shape = RoundedRect::from_rect(rect, radius);
-        ui::chrome::panel_shadow(scene, transform, rect, radius, theme, 1.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            ui::chrome::panel_ground(theme),
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            ui::chrome::panel_border(theme),
-            None,
-            &ui::surface::edge_outline(rect, radius),
-        );
-        let x = rect.x0 + 24.0;
-        text_renderer.draw_text(
-            scene,
-            &panel.title,
-            theme.tokens.typography.scale.lg,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((x, rect.y0 + 23.0)),
-            Some((rect.width() - 80.0) as f32),
-        );
-        text_renderer.draw_text(
-            scene,
-            &panel.summary,
-            theme.tokens.typography.scale.sm,
-            theme.tokens.colors.text_dim,
-            transform * Affine::translate((x, rect.y0 + 53.0)),
-            Some((rect.width() - 48.0) as f32),
-        );
+        let mut actions = Vec::new();
+        if let Some(label) = action_label.as_deref() {
+            actions.push(if emphasis_safe {
+                modal_dialog::ModalAction::primary(label)
+            } else {
+                modal_dialog::ModalAction::danger(label)
+            });
+        }
+        let body_height = Self::collab_panel_body_height(panel, text_renderer, theme);
+        let spec = Self::collab_panel_spec(&panel.title, &actions, body_height);
+        let layout = modal_dialog::layout(self.rect, &spec, text_renderer, theme);
+        // Hover on the footer action and the close control follows the pointer.
+        if let (Some(action), Some(rect)) = (actions.first_mut(), layout.actions.first()) {
+            action.hovered = hovered(*rect);
+        }
+        let spec = Self::collab_panel_spec(&panel.title, &actions, body_height)
+            .close_hovered(layout.close.is_some_and(hovered));
+        modal_dialog::paint_backdrop(scene, transform, text_renderer, theme, &layout, &spec);
 
-        let accent = theme.tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX];
-        let mut y = rect.y0 + 88.0;
-        for line in panel.lines.iter().take(14) {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                accent,
-                None,
-                &Rect::new(x, y + 5.0, x + 5.0, y + 10.0),
-            );
-            text_renderer.draw_text(
-                scene,
-                line,
-                theme.tokens.typography.scale.sm,
-                theme.tokens.colors.text_primary,
-                transform * Affine::translate((x + 14.0, y)),
-                Some((rect.width() - 62.0) as f32),
-            );
-            y += 27.0;
-            if y > rect.y1 - 26.0 {
+        let (ink, dim) = modal_dialog::ink(theme);
+        let body = layout.body;
+        let width = body.width() as f32;
+        let text_style = theme.text(ui::TextRole::Body);
+        let (_, line_h) = text_renderer.measure_style("Ag", None, &text_style);
+        let mut y = body.y0;
+        let summary = text_renderer.elide_to_width_style(&panel.summary, width, &text_style);
+        text_renderer.draw_style(
+            scene,
+            &summary,
+            dim,
+            transform * vello::kurbo::Affine::translate((body.x0, y)),
+            None,
+            &text_style,
+        );
+        y += f64::from(line_h) + f64::from(theme.tokens.spacing.rhythm.group);
+        for line in panel.lines.iter().take(20) {
+            if y + f64::from(line_h) > body.y1 + 0.5 {
                 break;
             }
+            let line = text_renderer.elide_to_width_style(line, width, &text_style);
+            text_renderer.draw_style(
+                scene,
+                &line,
+                ink,
+                transform * vello::kurbo::Affine::translate((body.x0, y)),
+                None,
+                &text_style,
+            );
+            y += f64::from(line_h) + f64::from(theme.tokens.spacing.rhythm.related);
         }
-        if let Some(action_rect) = self.collab_panel_action_rect()
-            && let Some(label) = self.collab_panel_action_label()
-        {
-            // The shared button face (HIG §8): the outlined destructive style
-            // for the irreversible actions, the primary for a safe merge.
-            let face = ui::widget::ButtonFace::new(action_rect, &label)
-                .text_size(theme.tokens.typography.scale.sm)
-                .wrap_label();
-            let face = match panel.action.as_ref() {
-                Some(
-                    CollabPanelAction::ApplySafeMerge { .. }
-                    | CollabPanelAction::ChooseNearbyDestination { .. }
-                    | CollabPanelAction::RetryNearby { .. },
-                ) => face.primary(),
-                _ => face.danger_outline(),
-            };
-            ui::widget::Button::paint(scene, transform, text_renderer, theme, &face);
-        }
-        let close_rect = Rect::new(
-            rect.x1 - 42.0,
-            rect.y0 + 12.0,
-            rect.x1 - 14.0,
-            rect.y0 + 40.0,
-        );
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            close_rect,
-            ui::icons::Icon::X,
-            theme.tokens.colors.text_dim,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
+        modal_dialog::paint_actions(scene, transform, text_renderer, theme, &layout, &spec);
+        self.collab_layout = Some(layout);
     }
 
     /// Draw the in-place rename editor over the row/cell being renamed. The
@@ -4895,15 +4749,15 @@ impl FileExplorerWidget {
         }
     }
 
-    /// Draw the accent highlight over the folder (or Up affordance) a live drag
-    /// is hovering, so the drop target is unmistakable. Drawn under the ghost.
+    /// Mark the folder (or Up affordance) a live drag is hovering, so the drop
+    /// target is unmistakable: the row's lift with your colour as its edge.
+    /// Drawn under the ghost.
     fn draw_drop_highlight(
         &self,
         scene: &mut vello::Scene,
         transform: vello::kurbo::Affine,
         theme: &ui::Theme,
     ) {
-        use ui::ColorCompat;
         use vello::kurbo::{Rect, RoundedRect, Stroke};
         use vello::peniko::Fill;
         let Some(hover) = &self.drag_hover else {
@@ -4923,24 +4777,27 @@ impl FileExplorerWidget {
                     .flatten()
             });
         let Some(rect) = rect else { return };
-        // A live drop target is state the user did not choose and must notice
-        // (HIG §9.4), so the accent is the right ink here. The face matches
-        // the row highlight's insets so the two never disagree by a pixel.
-        let accent = theme.tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX];
+        let colors = &theme.tokens.colors;
         let (ix, iy) = (
             f64::from(theme.tokens.spacing.s2),
             f64::from(theme.tokens.spacing.s1) / 2.0,
         );
         let inset = Rect::new(rect.x0 + ix, rect.y0 + iy, rect.x1 - ix, rect.y1 - iy);
-        let shape = RoundedRect::from_rect(inset, f64::from(theme.tokens.radii.md));
+        let shape = RoundedRect::from_rect(inset, f64::from(theme.tokens.radii.item));
         scene.fill(
             Fill::NonZero,
             transform,
-            accent.with_alpha_factor(0.25),
+            colors.lift_on(colors.surfaces.content, 1.0),
             None,
             &shape,
         );
-        scene.stroke(&Stroke::new(2.0), transform, accent, None, &shape);
+        scene.stroke(
+            &Stroke::new(2.0),
+            transform,
+            colors.intent.you,
+            None,
+            &shape,
+        );
     }
 
     /// Draw the floating ghost that tracks the cursor during a drag, so it reads
@@ -4966,46 +4823,39 @@ impl FileExplorerWidget {
             )
         };
         let tokens = &theme.tokens;
-        let text_scale = text_renderer.text_scale();
-        let size = tokens.typography.scale.base / text_scale;
-        let (tw, th) = text_renderer.measure(&label, size, None);
-        let (pad, icon, gap) = (10.0_f64, 16.0_f64, 8.0_f64);
+        let style = theme.text(ui::TextRole::Label);
+        let (tw, th) = text_renderer.measure_style(&label, None, &style);
+        let pad = f64::from(tokens.spacing.s3);
+        let icon = f64::from(tokens.metrics.icon_sm);
+        let gap = f64::from(tokens.spacing.s2);
         // The pill grows with its measured label so enlarged text stays inside it.
-        let h = (f64::from(th) + 2.0 * f64::from(tokens.spacing.s1)).max(30.0);
+        let h = (f64::from(th) + 2.0 * f64::from(tokens.spacing.s2))
+            .max(ui::widget::ControlSize::Small.height(theme));
         let w = pad + icon + gap + f64::from(tw) + pad;
         // Offset from the cursor so the ghost sits beside, not under, the pointer.
-        let x0 = self.last_cursor.x + 14.0;
-        let y0 = self.last_cursor.y + 6.0;
+        let x0 = self.last_cursor.x + f64::from(tokens.spacing.s3);
+        let y0 = self.last_cursor.y + f64::from(tokens.spacing.s2);
         let rect = Rect::new(x0, y0, x0 + w, y0 + h);
-        // The ghost is genuinely off the surface (HIG §9.3): it casts the
-        // Panel shadow and its edge derives from its own raised face.
-        let radius = f64::from(tokens.radii.md);
-        ui::chrome::panel_shadow(scene, transform, rect, radius, theme, 1.0);
-        ui::surface::card(
-            scene,
-            transform,
-            rect,
-            radius,
-            tokens.colors.surfaces.raised,
-        );
-        let accent = tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX];
+        // The ghost is genuinely off the surface: it floats, with the
+        // floating shadow and material.
+        ui::widget::floating_surface::paint(scene, transform, rect, theme);
         let iy = y0 + (h - icon) / 2.0;
         ui::icons::draw_icon(
             scene,
             transform,
             Rect::new(x0 + pad, iy, x0 + pad + icon, iy + icon),
             glyph,
-            accent,
+            tokens.colors.text_dim,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        let ty = crate::text_layout::centered_text_y(y0, h, size, text_scale);
-        text_renderer.draw_text(
+        let ty = ui::text_metrics::centered_text_top(y0, h, f64::from(th));
+        text_renderer.draw_style(
             scene,
             &label,
-            size,
             tokens.colors.text_primary,
             transform * Affine::translate((x0 + pad + icon + gap, ty)),
             None,
+            &style,
         );
     }
 
@@ -5665,7 +5515,7 @@ impl FileExplorerWidget {
                                 if merge_supported_path(&entry.path) {
                                     spec.push((
                                         format!(
-                                            "{} · {}",
+                                            "{} ({})",
                                             t("files-merge-review-menu"),
                                             short_fingerprint(&other.actor.device),
                                         ),
@@ -5678,7 +5528,7 @@ impl FileExplorerWidget {
                                 }
                                 spec.push((
                                     format!(
-                                        "{} · {}",
+                                        "{} ({})",
                                         conflict_strategy_label(
                                             collab_types::ConflictStrategy::KeepBoth,
                                         ),
@@ -5742,7 +5592,7 @@ impl FileExplorerWidget {
 
         // Sort section — the only place the sort *key* can be changed in grid
         // mode (which has no clickable column header) and the only way to
-        // reach "Sort by Type" at all.
+        // reach "Sort by type" at all.
         spec.push((String::new(), None));
         spec.push((
             t("files-menu-sort-name"),
@@ -5775,7 +5625,7 @@ impl FileExplorerWidget {
     }
 
     /// The path of the single selected entry when it is a directory (drives the
-    /// "Add to Favourites" action).
+    /// "Add to Favorites" action).
     fn single_selected_dir(&self) -> Option<PathBuf> {
         let disp = self.displayed_entries();
         let sel = self.selection.selected();
@@ -5986,7 +5836,7 @@ impl FileExplorerWidget {
                 cmds.push(None);
             } else {
                 menu.push(match checked {
-                    Some(checked) => MenuItem::checked_action(label, checked, || {}),
+                    Some(checked) => MenuItem::action(label, || {}).with_checked(checked),
                     None => MenuItem::action(label, || {}),
                 });
                 cmds.push(cmd);
@@ -6149,48 +5999,6 @@ impl FileExplorerWidget {
             Some(!asc),
         ));
         self.open_menu_right_aligned(spec, anchor, flip_y);
-    }
-
-    /// The right-click menu for a sidebar favourite `path`: open it, plus the
-    /// standard "Remove from Favourites" (suppressed for the pinned Home entry,
-    /// which cannot be removed). Anchored at the cursor like any context menu.
-    fn open_favorite_menu(&mut self, path: PathBuf, at: Point) {
-        let is_home = self
-            .favs
-            .borrow()
-            .favorites
-            .iter()
-            .any(|f| f.is_home && f.path == path);
-        let mut spec: Vec<(String, Option<FileCommand>)> = Vec::new();
-        spec.push((
-            t("files-menu-open"),
-            Some(FileCommand::Navigate(path.clone())),
-        ));
-        if !is_home {
-            spec.push((String::new(), None));
-            spec.push((
-                t("files-menu-remove-favourite"),
-                Some(FileCommand::RemoveFavorite(path)),
-            ));
-        }
-        // A favourite menu opens at the cursor (left-anchored is fine — the
-        // sidebar sits at the window's left edge).
-        self.submenu.close();
-        let mut menu = self.new_overlay_menu();
-        let mut cmds = Vec::with_capacity(spec.len());
-        for (label, cmd) in spec {
-            if cmd.is_none() && label.is_empty() {
-                menu.push(MenuItem::separator());
-                cmds.push(None);
-            } else {
-                menu.push(MenuItem::action(label, || {}));
-                cmds.push(cmd);
-            }
-        }
-        menu.open_at([at.x as f32, at.y as f32]);
-        self.context_menu = menu;
-        self.menu_commands = cmds;
-        layout_menu_widget(&mut self.context_menu);
     }
 
     /// If either menu is open, route a left-press to it. Returns true when the
@@ -6604,13 +6412,9 @@ impl FileExplorerWidget {
         let Ok(children) = ctx.taffy.children(ctx.node_id) else {
             return;
         };
-        let (Some(&above_n), Some(&nav_n)) = (children.first(), children.get(1)) else {
+        let Some(&nav_n) = children.first() else {
             return;
         };
-        if !*ctx.handled {
-            self.toolbar
-                .handle_event(event, &mut ctx.reborrow(ctx.path, above_n));
-        }
         if !*ctx.handled {
             self.nav
                 .handle_event(event, &mut ctx.reborrow(ctx.path, nav_n));
@@ -6815,13 +6619,13 @@ impl FileExplorerWidget {
         event: &winit::event::WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
-        if self.nav.mode() != ShellMode::Narrow || !self.nav.is_sidebar_open() {
+        if !self.places_drawer_open() {
             return false;
         }
         let Ok(children) = ctx.taffy.children(ctx.node_id) else {
             return false;
         };
-        let Some(&nav_node) = children.get(1) else {
+        let Some(&nav_node) = children.first() else {
             return false;
         };
         let path_before = self.current_path.clone();
@@ -6907,12 +6711,9 @@ impl FileExplorerWidget {
             },
         );
         self.drain_commands();
-        // A right-press over a sidebar favourite pushes `OpenFavoriteMenu`,
-        // which the drain records here; open the favourite's own menu at the
-        // cursor rather than the file-view context menu.
-        if let Some(fav) = self.pending_fav_menu.take() {
-            self.open_favorite_menu(fav, self.last_cursor);
-        } else {
+        // The places list has no context menu of its own: a right-press over
+        // it is the list's, never the file view's.
+        if !self.in_places_list(self.last_cursor) {
             self.open_context_menu(self.last_cursor);
         }
         *ctx.handled = true;
@@ -7048,7 +6849,8 @@ impl FileExplorerWidget {
         if self.drain_commands() {
             self.structure_dirty = true;
         }
-        if self.current_path != path_before && self.nav.mode() == ShellMode::Narrow {
+        // Going somewhere leaves the drawer that was open over the files.
+        if self.current_path != path_before && self.places_drawer_open() {
             self.nav.close_sidebar();
         }
     }
@@ -7625,11 +7427,11 @@ impl FileExplorerWidget {
         let (id, label, verb) = if current_is_favorite {
             (
                 "remove-favorite",
-                "Remove from Favourites",
+                "Remove from Favorites",
                 "remove-favorite",
             )
         } else {
-            ("add-favorite", "Add to Favourites", "add-favorite")
+            ("add-favorite", "Add to Favorites", "add-favorite")
         };
         folder.actions.push(
             ActionSpec::operation(
@@ -7666,7 +7468,7 @@ impl FileExplorerWidget {
                 "new-folder",
                 "New folder",
                 "Folder name",
-                "New Folder",
+                "New folder",
                 OperationKind::Effect,
                 "files.new-folder",
                 |name| {
@@ -8055,7 +7857,7 @@ impl FileExplorerWidget {
                 let mut resource =
                     Resource::new(resource_id, "files.remote-account", account.label.clone());
                 resource.presentation = Some(tilo_actions::ResourcePresentation {
-                    detail: Some(format!("{} · {}", account.kind.label(), account.host)),
+                    detail: Some(format!("{} at {}", account.kind.label(), account.host)),
                     badge: account.health.badge().map(str::to_owned),
                     preview: None,
                 });
@@ -8410,7 +8212,6 @@ impl Widget for FileExplorerWidget {
             self.rename_select_pending = false;
         }
 
-        self.toolbar.sync(state, path);
         self.nav.sync(state, path);
 
         // `TextInput` also accepts accessibility SetValue; absorb any local
@@ -8436,7 +8237,6 @@ impl Widget for FileExplorerWidget {
             .into_iter()
             .chain(document_open_reply)
             .chain(self.nav.next_wake_deadline())
-            .chain(self.toolbar.next_wake_deadline())
             .min()
     }
 
@@ -8446,62 +8246,20 @@ impl Widget for FileExplorerWidget {
         theme: &ui::Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
-        // Refresh the persistent top bar, then rebuild the footer + swap the
-        // freshly-built body panes into the persistent `nav`. `nav` and the
-        // `toolbar` keep their state across the swap (docked/push state; the
-        // path bar's in-progress edit), so a rebuild triggered by navigation /
-        // sort doesn't snap the body or the path bar back mid-interaction.
+        // Refresh the toolbar's context, then swap the freshly built body
+        // panes into the persistent `nav`. `nav` and the toolbar it owns keep
+        // their state across the swap (docked state; the path bar's
+        // in-progress edit), so a rebuild triggered by navigation / sort
+        // doesn't snap the body or the path bar back mid-interaction.
         self.update_toolbar();
-        // At enlarged text sizes, a permanently docked 200 px Places column
-        // turns useful labels into a wall of truncation and steals the width
-        // needed by file metadata. Promote it to the same labelled hamburger
-        // drawer used on narrow screens. The threshold grows only above 1×,
-        // preserving the normal desktop/tablet breakpoint exactly.
-        self.nav.set_breakpoint(
-            BODY_BREAKPOINT_PX + f64::from((theme.text_scale - 1.0).max(0.0)) * 900.0,
-        );
         self.composed_once = true;
         self.nav.set_sidebar(Some(self.build_places_pane()));
         self.nav.set_content(self.build_content_pane(theme));
 
-        let above_node = self.toolbar.build_layout(taffy, theme, node_map);
+        // The shell fills the window; the item count / selection status floats
+        // in a reserved bottom lane inside the body (see `draw_status_bubble`),
+        // leaving the rest of the body available to the file viewport.
         let nav_node = self.nav.build_layout(taffy, theme, node_map);
-        // No permanent footer band: the item count / selection status floats
-        // in a reserved bottom lane inside the body (see
-        // `draw_status_bubble`), leaving the rest of the body available to
-        // the file viewport.
-
-        // The body fills the height left below the top bar (the toolbar uses
-        // `with_intrinsic_height`).
-        // `NavShell::build_layout` hard-codes a `percent(1.0)` height leaf; in
-        // a column of three that would claim the full height, so override it to
-        // grow into the remaining space instead.
-        // `set_style` only fails when the node id is unknown to this tree;
-        // `nav_node` was just built in it above.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "nav_node was just created in this same tree"
-        )]
-        taffy
-            .set_style(
-                nav_node,
-                taffy::Style {
-                    flex_grow: 1.0,
-                    flex_shrink: 1.0,
-                    flex_basis: taffy::Dimension::length(0.0),
-                    size: taffy::Size {
-                        width: taffy::Dimension::percent(1.0),
-                        height: taffy::Dimension::auto(),
-                    },
-                    min_size: taffy::Size {
-                        width: taffy::Dimension::auto(),
-                        height: taffy::Dimension::length(0.0),
-                    },
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-
         let style = taffy::Style {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
@@ -8512,14 +8270,12 @@ impl Widget for FileExplorerWidget {
             ..Default::default()
         };
         // `new_with_children` only fails when a child belongs to a
-        // different tree; both children were just built in this one above.
+        // different tree; the shell was just built in this one above.
         #[allow(
             clippy::unwrap_used,
-            reason = "above_node and nav_node were just created in this same tree"
+            reason = "nav_node was just created in this same tree"
         )]
-        let node = taffy
-            .new_with_children(style, &[above_node, nav_node])
-            .unwrap();
+        let node = taffy.new_with_children(style, &[nav_node]).unwrap();
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
@@ -8545,9 +8301,8 @@ impl Widget for FileExplorerWidget {
         );
         let base = vello::kurbo::Point::new(self.rect.x0, self.rect.y0);
         if let Ok(children) = taffy.children(node)
-            && let (Some(&above_n), Some(&nav_n)) = (children.first(), children.get(1))
+            && let Some(&nav_n) = children.first()
         {
-            self.toolbar.apply_layout(taffy, above_n, base);
             self.nav.apply_layout(taffy, nav_n, base);
         }
     }
@@ -8562,16 +8317,10 @@ impl Widget for FileExplorerWidget {
     ) {
         self.poll_share_result();
         self.poll_history_result();
-        self.paint_background(scene, transform, theme);
+        self.paint_background(theme);
         self.nav
             .draw(scene, transform, text_renderer, theme, presence);
-        self.draw_places_modal_backdrop(scene, transform, theme);
         self.draw_state_surface(scene, transform, text_renderer, theme, presence);
-        // The toolbar is fixed app chrome. Paint it above the body so an
-        // error/empty surface can never obscure its Back, Up, or location
-        // routes at a compact width.
-        self.toolbar
-            .draw(scene, transform, text_renderer, theme, presence);
         self.draw_empty_state(scene, transform, text_renderer, theme);
         self.draw_rename_editor(scene, transform, text_renderer, theme, presence);
     }
@@ -8585,7 +8334,7 @@ impl Widget for FileExplorerWidget {
         presence: &ui::presence::PresenceCtx,
         permissions: &ui::permissions::PermissionContext,
     ) {
-        self.paint_background(scene, transform, theme);
+        self.paint_background(theme);
         // Recurse with `draw_with_presence` (not the plain `draw`) so the
         // inner `Scrollable` pushes its viewport rect and the file list culls
         // rows outside it. The default trait impl would call our own `draw`,
@@ -8599,16 +8348,7 @@ impl Widget for FileExplorerWidget {
             presence,
             permissions,
         );
-        self.draw_places_modal_backdrop(scene, transform, theme);
         self.draw_state_surface(scene, transform, text_renderer, theme, presence);
-        self.toolbar.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
         self.draw_empty_state(scene, transform, text_renderer, theme);
         self.draw_rename_editor(scene, transform, text_renderer, theme, presence);
     }
@@ -8624,8 +8364,6 @@ impl Widget for FileExplorerWidget {
         // Child overlays (the path bar's completion popover, dropdowns) first,
         // then our top-layer context menu (and its flyout) so they composite
         // above everything.
-        self.toolbar
-            .draw_overlay(scene, transform, text_renderer, theme, presence);
         self.nav
             .draw_overlay(scene, transform, text_renderer, theme, presence);
         // Floating status bubble (item count / status + selection), above the
@@ -8735,6 +8473,10 @@ impl Widget for FileExplorerWidget {
         }
         if self.collab_panel.is_some() {
             use winit::keyboard::{Key, NamedKey};
+            let hit = self
+                .collab_layout
+                .as_ref()
+                .and_then(|layout| layout.hit(self.last_cursor));
             let activate = match event {
                 WindowEvent::KeyboardInput { event, .. }
                     if event.state == ElementState::Pressed
@@ -8746,10 +8488,7 @@ impl Widget for FileExplorerWidget {
                     state: ElementState::Released,
                     button: MouseButton::Left,
                     ..
-                } if self
-                    .collab_panel_action_rect()
-                    .is_some_and(|rect| rect.contains(self.last_cursor)) =>
-                {
+                } if hit == Some(ui::widget::ModalHit::Action(0)) => {
                     self.collab_panel_action_command()
                 }
                 _ => None,
@@ -8772,16 +8511,10 @@ impl Widget for FileExplorerWidget {
                     state: ElementState::Released,
                     button: MouseButton::Left,
                     ..
-                } => {
-                    let rect = self.collab_panel_rect();
-                    let close_rect = vello::kurbo::Rect::new(
-                        rect.x1 - 48.0,
-                        rect.y0 + 6.0,
-                        rect.x1 - 8.0,
-                        rect.y0 + 46.0,
-                    );
-                    !rect.contains(self.last_cursor) || close_rect.contains(self.last_cursor)
-                }
+                } => self
+                    .collab_layout
+                    .as_ref()
+                    .is_none_or(|layout| layout.dismisses(self.last_cursor)),
                 _ => false,
             };
             if close {
@@ -8825,7 +8558,6 @@ impl Widget for FileExplorerWidget {
 
     fn take_structure_dirty(&mut self) -> bool {
         let mut d = std::mem::take(&mut self.structure_dirty);
-        d |= self.toolbar.take_structure_dirty();
         d |= self.nav.take_structure_dirty();
         d
     }
@@ -8835,15 +8567,12 @@ impl Widget for FileExplorerWidget {
         // frames while it settles; the floating status bubble likewise while it
         // lingers / fades.
         self.nav.needs_animation_frame()
-            || self.toolbar.needs_animation_frame()
             || (self.is_loading && self.state_spinner.needs_animation_frame())
             || self.status_bubble.needs_frame(ui::time::now())
     }
 
     fn needs_idle_sync(&self) -> bool {
-        self.collaborative_record_pager.borrow().has_more()
-            || self.nav.needs_idle_sync()
-            || self.toolbar.needs_idle_sync()
+        self.collaborative_record_pager.borrow().has_more() || self.nav.needs_idle_sync()
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -8851,7 +8580,6 @@ impl Widget for FileExplorerWidget {
             return Vec::new();
         }
         let v: Vec<&dyn Widget> = vec![
-            &self.toolbar,
             &self.nav,
             // Standalone overlays are not taffy children, but they are semantic
             // children: expose their menu/item nodes while open (closed nodes carry
@@ -8866,12 +8594,8 @@ impl Widget for FileExplorerWidget {
         if self.collab_panel.is_some() {
             return Vec::new();
         }
-        let v: Vec<&mut (dyn Widget + '_)> = vec![
-            &mut self.toolbar,
-            &mut self.nav,
-            &mut self.context_menu,
-            &mut self.submenu,
-        ];
+        let v: Vec<&mut (dyn Widget + '_)> =
+            vec![&mut self.nav, &mut self.context_menu, &mut self.submenu];
         v
     }
 

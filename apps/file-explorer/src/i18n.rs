@@ -442,13 +442,13 @@ mod tests {
                     .map_or(source, |(production, _)| production)
             });
             for phrase in [
-                "Keep Offline",
-                "Use Automatic Storage",
-                "Retry Download",
-                "Copy One-Time Share Link",
-                "Sharing & Access…",
+                "Keep offline",
+                "Use automatic storage",
+                "Retry download",
+                "Copy one-time share link",
+                "Sharing and access…",
                 "Availability…",
-                "Version History…",
+                "Version history…",
                 "Shared with 1 recipient",
                 "Transfer failed",
                 "Replica status unknown",
@@ -507,7 +507,6 @@ mod tests {
         // --- phase: generic_files_surfaces_do_not_embed_catalog_labels ---
         {
             let sources = [
-                include_str!("breadcrumb_bar.rs"),
                 include_str!("breadcrumbs.rs"),
                 include_str!("favorites.rs"),
                 include_str!("fileops.rs"),
@@ -515,7 +514,6 @@ mod tests {
                 include_str!("path_bar.rs"),
                 include_str!("places_sidebar.rs"),
                 include_str!("search_provider.rs"),
-                include_str!("sidebar.rs"),
                 include_str!("templates.rs"),
                 include_str!("toolbar.rs"),
                 include_str!("views/file_view.rs"),
