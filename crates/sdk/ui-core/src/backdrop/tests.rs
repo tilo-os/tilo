@@ -130,6 +130,101 @@ fn a_frame_blurs_at_most_its_region_budget() {
 }
 
 #[test]
+fn a_continued_recording_keeps_the_frames_regions_distinct() {
+    let theme = Theme::dark();
+    let mut scene = Scene::new();
+    let first = BackdropRecording::begin();
+    layer_scene(&scene, 0);
+    floating(&mut scene, Affine::IDENTITY, &theme);
+    let main_pass = first.finish();
+    // The top layer, drawn later into the same scene.
+    let second = BackdropRecording::continuing(main_pass);
+    layer_scene(&scene, 0);
+    floating(&mut scene, Affine::IDENTITY, &theme);
+    let surfaces = second.finish();
+    assert_eq!(surfaces.len(), 2);
+    assert_ne!(
+        surfaces[0].image.data.id(),
+        surfaces[1].image.data.id(),
+        "the second pass takes the next region slot"
+    );
+}
+
+/// A subtree cache (a `Column`'s) is drawn on its own and appended later: a
+/// surface inside it takes what the frame held before the cache, plus the
+/// cache's content under it, at the cache's place in the frame.
+#[test]
+fn a_surface_in_a_nested_cache_lands_where_the_cache_is_appended() {
+    let theme = Theme::dark();
+    let mut frame = stripes(256, 192);
+    let frame_len = frame.encoding().draw_tags.len();
+    let recording = BackdropRecording::begin();
+    layer_scene(&frame, 1);
+    let mut outer = Scene::new();
+    nest_scene(&outer);
+    let mut inner = Scene::new();
+    nest_scene(&inner);
+    inner.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        Color::WHITE,
+        None,
+        &Rect::new(0.0, 0.0, 4.0, 4.0),
+    );
+    let inner_len = inner.encoding().draw_tags.len();
+    floating(&mut inner, Affine::IDENTITY, &theme);
+    assert_eq!(
+        append_nested(&mut outer, &inner, Affine::translate((4.0, 2.0))),
+        1
+    );
+    assert_eq!(
+        append_nested(&mut frame, &outer, Affine::translate((6.0, 3.0))),
+        1,
+        "a cache inside a cache carries its child's surface up"
+    );
+    // A cache appended into a scene nobody records stays opaque.
+    let mut lost = Scene::new();
+    nest_scene(&lost);
+    floating(&mut lost, Affine::IDENTITY, &theme);
+    let mut scratch = Scene::new();
+    assert_eq!(append_nested(&mut scratch, &lost, Affine::IDENTITY), 1);
+    let surfaces = recording.finish();
+    assert_eq!(surfaces.len(), 1);
+    let surface = &surfaces[0];
+    assert_eq!(surface.layer, 1);
+    assert_eq!(surface.bounds, PANEL + Vec2::new(10.0, 5.0));
+    assert_eq!(
+        surface.below.encoding().draw_tags.len(),
+        frame_len + inner_len,
+        "below is the frame so far plus the cache's own content"
+    );
+    // Outside a recording a cache carries nothing.
+    let mut plain = Scene::new();
+    assert_eq!(append_nested(&mut plain, &inner, Affine::IDENTITY), 0);
+}
+
+#[test]
+fn a_nested_recording_never_shares_a_placeholder_with_its_host() {
+    let theme = Theme::dark();
+    let mut outer_scene = Scene::new();
+    let mut inner_scene = Scene::new();
+    let outer = BackdropRecording::begin();
+    layer_scene(&outer_scene, 0);
+    floating(&mut outer_scene, Affine::IDENTITY, &theme);
+    let inner = BackdropRecording::begin();
+    layer_scene(&inner_scene, 0);
+    floating(&mut inner_scene, Affine::IDENTITY, &theme);
+    let inner_surfaces = inner.finish();
+    let outer_surfaces = outer.finish();
+    assert_eq!((outer_surfaces.len(), inner_surfaces.len()), (1, 1));
+    assert_ne!(
+        outer_surfaces[0].image.data.id(),
+        inner_surfaces[0].image.data.id(),
+        "the host's blur must not be substituted into the inner surface"
+    );
+}
+
+#[test]
 fn an_unchanged_surface_encodes_identically_frame_to_frame() {
     let theme = Theme::dark();
     let frame = || {
@@ -252,7 +347,7 @@ fn cost_at_1080p() {
     let rect = Rect::new(1480.0, 56.0, 1900.0, 776.0);
     let ground = crate::chrome::panel_ground(&theme);
     let region = BackdropRegion {
-        image: placeholder(0, texels(rect.width()), texels(rect.height()), ground),
+        image: placeholder((0, 0), texels(rect.width()), texels(rect.height()), ground),
         rect,
         blur_px: f64::from(theme.tokens.colors.surfaces.material_blur_px),
         below: stripes(target.0, target.1),
