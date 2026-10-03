@@ -3,10 +3,12 @@
 //!
 //! cosmic-text falls back per glyph to whatever face covers a character, at
 //! the size and weight the run asked for. That is right for Arabic or CJK,
-//! which have no x-height to match, but Greek, Cyrillic and Vietnamese set
+//! which have no x-height to match, but Cyrillic, Greek and Vietnamese set
 //! that way sit visibly smaller or larger, lighter or heavier, than the Latin
-//! around them. Before shaping, every run is split here into spans the
-//! shaper can set as one face:
+//! around them. Tilo Sans covers Vietnamese and Greek itself; the matched
+//! faces serve the scripts it lacks, and any other UI face's gaps. Before
+//! shaping, every run is split here into spans the shaper can set as one
+//! face:
 //!
 //! - a word in a script the run's face lacks goes to the face matched for
 //!   that script ([`MATCHED`]), at the size that gives it the primary face's
@@ -50,10 +52,10 @@ struct Matched {
 
 /// Matched fallbacks; for each script the first usable entry wins. A face is
 /// usable when the font system has it in the run's style and it covers the
-/// word.
-const MATCHED: [Matched; 3] = [
+/// word. A word the run's own face covers never reaches them.
+const MATCHED: [Matched; 2] = [
     // Onest's straight-armed forms (`ss02`) are the closest Cyrillic to
-    // Instrument Sans; at the same x-height its stems match at about 1.2x
+    // Tilo Sans' Latin; at the same x-height its stems match at about 1.2x
     // the weight above 400.
     Matched {
         scripts: &[Script::Cyrillic],
@@ -63,19 +65,8 @@ const MATCHED: [Matched; 3] = [
         offset: -90.0,
         italic: false,
     },
-    // Geologica is far heavier than its axis value suggests: at the same
-    // x-height its stems match Instrument Sans' at about 215 for Regular,
-    // 350 for Medium, 480 for SemiBold and 615 for Bold.
-    Matched {
-        scripts: &[Script::Greek],
-        family: "Geologica",
-        features: &[],
-        scale: 1.33,
-        offset: -317.0,
-        italic: false,
-    },
-    // Italic Greek and Cyrillic, Vietnamese, and any other Latin letters the
-    // UI face lacks.
+    // Italic Cyrillic, and Greek, Vietnamese and any other Latin letters a
+    // UI face lacks (Hyperlegible has no Greek and no Vietnamese).
     Matched {
         scripts: &[Script::Cyrillic, Script::Greek, Script::Latin],
         family: "Noto Sans",

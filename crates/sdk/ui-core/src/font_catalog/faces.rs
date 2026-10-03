@@ -18,11 +18,12 @@ use skrifa::{FontRef, MetadataProvider, Tag};
 use crate::text_render::TextKind;
 
 /// Characters a "distinct I and l" stylistic set or character variant is
-/// expected to touch: capital I, lowercase l and their accented forms, and
-/// the one and the bar they are confused with. A set that also changes any
-/// other encoded character (a titling J, a single-storey a) is a different
-/// stylistic choice and is never applied for a kind.
-const CONFUSABLE_IL: &str = "IÌÍÎÏĨĪĬĮİǏȈȊỈỊlĺļľŀłƚ1|¦ǀ";
+/// expected to touch: capital I, lowercase l, their accented forms and the
+/// Dutch IJ built on that I, and the one and the bar they are confused with.
+/// A set that also changes any other encoded character (a titling J, a
+/// single-storey a) is a different stylistic choice and is never applied for
+/// a kind.
+const CONFUSABLE_IL: &str = "IÌÍÎÏĨĪĬĮİǏȈȊỈỊĲlĺļľŀłƚ1|¦ǀ";
 
 /// What one face supports.
 #[derive(Debug)]
