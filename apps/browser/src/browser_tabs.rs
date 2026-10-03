@@ -4,12 +4,13 @@ use crate::BrowserWidget;
 use crate::browser_tab_strip::BrowserTabStrip;
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
-use taffy::style_helpers::{auto, length};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::presence::PresenceCtx;
+use ui::status_bubble::StatusBubble;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::{Duration, Instant};
+use ui::tokens::TextRole;
 use ui::widget::{
     AppKind, AppWidget, ContextMenu, Continuable, FloatingSurfaceProvider, FullscreenProvider,
     IconDescriptor, MenuItem, TabDescriptor, TaffyTreeExt, Widget, WindowCloseAdmission,
@@ -102,7 +103,8 @@ pub struct BrowserTabs {
     window_fullscreen_active: bool,
     observed_active_content_fullscreen: bool,
     fullscreen_hint_deadline: Option<Instant>,
-    fullscreen_hint: Option<Box<dyn Widget>>,
+    /// The transient "Esc to exit full screen" status, painted over the page.
+    fullscreen_hint: Option<StatusBubble>,
 }
 
 impl BrowserTabs {
@@ -148,36 +150,16 @@ impl BrowserTabs {
     fn immersive(&self) -> bool {
         self.window_fullscreen_active && self.active().content_fullscreen()
     }
-    fn make_fullscreen_hint() -> Box<dyn Widget> {
-        use ui::a11y::Politeness;
-        use ui::widget::{Container, Text};
-        // Theme-driven: the hint pill takes the theme's own surface and body
-        // ink instead of a fixed near-black fill with white text, so it reads
-        // on the light palette as well (HIG §7 theme-driven, pixel-clean).
-        Box::new(
-            Container::new()
-                .with_no_padding()
-                .with_height(48.0)
-                .with_child(Box::new(
-                    Container::new()
-                        .with_centered_max_width(240.0)
-                        .with_background()
-                        .with_child(Box::new(
-                            Text::new("Esc to exit full screen")
-                                .with_id("browser.fullscreen-hint")
-                                .with_live(Politeness::Polite)
-                                .with_size(14.0),
-                        )),
-                )),
-        )
-    }
     fn clear_fullscreen_hint(&mut self) {
         self.fullscreen_hint_deadline = None;
         self.fullscreen_hint = None;
     }
     fn start_fullscreen_hint(&mut self) {
         self.fullscreen_hint_deadline = Some(ui::time::now() + FULLSCREEN_HINT_DURATION);
-        self.fullscreen_hint = Some(Self::make_fullscreen_hint());
+        let now = ui::time::now();
+        let mut hint = StatusBubble::new().with_linger(FULLSCREEN_HINT_DURATION);
+        hint.show("Esc to exit full screen", now);
+        self.fullscreen_hint = Some(hint);
     }
     fn reconcile_active_content_fullscreen(&mut self) {
         let content_fullscreen = self.active().content_fullscreen();
@@ -193,7 +175,7 @@ impl BrowserTabs {
         self.dirty = true;
     }
     fn make_exit_panel(&self, cancelling: bool) -> Box<dyn Widget> {
-        use ui::widget::{Button, Column, Container, Row, Text};
+        use ui::widget::{Actions, Button, ButtonRole, Column, Container, Text};
         let status = self
             .active()
             .download_exit_status()
@@ -206,26 +188,27 @@ impl BrowserTabs {
                 } else {
                     "Downloads are still running"
                 })
-                .with_size(18.0),
+                .with_role(TextRole::Heading),
             ))
-            .push(Box::new(Text::new(&status).with_size(13.0)));
+            .push(Box::new(Text::new(&status).with_role(TextRole::Body)));
         if !cancelling {
             let keep = self.exit_choice.writer();
             let cancel = self.exit_choice.writer();
             column = column.push(Box::new(
-                Row::new()
-                    .push(Box::new(
-                        Button::new("browser.download-exit.keep", "Keep downloading", None)
-                            .on_effect(move || keep.set(Some(false))),
-                    ))
-                    .push(Box::new(
-                        Button::new(
-                            "browser.download-exit.cancel",
-                            "Cancel downloads and quit",
-                            None,
-                        )
-                        .on_effect(move || cancel.set(Some(true))),
-                    )),
+                Actions::new(
+                    Button::new("browser.download-exit.keep", "Keep downloading", None)
+                        .role(ButtonRole::Primary)
+                        .on_effect(move || keep.set(Some(false))),
+                )
+                .secondary(
+                    Button::new(
+                        "browser.download-exit.cancel",
+                        "Cancel downloads and quit",
+                        None,
+                    )
+                    .role(ButtonRole::Destructive)
+                    .on_effect(move || cancel.set(Some(true))),
+                ),
             ));
         }
         Box::new(
@@ -268,15 +251,34 @@ impl BrowserTabs {
         Ok(self)
     }
     fn make_recovery_panel(&self) -> Box<dyn Widget> {
-        use ui::widget::{Button, Column, Container, Row, Text};
+        use ui::widget::{Actions, Button, ButtonRole, Column, Container, Text};
         let restore = self.recovery_choice.writer();
         let fresh = self.recovery_choice.writer();
-        Box::new(Container::new().with_background().with_child(Box::new(Column::new()
-            .push(Box::new(Text::new("Restore your browser session?").with_size(24.0)))
-            .push(Box::new(Text::new("The browser did not close cleanly. Restore your saved tabs, or start fresh.")))
-            .push(Box::new(Row::new()
-                .push(Box::new(Button::new("browser.session.restore", "Restore", None).on_effect(move || restore.set(Some(true)))))
-                .push(Box::new(Button::new("browser.session.fresh", "Start fresh", None).on_effect(move || fresh.set(Some(false))))))))))
+        Box::new(
+            Container::new().with_child(Box::new(
+                Column::new()
+                    .push(Box::new(
+                        Text::new("Restore your tabs?").with_role(TextRole::Title),
+                    ))
+                    .push(Box::new(
+                        Text::new(
+                            "Browser did not close cleanly. Restore your saved tabs, or start fresh.",
+                        )
+                        .with_role(TextRole::Body),
+                    ))
+                    .push(Box::new(
+                        Actions::new(
+                            Button::new("browser.session.restore", "Restore tabs", None)
+                                .role(ButtonRole::Primary)
+                                .on_effect(move || restore.set(Some(true))),
+                        )
+                        .secondary(
+                            Button::new("browser.session.fresh", "Start fresh", None)
+                                .on_effect(move || fresh.set(Some(false))),
+                        ),
+                    )),
+            )),
+        )
     }
     fn session_snapshot(&self, clean: bool) -> crate::session::Snapshot {
         crate::session::Snapshot {
@@ -1032,20 +1034,7 @@ impl Widget for BrowserTabs {
             let page = self.active_mut().build_layout(taffy, theme, nodes);
             self.layout_active_id = Some(self.active_id);
             self.layout_immersive = Some(true);
-            let mut children = vec![page];
-            if let Some(hint) = self.fullscreen_hint.as_mut() {
-                let hint = hint.build_layout(taffy, theme, nodes);
-                let mut style = taffy.style(hint).cloned().unwrap_or_default();
-                style.position = taffy::Position::Absolute;
-                style.inset = taffy::Rect {
-                    left: length(0.0_f32),
-                    right: length(0.0_f32),
-                    top: length(24.0_f32),
-                    bottom: auto(),
-                };
-                let _ = taffy.set_style(hint, style);
-                children.push(hint);
-            }
+            let children = vec![page];
             let root = taffy.parent_node(
                 Style {
                     size: Size {
@@ -1123,11 +1112,6 @@ impl Widget for BrowserTabs {
                     let origin = self.rect.origin();
                     self.active_mut().apply_layout(taffy, *page, origin);
                 }
-                if let Some(hint) = self.fullscreen_hint.as_mut()
-                    && let Some(node) = children.get(1)
-                {
-                    hint.apply_layout(taffy, *node, self.rect.origin());
-                }
                 return;
             }
             if let Some(bar) = children.first() {
@@ -1161,7 +1145,7 @@ impl Widget for BrowserTabs {
             self.active_mut()
                 .draw(scene, transform, tr, theme, presence);
             if let Some(hint) = self.fullscreen_hint.as_mut() {
-                hint.draw(scene, transform, tr, theme, presence);
+                hint.paint(scene, transform, tr, theme, self.rect, ui::time::now());
             }
             return;
         }
@@ -1338,9 +1322,7 @@ impl Widget for BrowserTabs {
             return vec![recovery.panel.as_ref()];
         }
         if self.immersive() {
-            return std::iter::once(self.active() as &dyn Widget)
-                .chain(self.fullscreen_hint.as_deref())
-                .collect();
+            return vec![self.active()];
         }
         let mut children: Vec<&dyn Widget> = vec![self.bar.as_ref()];
         if let Some(panel) = self.exit_panel.as_ref() {
@@ -1359,13 +1341,9 @@ impl Widget for BrowserTabs {
         }
         if self.immersive() {
             let active_id = self.active_id;
-            let (tabs, hint) = (&mut self.tabs, &mut self.fullscreen_hint);
             let mut children: Vec<&mut dyn Widget> = Vec::new();
-            if let Some(tab) = tabs.iter_mut().find(|tab| tab.id == active_id) {
+            if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == active_id) {
                 children.push(tab.widget.as_mut());
-            }
-            if let Some(hint) = hint.as_mut() {
-                children.push(hint.as_mut());
             }
             return children;
         }
@@ -1815,12 +1793,13 @@ mod tests {
             tabs.on_fullscreen_changed(true);
             let rects = layout_rects(&mut tabs);
             assert!(rects.contains_key("browser.surface"), "{rects:?}");
-            assert!(rects.contains_key("browser.fullscreen-hint"), "{rects:?}");
+            assert!(
+                tabs.fullscreen_hint.is_some(),
+                "the Esc hint is a transient status over the page"
+            );
             assert!(!rects.contains_key("browser.tab-strip"), "{rects:?}");
             assert!(!rects.contains_key("browser.url_input"), "{rects:?}");
             assert_eq!(rects["browser.surface"], Rect::new(0.0, 0.0, 1000.0, 700.0));
-            assert!(rects["browser.fullscreen-hint"].height() > 0.0);
-            assert!(rects["browser.fullscreen-hint"].y0 >= 24.0);
             assert!(tabs.needs_animation_frame());
 
             let mut tree = TaffyTree::new();

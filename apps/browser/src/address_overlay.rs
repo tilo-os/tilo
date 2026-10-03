@@ -24,27 +24,17 @@
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextStyle};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{Interaction, ListRowFace, Widget};
 
 use crate::history::HistoryEntry;
-
-/// Height of one two-line suggestion row (title + dimmed URL).
-const ROW_H: f64 = 46.0;
-/// Vertical inset above the first / below the last row.
-const PAD: f64 = 6.0;
-/// Horizontal text inset inside a row.
-const ROW_PAD_X: f64 = 12.0;
-/// Fallback panel width when the chrome hasn't supplied one.
-const DEFAULT_WIDTH: f32 = 480.0;
-/// Width of the accent bar drawn down the left of the selected row.
-const SEL_BAR_W: f64 = 3.0;
 
 /// Address-bar suggestion dropdown. See the module docs.
 pub struct AddressSuggestions {
@@ -67,10 +57,12 @@ pub struct AddressSuggestions {
     width: f32,
     /// Last cursor position (mouse-move carries it; mouse-press doesn't).
     last_cursor: Point,
-    /// Current UI text scale. The overlay is painted outside the normal
-    /// widget tree, so it must retain this to give scaled two-line rows their
-    /// matching hit targets and avoid overlapping text.
-    text_scale: f32,
+    /// The theme the rows are measured in. The overlay is painted outside the
+    /// normal widget tree, so it keeps the theme to give its rows their
+    /// matching hit targets at every text scale.
+    theme: Theme,
+    /// Height of one two-line suggestion row in `theme`.
+    row_h: f64,
 }
 
 impl Default for AddressSuggestions {
@@ -89,9 +81,10 @@ impl AddressSuggestions {
             chosen: None,
             rect: Rect::ZERO,
             anchor: None,
-            width: DEFAULT_WIDTH,
+            width: Theme::dark().tokens.metrics.panel_width_sheet,
             last_cursor: Point::ZERO,
-            text_scale: 1.0,
+            row_h: measured_row_height(&Theme::dark()),
+            theme: Theme::dark(),
         }
     }
 
@@ -160,15 +153,16 @@ impl AddressSuggestions {
         self.relayout(top_left);
     }
 
-    /// Match the live theme's text scale. At accessibility scales a fixed
-    /// 46px row made the title and URL collide while pointer hit testing
-    /// still assumed unscaled geometry.
-    pub fn set_text_scale(&mut self, scale: f32) {
-        let scale = scale.clamp(1.0, 2.0);
-        if (self.text_scale - scale).abs() <= f32::EPSILON {
+    /// Measure the rows in the live theme. Rows are as tall as their text,
+    /// so pointer hit testing follows them at every text scale.
+    pub fn set_theme(&mut self, theme: &Theme) {
+        if self.theme.text_scale.to_bits() == theme.text_scale.to_bits()
+            && self.theme.ui_scale.to_bits() == theme.ui_scale.to_bits()
+        {
             return;
         }
-        self.text_scale = scale;
+        self.theme = theme.clone();
+        self.row_h = measured_row_height(theme);
         if let Some(anchor) = self.anchor {
             self.relayout(anchor);
         }
@@ -215,17 +209,22 @@ impl AddressSuggestions {
         }
     }
 
+    /// Inset of the rows inside the panel.
+    fn pad(&self) -> f64 {
+        f64::from(self.theme.tokens.spacing.s2)
+    }
+
     /// Total panel height for the current item count (0 when hidden).
     fn panel_height(&self) -> f64 {
         if self.items.is_empty() {
             0.0
         } else {
-            PAD * 2.0 + self.items.len() as f64 * self.row_height()
+            self.pad() * 2.0 + self.items.len() as f64 * self.row_height()
         }
     }
 
     fn row_height(&self) -> f64 {
-        ROW_H * f64::from(self.text_scale)
+        self.row_h
     }
 
     /// Recompute `self.rect` from the anchor (or a fallback origin) and the
@@ -245,7 +244,7 @@ impl AddressSuggestions {
         if self.items.is_empty() || !self.rect.contains(point) {
             return None;
         }
-        let rel = point.y - (self.rect.y0 + PAD);
+        let rel = point.y - (self.rect.y0 + self.pad());
         if rel < 0.0 {
             return None;
         }
@@ -265,114 +264,45 @@ impl AddressSuggestions {
         if self.items.is_empty() {
             return;
         }
-
-        // Panel surface — translucent so the page shows through faintly
-        // (a frosted dropdown, per the requested look).
-        let panel = RoundedRect::from_rect(self.rect, theme.radius_standard);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised.with_alpha(0.85),
-            None,
-            &panel,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.border_standard,
-            None,
-            &panel,
-        );
-
-        // Theme type sizes already carry the text scale; `renderer_input_style`
-        // hands them to the renderer so the scale is applied exactly once.
-        // Drawing the resolved size through the legacy size API scaled it a
-        // second time on the live desktop at large text.
-        let title_style =
-            text_renderer.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm));
-        let url_style =
-            text_renderer.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.xs));
-        let line_gap = f64::from(theme.tokens.spacing.s1);
-        let text_max = (f64::from(self.width) - ROW_PAD_X * 2.0).max(0.0) as f32;
-
-        let row_height = self.row_height();
+        // A floating panel: its own material and shadow, its rows inked and
+        // lifted for that ground.
+        ui::widget::floating_surface::paint(scene, transform, self.rect, theme);
+        let on_panel = theme.on_ground(ui::chrome::panel_ground(theme));
+        let mut ctx = PaintCtx::new(scene, transform, text_renderer, &on_panel);
+        let pad = self.pad();
         for (idx, entry) in self.items.iter().enumerate() {
-            let row_top = self.rect.y0 + PAD + idx as f64 * row_height;
-            let is_selected = idx == self.selected;
-            let is_hovered = self.hovered == Some(idx);
-
-            // Selection / hover background + accent bar. Selection wins.
-            if is_selected || is_hovered {
-                let fill = if is_selected {
-                    theme.bg_active
-                } else {
-                    theme.bg_hover
-                };
-                let row_rect = Rect::new(
-                    self.rect.x0 + 3.0,
-                    row_top + 1.0,
-                    self.rect.x1 - 3.0,
-                    row_top + row_height - 1.0,
-                );
-                let shape = RoundedRect::from_rect(row_rect, f64::from(theme.tokens.radii.sm));
-                scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
-                if is_selected {
-                    let bar = Rect::new(
-                        self.rect.x0 + 3.0,
-                        row_top + 6.0,
-                        self.rect.x0 + 3.0 + SEL_BAR_W,
-                        row_top + row_height - 6.0,
-                    );
-                    scene.fill(
-                        vello::peniko::Fill::NonZero,
-                        transform,
-                        theme.accent_primary,
-                        None,
-                        &bar,
-                    );
-                }
-            }
-
-            // Title (primary) then URL (dimmed) — fall back to the URL as
-            // the title when a page has no title yet.
+            let row_top = self.rect.y0 + pad + idx as f64 * self.row_height();
+            let rect = Rect::new(
+                self.rect.x0 + pad,
+                row_top,
+                self.rect.x1 - pad,
+                row_top + self.row_height(),
+            );
+            // Fall back to the URL as the title when a page has none yet.
             let title = if entry.title.trim().is_empty() {
                 entry.url.as_str()
             } else {
                 entry.title.as_str()
             };
-            let x = self.rect.x0 + ROW_PAD_X;
-            // One line each, elided to the row's width: a long title used to
-            // wrap under the width limit, and a wrapped title has no place to
-            // go in a row this tall except over its own URL line. Both lines
-            // are then measured with the styles they are drawn with and
-            // centred as one block in the row, so the pair sits in the same
-            // place in a 46px row and in the taller rows a text scale buys. A
-            // fixed 8px top with a size-derived second line left the block
-            // high in the row at every scale above 1.
-            let title = text_renderer.elide_to_width(title, title_style.size, text_max);
-            let url = text_renderer.elide_to_width(&entry.url, url_style.size, text_max);
-            let (_, title_h) = text_renderer.measure_style(&title, None, &title_style);
-            let (_, url_h) = text_renderer.measure_style(&url, None, &url_style);
-            let block_h = f64::from(title_h) + line_gap + f64::from(url_h);
-            let block_top = row_top + ((row_height - block_h) / 2.0).max(0.0);
-            text_renderer.draw_style(
-                scene,
-                &title,
-                theme.text_primary,
-                transform * Affine::translate((x, block_top)),
-                None,
-                &title_style,
-            );
-            text_renderer.draw_style(
-                scene,
-                &url,
-                theme.text_dim,
-                transform * Affine::translate((x, block_top + f64::from(title_h) + line_gap)),
-                None,
-                &url_style,
-            );
+            ListRowFace::new(title)
+                .secondary(&entry.url)
+                .selected(idx == self.selected)
+                .interaction(Interaction {
+                    hovered: self.hovered == Some(idx),
+                    ..Interaction::default()
+                })
+                .paint(&mut ctx, rect);
         }
     }
+}
+
+/// The height of one two-line suggestion row in `theme`.
+fn measured_row_height(theme: &Theme) -> f64 {
+    ui::text_render::with_layout_renderer(theme.text_scale, |text| {
+        ListRowFace::new("Title")
+            .secondary("https://example.test")
+            .height(text, theme)
+    })
 }
 
 impl Widget for AddressSuggestions {
@@ -439,7 +369,7 @@ impl Widget for AddressSuggestions {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        self.set_text_scale(theme.text_scale);
+        self.set_theme(theme);
         self.render(scene, transform, text_renderer, theme);
     }
 
@@ -514,7 +444,7 @@ impl Widget for AddressSuggestions {
                 } else {
                     entry.title.as_str()
                 };
-                let row_top = self.rect.y0 + PAD + index as f64 * self.row_height();
+                let row_top = self.rect.y0 + self.pad() + index as f64 * self.row_height();
                 AccessNode::new(Role::ListItem)
                     .with_action_target(format!(
                         "browser.address-suggestion:{}",
@@ -555,7 +485,7 @@ impl Widget for AddressSuggestions {
             return None;
         };
         (*index < self.items.len()).then(|| {
-            let top = self.rect.y0 + PAD + *index as f64 * self.row_height();
+            let top = self.rect.y0 + self.pad() + *index as f64 * self.row_height();
             Rect::new(self.rect.x0, top, self.rect.x1, top + self.row_height())
         })
     }
@@ -715,12 +645,12 @@ mod tests {
             w.set_anchor(Point::new(20.0, 40.0), 320.0);
             let normal_height = w.rect.height();
 
-            w.set_text_scale(1.5);
+            w.set_theme(&Theme::dark().with_text_scale(1.5));
             assert!(w.rect.height() > normal_height);
             assert_eq!(
-                w.row_at(Point::new(40.0, w.rect.y0 + PAD + w.row_height() + 1.0)),
+                w.row_at(Point::new(40.0, w.rect.y0 + w.pad() + w.row_height() + 1.0)),
                 Some(1),
-                "hit testing follows the larger visual row rather than the old 46px grid"
+                "hit testing follows the larger visual row"
             );
         }
 
@@ -895,7 +825,7 @@ mod tests {
 
             // Aim at the centre of the second row (idx 1).
             let r = w.get_rect();
-            let row1_y = r.y0 + PAD + ROW_H * 1.5;
+            let row1_y = r.y0 + w.pad() + w.row_height() * 1.5;
             let mut dispatch = |w: &mut AddressSuggestions, ev: WindowEvent| -> bool {
                 let mut handled = false;
                 let mut focus = None;
