@@ -992,6 +992,26 @@ impl StandaloneHistoryHost {
         }
         Ok(())
     }
+
+    /// The History chrome's part of the window's top layer: the restore
+    /// review is a modal, painted over everything else in the window.
+    pub(crate) fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if self.is_open() {
+            self.pane
+                .draw_overlay(scene, transform, text, theme, presence);
+        }
+        if self.preview_visible {
+            self.canvas
+                .draw_overlay(scene, transform, text, theme, presence);
+        }
+    }
 }
 
 /// Private so callers can obtain only the immutable traversal projection from
