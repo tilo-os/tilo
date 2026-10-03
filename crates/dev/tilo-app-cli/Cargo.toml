@@ -28,6 +28,9 @@ libc.workspace = true
 notify.workspace = true
 image = { workspace = true, features = ["png"] }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
+# Inside a Tilo session, `dev` hands the app the shell's file chooser the
+# way the launcher does.
+launcher = { path = "../../packaging/launcher" }
 tilo-caps = { path = "../../sdk/tilo-caps" }
 sha2.workspace = true
 registry-types = { path = "../../packaging/registry-types" }
