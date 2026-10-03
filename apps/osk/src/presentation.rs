@@ -3,20 +3,31 @@ use crate::layout::{Key, KeyAction, KeyId, KeyboardLayout, ShiftState, key_rects
 use crate::suggest::{Suggestion, suggestion_rects};
 use crate::toolbar::{OskToolbarItem, toolbar_rects};
 use crate::touch_model::{CORE_FRACTION, HitCell, core_zone};
-use ui::tokens::colors::ON_FILL_MIN_CONTRAST;
+use ui::chrome::{SelectionState, selection_floor_ramp};
+use ui::widget::{Button, ButtonFace, ButtonRole, ChipFace, ChipLead, ChipStyle};
 use ui::{
-    TextRenderer, Theme,
+    TextRenderer, TextRole, TextStyle, Theme,
     icons::{self, Icon},
     paint::PaintCtx,
 };
 use vello::{
     Scene,
-    kurbo::{Affine, Rect, RoundedRect},
+    kurbo::{Affine, Point, Rect},
     peniko::Color,
 };
 
 /// Widest the keyboard content grows; wider surfaces centre it.
 pub(crate) const MAX_KEYBOARD_CONTENT_WIDTH: f64 = 1_120.0;
+
+/// A glyph key's character, as a fraction of its cell height. Keys are a
+/// content surface: the glyph follows the key it sits on, not the text scale.
+const KEY_GLYPH_CONTENT_PX_RATIO: f64 = 0.42;
+/// The press preview's glyph, as a fraction of the bubble's height.
+const PREVIEW_GLYPH_CONTENT_PX_RATIO: f64 = 0.5;
+/// A long-press option's glyph, as a fraction of its cell's height.
+const OPTION_GLYPH_CONTENT_PX_RATIO: f64 = 0.5;
+/// Gutter between neighbouring keys, as a fraction of a row's height.
+const KEY_GAP_RATIO: f64 = 0.06;
 
 pub(crate) struct KeyboardGeometry {
     pub content_rect: Rect,
@@ -37,8 +48,11 @@ pub(crate) fn keyboard_geometry(
     shift: ShiftState,
     toolbar_height: f32,
     suggestion_height: f32,
+    gutter: f64,
 ) -> KeyboardGeometry {
-    let width = rect.width().min(MAX_KEYBOARD_CONTENT_WIDTH);
+    // Every band shares one width: the window less a side gutter, so no key,
+    // chip or button touches the window edge.
+    let width = (rect.width() - 2.0 * gutter).clamp(0.0, MAX_KEYBOARD_CONTENT_WIDTH);
     let x = rect.center().x - width * 0.5;
     let content_rect = Rect::new(x, rect.y0, x + width, rect.y1);
     let h = content_rect.height();
@@ -193,16 +207,10 @@ impl KeyboardPresentation<'_> {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        // Surface background.
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &self.rect,
-        );
-
+        // No ground of its own: the keyboard stands on the window's.
+        let ground = theme.tokens.colors.surfaces.content;
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
+
         // Toolbar.
         for (i, r) in self.toolbar_geom {
             // `toolbar_geom` is built from `self.toolbar` each frame, so `*i`
@@ -211,66 +219,42 @@ impl KeyboardPresentation<'_> {
             let Some(item) = self.toolbar.get(*i) else {
                 continue;
             };
-            let hovered = self.hovered_tool == Some(*i);
-            let pressed = self.pressed_tool == Some(*i);
-            draw_cell(
+            draw_toolbar_item(
                 &mut ctx,
                 *r,
-                CellFace::new(item.icon, &item.label, 0.34),
-                CellState {
-                    hovered,
-                    pressed,
-                    tone: CellTone::Flat,
-                    ..Default::default()
-                },
+                item,
+                self.hovered_tool == Some(*i),
+                self.pressed_tool == Some(*i),
             );
         }
 
-        // Suggestion bar: a subtle band, then a tappable chip per suggestion.
+        // The bands are told apart by one hairline each, never by a fill.
+        if self.suggestion_area.area() > 0.0 {
+            let (x0, x1) = (self.rect.x0, self.rect.x1);
+            for y in [self.suggestion_area.y0, self.suggestion_area.y1] {
+                ui::surface::separator(ctx.scene, ctx.transform, x0, x1, y, 0.0, ground);
+            }
+        }
+
+        // Suggestion bar: a tappable chip per suggestion.
         if self.suggestion_area.area() > 0.0 && !self.emoji_panel_open {
-            ctx.fill_rect(self.suggestion_area, theme.tokens.colors.surfaces.raised);
             for (i, r) in self.suggestion_geom {
                 let Some(s) = self.suggestions.get(*i) else {
                     continue;
                 };
-                let hovered = self.hovered_sugg == Some(*i);
-                let pressed = self.pressed_sugg == Some(*i);
+                let hovered = self.hovered_sugg == Some(*i) || self.pressed_sugg == Some(*i);
                 // The top chip is the highlighted (auto / best) pick.
-                let top = *i == 0;
-                draw_suggestion_chip(
-                    &mut ctx,
-                    *r,
-                    &s.word,
-                    CellState {
-                        hovered,
-                        pressed,
-                        tone: if top {
-                            CellTone::Primary
-                        } else {
-                            CellTone::Plain
-                        },
-                        ..Default::default()
-                    },
-                );
+                draw_suggestion_chip(&mut ctx, *r, &s.word, *i == 0, hovered);
             }
             if self.suggestion_geom.is_empty() {
                 let hint = self.empty_hint;
-                let font = (self.suggestion_area.height() * 0.38).clamp(12.0, 18.0) as f32;
-                // Centre on the measured line, as the key labels and chips
-                // do: the nominal size under-reads the line at 1× and by
-                // half a line at 2×, sinking the hint below the bar's centre.
-                let (width, height) = ctx.text.measure(hint, font, None);
-                let x = self.suggestion_area.center().x - f64::from(width) * 0.5;
-                let y = self.suggestion_area.y0
-                    + (self.suggestion_area.height() - f64::from(height)) * 0.5;
-                ctx.text.draw_text(
-                    ctx.scene,
-                    hint,
-                    font,
-                    theme.tokens.colors.text_primary,
-                    transform * Affine::translate((x, y)),
-                    None,
+                let size = ctx.measure_role(hint, TextRole::Caption, None);
+                let origin = Point::new(
+                    self.suggestion_area.center().x - size.width * 0.5,
+                    self.suggestion_area.center().y - size.height * 0.5,
                 );
+                let ink = theme.tokens.colors.text_dim;
+                ctx.text_role(hint, TextRole::Caption, ink, origin, None);
             }
         }
 
@@ -288,13 +272,6 @@ impl KeyboardPresentation<'_> {
                 KeyAction::Shift if shift.is_upper() => CellTone::Active,
                 _ => CellTone::Modifier,
             };
-            // One glyph (a letter, digit or punctuation mark) reads at the
-            // letter size; word labels ("?123", "space") sit smaller.
-            let font_scale = if label.chars().count() == 1 {
-                0.42
-            } else {
-                0.30
-            };
             // The Shift key's icon fills solid while Caps-Lock is latched, so a
             // sticky upper-case reads differently from a one-shot shift.
             let icon_filled =
@@ -302,7 +279,7 @@ impl KeyboardPresentation<'_> {
             let is_space = matches!(&key.action, KeyAction::Space);
             // While the space bar steers the caret the letters fade and the
             // space bar shows which way it moves.
-            let dim_label = is_space || (self.cursor_mode && Key::is_letter(key));
+            let dim_label = self.cursor_mode && Key::is_letter(key);
             let shown = if is_space && self.cursor_mode {
                 ""
             } else {
@@ -311,7 +288,7 @@ impl KeyboardPresentation<'_> {
             draw_cell(
                 &mut ctx,
                 *rect,
-                CellFace::new(key.icon, shown, font_scale),
+                CellFace::new(key.icon, shown),
                 CellState {
                     hovered,
                     pressed,
@@ -321,7 +298,7 @@ impl KeyboardPresentation<'_> {
                 },
             );
             if is_space && self.cursor_mode {
-                draw_cursor_chevrons(ctx.scene, ctx.transform, ctx.theme, *rect);
+                draw_cursor_chevrons(&mut ctx, *rect);
             }
         }
 
@@ -338,175 +315,195 @@ impl KeyboardPresentation<'_> {
 
         // Floating feedback goes last so it overlaps the rows above.
         if let Some(popup) = self.alternates {
-            draw_alternates(ctx.scene, ctx.transform, ctx.text, ctx.theme, popup);
+            draw_alternates(&mut ctx, popup);
         } else if let Some(id) = self.preview
             && let Some((_, rect)) = self.key_geom.iter().find(|(k, _)| *k == id)
             && let Some(key) = layout.key(id)
         {
             let label = key.display_label(shift);
             let bubble = preview_rect(*rect, self.rect);
-            draw_key_preview(
-                ctx.scene,
-                ctx.transform,
-                ctx.text,
-                ctx.theme,
-                bubble,
-                &label,
-            );
+            draw_key_preview(&mut ctx, bubble, &label);
         }
     }
 }
 
 /// Gutter between neighbouring keys: each cell is inset by this on every side.
 fn key_pad(rect: Rect) -> f64 {
-    (rect.height() * 0.06).clamp(2.0, 6.0)
+    (rect.height() * KEY_GAP_RATIO).clamp(2.0, 6.0)
 }
 
-/// `veneer` (a translucent state token) as it lands on opaque `ground`.
-fn composite(ground: Color, veneer: Color) -> Color {
-    let alpha = veneer.components[3];
-    ui::tokens::colors::over(ground, veneer.with_alpha(1.0), alpha)
-}
-
-/// A key's fill at rest. A modifier is the key surface under the medium
-/// veneer, one step quieter than a letter in either theme polarity, so the
-/// letters lead; a latched or primary key carries the accent.
-fn resting_fill(theme: &Theme, tone: CellTone) -> Option<Color> {
+/// The face of a key at rest, hovered or pressed, standing on the window
+/// ground. A character key is a floor lifted off the ground; a modifier
+/// stays on the ground itself until touched, so the letters lead.
+fn key_fill(theme: &Theme, tone: CellTone, hovered: bool, pressed: bool) -> Color {
     let c = &theme.tokens.colors;
+    let ground = c.surfaces.content;
     match tone {
-        CellTone::Plain => Some(c.surfaces.raised),
-        CellTone::Modifier => Some(composite(c.surfaces.raised, c.overlay_medium)),
-        CellTone::Active | CellTone::Primary => Some(theme.accent_primary),
-        CellTone::Flat => None,
+        CellTone::Active | CellTone::Primary => {
+            if pressed || hovered {
+                c.intent.inverted_hover
+            } else {
+                c.intent.inverted
+            }
+        }
+        CellTone::Plain => {
+            selection_floor_ramp(theme, SelectionState::new(false, hovered, pressed), ground)
+        }
+        CellTone::Modifier | CellTone::Flat => {
+            if pressed {
+                c.lift_on(ground, 1.0)
+            } else if hovered {
+                c.lift_on(ground, 0.5)
+            } else {
+                ground
+            }
+        }
     }
 }
 
-/// A raised, shadowed rounded panel for floating feedback.
-fn draw_float_panel(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
-    let t = &theme.tokens;
-    let radius = f64::from(t.radii.lg);
-    ui::surface::shadow(scene, transform, rect, radius, &t.elevation.e2);
-    let shape = RoundedRect::from_rect(rect, radius);
-    scene.fill(
-        vello::peniko::Fill::NonZero,
-        transform,
-        t.colors.surfaces.raised,
-        None,
-        &shape,
-    );
-    scene.stroke(
-        &vello::kurbo::Stroke::new(1.0),
-        transform,
-        t.colors.border_standard,
-        None,
-        &shape,
-    );
-}
-
-/// Centre `label` in `rect` at `font` px.
-fn draw_centred(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    rect: Rect,
-    label: &str,
-    font: f32,
-    ink: Color,
-) {
-    // Centre on the measured line, not the nominal size, so the glyph stays
-    // centred at every accessibility text scale.
-    let (tw, th) = text_renderer.measure(label, font, None);
-    let tx = rect.center().x - f64::from(tw) / 2.0;
-    let ty = rect.y0 + (rect.height() - f64::from(th)) / 2.0;
-    text_renderer.draw_text(
+/// A floating panel for key feedback: the floating material, the panel edge
+/// and the one floating shadow. Returns the panel's radius.
+fn draw_float_panel(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) -> f64 {
+    let radius = f64::from(theme.tokens.radii.panel);
+    ui::surface::shadow(
         scene,
-        label,
-        font,
-        ink,
-        transform * Affine::translate((tx, ty)),
-        None,
+        transform,
+        rect,
+        radius,
+        &theme.tokens.elevation.floating,
     );
+    ui::surface::panel(scene, transform, rect, radius, theme);
+    radius
 }
 
-/// The press preview: the held key's glyph, enlarged in a raised bubble
+/// Vertical extent of one glyph's ink above its baseline, in em, as
+/// `(bottom, top)`. A key's glyph is centred on this, not on the line box,
+/// so a full stop, a hyphen and a capital all sit on the key's centre.
+/// Measured from the outlines of the UI face.
+fn ink_span(ch: char) -> (f64, f64) {
+    const X_HEIGHT: f64 = 0.51;
+    const CAP_HEIGHT: f64 = 0.72;
+    match ch {
+        // Every lower-case letter rides the same body, so a row of keys keeps
+        // one baseline whatever ascenders and descenders it carries.
+        c if c.is_lowercase() => (0.0, X_HEIGHT),
+        '.' => (0.0, 0.10),
+        ',' => (-0.14, 0.10),
+        ':' => (0.0, 0.48),
+        ';' => (-0.14, 0.48),
+        '-' | '\u{2013}' | '\u{2014}' => (0.23, 0.31),
+        '+' => (0.15, 0.59),
+        '=' => (0.24, 0.51),
+        '~' => (0.296, 0.419),
+        '<' => (0.18, 0.57),
+        '>' => (0.17, 0.56),
+        '_' => (-0.12, -0.05),
+        '\'' | '"' | '^' | '\u{b0}' => (0.45, 0.75),
+        '*' => (0.44, 0.74),
+        '\u{b7}' | '\u{2022}' => (0.30, 0.45),
+        '/' | '\\' => (-0.06, 0.75),
+        '|' => (-0.13, 0.79),
+        '(' | ')' | '[' | ']' | '{' | '}' => (-0.11, 0.75),
+        '$' => (-0.11, 0.83),
+        '\u{bf}' | '\u{a1}' => (-0.21, 0.51),
+        _ => (0.0, CAP_HEIGHT),
+    }
+}
+
+/// Paint one character centred on `rect` by its ink: horizontally on its
+/// advance, vertically on the span its outline covers.
+fn draw_glyph(ctx: &mut PaintCtx<'_>, rect: Rect, ch: &str, content_px: f32, ink: Color) {
+    let style = TextStyle::content(content_px);
+    let (advance, _) = ctx.text.measure_style(ch, None, &style);
+    let baseline = ctx.text.first_baseline_style(ch, None, &style);
+    let (bottom, top) = ch.chars().next().map_or((0.0, 0.0), ink_span);
+    let mid = (bottom + top) * 0.5 * f64::from(content_px);
+    let origin = Point::new(
+        rect.center().x - f64::from(advance) * 0.5,
+        rect.center().y + mid - f64::from(baseline),
+    );
+    ctx.text(ch, &style, ink, origin, None);
+}
+
+/// Paint a word label (`?123`, `space`) centred on `rect` in `Label`.
+fn draw_word(ctx: &mut PaintCtx<'_>, rect: Rect, word: &str, ink: Color) {
+    let size = ctx.measure_role(word, TextRole::Label, None);
+    let origin = Point::new(
+        rect.center().x - size.width * 0.5,
+        rect.center().y - size.height * 0.5,
+    );
+    ctx.text_role(word, TextRole::Label, ink, origin, None);
+}
+
+/// A label that is one character reads at the key's glyph size; a word sits
+/// in the label role.
+fn draw_label(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str, ratio: f64, ink: Color) {
+    if label.chars().count() == 1 {
+        let label_px = ctx.theme.text(TextRole::Label).size;
+        let px = ((rect.height() * ratio) as f32).max(label_px);
+        draw_glyph(ctx, rect, label, px, ink);
+    } else {
+        draw_word(ctx, rect, label, ink);
+    }
+}
+
+/// The press preview: the held key's glyph, enlarged in a floating bubble
 /// above the finger, so the letter stays visible while the thumb covers the
 /// key itself.
-fn draw_key_preview(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    bubble: Rect,
-    label: &str,
-) {
+fn draw_key_preview(ctx: &mut PaintCtx<'_>, bubble: Rect, label: &str) {
     if label.is_empty() {
         return;
     }
-    draw_float_panel(scene, transform, theme, bubble);
-    let font = (bubble.height() * 0.5).clamp(18.0, 44.0) as f32;
-    draw_centred(
-        scene,
-        transform,
-        text_renderer,
-        bubble,
-        label,
-        font,
-        theme.tokens.colors.text_primary,
-    );
+    draw_float_panel(ctx.scene, ctx.transform, ctx.theme, bubble);
+    let ink = ctx.theme.tokens.colors.text_primary;
+    draw_label(ctx, bubble, label, PREVIEW_GLYPH_CONTENT_PX_RATIO, ink);
 }
 
-/// The long-press row of accented variants, the selected one accent-filled.
-fn draw_alternates(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    popup: &AlternatesPopup,
-) {
+/// The long-press row of accented variants; the one under the finger is the
+/// armed row of a popover, inverted.
+fn draw_alternates(ctx: &mut PaintCtx<'_>, popup: &AlternatesPopup) {
     let (Some(first), Some(last)) = (popup.cells.first(), popup.cells.last()) else {
         return;
     };
-    let t = &theme.tokens;
-    draw_float_panel(scene, transform, theme, first.union(*last));
-    let on_accent = t.colors.on_accent(ON_FILL_MIN_CONTRAST);
+    let panel_radius = draw_float_panel(ctx.scene, ctx.transform, ctx.theme, first.union(*last));
+    let colors = ctx.theme.tokens.colors.clone();
     for (i, (cell, option)) in popup.cells.iter().zip(&popup.options).enumerate() {
         let selected = i == popup.selected;
-        let inner = cell.inset(-key_pad(*cell));
-        if selected {
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                theme.accent_primary,
-                None,
-                &RoundedRect::from_rect(inner, f64::from(t.radii.md)),
-            );
-        }
-        let font = (inner.height() * 0.5).clamp(14.0, 30.0) as f32;
+        let pad = key_pad(*cell);
+        let inner = cell.inset(-pad);
         let ink = if selected {
-            on_accent
+            let radius = f64::from(
+                ctx.theme
+                    .tokens
+                    .radii
+                    .concentric(panel_radius as f32, pad as f32),
+            );
+            ctx.fill_round(inner, radius, colors.intent.inverted);
+            colors.intent.on_inverted
         } else {
-            t.colors.text_primary
+            colors.text_primary
         };
-        draw_centred(scene, transform, text_renderer, inner, option, font, ink);
+        draw_label(ctx, inner, option, OPTION_GLYPH_CONTENT_PX_RATIO, ink);
     }
 }
 
 /// Left and right chevrons on the space bar while it moves the caret.
-fn draw_cursor_chevrons(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
+fn draw_cursor_chevrons(ctx: &mut PaintCtx<'_>, rect: Rect) {
     let cell = rect.inset(-key_pad(rect));
-    let s = (cell.height() * 0.45).clamp(14.0, 24.0);
+    let s = f64::from(ctx.theme.tokens.metrics.icon_md);
     let y = cell.center().y - s / 2.0;
     let gap = s * 0.75;
+    let ink = ctx.theme.tokens.colors.text_primary;
     for (icon, x) in [
         (Icon::ChevronLeft, cell.center().x - gap - s),
         (Icon::ChevronRight, cell.center().x + gap),
     ] {
         icons::draw_icon(
-            scene,
-            transform,
+            ctx.scene,
+            ctx.transform,
             Rect::new(x, y, x + s, y + s),
             icon,
-            theme.tokens.colors.text_primary,
+            ink,
             icons::LUCIDE_DEFAULT_STROKE_PX,
         );
     }
@@ -574,8 +571,7 @@ pub(crate) struct CellState {
     /// Solid (vs. outline) icon glyph — used for a latched state like
     /// Caps-Lock's Shift key.
     pub(crate) icon_filled: bool,
-    /// A quieter label: the space bar's name, or the letters while the space
-    /// bar steers the caret.
+    /// A quieter label: the letters while the space bar steers the caret.
     pub(crate) dim_label: bool,
 }
 
@@ -587,37 +583,31 @@ pub(crate) enum CellTone {
     Plain,
     /// Shift, Backspace, layer and emoji keys.
     Modifier,
-    /// A latched state (Shift or Caps-Lock on).
+    /// A latched state (Shift or Caps-Lock on): the inverted fill, like a
+    /// switch that is on.
     Active,
-    /// The primary action (Return).
+    /// The primary action (Return): the inverted fill.
     Primary,
-    /// Toolbar items: no chrome until hovered or pressed.
+    /// A bare cell with no key surface of its own.
     Flat,
 }
 
-/// What a cell shows: an icon glyph, or a text label sized as a fraction of
-/// the cell's height.
+/// What a cell shows: an icon glyph, or a text label.
 #[derive(Clone, Copy)]
 pub(crate) enum CellFace<'a> {
     Icon(Icon),
-    Label { text: &'a str, scale: f64 },
+    Label { text: &'a str },
 }
 
 impl<'a> CellFace<'a> {
     /// The icon when there is one, else the label.
-    pub(crate) fn new(icon: Option<Icon>, text: &'a str, scale: f64) -> Self {
-        icon.map_or(Self::Label { text, scale }, Self::Icon)
+    pub(crate) fn new(icon: Option<Icon>, text: &'a str) -> Self {
+        icon.map_or(Self::Label { text }, Self::Icon)
     }
 }
 
-/// Draw a rounded "button" cell (used for both keys and toolbar items).
+/// Draw one key: an edged rounded cell with its icon or label.
 pub(crate) fn draw_cell(ctx: &mut PaintCtx<'_>, rect: Rect, face: CellFace<'_>, state: CellState) {
-    let PaintCtx {
-        scene,
-        transform,
-        text: text_renderer,
-        theme,
-    } = ctx.reborrow();
     let CellState {
         hovered,
         pressed,
@@ -625,167 +615,150 @@ pub(crate) fn draw_cell(ctx: &mut PaintCtx<'_>, rect: Rect, face: CellFace<'_>, 
         icon_filled,
         dim_label,
     } = state;
-    let t = &theme.tokens;
-    let c = &t.colors;
+    let theme = ctx.theme;
+    let c = &theme.tokens.colors;
     // Inset so adjacent cells have a visible gutter.
-    let pad = key_pad(rect);
-    let cell = Rect::new(rect.x0 + pad, rect.y0 + pad, rect.x1 - pad, rect.y1 - pad);
-    let shape = RoundedRect::from_rect(cell, f64::from(t.radii.md));
-    if let Some(fill) = resting_fill(theme, tone) {
-        scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
-    }
-    // State veneers over the resting fill: they darken a light key and
-    // lighten a dark one, so a press reads in every theme.
-    let veneer = if pressed {
-        Some(c.overlay_strong)
-    } else if hovered {
-        Some(c.overlay_subtle)
-    } else {
-        None
-    };
-    if let Some(v) = veneer {
-        scene.fill(vello::peniko::Fill::NonZero, transform, v, None, &shape);
-    }
+    let cell = rect.inset(-key_pad(rect));
+    let radius = f64::from(theme.tokens.radii.control);
     if tone != CellTone::Flat {
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            c.border_standard,
-            None,
-            &shape,
+        ui::surface::card(
+            ctx.scene,
+            ctx.transform,
+            cell,
+            radius,
+            key_fill(theme, tone, hovered, pressed),
         );
     }
 
     let fg = match tone {
-        CellTone::Active | CellTone::Primary => c.on_accent(ON_FILL_MIN_CONTRAST),
+        CellTone::Active | CellTone::Primary => c.intent.on_inverted,
         _ if dim_label => c.text_dim,
         _ => c.text_primary,
     };
-
-    let (label, font_scale) = match face {
-        CellFace::Label { text, scale } => (text, scale),
+    match face {
+        CellFace::Label { text } => {
+            if !text.is_empty() {
+                draw_label(ctx, cell, text, KEY_GLYPH_CONTENT_PX_RATIO, fg);
+            }
+        }
         CellFace::Icon(icon) => {
-            let s = (cell.height() * 0.5).clamp(14.0, 26.0);
-            let ix = cell.center().x - s / 2.0;
-            let iy = cell.center().y - s / 2.0;
-            let icon_rect = Rect::new(ix, iy, ix + s, iy + s);
+            let s = f64::from(theme.tokens.metrics.icon_md);
+            let icon_rect = Rect::from_center_size(cell.center(), (s, s));
             if icon_filled {
                 // A latched state (e.g. Caps-Lock's Shift key) reads as a solid
                 // glyph, distinct from the outline of the momentary state.
-                icon.draw_filled(scene, transform, icon_rect, fg);
+                icon.draw_filled(ctx.scene, ctx.transform, icon_rect, fg);
             } else {
                 icons::draw_icon(
-                    scene,
-                    transform,
+                    ctx.scene,
+                    ctx.transform,
                     icon_rect,
                     icon,
                     fg,
                     icons::LUCIDE_DEFAULT_STROKE_PX,
                 );
             }
-            return;
         }
-    };
-
-    if label.is_empty() {
-        return;
     }
-    let font = (cell.height() * font_scale).clamp(11.0, 30.0) as f32;
-    // Centre on the line the renderer paints (accessibility scale included),
-    // not on the nominal font size: at 2× the glyphs are twice as tall and a
-    // size-based offset sat them below the key centre and across the cell
-    // boundary.
-    let (tw, th) = text_renderer.measure(label, font, None);
-    let tx = cell.center().x - f64::from(tw) / 2.0;
-    let ty = cell.y0 + (cell.height() - f64::from(th)) / 2.0;
-    text_renderer.draw_text(
-        scene,
-        label,
-        font,
-        fg,
-        transform * Affine::translate((tx, ty)),
-        None,
-    );
 }
 
-/// Draw one suggestion chip: a pill with the word, themed by state. The
-/// best (auto-inserted) chip, the one in the [`CellTone::Primary`] tone, is
-/// highlighted; the rest are neutral. All colours come from theme tokens.
-fn draw_suggestion_chip(ctx: &mut PaintCtx<'_>, rect: Rect, word: &str, state: CellState) {
-    let PaintCtx {
-        scene,
-        transform,
-        text: text_renderer,
-        theme,
-    } = ctx.reborrow();
-    let CellState {
-        hovered,
-        pressed,
-        tone,
-        ..
-    } = state;
-    let top = tone == CellTone::Primary;
-    let t = &theme.tokens;
-    let pad_x = (rect.width() * 0.06).clamp(3.0, 10.0);
-    let pad_y = (rect.height() * 0.14).clamp(2.0, 8.0);
-    let chip = Rect::new(
-        rect.x0 + pad_x,
-        rect.y0 + pad_y,
-        rect.x1 - pad_x,
-        rect.y1 - pad_y,
-    );
-    // The strip is painted on the raised surface; the best pick is the
-    // theme's accent chip resolved against it (opaque wash, an edge that
-    // clears non-text contrast, ink that clears the text floor), the rest sit
-    // quietly on the base surface.
-    let ground = t.colors.surfaces.raised;
-    let accent = t.colors.accent_chip_on(ground, ON_FILL_MIN_CONTRAST);
-    let (chip_fill, edge, fg) = if top {
-        (accent.fill, Some(accent.border), accent.ink)
-    } else {
-        (t.colors.surfaces.base, None, t.colors.text_primary)
+/// One toolbar item: an icon-only plain button centred in its cell. The cell
+/// is the hit target; the face is the control's own size.
+fn draw_toolbar_item(
+    ctx: &mut PaintCtx<'_>,
+    cell: Rect,
+    item: &OskToolbarItem,
+    hovered: bool,
+    pressed: bool,
+) {
+    let control = ui::widget::ControlSize::Regular;
+    let square = ButtonFace::height(control, ctx.theme);
+    let rect = Rect::from_center_size(cell.center(), (square, square));
+    let face = match item.icon {
+        Some(icon) => ButtonFace::icon_only(rect, icon, &item.label),
+        None => ButtonFace::new(rect, &item.label).role(ButtonRole::Plain),
     };
-    let shape = RoundedRect::from_rect(chip, (chip.height() * 0.45).min(f64::from(t.radii.lg)));
-    scene.fill(
-        vello::peniko::Fill::NonZero,
-        transform,
-        chip_fill,
-        None,
-        &shape,
-    );
-    let veneer = if pressed {
-        Some(t.colors.overlay_strong)
-    } else if hovered {
-        Some(t.colors.overlay_subtle)
+    let face = face.control_size(control).hovered(hovered).pressed(pressed);
+    Button::paint(ctx.scene, ctx.transform, ctx.text, ctx.theme, &face);
+}
+
+/// Draw one suggestion chip. The best (auto-inserted) pick is the one filled
+/// chip; the rest are neutral.
+fn draw_suggestion_chip(ctx: &mut PaintCtx<'_>, rect: Rect, word: &str, top: bool, hovered: bool) {
+    let gap = f64::from(ctx.theme.tokens.spacing.s1);
+    let height = ChipFace::height(ctx.theme);
+    // As wide as the word needs, centred in its slot, so the label never
+    // sits against one end of an evenly split band.
+    let room = (rect.width() - 2.0 * gap).max(0.0);
+    let natural = ChipFace::intrinsic_width(word, ChipLead::None, false, ctx.text, ctx.theme);
+    let chip = Rect::from_center_size(rect.center(), (natural.min(room), height));
+    let style = if top {
+        ChipStyle::Live
     } else {
-        None
+        ChipStyle::Neutral
     };
-    if let Some(v) = veneer {
-        scene.fill(vello::peniko::Fill::NonZero, transform, v, None, &shape);
-    }
-    if let Some(edge) = edge {
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            edge,
-            None,
-            &shape,
+    ChipFace::new(chip, word)
+        .style(style)
+        .hovered(hovered)
+        .paint(ctx.scene, ctx.transform, ctx.text, ctx.theme);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::toolbar::OskToolbarItem;
+
+    #[test]
+    fn every_band_shares_one_width_inset_by_the_gutter() {
+        let layout = KeyboardLayout::qwerty();
+        let toolbar = OskToolbarItem::default_set();
+        let window = Rect::new(0.0, 0.0, 390.0, 312.0);
+        let gutter = 8.0;
+        let g = keyboard_geometry(
+            window,
+            &layout,
+            &toolbar,
+            &[],
+            ShiftState::Off,
+            48.0,
+            40.0,
+            gutter,
         );
+        for band in [g.toolbar_area, g.suggestion_area, g.key_area] {
+            assert_eq!(band.x0, gutter, "band starts at the gutter");
+            assert_eq!(band.x1, 390.0 - gutter, "band ends at the gutter");
+        }
+        assert!(g.keys.iter().all(|(_, r)| r.x0 >= gutter - 1e-6));
     }
-    if word.is_empty() {
-        return;
+
+    #[test]
+    fn the_gutter_never_collapses_a_narrow_window_to_nothing() {
+        let layout = KeyboardLayout::qwerty();
+        let g = keyboard_geometry(
+            Rect::new(0.0, 0.0, 10.0, 312.0),
+            &layout,
+            &[],
+            &[],
+            ShiftState::Off,
+            48.0,
+            40.0,
+            8.0,
+        );
+        assert!(g.content_rect.width() >= 0.0);
     }
-    let font = (chip.height() * 0.5).clamp(12.0, 22.0) as f32;
-    // Measured line height, so the word stays inside the pill at every scale.
-    let (tw, th) = text_renderer.measure(word, font, None);
-    let tx = chip.center().x - f64::from(tw) / 2.0;
-    let ty = chip.y0 + (chip.height() - f64::from(th)) / 2.0;
-    text_renderer.draw_text(
-        scene,
-        word,
-        font,
-        fg,
-        transform * Affine::translate((tx, ty)),
-        None,
-    );
+
+    #[test]
+    fn lower_case_letters_share_one_ink_body_and_punctuation_sits_by_its_ink() {
+        let (bottom, top) = ink_span('x');
+        for c in ['a', 'g', 'j', 'p', 'q', 'y', 'b', 'é'] {
+            assert_eq!(ink_span(c), (bottom, top), "{c} rides the shared body");
+        }
+        // A full stop is a low mark: its ink centre is below a letter's.
+        let centre = |c| f64::midpoint(ink_span(c).0, ink_span(c).1);
+        assert!(centre('.') < centre('x'));
+        // A hyphen floats near the middle of the lower-case body.
+        assert!((centre('-') - centre('x')).abs() < 0.15);
+        // An apostrophe is a high mark.
+        assert!(centre('\'') > centre('H'));
+    }
 }
