@@ -825,7 +825,12 @@ impl Session {
             self.report_task(
                 run,
                 runtime_collab::TaskRunUpdate::Progress {
-                    message: format!("Running {}/{} · {}", index + 1, actions.len(), action.label),
+                    message: format!(
+                        "Running {} of {}: {}",
+                        index + 1,
+                        actions.len(),
+                        action.label
+                    ),
                 },
             )?;
             let result = if let Some((param, text, next)) = self.chunkable(action, &arguments) {
@@ -3668,7 +3673,7 @@ mod tests {
                     } => {
                         let update = crate::live::AgentLiveUpdate::decode(message).unwrap();
                         assert_eq!(update.state, crate::live::LiveState::Applying);
-                        assert_eq!(update.label, "Start · Resource");
+                        assert_eq!(update.label, "Start: Resource");
                         preview = update.preview.map(|preview| preview.text);
                     }
                     CollabRequest::InvokeTaskAction {

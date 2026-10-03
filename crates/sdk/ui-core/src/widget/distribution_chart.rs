@@ -422,9 +422,7 @@ impl Widget for DistributionChart {
                 &theme.text(TextRole::Heading),
             );
         }
-        for step in 0_u32..=4 {
-            let fraction = f64::from(step) / 4.0;
-            let value = range.1 - (range.1 - range.0) * fraction;
+        for value in crate::charts::nice_ticks(range.0, range.1, 5) {
             let y = self.y(value, range);
             if self.style.show_grid {
                 scene.stroke(
