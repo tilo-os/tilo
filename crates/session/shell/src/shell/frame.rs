@@ -2164,7 +2164,14 @@ impl FrameBuilder {
     /// sources by label; empty when the loop may idle. For tests and
     /// diagnostics.
     pub fn animation_owners(&self) -> Vec<String> {
-        let demand = self.animation_demand();
+        self.animation_owners_at(Instant::now())
+    }
+
+    /// [`Self::animation_owners`] with the chrome's animations read at
+    /// `now`. An animation a frame started after `now` still counts, so a
+    /// test can ask whether a frame began one without racing its length.
+    pub fn animation_owners_at(&self, now: Instant) -> Vec<String> {
+        let demand = self.animation_demand_at(now);
         let mut owners: Vec<String> = crate::shell::animation_diagnostics::host_labels(demand.host)
             .filter(|label| *label != "content")
             .map(str::to_string)
@@ -2193,8 +2200,12 @@ impl FrameBuilder {
     }
 
     pub(crate) fn animation_demand(&self) -> AnimationDemand {
+        self.animation_demand_at(Instant::now())
+    }
+
+    fn animation_demand_at(&self, now: Instant) -> AnimationDemand {
         AnimationDemand {
-            host: self.host.animation_demand_bits(Instant::now()),
+            host: self.host.animation_demand_bits(now),
             floating: self
                 .floating_overlays
                 .iter()
