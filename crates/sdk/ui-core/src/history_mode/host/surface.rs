@@ -25,6 +25,13 @@ impl HistoryHost {
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.admit_composition();
+        let presents = live
+            .as_deref()
+            .is_some_and(crate::standalone_history_host::presents_history_button);
+        if presents != self.app_presents_button {
+            self.app_presents_button = presents;
+            self.rebuild_toolbar();
+        }
         let toolbar = self.toolbar.build_layout(tree, theme, nodes);
         // Open History lays out its own navigation rows edge to edge; only
         // the closed strip is inset like a bar.
@@ -237,7 +244,12 @@ impl Widget for HistoryHost {
         presence: &PresenceCtx,
     ) {
         if self.has_toolbar_controls() {
-            crate::chrome::paint_bar(scene, transform, theme, self.toolbar.get_rect());
+            crate::standalone_history_host::bar_edge(
+                scene,
+                transform,
+                theme,
+                self.toolbar.get_rect(),
+            );
         }
         self.toolbar.draw(scene, transform, text, theme, presence);
         if self.show_timeline() && !self.timeline_available() {

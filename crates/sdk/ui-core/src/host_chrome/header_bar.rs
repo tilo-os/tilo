@@ -736,7 +736,7 @@ mod tests {
                 .set_viewport(vello::kurbo::Rect::new(0.0, 0.0, 900.0, 260.0));
             driver.relayout();
             driver.click_named("host-header-history").unwrap();
-            driver.render_window_png(
+            driver.render_png(
                 &std::path::Path::new(&directory).join(format!("header-bar-{name}.png")),
             );
         }
