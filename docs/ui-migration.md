@@ -140,6 +140,12 @@ framework now does the job.
 | `raw_type_step` | `typography.scale.*`, `TypeScale::default()` | A `TextRole`. |
 | `renderer_scale_helper` | `renderer_input_style`, `renderer_type_size` | Delete; a role is scaled once, by the theme. |
 
+### `opentype`
+
+| Key | Matches | Replace with |
+|---|---|---|
+| `raw_opentype_feature` | `.with_numeric_style(…)`, `.with_font_feature(…)`, `.with_kerning(…)`, `.with_discretionary_ligatures(…)`, `.with_small_caps(…)`, `OpenTypeTag::new(…)`, `FeatureTag::new(…)`, a byte-string tag such as `b"tnum"` or `b"ss01"` | The text's `TextKind` ([Text kinds](#text-kinds)); the toolkit picks the features the face has. |
+
 ### `copy`
 
 | Key | Matches | Replace with |
@@ -284,7 +290,10 @@ section).
 | `ui::TextRole::{Display, LargeTitle, Title, Heading, Subheading, Body, Label, Caption, Reading, Code}` | What a piece of text is. |
 | `theme.text(role) -> TextStyle` | The complete, already-scaled style for custom measuring, painting and eliding. |
 | `TextStyle::strong()` / `Text::strong()` | Emphasis inside the role: one weight step up (Regular/Medium → Semibold, Semibold → Bold). |
-| `TextStyle::numeric()` / `Text::numeric()` | Tabular lining figures for counters, clocks, sizes and columns. |
+| `TextStyle::numeric()` / `Text::numeric()` | Shorthand for `with_kind(TextKind::Numeric)`: tabular figures for counters, clocks, sizes and columns. |
+| `ui::TextKind::{Prose, Numeric, Secret, Identifier, Code}`; `Text::with_kind`, `TextStyle::with_kind`, `ColumnDef::with_kind` | What text is, for the OpenType features the toolkit picks against the face ([Text kinds](#text-kinds)). |
+| `TextInputKind::Secret`, `TextInputKind::text_kind()` | A code or key typed in the clear; every field kind sets its text kind while typing. |
+| `ui::UiFace::{Default, Hyperlegible}`, `Typography::set_face(name)`, `Typography::face_name()`, `UI_HYPERLEGIBLE_FAMILY` | Theme authors: the UI face by the name a theme document stores. |
 | `TextStyle::with_content_size(px)` / `Text::with_content_size(px)` / `TextStyle::content(px)` | Text sized by its content (a canvas, a slide, a document's own type): the size is used as given and never grown by the text scale. |
 | `PaintCtx::text_role`, `measure_role`, `line_box`, `text_role_in_band` | Custom painters: paint, measure, size a row, or centre one line in a band in a role. |
 | `ui::widget::ControlSize::{Small, Regular, Large}` | A control's size: label role (`Label`, `Label`, `Body`) and height (`bar_control_height`, `min_pointer_target`, `bar_height`). |
@@ -337,12 +346,31 @@ section).
   toolkit internals and is counted by the `literal_font_size` ratchet.
 - Uppercasing of labels (`.to_uppercase()`, `"SETTINGS"`).
 
+### Text kinds
+
+An app never sets an OpenType feature. Say what the text is where a widget
+cannot know it; widgets that know their content (stat values, clocks, row
+timestamps, table columns declared numeric, inputs by their `TextInputKind`)
+set it themselves.
+
+| Old | New |
+|---|---|
+| `.with_numeric_style(NumericStyle::TabularLining)`, `.with_font_feature(OpenTypeTag::TABULAR_NUMERALS, 1)` on times, counts, prices, sizes, progress | `.numeric()` (`TextKind::Numeric`) |
+| Monospace or a hand-picked face for verification codes, TOTP, recovery codes, API keys, hashes, revealed passwords, Wi-Fi and licence keys | `.with_kind(TextKind::Secret)`; an input: `TextInputKind::Secret` (in the clear) or `Password` (revealed) |
+| Usernames, handles, email addresses, invite codes, room names shown for verification, other people's file names, URLs in permission prompts and link previews | `.with_kind(TextKind::Identifier)`; an input: `TextInputKind::Username` / `Email` / `Url` / `Path` |
+| `.with_font_family(FontChoice::Monospace)` on source or terminal text | `.with_kind(TextKind::Code)`, or the `Code` role |
+| A numeric `DataTable` column drawn by hand to line digits up | `ColumnDef::with_text(…).with_kind(TextKind::Numeric)` |
+| `.with_font_feature(*b"ss01", 1)` or any stylistic set for a look | Delete; the face is the theme's |
+
 ### The UI face
 
-The system UI face is Instrument Sans; Noto Sans is its fallback for Greek,
-Cyrillic and Vietnamese. Code never names a family: `TextRole` picks sans,
-serif (`Reading`) or mono (`Code`), and `FontChoice::{SansSerif, Serif,
-Monospace}` remains for the rare explicit choice.
+The system UI face is Instrument Sans; Greek and Cyrillic fall back to faces
+matched to its x-height and weight (Geologica, Onest), Vietnamese to Noto Sans
+([Script fallbacks](typography.md#script-fallbacks)). A theme or the
+accessibility layer may choose the built-in `Hyperlegible` face instead. Code
+never names a family: `TextRole` picks sans, serif (`Reading`) or mono
+(`Code`), and `FontChoice::{SansSerif, Serif, Monospace}` remains for the rare
+explicit choice.
 
 ## Ground & regions
 
