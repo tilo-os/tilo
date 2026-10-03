@@ -37,7 +37,10 @@ use crate::model::{
     ConnId, ConnKind, ConnStatus, Connection, LocalProfileDetails, Vault, sample_vault,
 };
 use crate::net::{self, Transfer};
-use crate::view::{self, DetailTab, Intent, Intents, MainAction, Notice, NoticeKind, Rates};
+use crate::view::{
+    self, DetailTab, Intent, Intents, MainAction, Notice, NoticeKind, Rates, ToolbarAction,
+    ToolbarActionSlot,
+};
 
 /// One byte-counter reading of a connected tunnel, timestamped so a rate can
 /// be derived from consecutive samples. Ephemeral live telemetry; it is not
@@ -227,6 +230,12 @@ struct ListKey {
 pub struct VpnApp {
     shell: NavShell,
     intents: Intents,
+    /// What the detail toolbar's main action is for the selection.
+    main_action: ToolbarActionSlot,
+    /// The window ground the columns were last laid out on: a new theme
+    /// rebuilds them, since a retained badge keeps the colours it was first
+    /// painted in.
+    painted_ground: Option<vello::peniko::Color>,
     vault: Vault,
     /// Per-window selection is presentation state, not shared configuration.
     local_selected: Option<ConnId>,
@@ -365,10 +374,13 @@ impl VpnApp {
             crate::local::load()
         };
         let intents = Intents::default();
-        let shell = Self::new_shell(&intents, true);
+        let main_action = ToolbarActionSlot::default();
+        let shell = Self::new_shell(&intents, &main_action);
         VpnApp {
             shell,
             intents,
+            main_action,
+            painted_ground: None,
             vault,
             local_selected,
             seeded: false,
@@ -416,27 +428,15 @@ impl VpnApp {
     }
 
     /// The window: the connections' header with the import action, and the
-    /// detail's header with History.
-    fn new_shell(intents: &Intents, history: bool) -> NavShell {
-        let content_actions: Vec<ui::widget::Element> = if history {
-            vec![Box::new(ui::widget::history_button())]
-        } else {
-            Vec::new()
-        };
+    /// detail's toolbar with the selected connection's main action.
+    fn new_shell(intents: &Intents, main_action: &ToolbarActionSlot) -> NavShell {
         NavShell::new()
             .overview_header("Connections", vec![Box::new(view::import_button(intents))])
-            .content_header("", content_actions)
+            .content_header(
+                "",
+                vec![Box::new(view::MainActionButton::new(main_action, intents))],
+            )
             .with_id("vpn-shell")
-    }
-
-    /// Without the in-window History button, so the host's own History bar
-    /// serves (tests of the host's control custody).
-    #[cfg(test)]
-    fn without_history_button(mut self) -> Self {
-        self.shell = Self::new_shell(&self.intents, false);
-        self.list_key = None;
-        self.detail_key = None;
-        self
     }
 
     /// Whether `id` can be connected from this device: its exact
@@ -500,9 +500,8 @@ impl VpnApp {
                 self.shell.show(NavPane::Content);
                 // Newest last: the tab lists the latest first.
                 self.activity
-                    .push("No keys were written to the shared document".into());
-                self.activity
-                    .push("NetworkManager confirmed the tunnel is active".into());
+                    .push("Imported the WireGuard profile 'Home' into NetworkManager".into());
+                self.activity.push("Connected to Home".into());
             }
             "loading" => self.shot_loading = true,
             "disconnected" => {
@@ -794,7 +793,7 @@ impl VpnApp {
         let Some(p) = self.pending.take() else { return };
         match p {
             Pending::Connect(id, plan) => match config::execute(&plan) {
-                Ok(out) => {
+                Ok(_) => {
                     let profile_uuid = self
                         .local_details
                         .get(&id)
@@ -802,7 +801,7 @@ impl VpnApp {
                     let real_up = profile_uuid.map(config::network_manager_active).transpose();
                     if matches!(real_up, Ok(Some(true))) {
                         self.live_status.insert(id, ConnStatus::Connected);
-                        self.log(format!("$ {}  → up {}", plan.display(), out));
+                        self.log(format!("Connected to {}", self.name_of(id)));
                     } else {
                         self.live_status.insert(id, ConnStatus::Disconnected);
                         let reason = match real_up {
@@ -816,28 +815,31 @@ impl VpnApp {
                         self.operation_error = Some(format!(
                             "NetworkManager accepted the request, but readiness could not be confirmed: {reason}"
                         ));
-                        self.log(format!("$ {}  → not ready: {reason}", plan.display()));
+                        self.log(format!("{} did not come up: {reason}", self.name_of(id)));
                     }
                 }
                 Err(e) => {
                     // Stay disconnected — we did NOT connect.
                     self.live_status.insert(id, ConnStatus::Disconnected);
                     self.operation_error = Some(format!("Could not connect: {e}"));
-                    self.log(format!("$ {}  → not connected: {}", plan.display(), e));
+                    self.log(format!("Could not connect to {}: {e}", self.name_of(id)));
                 }
             },
             Pending::Disconnect(id, plan) => match config::execute(&plan) {
-                Ok(out) => {
+                Ok(_) => {
                     self.live_status.insert(id, ConnStatus::Disconnected);
-                    self.log(format!("$ {}  → ok {}", plan.display(), out));
+                    self.log(format!("Disconnected from {}", self.name_of(id)));
                 }
                 Err(e) => {
                     self.operation_error = Some(format!("Could not disconnect: {e}"));
-                    self.log(format!("$ {}  → failed: {}", plan.display(), e));
+                    self.log(format!(
+                        "Could not disconnect from {}: {e}",
+                        self.name_of(id)
+                    ));
                 }
             },
             Pending::TorGlobal(on, plan) => match config::execute(&plan) {
-                Ok(out) => {
+                Ok(_) => {
                     // The routing command is the external side effect; flipping
                     // the stored preference is the action (undo + replay for free).
                     let action = actions::set_tor_global_action(on);
@@ -847,13 +849,24 @@ impl VpnApp {
                         &action,
                         tilo_actions::ActionContext::for_action("so.tilo.vpn", "VPN", &action),
                     );
-                    self.log(format!("$ {}  → ok {}", plan.display(), out));
+                    self.log(if on {
+                        "Started routing all connections over Tor".to_owned()
+                    } else {
+                        "Stopped routing connections over Tor".to_owned()
+                    });
                 }
-                Err(e) => self.log(format!("$ {}  → failed: {}", plan.display(), e)),
+                Err(e) => self.log(format!("Could not change routing over Tor: {e}")),
             },
         }
         self.modal = Modal::None;
         self.refresh(doc);
+    }
+
+    /// A saved connection's name, for the activity history.
+    fn name_of(&self, id: ConnId) -> String {
+        self.vault
+            .get(id)
+            .map_or_else(|| "the tunnel".to_owned(), |c| c.name.clone())
     }
 
     fn log(&mut self, line: String) {
@@ -1301,7 +1314,7 @@ fn synth_logs(
             c.kind.long_name()
         ));
         if let Some(details) = details {
-            out.push(format!("Endpoint {}", details.endpoint));
+            out.push(format!("Connected through {}", details.endpoint));
         }
         if let Some(x) = xfer {
             out.push(format!(
@@ -1354,6 +1367,7 @@ impl VpnApp {
             }
             self.detail_key = Some(key);
             self.list_key = None;
+            self.main_action.set(None);
             self.shell.set_overview(None);
             self.shell.set_content_title("");
             let content = match &notice {
@@ -1404,14 +1418,16 @@ impl VpnApp {
         }
 
         let Some(connection) = self.vault.selected_conn() else {
+            self.main_action.set(None);
             return;
         };
         let details = self.local_details.get(&connection.id);
         let provisioned = self.provisioned(connection.id);
         let rates = self.rates_for(connection);
         let activity = synth_logs(connection, details, &self.activity, rates.latest);
+        let tor_global = self.vault.tor_global;
         let key = format!(
-            "{connection:?}{details:?}{provisioned}{:?}{rates:?}{activity:?}{notice_state:?}{}",
+            "{connection:?}{details:?}{provisioned}{:?}{rates:?}{activity:?}{notice_state:?}{tor_global}{}",
             self.detail_tab, self.view_rev
         );
         if self.detail_key.as_deref() == Some(key.as_str()) {
@@ -1420,13 +1436,17 @@ impl VpnApp {
         let model = view::DetailModel {
             connection,
             details,
-            provisioned,
             tab: self.detail_tab,
             rates: &rates,
             activity,
             notice,
+            tor_global,
         };
         let content = view::detail(&model, &self.intents, &self.detail_offset);
+        self.main_action.set(Some(ToolbarAction {
+            id: connection.id,
+            action: MainAction::of(connection, provisioned),
+        }));
         let title = connection.name.clone();
         self.detail_key = Some(key);
         self.shell.set_content_title(title);
@@ -1814,6 +1834,21 @@ impl ui::widget::Decorator for VpnApp {
         self.refresh_view();
         self.refresh_sheet();
         self.shell.update(state, path) || self.dirty
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut taffy::TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
+    ) -> taffy::NodeId {
+        let ground = theme.tokens.colors.surfaces.content;
+        if self.painted_ground.is_some_and(|painted| painted != ground) {
+            self.view_rev += 1;
+            self.refresh_view();
+        }
+        self.painted_ground = Some(ground);
+        self.shell.build_layout(taffy, theme, node_map)
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -2389,8 +2424,7 @@ mod tests {
     #[test]
     fn control_custody_vpn_unreachable_private_route_saves_the_armed_import_and_confirms_a_fresh_one()
      {
-        let (app, doc) = demo_with_doc();
-        let mut app = app.without_history_button();
+        let (mut app, doc) = demo_with_doc();
         let arm = Rc::new(Cell::new(None));
         app.history_control_arm = Some(arm.clone());
         let portal_attempts = Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -2419,6 +2453,9 @@ mod tests {
         arm.set(Some(ConnKind::WireGuard));
         driver.relayout();
         denied.set(true);
+        // The app's header row is out of reach now, so the window puts its
+        // own History control back.
+        driver.recompose().unwrap();
         driver.click_named("history-open").unwrap();
         let sealed = driver.pending_history_controls();
         assert_eq!(
