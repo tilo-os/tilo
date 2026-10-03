@@ -6,6 +6,7 @@ from pathlib import Path
 import random
 import shutil
 import subprocess
+import struct
 import tempfile
 import unittest
 import zipfile
@@ -43,9 +44,37 @@ def fixture(*, raw_checksum=None, name=None):
 
 @unittest.skipUnless(shutil.which('zstd'), 'native zstd CLI required')
 class DownloadTests(unittest.TestCase):
-    def extract(self, wire, output, authority, reserve=0):
+    def test_streamed_zip64_descriptor_with_version20_local_header(self):
+        crc = 0x12345678
+        for packed, size in ((2**32, 17), (17, 2**32), (2**32 + 9, 2**32 + 31)):
+            with self.subTest(packed=packed, size=size):
+                data = struct.pack('<IQQ', crc, packed, size)
+                self.assertEqual(download.descriptor_values(data, 20, packed, size),
+                                 (crc, packed, size))
+        data = struct.pack('<III', crc, 19, 23)
+        self.assertEqual(download.descriptor_values(data, 20, 19, 23), (crc, 19, 23))
+        with self.assertRaises(struct.error):
+            download.descriptor_values(data, 20, 2**32, 23)
+
+    def extract(self, wire, output, authority, reserve=0, **options):
         response = io.BytesIO(wire)
-        return download.extract(response, response.read(65536), output, authority, reserve)
+        return download.extract(response, response.read(65536), output, authority, reserve, **options)
+
+    def test_resume_checks_retained_bytes_and_appends_without_another_disk(self):
+        raw, authority, wire = fixture()
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / 'disk.qcow2'
+            output.write_bytes(raw[:100003])
+            self.extract(wire, output, authority, resume=True)
+            self.assertEqual(output.read_bytes(), raw)
+            self.assertEqual(list(Path(temp).iterdir()), [output])
+            output.write_bytes(b'wrong prefix')
+            with self.assertRaisesRegex(ValueError, 'Retained partial disk differs'):
+                self.extract(wire, output, authority, resume=True)
+            self.assertEqual(output.read_bytes(), b'wrong prefix')
+            output.write_bytes(raw + b'unexpected tail')
+            with self.assertRaisesRegex(ValueError, 'beyond the CI stream'):
+                self.extract(wire, output, authority, resume=True)
 
     def test_zip64_stream_has_both_full_hashes_and_only_disk_output(self):
         raw, authority, wire = fixture()

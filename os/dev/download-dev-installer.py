@@ -25,6 +25,14 @@ def require(ok, message):
         raise ValueError(message)
 
 
+def descriptor_values(data, version, actual_packed, actual_size):
+    # Streaming writers cannot know the final ZIP64 sizes when they emit the
+    # local header. Go archive/zip can leave version 20 there and upgrade the
+    # descriptor once either measured size exceeds the 32-bit limit.
+    zip64 = version == 45 or max(actual_packed, actual_size) > 0xffffffff
+    return struct.unpack_from('<IQQ' if zip64 else '<III', data)
+
+
 def payload(response, prefix, offset):
     """Bounded extraction of the final ZIP entry, including its CRC/lengths."""
     header = struct.unpack_from('<I5H3I2H', prefix, offset)
@@ -76,13 +84,12 @@ def payload(response, prefix, offset):
             data += chunk
         if data.startswith(b'PK\x07\x08'):
             data = data[4:]
-        descriptor = '<IQQ' if version == 45 else '<III'
-        crc, packed, size = struct.unpack_from(descriptor, data)
+        crc, packed, size = descriptor_values(data, version, actual_packed, actual_size)
     require((crc, packed, size) == (actual_crc, actual_packed, actual_size),
             'CI payload ZIP CRC or length mismatch')
 
 
-def extract(response, prefix, output, authority, reserve_bytes=8 * 1024**3):
+def extract(response, prefix, output, authority, reserve_bytes=8 * 1024**3, *, resume=False):
     values, offset = medium.metadata(prefix, with_offset=True)
     require(hashlib.sha256(values['source.txt']).hexdigest() == authority['source_sha256'],
             'Downloaded metadata differs from live CI authority')
@@ -92,8 +99,11 @@ def extract(response, prefix, output, authority, reserve_bytes=8 * 1024**3):
         digest = values[key].decode().split()[0]
         require(digest == authority[key], 'Downloaded checksum differs from live CI authority')
         expected[suffix] = digest
-    require(output.parent.is_dir() and not output.exists() and not output.is_symlink(),
-            'Download output must be a new file in an existing directory')
+    require(output.parent.is_dir() and not output.is_symlink()
+            and (output.is_file() if resume else not output.exists()),
+            'Download output must be a new file, or a regular existing file with --resume')
+    retained = output.stat().st_size if resume else 0
+    require(retained <= MAX_DISK, 'Retained partial disk exceeds download bound')
     require(shutil.disk_usage(output.parent).free >= reserve_bytes,
             'Insufficient free space before download')
     compressed = hashlib.sha256()
@@ -119,15 +129,20 @@ def extract(response, prefix, output, authority, reserve_bytes=8 * 1024**3):
     worker.start()
     written = 0
     try:
-        with output.open('xb') as disk:
+        with output.open('r+b' if resume else 'xb') as disk:
             while chunk := process.stdout.read(CHUNK):
                 require(shutil.disk_usage(output.parent).free >= reserve_bytes,
                         'Stopped to preserve host free space; partial output is unverified')
+                existing = min(len(chunk), max(0, retained - written))
+                if existing:
+                    require(disk.read(existing) == chunk[:existing],
+                            'Retained partial disk differs from CI stream')
                 written += len(chunk)
                 require(written <= MAX_DISK, 'Decoded disk exceeds download bound')
                 decoded.update(chunk)
-                disk.write(chunk)
+                disk.write(chunk[existing:])
         worker.join()
+        require(written >= retained, 'Retained disk has bytes beyond the CI stream')
         require(process.wait() == 0 and not errors, 'CI extraction failed: ' + str(errors[:1]))
         require(compressed.hexdigest() == expected['.zst.sha256']
                 and decoded.hexdigest() == expected['.sha256'], 'Full CI disk checksum mismatch')
@@ -148,6 +163,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('run_id', type=int, help='internal Forgejo installer run ID')
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--resume', action='store_true',
+                        help='verify an existing partial disk against the stream and append only missing bytes')
     args = parser.parse_args()
     authority = medium.verify_medium(args.run_id)
     token = medium.fgj('auth', 'token').decode().strip()
@@ -156,7 +173,7 @@ def main():
         headers={'Authorization': 'token ' + token, 'Accept': 'application/zip'})
     with urllib.request.build_opener(medium.NoRedirect()).open(request, timeout=30) as response:
         require(response.status == 200, 'CI artifact transport failed')
-        result = extract(response, response.read(65536), args.output, authority)
+        result = extract(response, response.read(65536), args.output, authority, resume=args.resume)
     args.output.with_suffix(args.output.suffix + '.verified.json').write_text(
         json.dumps(result, indent=2) + '\n')
     print(json.dumps(result, sort_keys=True))

@@ -424,6 +424,10 @@ a new disk file. It verifies ZIP CRC/lengths plus the complete compressed and
 decoded CI hashes, writes a verified receipt, and never caches the ZIP archive.
 It reserves 8 GiB of host free space throughout extraction. A failed partial
 disk is unverified and has no verified receipt; it cannot be used for installation.
+To recover a partial disk, pass `--resume`: the downloader compares every retained
+byte against the decoded CI stream before appending missing bytes. It still
+checks the complete ZIP payload and both full CI hashes. It rereads the network
+stream but avoids another disk copy or discarding the existing allocation.
 For generic encrypted targets, `--resume` repeats the boot check against the
 completed install without copying the OS again. A Lenovo board install can use
 `--skip-target-boot` because its hardware UKI cannot boot QEMU's generic machine;
