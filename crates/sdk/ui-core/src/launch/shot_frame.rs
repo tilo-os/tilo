@@ -15,7 +15,6 @@ use std::path::Path;
 use taffy::prelude::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
 
 use crate::bound_dispatch::BoundNodeMap;
 #[cfg(not(target_arch = "wasm32"))]
@@ -297,10 +296,10 @@ impl ShotFrame {
     ///
     /// As [`ShotFrame::write_png`].
     pub fn write_png_transparent(&self, scene: &Scene, out: &Path) {
-        self.write_png_on(scene, Color::TRANSPARENT, out);
+        self.write_png_on(scene, vello::peniko::Color::TRANSPARENT, out);
     }
 
-    fn write_png_on(&self, scene: &Scene, background: Color, out: &Path) {
+    fn write_png_on(&self, scene: &Scene, background: vello::peniko::Color, out: &Path) {
         if let Some(parent) = out.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
