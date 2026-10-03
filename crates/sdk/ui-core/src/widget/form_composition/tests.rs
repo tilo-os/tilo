@@ -181,6 +181,27 @@ fn long_form() -> Form {
             .with_actions(Actions::new(super::super::Button::new("save", "Save account changes", None).role(ButtonRole::Primary))
                 .secondary(super::super::Button::new("cancel", "Cancel", None)))
 }
+/// A field with a validation error marks its control invalid: the control
+/// reports it to assistive technology (and edges itself in danger ink),
+/// while a field without one stays valid.
+#[test]
+fn a_validation_error_marks_its_control_invalid() {
+    let harness = FrameHarness::new_with_theme(
+        crate::State::new(),
+        Box::new(long_form()),
+        (900, 700),
+        Theme::dark(),
+    );
+    let root = harness.inspection().root;
+    let invalid = |id: &str| {
+        named(&root, id)
+            .semantics
+            .as_ref()
+            .is_some_and(|node| node.state.invalid)
+    };
+    assert!(invalid("email"), "the field with an error is invalid");
+    assert!(!invalid("name"), "a field without one is not");
+}
 #[test]
 fn form_page_edges_and_resize_match_fresh_layout() {
     fn page_readable_width_and_single_gutter_leave_common_content_edges() {

@@ -9259,7 +9259,7 @@ impl context_stream::Server for ContextStreamServer {
                     let mut slot = collabs.reborrow().get(idx);
                     slot.set_user_id(&c.id);
                     slot.set_display_name(&c.name);
-                    slot.set_color(pack_color(c.color));
+                    slot.set_color(c.packed_colour());
                     slot.set_is_agent(c.is_agent);
                     slot.set_is_self(c.is_self);
                 }
@@ -9277,26 +9277,6 @@ impl context_stream::Server for ContextStreamServer {
             Ok(())
         })
     }
-}
-
-/// Convert `[f32; 3]` RGB in 0..=1 to the wire's `0x00RRGGBB`.
-fn pack_color(rgb: [f32; 3]) -> u32 {
-    let clamp = |c: f32| -> u32 {
-        let scaled = (c.clamp(0.0, 1.0) * 255.0).round();
-        // `scaled` is clamped to 0.0..=255.0 immediately above, so this
-        // cast is always exact and never negative.
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "scaled is clamped to 0.0..=255.0 on the line above, so the u32 cast is always exact and non-negative"
-        )]
-        let result = scaled as u32;
-        result
-    };
-    let r = clamp(rgb[0]);
-    let g = clamp(rgb[1]);
-    let b = clamp(rgb[2]);
-    (r << 16) | (g << 8) | b
 }
 
 // Listener wiring
