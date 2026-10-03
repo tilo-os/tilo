@@ -3,72 +3,28 @@
 //! polylines, painted over the toolkit's [`FunctionPlane`] grid.
 
 use ui::charts::{ChartPalette, FunctionPlane};
+use ui::interaction::InteractionEnvironment;
 use ui::paint::PaintCtx;
-use ui::text_render::{TextRenderer, TextStyle, TextWeight};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tokens::TextRole;
+use ui::widget::{CanvasNavigation, CanvasNavigationHint};
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Point, Rect};
-use vello::peniko::Color;
+use vello::kurbo::{Affine, BezPath, Point, Rect, Stroke};
+use vello::peniko::{BlendMode, Color, Fill};
 
-use crate::draw::{self, Align};
 use crate::engine;
 use crate::mathfield::MathField;
 use crate::model::{CalcModel, View2d};
+use crate::plot_panel::{CURVES, Hover, Park, PlotPanel};
 use crate::zoom::ZoomAnim2d;
 
-/// Below this body width the Functions panel can't dock without eating half the
-/// plot, so it collapses to a toggle + overlay drawer (matching Calc's history
-/// sidebar and the OS Adwaita overlay-sidebar pattern).
-const PANEL_DOCK_MIN_W: f64 = 720.0;
-/// Overlay drawer width when the panel floats over the canvas.
-const PANEL_OVERLAY_W: f64 = 300.0;
-/// Every graph-row action gets a finger-sized semantic/hit target, while the
-/// painted icon inside remains compact and unobtrusive.
-const ROW_ACTION_TARGET: f64 = 44.0;
-const ROW_ACTION_GAP: f64 = 4.0;
-const ROW_ACTION_ICON: f64 = 22.0;
-
 pub struct Graph2dScreen {
-    pub panel: Rect,
+    /// The plot, below the header row.
     pub canvas: Rect,
-    row_rects: Vec<Rect>,
-    /// Compact visibility marks painted in the row.
-    vis_rects: Vec<Rect>,
-    /// Minimum 44×44 targets for visibility actions and a11y bounds.
-    vis_hit_rects: Vec<Rect>,
-    /// Direct delete affordance for each saved formula. Keeping this alongside
-    /// the visibility dot means graph management is not hidden in Ctrl+K.
-    delete_rects: Vec<Rect>,
-    /// Minimum 44×44 targets for delete actions and a11y bounds.
-    delete_hit_rects: Vec<Rect>,
-    edit_rects: Vec<Rect>,
-    add_rect: Rect,
-    /// Panel is an overlay drawer (narrow) rather than docked (wide).
-    overlay: bool,
-    /// Whether the panel is currently shown.
-    panel_open: bool,
-    /// Whether the user explicitly toggled the panel this session; until they
-    /// do, open/closed tracks the breakpoint so a resize feels natural.
-    user_toggled: bool,
-    /// Toggle pill (only present in overlay mode, to open the drawer).
-    toggle_rect: Rect,
-    /// Dismiss scrim behind an open overlay drawer.
-    scrim_rect: Rect,
-    pub hovered_row: Option<usize>,
-    /// One real math editor per function row, kept in sync with `model.funcs`.
-    fields: Vec<MathField>,
-    /// Per-row card (outer) heights, grown to fit each formula up to a max.
-    /// Measured during `draw` (where a `TextRenderer` is available) and reused
-    /// by `layout` on the pointer/event path so hit-testing matches what was
-    /// painted. Empty / short entries fall back to [`BASE_ROW_H`].
-    card_heights: Vec<f64>,
-    /// Measured width of the row prefix (`y =` / `z =`) at this frame's
-    /// paint scale, so the math field starts past it at every text scale.
-    /// Measured during `draw`; `layout` reuses it on the event path.
-    prefix_w: f64,
-    /// Measured height of the panel header (title + subtitle lines) so the
-    /// first card starts below them at every text scale (64 px at 1×).
-    header_h: f64,
+    /// The window area the screen was last laid out in.
+    area: Rect,
+    panel: PlotPanel,
     /// Sampled curve geometry, rebuilt only when the functions, view, domain,
     /// or canvas size change — never on a theme or tab switch (colour is
     /// resolved from the theme at paint time from the cached series index).
@@ -81,28 +37,9 @@ pub struct Graph2dScreen {
 impl Default for Graph2dScreen {
     fn default() -> Self {
         Self {
-            panel: Rect::ZERO,
             canvas: Rect::ZERO,
-            row_rects: Vec::new(),
-            vis_rects: Vec::new(),
-            vis_hit_rects: Vec::new(),
-            delete_rects: Vec::new(),
-            delete_hit_rects: Vec::new(),
-            edit_rects: Vec::new(),
-            add_rect: Rect::ZERO,
-            overlay: false,
-            panel_open: true,
-            // Shots-only: force the panel open so the headless narrow-width
-            // screenshot can show the overlay drawer. No effect when unset, so
-            // live behaviour (breakpoint-driven default) is unchanged.
-            user_toggled: std::env::var_os("TILO_CALC_PANEL_OPEN").is_some(),
-            toggle_rect: Rect::ZERO,
-            scrim_rect: Rect::ZERO,
-            hovered_row: None,
-            fields: Vec::new(),
-            card_heights: Vec::new(),
-            prefix_w: PREFIX_W_1X,
-            header_h: HEADER_H_1X,
+            area: Rect::ZERO,
+            panel: PlotPanel::new(CURVES),
             curve_cache: CurveCache::default(),
             zoom: ZoomAnim2d::new(View2d::default()),
         }
@@ -144,16 +81,6 @@ fn bits(x: f64) -> u64 {
     x.to_bits()
 }
 
-fn centered_square(center: Point, side: f64) -> Rect {
-    let radius = side / 2.0;
-    Rect::new(
-        center.x - radius,
-        center.y - radius,
-        center.x + radius,
-        center.y + radius,
-    )
-}
-
 impl CurveKey {
     fn build(model: &CalcModel, canvas: Rect) -> Self {
         CurveKey {
@@ -176,25 +103,6 @@ impl CurveKey {
     }
 }
 
-/// Vertical padding between a card's edge and the math-field viewport inside it.
-const CARD_PAD_Y: f64 = 7.0;
-/// Gap between successive function cards.
-const ROW_GAP: f64 = 8.0;
-/// Card height for a short, single-line formula — `CARD_MIN_H` viewport plus the
-/// top/bottom padding. Keeps the common case identical to the old fixed rows.
-const BASE_ROW_H: f64 = crate::mathfield::CARD_MIN_H + 2.0 * CARD_PAD_Y;
-/// Left edge of the row prefix label inside a card (past the colour swatch).
-const PREFIX_X: f64 = 34.0;
-/// Gap between the measured prefix and the math field.
-const PREFIX_GAP: f64 = 4.0;
-/// Prefix slot before the first frame has measured it (the 1× design).
-const PREFIX_W_1X: f64 = 22.0;
-/// Panel header height before the first frame has measured it (the 1× design:
-/// 12 top pad + 24 title line + 20 subtitle line + 8 gap).
-const HEADER_H_1X: f64 = 64.0;
-/// The upright prefix every row paints ahead of its math field.
-const PREFIX_LABEL: &str = "y =";
-
 impl Graph2dScreen {
     /// Pure graph rendering for a frozen History model; no editing controls.
     pub(crate) fn draw_history_canvas(
@@ -211,184 +119,53 @@ impl Graph2dScreen {
         self.draw_canvas(scene, t, tr, theme, model, (None, &model.view2d));
     }
 
-    /// Resolve docked-vs-overlay and the panel / canvas / scrim / toggle rects
-    /// from the current width. Re-derived every layout pass so a resize reflows.
-    fn resolve_panel(&mut self, area: Rect) {
-        let can_dock = area.width() >= PANEL_DOCK_MIN_W;
-        self.overlay = !can_dock;
-        if !self.user_toggled {
-            self.panel_open = can_dock;
-        }
-
-        if can_dock && self.panel_open {
-            // The 300 px minimum leaves formula text enough room even after
-            // reserving two adjacent 44 px graph actions.
-            let panel_w = (area.width() * 0.27).clamp(300.0, 360.0);
-            self.panel = Rect::new(area.x0, area.y0, area.x0 + panel_w, area.y1);
-            self.canvas = Rect::new(self.panel.x1, area.y0, area.x1, area.y1);
-            self.scrim_rect = Rect::ZERO;
-            self.toggle_rect = Rect::ZERO;
-        } else {
-            self.canvas = Rect::new(area.x0, area.y0, area.x1, area.y1);
-            if self.overlay && self.panel_open {
-                let w = PANEL_OVERLAY_W.min(area.width() - 40.0);
-                self.panel = Rect::new(area.x0, area.y0, area.x0 + w, area.y1);
-                self.scrim_rect = Rect::new(self.panel.x1, area.y0, area.x1, area.y1);
-                // "Hide" chip at the drawer header's right edge.
-                self.toggle_rect = Rect::new(
-                    self.panel.x1 - 66.0,
-                    self.panel.y0 + 14.0,
-                    self.panel.x1 - 16.0,
-                    self.panel.y0 + 42.0,
-                );
-            } else {
-                self.panel = Rect::ZERO;
-                self.scrim_rect = Rect::ZERO;
-                // Closed overlay: a toggle pill floats at the canvas top-left.
-                self.toggle_rect = Rect::new(
-                    area.x0 + 12.0,
-                    area.y0 + 12.0,
-                    area.x0 + 152.0,
-                    area.y0 + 44.0,
-                );
-            }
-        }
+    /// Adopt the theme's scale and metrics.
+    pub fn scale_for(&mut self, theme: &Theme) {
+        self.panel.scale_for(theme);
     }
 
+    /// Resolve the panel, the content column and the plot for the window
+    /// `area` (the header row included).
     pub fn layout(&mut self, area: Rect, model: &CalcModel) {
-        self.resolve_panel(area);
-
-        self.row_rects.clear();
-        self.vis_rects.clear();
-        self.vis_hit_rects.clear();
-        self.delete_rects.clear();
-        self.delete_hit_rects.clear();
-        self.edit_rects.clear();
-        if self.panel == Rect::ZERO {
-            // Panel hidden (collapsed overlay): no rows to place.
-            self.add_rect = Rect::ZERO;
-            return;
-        }
-        let list_top = self.panel.y0 + self.header_h;
-        // Cards flow top-to-bottom with per-row heights (a fraction's card is
-        // taller than a plain line's), so the list reflows to accommodate them.
-        let mut y = list_top;
-        for i in 0..model.funcs.len() {
-            let card_h = self.card_heights.get(i).copied().unwrap_or(BASE_ROW_H);
-            let r = Rect::new(self.panel.x0 + 12.0, y, self.panel.x1 - 12.0, y + card_h);
-            // Keep the two durable actions separate for touch, mouse, and AT.
-            // The compact marks are centered inside their 44 px target boxes.
-            let vis_hit = Rect::new(
-                r.x1 - ROW_ACTION_TARGET,
-                r.center().y - ROW_ACTION_TARGET / 2.0,
-                r.x1,
-                r.center().y + ROW_ACTION_TARGET / 2.0,
-            );
-            let delete_hit = Rect::new(
-                vis_hit.x0 - ROW_ACTION_GAP - ROW_ACTION_TARGET,
-                r.center().y - ROW_ACTION_TARGET / 2.0,
-                vis_hit.x0 - ROW_ACTION_GAP,
-                r.center().y + ROW_ACTION_TARGET / 2.0,
-            );
-            let vis = centered_square(vis_hit.center(), ROW_ACTION_ICON);
-            let delete = centered_square(delete_hit.center(), ROW_ACTION_ICON);
-            // Editor area: a "y =" label sits at the left, the math field fills
-            // the rest up to the visibility dot. Its height is the grown card
-            // minus the padding, so the field viewport grows with the card.
-            let edit = Rect::new(
-                r.x0 + PREFIX_X + self.prefix_w + PREFIX_GAP,
-                r.y0 + CARD_PAD_Y,
-                delete_hit.x0 - 8.0,
-                r.y1 - CARD_PAD_Y,
-            );
-            self.vis_rects.push(vis);
-            self.vis_hit_rects.push(vis_hit);
-            self.delete_rects.push(delete);
-            self.delete_hit_rects.push(delete_hit);
-            self.edit_rects.push(edit);
-            self.row_rects.push(r);
-            y += card_h + ROW_GAP;
-        }
-        let add_y = y + 4.0;
-        self.add_rect = Rect::new(
-            self.panel.x0 + 12.0,
-            add_y,
-            self.panel.x1 - 12.0,
-            add_y + 36.0,
+        self.area = area;
+        self.panel.layout(area, model.funcs.len());
+        let content = self.panel.side().content();
+        self.canvas = Rect::new(
+            content.x0,
+            (content.y0 + self.panel.side().header_height()).min(content.y1),
+            content.x1,
+            content.y1,
         );
     }
 
-    /// Measure every row's formula and compute its grown card height. Run at the
-    /// top of `draw` (a `TextRenderer` is available there) so `layout` — which
-    /// also runs on the event path without a renderer — can place variable-height
-    /// cards from the cached measurements. A formula taller than the card max
-    /// clamps to the max height and then scrolls within its field.
-    fn measure_cards(&mut self, model: &CalcModel, tr: &mut TextRenderer, text_scale: f32) {
-        self.sync_fields(model);
-        self.card_heights.clear();
-        // The prefix slot and the header band follow the labels as this frame
-        // paints them, so the field never starts under `y =` and the first
-        // card never starts under the subtitle at any text scale.
-        self.prefix_w =
-            draw::measure_w(tr, PREFIX_LABEL, 14.0, TextWeight::Medium).max(PREFIX_W_1X);
-        self.header_h = Self::header_band(tr).2;
-        for field in &mut self.fields {
-            field.set_text_scale(text_scale);
-            let content_h = if field.is_empty() {
-                crate::mathfield::CARD_MIN_H
-            } else {
-                field.content_height(tr)
-            };
-            let field_h = crate::mathfield::card_view_height(content_h);
-            self.card_heights.push(field_h + 2.0 * CARD_PAD_Y);
-        }
+    /// The column beside the panel, header row included.
+    pub fn content_column(&self) -> Rect {
+        self.panel.side().content()
     }
 
-    /// Reconcile the per-row [`MathField`]s with `model.funcs`: build one
-    /// field per row and feed it the row's current expression. Local edits are
-    /// preserved because `set_source` is a no-op when the string is unchanged.
+    /// Reconcile the per-row editors with `model.funcs`.
     pub fn sync_fields(&mut self, model: &CalcModel) {
-        if self.fields.len() == model.funcs.len() {
-            for (field, f) in self.fields.iter_mut().zip(&model.funcs) {
-                field.set_source(&f.expr);
-            }
-        } else {
-            self.fields = model
-                .funcs
-                .iter()
-                .map(|f| MathField::new(&f.expr).with_size(20.0))
-                .collect();
-            // Seed the active row's caret inside a structure so a fresh frame
-            // (incl. the headless screenshot) shows a real 2D caret in place.
-            // `TILO_CALC_SELECTION_DEMO` instead seeds a selection band, for the
-            // drag-selection screenshot.
-            if let Some(field) = self.fields.get_mut(model.active_fn) {
-                if std::env::var_os("TILO_CALC_LONG_DEMO").is_some() {
-                    field.park_caret_at_end();
-                } else if std::env::var_os("TILO_CALC_SELECTION_DEMO").is_some() {
-                    field.park_demo_selection();
-                } else {
-                    field.park_caret_in_structure();
-                }
-            }
-        }
+        self.panel.sync_fields(&model.funcs, model.active_fn);
+    }
+
+    /// Where a freshly built editor parks its caret.
+    pub fn set_park(&mut self, park: Park) {
+        self.panel.set_park(park);
     }
 
     /// The math field for the active function row, if any.
     pub fn active_field_mut(&mut self, active: usize) -> Option<&mut MathField> {
-        self.fields.get_mut(active)
+        self.panel.active_field_mut(active)
     }
 
     /// The row index whose editor rect contains `p`.
-    pub fn field_at(&mut self, p: Point) -> Option<usize> {
-        self.edit_rects.iter().position(|r| r.contains(p))
+    pub fn field_at(&self, p: Point) -> Option<usize> {
+        self.panel.field_at(p)
     }
 
     /// End any in-progress drag-selection in every row's field.
     pub fn release_fields(&mut self) {
-        for f in &mut self.fields {
-            f.on_release();
-        }
+        self.panel.release_fields();
     }
 
     /// Paint remote collaborators' carets into the active function field,
@@ -400,66 +177,61 @@ impl Graph2dScreen {
         active: usize,
         cursors: &[(Point, Color)],
     ) {
-        if let Some(f) = self.fields.get(active) {
-            f.draw_remote_carets(scene, t, cursors);
-        }
+        self.panel.draw_remote_carets(scene, t, active, cursors);
     }
 
-    pub fn draw(
+    /// Measure the formulas and lay the screen out for this frame, then
+    /// advance the eased zoom. Call once per draw, before painting.
+    pub fn prepare(&mut self, tr: &mut TextRenderer, theme: &Theme, model: &CalcModel, area: Rect) {
+        self.panel.fit(&model.funcs, model.active_fn, tr, theme);
+        self.layout(area, model);
+        self.panel.side_mut().tick(theme);
+        // Advance the smooth-zoom ease one frame toward the model target.
+        self.zoom.tick(model.view2d, theme.reduce_motion);
+        self.layout(area, model);
+    }
+
+    /// The plot: grid, curves and the trace under the pointer.
+    pub fn draw_content(
         &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
         model: &CalcModel,
-        area: Rect,
-        trace: Option<Point>,
+        pointer: Pointer,
     ) {
-        draw::set_text_scale(draw::paint_scale(tr, theme));
-        // Measure formulas → grow cards, then place the (now variable-height)
-        // rows before painting anything that depends on their rects.
-        self.measure_cards(model, tr, draw::paint_scale(tr, theme));
-        self.layout(area, model);
-
-        // Advance the smooth-zoom ease one frame toward the model target. The
-        // eased `view` (== model when settled) drives the grid + trace so they
-        // move in lock-step with the cheaply-transformed curves.
-        self.zoom.tick(model.view2d, theme.reduce_motion);
+        // The eased `view` (== model when settled) drives the grid + trace so
+        // they move in lock-step with the cheaply-transformed curves.
         let view = self.zoom.display();
-
-        self.draw_canvas(scene, t, tr, theme, model, (trace, &view));
-
-        // Collapsed overlay: nothing but a floating toggle over the plot.
-        if self.panel == Rect::ZERO {
-            if self.overlay {
-                self.draw_toggle(scene, t, tr, theme);
-            }
-            return;
-        }
-        // Open overlay drawer: lay a dismiss scrim over the canvas first.
-        if self.overlay {
-            draw::fill_rect(
+        self.draw_canvas(scene, t, tr, theme, model, (pointer.trace, &view));
+        if let Some(environment) = pointer.hint {
+            CanvasNavigationHint::paint(
                 scene,
                 t,
-                self.scrim_rect,
-                draw::with_alpha(theme.tokens.colors.surfaces.scrim, 110),
+                tr,
+                theme,
+                self.canvas,
+                CanvasNavigation::PanZoom,
+                environment,
             );
-        }
-
-        self.draw_panel_header(scene, t, tr, theme);
-        self.draw_function_rows(scene, t, tr, theme, model);
-        self.draw_add_button(scene, t, tr, theme);
-        self.draw_info_readout(scene, t, tr, theme, model, trace);
-
-        // Overlay drawer keeps a "Hide" chip in its header so it can be
-        // dismissed without hunting for the scrim.
-        if self.overlay {
-            self.draw_toggle(scene, t, tr, theme);
         }
     }
 
-    /// The plot canvas: background, grid, curves, the trace crosshair (if
-    /// any), and the frame stroke.
+    /// The formula panel, over the plot.
+    pub fn draw_panel(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        model: &CalcModel,
+    ) {
+        self.panel
+            .draw(scene, t, tr, theme, &model.funcs, model.active_fn);
+    }
+
+    /// The plot canvas: grid, curves and the trace crosshair (if any).
     fn draw_canvas(
         &mut self,
         scene: &mut Scene,
@@ -470,377 +242,92 @@ impl Graph2dScreen {
         trace_view: (Option<Point>, &View2d),
     ) {
         let (trace, view) = trace_view;
-        let c = &theme.tokens.colors;
-        draw::fill_rect(scene, t, self.canvas, c.neutral[0]);
         self.draw_grid(scene, t, tr, theme, view);
         self.draw_curves(scene, t, theme, model);
         if let Some(p) = trace {
             self.draw_trace(scene, t, tr, theme, model, (p, view));
         }
-        draw::stroke_round(
-            scene,
-            t,
-            self.canvas,
-            0.0,
-            ui::surface::edge_on(c.neutral[0]),
-            1.0,
-        );
     }
 
-    /// The function panel's background + "Functions" header.
-    fn draw_panel_header(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let mut ctx = PaintCtx::new(scene, t, tr, theme);
-        let c = &theme.tokens.colors;
-        let panel_bg = if self.overlay {
-            c.surfaces.raised
-        } else {
-            c.surfaces.base
-        };
-        ctx.fill_rect(self.panel, panel_bg);
-        draw::line(
-            ctx.scene,
-            t,
-            Point::new(self.panel.x1, self.panel.y0),
-            Point::new(self.panel.x1, self.panel.y1),
-            ui::surface::edge_on(panel_bg),
-            1.0,
-        );
-        // Title and subtitle stack on their measured line boxes (24 + 20 px at
-        // 1×); `layout` starts the first card below the same band.
-        let (head_h, sub_h, _) = Self::header_band(ctx.text);
-        let head = Rect::new(
-            self.panel.x0 + 16.0,
-            self.panel.y0 + 12.0,
-            self.panel.x1 - 16.0,
-            self.panel.y0 + 12.0 + head_h,
-        );
-        draw::text_in(
-            &mut ctx,
-            head,
-            "Functions",
-            &TextStyle::new(16.0).with_weight(TextWeight::Semibold),
-            c.text_primary,
-            Align::Left,
-        );
-        let sub = Rect::new(
-            self.panel.x0 + 16.0,
-            head.y1,
-            self.panel.x1 - 16.0,
-            head.y1 + sub_h,
-        );
-        draw::text_in(
-            &mut ctx,
-            sub,
-            "y = f(x)  ·  click to edit",
-            &TextStyle::new(12.0),
-            c.text_dim,
-            Align::Left,
-        );
-    }
+    // -- panel chrome --------------------------------------------------------
 
-    /// `(title band, subtitle band, whole header)` heights from the measured
-    /// line boxes of the 16 px title and 12 px subtitle — 24 / 20 / 64 px at
-    /// 1× — so the header and the card list agree at every text scale.
-    fn header_band(tr: &mut TextRenderer) -> (f64, f64, f64) {
-        let head_h = draw::line_box(tr, 16.0) + 4.0;
-        let sub_h = draw::line_box(tr, 12.0) + 5.0;
-        (head_h, sub_h, 12.0 + head_h + sub_h + 8.0)
-    }
-
-    /// One row per saved function: background, colour swatch, "y =" prefix,
-    /// the math editor (or its placeholder), visibility dot, and delete button.
-    /// Editors are already reconciled + measured by `measure_cards`.
-    fn draw_function_rows(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        model: &CalcModel,
-    ) {
-        let mut ctx = PaintCtx::new(scene, t, tr, theme);
-        let c = &theme.tokens.colors;
-        for i in 0..model.funcs.len() {
-            let (Some(f), Some(&r), Some(&edit), Some(&dr), Some(&vr)) = (
-                model.funcs.get(i),
-                self.row_rects.get(i),
-                self.edit_rects.get(i),
-                self.delete_rects.get(i),
-                self.vis_rects.get(i),
-            ) else {
-                continue;
-            };
-            let active = i == model.active_fn;
-            if active {
-                ctx.fill_round(r, 8.0, draw::mix(c.surfaces.raised, c.accent[5], 0.18));
-                ctx.stroke_round(r, 8.0, c.accent[5], 1.0);
-            } else if self.hovered_row == Some(i) {
-                ui::surface::card(ctx.scene, t, r, 8.0, c.surfaces.raised);
-            }
-            // colour swatch
-            let sw = Rect::new(
-                r.x0 + 12.0,
-                r.center().y - 7.0,
-                r.x0 + 26.0,
-                r.center().y + 7.0,
-            );
-            let col = ChartPalette::from_theme(theme).categorical(i);
-            ctx.fill_round(
-                sw,
-                3.0,
-                if f.visible {
-                    col
-                } else {
-                    draw::with_alpha(col, 80)
-                },
-            );
-            // "y =" prefix (upright label), then the 2D math editor.
-            let txt_col = if f.visible {
-                c.text_primary
-            } else {
-                c.text_dim
-            };
-            let prefix = Rect::new(r.x0 + PREFIX_X, r.y0, r.x0 + PREFIX_X + self.prefix_w, r.y1);
-            draw::text_in(
-                &mut ctx,
-                prefix,
-                "y =",
-                &TextStyle::new(14.0).with_weight(TextWeight::Medium),
-                txt_col,
-                Align::Left,
-            );
-            let visible = f.visible;
-            let Some(empty) = self.fields.get(i).map(MathField::is_empty) else {
-                continue;
-            };
-            if empty && !active {
-                let pr = Rect::new(edit.x0 + 4.0, edit.y0, edit.x1, edit.y1);
-                draw::text_in(
-                    &mut ctx,
-                    pr,
-                    "f(x)",
-                    &TextStyle::new(14.0),
-                    c.text_dim,
-                    Align::Left,
-                );
-            } else if let Some(field) = self.fields.get_mut(i) {
-                field.set_rect(edit, ctx.text);
-                let fld_col = if visible { txt_col } else { c.text_dim };
-                field.draw(ctx.scene, t, ctx.text, theme, fld_col, active);
-            }
-            // Direct deletion remains available beside every formula; Ctrl+K
-            // offers the same durable DeleteGraph action to agents and search.
-            ui::surface::card(ctx.scene, t, dr, 5.0, c.neutral[2]);
-            draw::text_in(
-                &mut ctx,
-                dr,
-                "×",
-                &TextStyle::new(16.0).with_weight(TextWeight::Semibold),
-                c.text_dim,
-                Align::Center,
-            );
-            // visibility dot
-            let vis_col = if f.visible { col } else { c.neutral[3] };
-            ctx.stroke_round(vr, vr.height() / 2.0, vis_col, 2.0);
-            if f.visible {
-                let inner = Rect::new(vr.x0 + 5.0, vr.y0 + 5.0, vr.x1 - 5.0, vr.y1 - 5.0);
-                ctx.fill_round(inner, inner.height() / 2.0, vis_col);
-            }
-        }
-    }
-
-    /// The "+ Add function" button below the row list.
-    fn draw_add_button(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let mut ctx = PaintCtx::new(scene, t, tr, theme);
-        let c = &theme.tokens.colors;
-        ui::surface::card(ctx.scene, t, self.add_rect, 8.0, c.surfaces.raised);
-        draw::text_in(
-            &mut ctx,
-            self.add_rect,
-            "+ Add function",
-            &TextStyle::new(13.0).with_weight(TextWeight::Medium),
-            c.accent[6],
-            Align::Center,
-        );
-    }
-
-    /// The view/trace readout card below the add button: pan center, zoom,
-    /// and either the traced `f(x)` value or a hint line.
-    fn draw_info_readout(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        model: &CalcModel,
-        trace: Option<Point>,
-    ) {
-        let mut ctx = PaintCtx::new(scene, t, tr, theme);
-        let c = &theme.tokens.colors;
-        // Three 12 px lines stacked on their measured line boxes (20 px each
-        // at 1×, an 80 px card), so the read-out never overprints itself.
-        let line_h = draw::line_box(ctx.text, 12.0) + 5.0;
-        let info_y = self.add_rect.y1 + 16.0;
-        let info = Rect::new(
-            self.panel.x0 + 16.0,
-            info_y,
-            self.panel.x1 - 16.0,
-            info_y + 3.0 * line_h + 20.0,
-        );
-        ui::surface::card(ctx.scene, t, info, 8.0, c.neutral[1]);
-        let view = &model.view2d;
-        let l1 = Rect::new(
-            info.x0 + 12.0,
-            info.y0 + 8.0,
-            info.x1 - 12.0,
-            info.y0 + 8.0 + line_h,
-        );
-        draw::text_in(
-            &mut ctx,
-            l1,
-            &format!("center  ({:.2}, {:.2})", view.cx, view.cy),
-            &TextStyle::new(12.0),
-            c.text_dim,
-            Align::Left,
-        );
-        let l2 = Rect::new(info.x0 + 12.0, l1.y1, info.x1 - 12.0, l1.y1 + line_h);
-        draw::text_in(
-            &mut ctx,
-            l2,
-            &format!("zoom  {:.1} px/unit", view.scale),
-            &TextStyle::new(12.0),
-            c.text_dim,
-            Align::Left,
-        );
-        let l3 = Rect::new(info.x0 + 12.0, l2.y1 + 2.0, info.x1 - 12.0, info.y1 - 6.0);
-        if let Some(p) = trace {
-            let wx = self.to_world(p, view).x;
-            if let Some(expr) = model.active_expr()
-                && let Ok(comp) = engine::compile(expr, model.deg, false)
-            {
-                let wy = comp.eval1(wx);
-                draw::text_in(
-                    &mut ctx,
-                    l3,
-                    &format!(
-                        "f({}) = {}",
-                        engine::format_number(wx),
-                        engine::format_number(wy)
-                    ),
-                    &TextStyle::new(13.0).with_weight(TextWeight::Semibold),
-                    c.accent[6],
-                    Align::Left,
-                );
-            }
-        } else {
-            draw::text_in(
-                &mut ctx,
-                l3,
-                "drag to pan · scroll to zoom",
-                &TextStyle::new(12.0),
-                c.text_dim,
-                Align::Left,
-            );
-        }
-    }
-
-    /// Draw the panel toggle: a floating "Functions" pill over the canvas when
-    /// the drawer is closed, or a compact "Hide" chip in the drawer header when
-    /// it's open.
-    fn draw_toggle(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let mut ctx = PaintCtx::new(scene, t, tr, theme);
-        if self.toggle_rect == Rect::ZERO {
-            return;
-        }
-        let c = &theme.tokens.colors;
-        let r = self.toggle_rect;
-        if self.panel_open {
-            ui::surface::card(ctx.scene, t, r, 8.0, c.neutral[2]);
-            draw::text_in(
-                &mut ctx,
-                r,
-                "Hide",
-                &TextStyle::new(12.0).with_weight(TextWeight::Semibold),
-                c.text_dim,
-                Align::Center,
-            );
-        } else {
-            ctx.fill_round(r, 8.0, draw::mix(c.surfaces.raised, c.accent[5], 0.20));
-            ctx.stroke_round(r, 8.0, c.accent[5], 1.0);
-            draw::text_in(
-                &mut ctx,
-                r,
-                "ƒ  Functions",
-                &TextStyle::new(13.0).with_weight(TextWeight::Semibold),
-                c.accent[6],
-                Align::Center,
-            );
-        }
-    }
-
-    // -- overlay panel chrome ------------------------------------------------
-
-    /// Whether `p` hit the panel toggle (open/close the Functions drawer).
+    /// Whether `p` hit the panel's show/hide button.
     pub fn toggle_at(&self, p: Point) -> bool {
-        self.toggle_rect != Rect::ZERO && self.toggle_rect.contains(p)
+        self.panel.side().toggle_at(p)
     }
-    /// Whether `p` landed on the dismiss scrim of an open overlay drawer.
+    /// Whether `p` landed on the dismiss scrim of an open floating drawer.
     pub fn scrim_at(&self, p: Point) -> bool {
-        self.overlay && self.panel_open && self.scrim_rect.contains(p)
+        self.panel.side().scrim_at(p)
     }
-    /// Flip the panel open/closed and remember the user's explicit choice.
+    /// Flip the panel open/closed and remember the person's explicit choice.
     pub fn toggle_panel(&mut self) {
-        self.panel_open = !self.panel_open;
-        self.user_toggled = true;
+        self.panel.side_mut().toggle();
     }
-    /// Force the overlay drawer shut (e.g. a scrim tap).
+    /// Force a floating drawer shut (a scrim tap).
     pub fn close_panel(&mut self) {
-        self.panel_open = false;
-        self.user_toggled = true;
+        self.panel.side_mut().close();
     }
-    /// Whether an open overlay drawer is covering `p` (so a click there must not
+    /// Snap the panel open or shut with no animation (captures and tests).
+    pub fn snap_panel(&mut self, open: bool) {
+        self.panel.side_mut().snap(open);
+    }
+    /// Whether a floating drawer is covering `p` (so a press there must not
     /// fall through to the canvas as a pan).
     pub fn overlay_captures(&self, p: Point) -> bool {
-        self.overlay && self.panel_open && self.panel.contains(p)
+        self.panel.side().covers(p)
     }
-    /// Whether the Functions panel is currently shown (test/introspection).
+    /// Whether the Functions panel is currently shown.
     pub fn panel_open(&self) -> bool {
-        self.panel_open
+        self.panel.side().is_open()
     }
-    /// Center of the panel toggle, if one is placed this frame (test helper).
-    pub fn toggle_center(&self) -> Option<Point> {
-        (self.toggle_rect != Rect::ZERO).then(|| self.toggle_rect.center())
+    /// Whether the panel floats over the plot.
+    pub fn is_overlay(&self) -> bool {
+        self.panel.side().is_overlay()
     }
-    /// Geometry exported for the calculator's retained accessibility tree.
+    /// Whether the panel's slide is still running.
+    pub fn panel_animating(&self) -> bool {
+        self.panel.side().is_animating()
+    }
+    /// The panel's show/hide button, for the accessibility tree.
     pub fn toggle_rect(&self) -> Option<Rect> {
-        (self.toggle_rect != Rect::ZERO).then_some(self.toggle_rect)
+        Some(self.panel.side().toggle_rect()).filter(|r| *r != Rect::ZERO)
     }
     pub fn add_rect(&self) -> Option<Rect> {
-        (self.add_rect != Rect::ZERO).then_some(self.add_rect)
+        self.panel.add_rect()
     }
     pub fn row_rect(&self, i: usize) -> Option<Rect> {
-        self.row_rects.get(i).copied()
+        self.panel.row_rect(i)
     }
     pub fn field_rect(&self, i: usize) -> Option<Rect> {
-        self.edit_rects.get(i).copied()
+        self.panel.field_rect(i)
     }
     pub fn visibility_rect(&self, i: usize) -> Option<Rect> {
-        self.vis_hit_rects.get(i).copied()
+        self.panel.visibility_rect(i)
     }
     /// Geometry for the direct formula-delete button.
     pub fn delete_rect(&self, i: usize) -> Option<Rect> {
-        self.delete_hit_rects.get(i).copied()
+        self.panel.delete_rect(i)
     }
-    /// Center of function row `i`'s visibility dot, once laid out (test helper).
+    /// Center of the panel toggle, if one is placed this frame (test helper).
+    #[doc(hidden)]
+    pub fn toggle_center(&self) -> Option<Point> {
+        self.toggle_rect().map(|r| r.center())
+    }
+    /// Center of function row `i`'s visibility toggle, once laid out (test
+    /// helper).
     #[doc(hidden)]
     pub fn vis_center(&self, i: usize) -> Option<Point> {
-        self.vis_rects.get(i).map(ui::kurbo::Rect::center)
+        self.visibility_rect(i).map(|r| r.center())
+    }
+
+    /// Track the pointer over the panel. Returns what it is over, and
+    /// whether that changed.
+    pub fn set_pointer(&mut self, p: Point) -> bool {
+        self.panel.set_pointer(p)
+    }
+
+    pub fn hover(&self) -> Hover {
+        self.panel.hover()
     }
 
     // ----- canvas internals -------------------------------------------------
@@ -863,16 +350,9 @@ impl Graph2dScreen {
         theme: &Theme,
         v: &View2d,
     ) {
-        // The grid derives against the canvas ground `draw_canvas` fills;
-        // its tick labels match the canvas's other 11 px captions.
-        self.plane(v).paint_grid(
-            scene,
-            t,
-            tr,
-            theme,
-            theme.tokens.colors.neutral[0],
-            draw::type_size(11.0),
-        );
+        // The grid derives against the window ground the plot stands on.
+        self.plane(v)
+            .paint_grid(scene, t, tr, theme, theme.tokens.colors.surfaces.content);
     }
 
     fn draw_curves(&mut self, scene: &mut Scene, t: Affine, theme: &Theme, model: &CalcModel) {
@@ -886,14 +366,8 @@ impl Graph2dScreen {
             self.zoom.mark_sampled(model.view2d);
             Affine::IDENTITY
         };
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            t,
-            &self.canvas,
-        );
-        let stroke = vello::kurbo::Stroke::new(2.0);
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &self.canvas);
+        let stroke = Stroke::new(2.0);
         let palette = ChartPalette::from_theme(theme);
         for cp in &self.curve_cache.paths {
             let col = palette.categorical(cp.series);
@@ -977,6 +451,8 @@ impl Graph2dScreen {
         self.curve_cache.rebuilds = self.curve_cache.rebuilds.wrapping_add(1);
     }
 
+    /// The trace under the pointer: a guide, a dot on the active curve and a
+    /// readout of the point it marks, in a floating chip over the plot.
     fn draw_trace(
         &self,
         scene: &mut Scene,
@@ -986,7 +462,6 @@ impl Graph2dScreen {
         model: &CalcModel,
         trace_at: (Point, &View2d),
     ) {
-        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let (p, v) = trace_at;
         if !self.canvas.contains(p) {
             return;
@@ -1001,90 +476,98 @@ impl Graph2dScreen {
         };
         let wy = comp.eval1(wx);
         let sx = self.to_screen(wx, 0.0, v).x;
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         // vertical guide
-        draw::line(
+        ctx.fill_rect(
+            Rect::new(sx - 0.5, self.canvas.y0, sx + 0.5, self.canvas.y1),
+            c.text_tertiary,
+        );
+        if !wy.is_finite() {
+            return;
+        }
+        let dot = self.to_screen(wx, wy, v);
+        if dot.y < self.canvas.y0 || dot.y > self.canvas.y1 {
+            return;
+        }
+        let radius = f64::from(theme.tokens.spacing.s1) + 1.0;
+        let col = ChartPalette::from_theme(theme).categorical(model.active_fn);
+        let marker = Rect::from_center_size(dot, (2.0 * radius, 2.0 * radius));
+        ctx.fill_round(marker, radius, col);
+        ctx.stroke_round(marker, radius, c.surfaces.content, 1.5);
+        // readout chip near the top
+        let label = format!(
+            "({}, {})",
+            engine::format_number(wx),
+            engine::format_number(wy)
+        );
+        let size = ctx.measure_role(&label, TextRole::Label, None);
+        let pad = f64::from(theme.tokens.spacing.s2);
+        let chip = Rect::from_origin_size(
+            Point::new(sx + pad, self.canvas.y0 + pad),
+            (size.width + 2.0 * pad, size.height + pad),
+        );
+        let chip = clamp_rect_x(chip, self.canvas, pad);
+        ui::surface::panel(
             ctx.scene,
             t,
-            Point::new(sx, self.canvas.y0),
-            Point::new(sx, self.canvas.y1),
-            draw::with_alpha(c.text_dim, 120),
-            1.0,
+            chip,
+            f64::from(theme.tokens.radii.control),
+            theme,
         );
-        if wy.is_finite() {
-            let dot = self.to_screen(wx, wy, v);
-            if dot.y >= self.canvas.y0 && dot.y <= self.canvas.y1 {
-                let col = ChartPalette::from_theme(theme).categorical(model.active_fn);
-                let dot_r = Rect::new(dot.x - 5.0, dot.y - 5.0, dot.x + 5.0, dot.y + 5.0);
-                ctx.fill_round(dot_r, 5.0, col);
-                ctx.stroke_round(
-                    dot_r,
-                    5.0,
-                    ui::tokens::Colors::hairline_on(c.neutral[0], 255),
-                    1.5,
-                );
-            }
-            // readout chip near the top
-            let label = format!(
-                "({}, {})",
-                engine::format_number(wx),
-                engine::format_number(wy)
-            );
-            let (label_w, _h) = ctx
-                .text
-                .measure_weighted(&label, 13.0, None, TextWeight::Semibold);
-            let chip = Rect::new(
-                sx + 8.0,
-                self.canvas.y0 + 10.0,
-                sx + 8.0 + f64::from(label_w) + 20.0,
-                self.canvas.y0 + 36.0,
-            );
-            let chip = clamp_rect_x(chip, self.canvas);
-            ui::surface::card(ctx.scene, t, chip, 6.0, c.surfaces.raised);
-            draw::text_in(
-                &mut ctx,
-                chip,
-                &label,
-                &TextStyle::new(13.0).with_weight(TextWeight::Semibold),
-                c.text_primary,
-                Align::Center,
-            );
-        }
+        let ink = theme.on_ground(ui::chrome::panel_ground(theme));
+        ctx.text_role_in_band(
+            &label,
+            TextRole::Label,
+            ink.tokens.colors.text_primary,
+            chip.x0 + pad,
+            chip,
+            None,
+        );
     }
 
     // ----- hit-testing ------------------------------------------------------
 
     pub fn row_at(&self, p: Point) -> Option<usize> {
-        self.row_rects.iter().position(|r| r.contains(p))
+        self.panel.row_at(p)
     }
     pub fn vis_at(&self, p: Point) -> Option<usize> {
-        self.vis_hit_rects.iter().position(|r| r.contains(p))
+        self.panel.vis_at(p)
     }
     /// The formula row whose direct delete button contains `p`.
     pub fn delete_at(&self, p: Point) -> Option<usize> {
-        self.delete_hit_rects.iter().position(|r| r.contains(p))
+        self.panel.delete_at(p)
     }
     pub fn add_at(&self, p: Point) -> bool {
-        self.add_rect.contains(p)
+        self.panel.add_at(p)
     }
     pub fn canvas_contains(&self, p: Point) -> bool {
-        // While an overlay drawer (and its scrim) is up, the canvas is not
+        // While a floating drawer (and its scrim) is up, the canvas is not
         // directly interactive — a press there dismisses the drawer instead of
         // panning/tracing.
-        if self.overlay && self.panel_open {
+        if self.panel.side().is_overlay() && self.panel.side().is_open() {
             return false;
         }
         self.canvas.contains(p)
     }
 }
 
-fn clamp_rect_x(r: Rect, bounds: Rect) -> Rect {
+/// What the pointer is doing over the plot, for painting.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Pointer {
+    /// The point to trace, while the pointer is over the plot.
+    pub trace: Option<Point>,
+    /// Show the navigation hint, for this kind of pointer.
+    pub hint: Option<InteractionEnvironment>,
+}
+
+fn clamp_rect_x(r: Rect, bounds: Rect, margin: f64) -> Rect {
     let w = r.width();
     let mut x0 = r.x0;
-    if x0 + w > bounds.x1 - 6.0 {
-        x0 = bounds.x1 - 6.0 - w;
+    if x0 + w > bounds.x1 - margin {
+        x0 = bounds.x1 - margin - w;
     }
-    if x0 < bounds.x0 + 6.0 {
-        x0 = bounds.x0 + 6.0;
+    if x0 < bounds.x0 + margin {
+        x0 = bounds.x0 + margin;
     }
     Rect::new(x0, r.y0, x0 + w, r.y1)
 }
@@ -1101,110 +584,131 @@ mod tests {
         (s, canvas)
     }
 
-    /// The Functions panel layout is re-derived from the current width: it docks
-    /// when wide, collapses to an overlay drawer (toggle, scrim, dismiss) when
-    /// narrow, re-docks when widened, and keeps non-overlapping 44 px row-action
-    /// targets. Fresh screen per phase.
+    /// The Functions panel is re-derived from the current width: it docks when
+    /// wide, becomes a floating drawer (button, scrim, no pan beneath it)
+    /// when narrow, re-docks when widened, and keeps its row buttons apart.
+    /// Fresh screen per phase.
     #[test]
-    fn functions_panel_docks_wide_overlays_narrow_and_keeps_row_targets() {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn functions_panel_docks_wide_floats_narrow_and_keeps_row_targets() {
         // phase wide_docks_the_functions_panel
         {
             let mut s = Graph2dScreen::default();
             let m = CalcModel::seeded();
-            let area = Rect::new(0.0, 60.0, 1280.0, 800.0);
+            let area = Rect::new(0.0, 0.0, 1280.0, 800.0);
             s.layout(area, &m);
-            assert!(!s.overlay, "wide window docks the panel");
-            assert!(s.panel_open);
+            assert!(!s.is_overlay(), "wide window docks the panel");
+            assert!(s.panel_open());
+            let column = s.panel.side().column();
             assert!(
-                s.panel.width() > 0.0 && (s.panel.x0 - area.x0).abs() < f64::EPSILON,
+                column.width() > 0.0 && (column.x0 - area.x0).abs() < f64::EPSILON,
                 "docked panel on the left"
             );
             assert!(
-                s.canvas.x0 >= s.panel.x1 - 0.5,
+                s.canvas.x0 >= column.x1 - 0.5,
                 "canvas starts after the docked panel"
+            );
+            assert!(
+                s.canvas.y0 >= area.y0 + s.panel.side().header_height() - 0.5,
+                "the plot stands below the header row"
             );
         }
 
-        // phase narrow_collapses_panel_to_overlay
+        // phase narrow_floats_the_panel_as_a_drawer
         {
             let mut s = Graph2dScreen::default();
             let m = CalcModel::seeded();
-            let area = Rect::new(0.0, 60.0, 560.0, 800.0);
+            let area = Rect::new(0.0, 0.0, 560.0, 800.0);
             s.layout(area, &m);
-            assert!(s.overlay, "narrow window uses the overlay drawer");
+            assert!(s.is_overlay(), "narrow window floats the panel");
             assert!(
-                !s.panel_open,
+                !s.panel_open(),
                 "narrow default is collapsed so the plot keeps the width"
             );
             assert_eq!(
-                s.panel,
+                s.panel.side().column(),
                 Rect::ZERO,
-                "collapsed → no docked panel eating the canvas"
+                "no panel eating the plot"
             );
             assert!(
                 (s.canvas.width() - area.width()).abs() < 0.5,
-                "canvas gets the full width when collapsed"
+                "the plot gets the full width when collapsed"
             );
+            let toggle = s
+                .toggle_rect()
+                .expect("a button must be present to open it");
             assert!(
-                s.toggle_at(s.toggle_rect.center()),
-                "a floating toggle must be present to open it"
+                toggle.x0 < area.x0 + s.panel.side().header_height(),
+                "the button sits at the leading edge of the content header"
             );
+            assert!(s.toggle_at(toggle.center()));
         }
 
-        // phase narrow_overlay_opens_with_scrim_and_dismisses
+        // phase narrow_drawer_opens_with_scrim_and_dismisses
         {
             let mut s = Graph2dScreen::default();
             let m = CalcModel::seeded();
-            let area = Rect::new(0.0, 60.0, 560.0, 800.0);
+            let area = Rect::new(0.0, 0.0, 560.0, 800.0);
             s.layout(area, &m);
-            // Open via the toggle.
             s.toggle_panel();
+            s.snap_panel(true);
             s.layout(area, &m);
-            assert!(s.panel_open && s.overlay);
-            assert!(s.panel.width() > 0.0, "open overlay draws a drawer");
+            assert!(s.panel_open() && s.is_overlay());
+            let column = s.panel.side().column();
+            assert!(column.width() > 0.0, "an open drawer is drawn");
             assert!(
-                s.scrim_rect.width() > 0.0,
-                "open overlay lays down a dismiss scrim"
+                s.toggle_rect().is_some_and(|t| column.contains_rect(t)),
+                "the drawer carries its own show/hide button"
             );
-            // A press inside the drawer must not pan the canvas.
-            assert!(!s.canvas_contains(s.panel.center()));
-            // Scrim tap dismisses.
-            let scrim_pt = Point::new(s.scrim_rect.x0 + 10.0, s.scrim_rect.center().y);
-            assert!(s.scrim_at(scrim_pt));
+            // A press inside the drawer must not pan the plot.
+            assert!(!s.canvas_contains(column.center()));
+            assert!(s.overlay_captures(column.center()));
+            // A press on the scrim, beside the drawer, dismisses it.
+            let beside = Point::new(area.x1 - 10.0, area.center().y);
+            assert!(s.scrim_at(beside));
             s.close_panel();
+            s.snap_panel(false);
             s.layout(area, &m);
-            assert!(!s.panel_open);
+            assert!(!s.panel_open());
         }
 
-        // phase narrow_panel_reflows_back_to_docked_when_widened
+        // phase panel_reflows_back_to_docked_when_widened
         {
-            // Re-derive from the current width each pass: a fresh (un-toggled) screen
-            // must dock when wide and overlay when narrow, proving no first-frame cache.
+            // Re-derive from the current width each pass: a fresh screen must
+            // dock when wide and float when narrow, with no first-frame cache.
             let mut s = Graph2dScreen::default();
             let m = CalcModel::seeded();
-            s.layout(Rect::new(0.0, 60.0, 560.0, 800.0), &m);
-            assert!(s.overlay && !s.panel_open);
-            s.layout(Rect::new(0.0, 60.0, 1280.0, 800.0), &m);
+            s.layout(Rect::new(0.0, 0.0, 560.0, 800.0), &m);
+            assert!(s.is_overlay() && !s.panel_open());
+            s.layout(Rect::new(0.0, 0.0, 1280.0, 800.0), &m);
             assert!(
-                !s.overlay && s.panel_open,
+                !s.is_overlay() && s.panel_open(),
                 "widening must re-dock the panel"
             );
         }
 
-        // phase row_actions_have_non_overlapping_44px_targets
+        // phase row_buttons_have_pointer_targets_that_stay_apart
         {
             let mut s = Graph2dScreen::default();
             let m = CalcModel::seeded();
-            // 390-wide overlay is the tightest production presentation.
-            let area = Rect::new(0.0, 60.0, 390.0, 844.0);
+            // 390 wide is the tightest production presentation.
+            let area = Rect::new(0.0, 0.0, 390.0, 844.0);
             s.layout(area, &m);
             s.toggle_panel();
+            s.snap_panel(true);
             s.layout(area, &m);
+            let target = f64::from(ui::tokens::Metrics::BASE.min_pointer_target);
             let delete = s.delete_rect(0).expect("delete target");
             let visible = s.visibility_rect(0).expect("visibility target");
-            assert!(delete.width() >= 44.0 && delete.height() >= 44.0);
-            assert!(visible.width() >= 44.0 && visible.height() >= 44.0);
-            assert!(delete.x1 <= visible.x0, "row actions must not overlap");
+            assert!(delete.width() >= target - 0.5 && delete.height() >= target - 0.5);
+            assert!(visible.width() >= target - 0.5 && visible.height() >= target - 0.5);
+            assert!(
+                visible.x1 <= delete.x0 + 0.5,
+                "row buttons must not overlap"
+            );
             assert_eq!(s.delete_at(delete.center()), Some(0));
             assert_eq!(s.vis_at(visible.center()), Some(0));
             assert_eq!(
@@ -1212,17 +716,18 @@ mod tests {
                 Some(1),
                 "a delete hit must not target the adjacent row"
             );
+            let edit = s.field_rect(0).expect("editor");
             assert!(
-                s.edit_rects[0].x1 <= delete.x0,
-                "math editing must not steal the delete target"
+                edit.x1 <= visible.x0 + 0.5,
+                "math editing must not steal a button's target"
             );
         }
     }
 
     /// The sampled-curve cache: the first draw samples every visible function;
     /// theme or tab switches do not resample; editing a function, panning or
-    /// zooming resample; hiding a function drops its curve. Fresh screen + model
-    /// per phase.
+    /// zooming resample; hiding a function drops its curve. Fresh screen +
+    /// model per phase.
     #[test]
     fn curve_cache_resamples_only_when_geometry_changes() {
         // phase first_draw_samples_visible_functions
@@ -1294,130 +799,19 @@ mod tests {
         }
     }
 
-    /// Formula cards on the real measure → layout → set-rect path: a fraction
-    /// grows to show in full, an oversized formula clamps to the max and scrolls,
-    /// a short formula keeps the base height, and taller rows push later rows
-    /// down. Fresh screen + renderer per phase.
+    /// Every curve of the lived-in plot gets its own colour: no two of the
+    /// first four series repeat.
     #[test]
-    fn formula_cards_grow_to_fit_clamp_to_max_and_reflow() {
-        // phase fraction_card_grows_to_show_in_full
-        // A fraction row's card grows taller than the base to show the fraction IN
-        // FULL (no clip, no scroll) — mirrors `draw()`'s measure → layout → set-rect
-        // sequence on the real path.
-        {
-            let mut tr = TextRenderer::new();
-            let mut s = Graph2dScreen::default();
-            let mut m = CalcModel::seeded();
-            m.funcs = vec![crate::model::PlotFn {
-                expr: "(x^2+1)/(x-3)".into(),
-                visible: true,
-            }];
-            m.active_fn = 0;
-            let area = Rect::new(0.0, 0.0, 1000.0, 700.0);
-            s.measure_cards(&m, &mut tr, 1.0);
-            s.layout(area, &m);
-            assert!(
-                s.card_heights[0] > BASE_ROW_H + 8.0,
-                "a fraction card must grow visibly taller than the base ({BASE_ROW_H}), got {}",
-                s.card_heights[0]
-            );
-            assert!(
-                (s.row_rects[0].height() - s.card_heights[0]).abs() < 1e-6,
-                "the row rect must reflect the grown card height"
-            );
-            // The fraction fits VERTICALLY in its grown field (no vertical scroll /
-            // clip); horizontal scrolling for very wide formulas is a separate axis.
-            let content_h = s.fields[0].content_height(&mut tr);
-            assert!(
-                content_h <= s.edit_rects[0].height() + 0.5,
-                "a fraction under the card max must fit vertically in full: content {content_h} vs field {}",
-                s.edit_rects[0].height()
-            );
-        }
-
-        // phase oversized_formula_card_grows_to_max_then_scrolls
-        // A fraction-over-fraction exceeds even the generous max: the card grows to
-        // the max and its field scrolls (never clips).
-        {
-            let mut tr = TextRenderer::new();
-            let mut s = Graph2dScreen::default();
-            let mut m = CalcModel::seeded();
-            m.funcs = vec![crate::model::PlotFn {
-                expr: "(1/x)/(1/y)".into(),
-                visible: true,
-            }];
-            m.active_fn = 0;
-            let area = Rect::new(0.0, 0.0, 1000.0, 700.0);
-            s.measure_cards(&m, &mut tr, 1.0);
-            s.layout(area, &m);
-            let expected = crate::mathfield::CARD_MAX_H + 2.0 * CARD_PAD_Y;
-            assert!(
-                (s.card_heights[0] - expected).abs() < 1e-6,
-                "an oversized formula card must clamp to the max ({expected}), got {}",
-                s.card_heights[0]
-            );
-            // The formula is taller than the (maxed) field → it scrolls vertically.
-            let content_h = s.fields[0].content_height(&mut tr);
-            assert!(
-                content_h > s.edit_rects[0].height() + 0.5,
-                "an oversized formula must overflow its maxed field vertically (scroll, not clip): content {content_h} vs field {}",
-                s.edit_rects[0].height()
-            );
-            s.fields[0].set_rect(s.edit_rects[0], &mut tr);
-            assert!(
-                s.fields[0].overflows(),
-                "the maxed field must report overflow"
-            );
-        }
-
-        // phase short_formula_card_keeps_base_height
-        // A short one-line formula keeps the base card height and does not scroll,
-        // so the common case is unchanged.
-        {
-            let mut tr = TextRenderer::new();
-            let mut s = Graph2dScreen::default();
-            let mut m = CalcModel::seeded();
-            m.funcs = vec![crate::model::PlotFn {
-                expr: "sin(x)".into(),
-                visible: true,
-            }];
-            m.active_fn = 0;
-            s.measure_cards(&m, &mut tr, 1.0);
-            s.layout(Rect::new(0.0, 0.0, 1000.0, 700.0), &m);
-            assert!(
-                (s.card_heights[0] - BASE_ROW_H).abs() < 1e-6,
-                "a short one-line formula keeps the base card height, got {}",
-                s.card_heights[0]
-            );
-            s.fields[0].set_rect(s.edit_rects[0], &mut tr);
-            assert!(!s.fields[0].overflows(), "a short formula must not scroll");
-        }
-
-        // phase cards_reflow_to_accommodate_taller_rows
-        // Cards reflow: the second card starts below the (grown) first card plus the
-        // gap, so a tall formula pushes later rows down instead of overlapping them.
-        {
-            let mut tr = TextRenderer::new();
-            let mut s = Graph2dScreen::default();
-            let mut m = CalcModel::seeded();
-            m.funcs = vec![
-                crate::model::PlotFn {
-                    expr: "(x^2+1)/(x-3)".into(),
-                    visible: true,
-                },
-                crate::model::PlotFn {
-                    expr: "sin(x)".into(),
-                    visible: true,
-                },
-            ];
-            s.measure_cards(&m, &mut tr, 1.0);
-            s.layout(Rect::new(0.0, 0.0, 1000.0, 700.0), &m);
-            assert!(
-                s.row_rects[1].y0 >= s.row_rects[0].y1 - 0.01,
-                "row 1 (y0={}) must start at/after the bottom of the taller row 0 (y1={})",
-                s.row_rects[1].y0,
-                s.row_rects[0].y1
-            );
+    fn curves_take_distinct_colours() {
+        let palette = ChartPalette::from_theme(&Theme::dark());
+        for a in 0..4 {
+            for b in (a + 1)..4 {
+                assert_ne!(
+                    palette.categorical(a),
+                    palette.categorical(b),
+                    "series {a} and {b} share a colour"
+                );
+            }
         }
     }
 }
