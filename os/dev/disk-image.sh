@@ -640,8 +640,14 @@ fi
 msg "1/4 systemd-repart -> $RAW (ESP $ESP_SIZE + $ROOTFS root >= $ROOT_MIN, disk $SIZE)"
 rm -f "$RAW"
 truncate -s "$SIZE" "$RAW"
+# Pin 512-byte sectors. Without --sector-size, systemd-repart 255 and >= 257
+# format a regular file's partitions with 4096-byte filesystem sectors, which
+# makes the ESP a 4K-sector FAT that SD/eMMC/USB firmware cannot read. btrfs
+# keeps its 4 KiB minimum block size; ext4 does not take a sector size.
 sudo -n systemd-repart --empty=force --dry-run=no --discard=no --offline=false \
-  --definitions="$DEFS" --size="$SIZE" "$RAW"
+  --sector-size=512 --definitions="$DEFS" --size="$SIZE" "$RAW"
+python3 "$SCRIPT_DIR/check-disk-sectors.py" "$RAW" >&2 \
+  || die "systemd-repart did not lay out $RAW with 512-byte sectors"
 
 LOOP="$(sudo -n losetup -fP --show "$RAW")"
 sudo -n udevadm settle 2>/dev/null || true
