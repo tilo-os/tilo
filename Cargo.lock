@@ -3626,6 +3626,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "env-tools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "bounded-command",
+ "clap",
+ "hex",
+ "libc",
+ "package-store",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tilo-app-package",
+ "tilo-environment",
+ "tilo-user-identity",
+ "tracing",
+ "tracing-subscriber",
+ "workspace-hack",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8353,6 +8376,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-vello",
  "tilo-winit",
+ "tracing",
  "workspace-hack",
 ]
 
@@ -18160,6 +18184,7 @@ dependencies = [
  "collab-types",
  "durable-store",
  "ed25519-dalek 3.0.0",
+ "env-tools",
  "hex",
  "landlock",
  "libc",
