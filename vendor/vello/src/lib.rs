@@ -1622,6 +1622,75 @@ pub(crate) fn sparse_coarse_adaptive_selection(
 
 #[cfg(feature = "wgpu")]
 impl Renderer {
+    /// Run every GPU pipeline's first dispatch now, spread over this device and up to
+    /// `helpers` more opened by `open_device`, each driven from its own thread.
+    ///
+    /// Mesa's CPU Vulkan driver (lavapipe) compiles a pipeline's machine code on its first
+    /// dispatch, so a cold first frame compiles every stage one after another. It also keeps the
+    /// code in its shader disk cache, shared by every device in the process. This dispatches the
+    /// largest pipeline here while the helpers take the rest, whose code this device then reads
+    /// from the cache. When that one dispatch finds its code already compiled, the cache is warm
+    /// and the helpers stop before compiling anything.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn precompile_pipelines(
+        &self,
+        device: &Device,
+        queue: &Queue,
+        helpers: usize,
+        open_device: &(dyn Fn() -> Option<(Device, Queue)> + Sync),
+    ) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// A dispatch this quick found its code compiled already.
+        const COMPILED: std::time::Duration = std::time::Duration::from_millis(50);
+
+        let order = self.engine.precompile_order();
+        let Some((&largest, rest)) = order.split_first() else {
+            return;
+        };
+        let (use_cpu, antialiasing_support) =
+            (self.options.use_cpu, self.options.antialiasing_support);
+        let next = AtomicUsize::new(0);
+        let warm = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            for _ in 0..helpers.min(rest.len()) {
+                let (next, warm) = (&next, &warm);
+                let _ = std::thread::Builder::new()
+                    .name("vello pipeline precompile".into())
+                    .spawn_scoped(scope, move || {
+                        let Some((device, queue)) = open_device() else {
+                            return;
+                        };
+                        if warm.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        let options = RendererOptions {
+                            use_cpu,
+                            antialiasing_support,
+                            num_init_threads: NonZeroUsize::new(1),
+                            pipeline_cache: None,
+                        };
+                        let Ok(helper) = Self::new(&device, options) else {
+                            return;
+                        };
+                        // The same order as `order`: both renderers registered the same shaders.
+                        let helper_order = helper.engine.precompile_order();
+                        while !warm.load(Ordering::Relaxed)
+                            && let Some(&index) =
+                                helper_order.get(1 + next.fetch_add(1, Ordering::Relaxed))
+                        {
+                            helper.engine.dispatch_empty(&device, &queue, index);
+                        }
+                    });
+            }
+            let started = std::time::Instant::now();
+            self.engine.dispatch_empty(device, queue, largest);
+            if started.elapsed() < COMPILED {
+                warm.store(true, Ordering::Relaxed);
+            }
+        });
+    }
+
     /// Creates a new renderer for the specified device.
     pub fn new(device: &Device, mut options: RendererOptions) -> Result<Self> {
         let mut engine = WgpuEngine::new(options.use_cpu, options.pipeline_cache.clone());
