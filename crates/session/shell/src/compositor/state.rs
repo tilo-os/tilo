@@ -488,6 +488,8 @@ pub struct State {
     /// Owns the four selection globals plus the compositor's clipboard
     /// mirror, letting in-process chrome paste without a Wayland round trip. See [`crate::compositor::selection`] for why the data-control globals are gated to privileged clients.
     pub selection: SelectionState,
+    /// Legacy windows remote viewers closed, for the compositor to close.
+    remote_closes: Vec<SurfaceId>,
     /// `wl_output` + xdg-output manager; concrete outputs are added separately.
     pub output_manager_state: OutputManagerState,
     /// Persisted workspace tree; foreign-client toplevels adopt into it as [`crate::shell::state::TileContent::Foreign`] tabs.
@@ -1105,6 +1107,7 @@ impl State {
             input_method_manager_state,
             virtual_keyboard_manager_state,
             selection,
+            remote_closes: Vec::new(),
             output_manager_state,
             workspace_tree,
             share_registry: ShareRegistry::new(),
@@ -2889,33 +2892,7 @@ impl RemoteInputSink for State {
                 // moved the shared seat since this peer's last motion, so
                 // restore this peer's accepted focus/location before its
                 // coordinate-less button edge is delivered.
-                if let Some((x, y)) = self.remote_input_firewall.peer_cursor_global(peer, surface)
-                    && let Some(pointer) = self.seat.get_pointer()
-                {
-                    let focus =
-                        self.surface_handles
-                            .get(&surface)
-                            .cloned()
-                            .and_then(|wl_surface| {
-                                self.remote_input_firewall.view().rect(surface).map(|rect| {
-                                    let origin = crate::compositor::foreign::store()
-                                        .surface_origin(surface, rect);
-                                    (wl_surface, origin.into())
-                                })
-                            });
-                    pointer.motion(
-                        self,
-                        focus,
-                        &MotionEvent {
-                            location: (x, y).into(),
-                            serial,
-                            time,
-                        },
-                    );
-                    if let Some(pointer) = self.seat.get_pointer() {
-                        pointer.frame(self);
-                    }
-                }
+                self.restore_remote_pointer(peer, surface, serial, time);
                 if self.remote_seats.button_transition(peer, button, pressed)
                     && let Some(pointer) = self.seat.get_pointer()
                 {
@@ -2966,6 +2943,18 @@ impl RemoteInputSink for State {
                 let _ = self.remote_seats.seat_mut(peer).leave();
                 self.release_remote_inputs_for_peer(peer);
             }
+            InputEvent::PointerAxis { dx, dy } => {
+                self.restore_remote_pointer(peer, surface, serial, time);
+                let _ = self.remote_pointer_axis(dx, dy, time);
+            }
+            InputEvent::ClipboardText { text } => {
+                let _ = crate::compositor::selection::set_mirror_text(
+                    &self.selection_store(),
+                    crate::compositor::selection::Target::Clipboard,
+                    &text,
+                );
+            }
+            InputEvent::Close => self.remote_closes.push(surface),
             InputEvent::Key {
                 keysym,
                 pressed,
@@ -3004,6 +2993,54 @@ impl RemoteInputSink for State {
 }
 
 impl State {
+    /// Put the shared pointer back where `peer`'s last accepted motion over
+    /// `surface` left it: a legacy client sees one `wl_pointer`, while the
+    /// firewall keeps one cursor per participant, and another peer may have
+    /// moved the seat since. Coordinate-less edges (a button, the wheel)
+    /// land there.
+    fn restore_remote_pointer(
+        &mut self,
+        peer: MsgPeerId,
+        surface: SurfaceId,
+        serial: Serial,
+        time: u32,
+    ) {
+        let Some((x, y)) = self.remote_input_firewall.peer_cursor_global(peer, surface) else {
+            return;
+        };
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        let focus = self
+            .surface_handles
+            .get(&surface)
+            .cloned()
+            .and_then(|wl_surface| {
+                self.remote_input_firewall.view().rect(surface).map(|rect| {
+                    let origin = crate::compositor::foreign::store().surface_origin(surface, rect);
+                    (wl_surface, origin.into())
+                })
+            });
+        pointer.motion(
+            self,
+            focus,
+            &MotionEvent {
+                location: (x, y).into(),
+                serial,
+                time,
+            },
+        );
+        if let Some(pointer) = self.seat.get_pointer() {
+            pointer.frame(self);
+        }
+    }
+
+    /// The legacy windows remote viewers closed since the last call; the
+    /// compositor closes their tabs as a person's close does.
+    pub fn take_remote_closes(&mut self) -> Vec<SurfaceId> {
+        std::mem::take(&mut self.remote_closes)
+    }
+
     fn refresh_foreign_subsurface_tree(&self, root: &WlSurface) {
         use smithay::wayland::compositor::{TraversalAction, with_surface_tree_upward};
 

@@ -72,6 +72,7 @@
 
 pub mod audit;
 pub mod broker;
+pub mod fleet;
 pub mod guard;
 pub mod guest;
 pub mod images;
