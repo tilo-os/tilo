@@ -24,6 +24,24 @@ cover = "20260110053727.2295260-1-christianshewitt@gmail.com"
 status = "not merged: absent from mainline v7.3-rc (a74306e2e676) and linux-next next-20261002"
 drop_when = "the Fedora kernel contains the compatible \"rockchip,rk3568-vdec\" in drivers/media/platform/rockchip/rkvdec/rkvdec.c"
 fedora_kernel = "kernel-7.2.7-200.fc44"
+# Not shippable as carried: on an Orange Pi 3B v2.1 (RK3566, U-Boot 2026.07
+# EFI) the driver probes and enumerates S264/S265 up to 4096x2304, but the
+# first VIDIOC_STREAMON panics the board. Zeroing the row-cache buffers in the
+# SRAM pool the DT node assigns (sram@fdcc0000, 0xb000) raises an asynchronous
+# SError (netconsole, a 10-frame H.264 1080p decode, no session running):
+#
+#   SError Interrupt on CPU1, code 0x00000000be000011 -- SError
+#   pc : __pi_memset_generic+0x170/0x188
+#   lr : gen_pool_dma_zalloc_algo+0x30/0x50
+#     gen_pool_dma_zalloc_align+0x34/0x60
+#     rkvdec_allocate_rcb+0x124/0x240 [rockchip_vdec]
+#     rkvdec_start_streaming+0x4c/0xc0 [rockchip_vdec]
+#     vb2_core_streamon <- v4l2_m2m_ioctl_streamon <- VIDIOC_STREAMON
+#   Kernel panic - not syncing: Asynchronous SError Interrupt
+#
+# Untested suspects: the range is reserved or secure-only under this board's
+# firmware, or needs a clock/power domain that is off at that point. The next
+# experiment would be the node without its `sram` property.
 
 [[series.patch]]
 file = "0004-media-dt-bindings-rockchip-add-rk3568-video-decoder-bindings.patch"
