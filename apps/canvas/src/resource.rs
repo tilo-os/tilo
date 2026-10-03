@@ -365,6 +365,27 @@ fn store_inline_picture(data: &str) -> Result<String, String> {
     store(&bytes)
 }
 
+/// Starting a new artwork and opening a saved one.
+fn document_declarations() -> Vec<ActionDecl<ArtworkResource>> {
+    vec![
+        decl::<NewArtwork>(
+            "new-artwork",
+            "New artwork",
+            "Start over on a blank artwork (the old one stays one undo away): a size (screen, a4, letter, square, poster, icon; landscape turns it) or width and height, and a start: paper, white, watercolour, oil, panel or dark (its ground and its first layer's medium).",
+            CanvasAction::NewArtwork,
+        ),
+        ActionDecl::new("open-artwork", "Open artwork", params_of::<OpenArtwork>(), |args, _now| {
+            let open: OpenArtwork = read_args(args)?;
+            let bytes = artwork_bytes(&open.file)?;
+            crate::document::ArtworkFile::parse(&bytes)?;
+            let file = String::from_utf8(bytes)
+                .map_err(|_| "the artwork file is not UTF-8 text".to_owned())?;
+            Ok(CanvasAction::OpenArtwork(OpenArtwork { file }))
+        })
+        .describe("Replace the artwork with a saved .artwork file (an absolute path, a content address, or its JSON); the old one stays one undo away."),
+    ]
+}
+
 /// The bytes of the artwork file `file` names: its JSON itself, stored
 /// content, or a file.
 ///
@@ -528,21 +549,6 @@ impl Resource for ArtworkResource {
                 "Set the title, size (units) or ground: texture (smooth, paper, cold-press, rough, linen, panel) and colour.",
                 CanvasAction::SetArtwork,
             ),
-            decl::<NewArtwork>(
-                "new-artwork",
-                "New artwork",
-                "Start over on a blank artwork (the old one stays one undo away): a size (screen, a4, letter, square, poster, icon; landscape turns it) or width and height, and a start: paper, white, watercolour, oil, panel or dark (its ground and its first layer's medium).",
-                CanvasAction::NewArtwork,
-            ),
-            ActionDecl::new("open-artwork", "Open artwork", params_of::<OpenArtwork>(), |args, _now| {
-                let open: OpenArtwork = read_args(args)?;
-                let bytes = artwork_bytes(&open.file)?;
-                crate::document::ArtworkFile::parse(&bytes)?;
-                let file = String::from_utf8(bytes)
-                    .map_err(|_| "the artwork file is not UTF-8 text".to_owned())?;
-                Ok(CanvasAction::OpenArtwork(OpenArtwork { file }))
-            })
-            .describe("Replace the artwork with a saved .artwork file (an absolute path, a content address, or its JSON); the old one stays one undo away."),
             decl::<SaveMedium>(
                 "save-medium",
                 "Save medium",
@@ -583,6 +589,7 @@ impl Resource for ArtworkResource {
         ]
         .into_iter()
         .chain(area_declarations())
+        .chain(document_declarations())
         .collect()
     }
 

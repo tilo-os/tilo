@@ -2153,8 +2153,6 @@
                       "edit-layer",
                       "remove-layer",
                       "set-artwork",
-                      "new-artwork",
-                      "open-artwork",
                       "save-medium",
                       "remove-medium",
                       "align",
@@ -2162,7 +2160,9 @@
                       "import-svg",
                       "select",
                       "use-selection",
-                      "combine"
+                      "combine",
+                      "new-artwork",
+                      "open-artwork"
                     ]
                   },
                   "args": {

@@ -54,28 +54,18 @@ impl Choices {
     /// The width and height chosen; `None` while a custom side is not a
     /// number in range.
     pub fn dimensions(&self) -> Option<(f64, f64)> {
-        let size = self.size.get();
-        if size == CUSTOM {
-            let side = |text: String| {
+        let chosen = self.size.get();
+        if chosen == CUSTOM {
+            let parse = |text: String| {
                 text.trim()
                     .parse::<f64>()
                     .ok()
-                    .filter(|side| (16.0..=crate::model::MAX_SIDE).contains(side))
+                    .filter(|value| (16.0..=crate::model::MAX_SIDE).contains(value))
             };
-            return Some((side(self.width.get())?, side(self.height.get())?));
+            return Some((parse(self.width.get())?, parse(self.height.get())?));
         }
-        let preset = document::size(&size)?;
-        let (long, short) = (
-            preset.width.max(preset.height),
-            preset.width.min(preset.height),
-        );
-        if preset.width == preset.height {
-            Some((preset.width, preset.height))
-        } else if self.landscape.get() {
-            Some((long, short))
-        } else {
-            Some((short, long))
-        }
+        let preset = document::size(&chosen)?;
+        Some(turned(preset.width, preset.height, self.landscape.get()))
     }
 
     /// The ground chosen.
@@ -98,6 +88,19 @@ impl Choices {
             start: Some(self.start.get()),
             ..NewArtwork::default()
         }))
+    }
+}
+
+/// `width` by `height` turned to stand `landscape` or upright; a square
+/// stays as it is.
+fn turned(width: f64, height: f64, landscape: bool) -> (f64, f64) {
+    let (long, short) = (width.max(height), width.min(height));
+    if (width - height).abs() < f64::EPSILON {
+        (width, height)
+    } else if landscape {
+        (long, short)
+    } else {
+        (short, long)
     }
 }
 
@@ -303,9 +306,8 @@ fn sides(width: f64, height: f64) -> String {
     format!("{width:.0} × {height:.0}")
 }
 
-/// The new-artwork dialog's body.
-pub fn body(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
-    let choices = tools.new.clone();
+/// The size tiles: the presets turned as the dialog says, and any size.
+fn size_tiles(choices: &Choices) -> Vec<Element> {
     let lookup = ui::i18n::I18nManager::lookup_plain;
     let mut sizes: Vec<Element> = SIZES
         .iter()
@@ -313,16 +315,7 @@ pub fn body(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
             let (width, height) = (size.width, size.height);
             let landscape = choices.landscape.clone();
             let ground = choices.clone();
-            let turned = move || {
-                let (long, short) = (width.max(height), width.min(height));
-                if width == height {
-                    (width, height)
-                } else if landscape.get() {
-                    (long, short)
-                } else {
-                    (short, long)
-                }
-            };
+            let turned = move || turned(width, height, landscape.get());
             let turned = std::rc::Rc::new(turned);
             let shown = std::rc::Rc::clone(&turned);
             tile(
@@ -359,6 +352,12 @@ pub fn body(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
             || ui::i18n::I18nManager::lookup_plain("canvas-size-custom-detail"),
         ));
     }
+    sizes
+}
+
+/// The tiles of the grounds with the medium of their first layer.
+fn start_tiles(choices: &Choices) -> Vec<Element> {
+    let lookup = ui::i18n::I18nManager::lookup_plain;
     let starts: Vec<Element> = STARTS
         .iter()
         .map(|start| {
@@ -387,6 +386,12 @@ pub fn body(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
             )
         })
         .collect();
+    starts
+}
+
+/// Portrait or landscape, and for any size its sides.
+fn orientation(cx: &ViewCx<ArtworkResource>, choices: &Choices) -> Element {
+    let lookup = ui::i18n::I18nManager::lookup_plain;
     let orientation = ui::widget::ToggleGroup::from_state(
         vec![
             (
@@ -436,10 +441,18 @@ pub fn body(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
             )
         })
     };
-    let title = TextInput::from_state(&choices.title)
-        .with_id("canvas-new-title")
-        .with_placeholder(&lookup("canvas-untitled"))
-        .with_accessible_name(lookup("canvas-artwork-title"));
+    Box::new(
+        Row::new()
+            .no_wrap()
+            .with_gap(12.0)
+            .with_align_items(ui::taffy::AlignItems::Center)
+            .push(Box::new(orientation))
+            .push(custom),
+    )
+}
+
+/// What creating the artwork does to the one in the window.
+fn replacing(cx: &ViewCx<ArtworkResource>) -> Element {
     let replacing = {
         let live = cx.live().clone();
         Text::dynamic(move || {
@@ -458,26 +471,30 @@ pub fn body(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
         .with_role(TextRole::Caption)
         .dimmed()
     };
+    Box::new(replacing)
+}
+
+/// The new-artwork dialog's body.
+pub fn body(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
+    let choices = tools.new.clone();
+    let lookup = ui::i18n::I18nManager::lookup_plain;
+    let title = TextInput::from_state(&choices.title)
+        .with_id("canvas-new-title")
+        .with_placeholder(&lookup("canvas-untitled"))
+        .with_accessible_name(lookup("canvas-artwork-title"));
     Box::new(
         Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .with_gap(10.0)
             .push(super::heading("canvas-new-size"))
-            .push(rows(sizes, 4))
-            .push(Box::new(
-                Row::new()
-                    .no_wrap()
-                    .with_gap(12.0)
-                    .with_align_items(ui::taffy::AlignItems::Center)
-                    .push(Box::new(orientation))
-                    .push(custom),
-            ))
+            .push(rows(size_tiles(&choices), 4))
+            .push(orientation(cx, &choices))
             .push(super::heading("canvas-new-start"))
-            .push(rows(starts, 3))
+            .push(rows(start_tiles(&choices), 3))
             .push(super::heading("canvas-artwork-title"))
             .push(Box::new(title))
-            .push(Box::new(replacing)),
+            .push(replacing(cx)),
     )
 }
 
@@ -512,11 +529,7 @@ fn card(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
     let lookup = ui::i18n::I18nManager::lookup_plain;
     let button = |id: &str, icon: Icon, then: Box<dyn Fn()>| -> Element {
         let name = lookup(id);
-        Box::new(
-            Button::new(id, &name, None)
-                .with_icon(icon)
-                .on_view(move || then()),
-        )
+        Box::new(Button::new(id, &name, None).with_icon(icon).on_view(then))
     };
     let new = {
         let sheet = tools.sheet.clone();
