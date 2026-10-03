@@ -467,6 +467,12 @@ impl CaptureExecutor {
                 .map(|id| CaptureOutcome::FloatingClosed { id }),
         );
 
+        let mut app_surface_adopted = false;
+        let mirrors_before: Vec<String> = self
+            .live_mirrors
+            .iter()
+            .map(|mirror| mirror.id.clone())
+            .collect();
         for (id, region, app_id, local_region) in std::mem::take(&mut self.external_updates) {
             if let Some(mirror) = self.live_mirrors.iter_mut().find(|mirror| mirror.id == id) {
                 mirror.intent.regions = vec![region];
@@ -514,6 +520,7 @@ impl CaptureExecutor {
                     },
                 );
                 tracing::debug!(id = %request.id, ?request.role, "shell adopted live app-owned surface");
+                app_surface_adopted = true;
                 continue;
             }
             match self.adopt_floating_request(frame_builder, request, true) {
@@ -770,8 +777,24 @@ impl CaptureExecutor {
         // pass. Reconcile structural nodes now so its very first appended
         // frame has real geometry at `spawn_from` rather than Rect::ZERO.
         // This shared gate removes the blank first frame for both live PiP and
-        // frozen screenshot pins.
-        frame_builder.relayout();
+        // frozen screenshot pins. A frame that added no surface keeps the
+        // layout it already has: laying everything out a second time can size
+        // a window differently from the first pass and resize it every frame.
+        let surface_added = app_surface_adopted
+            || outcomes.iter().any(|outcome| {
+                matches!(
+                    outcome,
+                    CaptureOutcome::Pinned { .. } | CaptureOutcome::Floated { .. }
+                )
+            });
+        if surface_added
+            || self
+                .live_mirrors
+                .iter()
+                .any(|mirror| !mirrors_before.contains(&mirror.id))
+        {
+            frame_builder.relayout();
+        }
         // Previews render from the frame store and a live repaint of each
         // window, never from the presented scene, so chrome over a window
         // never shows up inside its own preview.
