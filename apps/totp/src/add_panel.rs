@@ -38,8 +38,8 @@ use ui::tokens::TextRole;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
     AppModel, Button, Column, ControlSize, Element, EventCtx, Field, LabelPlacement, ListRow,
-    ModalDialog, ModelPath, Scrollable, Section, SectionHeader, TaffyTreeExt, Text, TextInput,
-    TextInputKind, ToggleGroup, Widget,
+    ModalDialog, ModelPath, Row, Scrollable, Section, SectionHeader, Spacer, TaffyTreeExt, Text,
+    TextInput, TextInputKind, ToggleGroup, Widget,
 };
 
 use crate::model::{self, Account, AccountId, Algorithm};
@@ -529,24 +529,19 @@ fn text_field(
     Box::new(field)
 }
 
-/// A labelled segmented choice: the segments' labels, which one is chosen and
-/// what choosing one does.
+/// A labelled segmented choice, as the label and the control that follow it in
+/// a row: the segments' labels, which one is chosen and what choosing one does.
 fn choice(
     label: &str,
     labels: &[String],
     selected: usize,
     set: impl FnMut(usize) + 'static,
-) -> Element {
+) -> [Element; 2] {
     let segments = labels.iter().map(Segment::new).collect();
-    Box::new(
-        Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .push(Box::new(Text::new(label).with_role(TextRole::Label)))
-            .push(Box::new(
-                ToggleGroup::new(segments, selected).on_change(set),
-            )),
-    )
+    [
+        Box::new(Text::new(label).with_role(TextRole::Label)),
+        Box::new(ToggleGroup::new(segments, selected).on_change(set)),
+    ]
 }
 
 /// What pressing a control of the sheet asks for: a callback that queues it.
@@ -597,7 +592,7 @@ fn details_section(sheet: &Shared, values: &Values, headed: bool) -> Section {
             &t("totp-add-label-issuer"),
             &values.issuer,
             TextInputKind::Name,
-            "GitHub",
+            &t("totp-add-placeholder-issuer"),
             None,
         ),
         text_field(
@@ -606,7 +601,7 @@ fn details_section(sheet: &Shared, values: &Values, headed: bool) -> Section {
             &t("totp-add-label-account"),
             &values.label,
             TextInputKind::Username,
-            "ada@example.com",
+            &t("totp-add-placeholder-account"),
             None,
         ),
         text_field(
@@ -615,7 +610,7 @@ fn details_section(sheet: &Shared, values: &Values, headed: bool) -> Section {
             &t("totp-add-label-secret"),
             &values.secret,
             TextInputKind::Password,
-            "JBSWY3DPEHPK3PXP",
+            &t("totp-add-placeholder-secret"),
             None,
         ),
     ]);
@@ -627,7 +622,7 @@ fn details_section(sheet: &Shared, values: &Values, headed: bool) -> Section {
 }
 
 /// The cryptographic parameters, behind a Show / Hide action in the header.
-fn advanced_section(sheet: &Shared, values: &Values, open: bool) -> Section {
+fn advanced_section(sheet: &Shared, values: &Values, theme: &Theme, open: bool) -> Section {
     let toggle = Button::new(
         "totp-advanced",
         &t(if open {
@@ -645,20 +640,29 @@ fn advanced_section(sheet: &Shared, values: &Values, open: bool) -> Section {
             .map(|algorithm| algorithm.as_str().to_owned())
             .collect();
         let algorithm = values.algorithm.clone();
-        items.push(choice(
+        let counts: Vec<String> = DIGITS.iter().map(u8::to_string).collect();
+        let digits = values.digits.clone();
+        // The two segmented choices share a line, so the form stays within a
+        // window of ordinary height with the section open.
+        let mut row = Row::new().with_gap(theme.tokens.spacing.s3);
+        for part in choice(
             &t("totp-add-label-algorithm"),
             &algorithms,
             values.algorithm.with(|selected| *selected),
             move |index| algorithm.set(index),
-        ));
-        let counts: Vec<String> = DIGITS.iter().map(u8::to_string).collect();
-        let digits = values.digits.clone();
-        items.push(choice(
+        ) {
+            row = row.push(part);
+        }
+        row = row.push(Box::new(Spacer::new()));
+        for part in choice(
             &t("totp-add-label-digits"),
             &counts,
             values.digits.with(|selected| *selected),
             move |index| digits.set(index),
-        ));
+        ) {
+            row = row.push(part);
+        }
+        items.push(Box::new(row));
         items.push(text_field(
             sheet,
             FieldId::Period,
@@ -721,10 +725,16 @@ fn build(sheet: &Shared, values: &Values, theme: &Theme, frame: &Frame<'_>) -> S
     }
     groups = groups
         .push(Box::new(details_section(sheet, values, imports)))
-        .push(Box::new(advanced_section(sheet, values, advanced_open)));
+        .push(Box::new(advanced_section(
+            sheet,
+            values,
+            theme,
+            advanced_open,
+        )));
     Scrollable::new_vertical()
         .with_max_height(frame.cap)
         .with_scrollbar(frame.bar)
+        .always_visible()
         .with_persisted_offset(Rc::clone(frame.offset))
         .with_cursor(frame.cursor)
         .with_child(Box::new(groups))
@@ -897,9 +907,6 @@ impl AddAccountPanel {
         self.open();
         self.sheet.borrow_mut().advanced_open = true;
         self.rebuild();
-        if let Some(dialog) = &mut self.dialog {
-            dialog.content_mut().scroll_to_end();
-        }
     }
 
     /// Open the same calm form for an existing account. This is intentionally
