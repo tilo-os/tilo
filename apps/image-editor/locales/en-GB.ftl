@@ -38,7 +38,7 @@ image-editor-empty-message = Open an image or drop one here to start editing.
 image-editor-original = Original
 image-editor-result = Result
 image-editor-unused = Not in the result
-image-editor-graph-hint = Drag from a step's output to another step's input to reconnect them. Press G to go back.
+image-editor-graph-hint = Drag from an output to an input to reconnect steps.
 
 # Transient status.
 image-editor-added = Added { $step }
@@ -88,3 +88,36 @@ image-editor-search-source = Original image
 image-editor-search-no-source = No image open
 image-editor-search-export = Export PNG
 image-editor-search-result = Final image
+
+# Palette and agent actions.
+image-editor-action-open-description = Choose a PNG, JPEG or WebP image
+image-editor-action-export-description = Save the edited image as a PNG beside the original
+image-editor-action-add-exposure = Add exposure
+image-editor-action-add-contrast = Add contrast
+image-editor-action-add-colour = Add colour
+image-editor-action-add-mono = Add black and white
+image-editor-action-add-rotate = Add rotation
+image-editor-action-add-crop = Add crop
+image-editor-action-add-description = Add a step to the image without changing the original
+image-editor-action-show-original = Show original
+image-editor-action-show-original-description = Select the original image
+image-editor-action-show-adjustment = Show adjustment
+image-editor-action-show-adjustment-description = Select this adjustment to change it
+image-editor-action-show-result = Show result
+image-editor-action-show-result-description = Select the finished image
+image-editor-action-set-description = Set this adjustment's value
+image-editor-action-set-exposure = Set exposure
+image-editor-action-set-contrast = Set contrast
+image-editor-action-set-colour = Set colour
+image-editor-action-set-rotation = Set rotation
+image-editor-action-set-crop-x = Set crop left edge
+image-editor-action-set-crop-y = Set crop top edge
+image-editor-action-set-crop-width = Set crop width
+image-editor-action-set-crop-height = Set crop height
+image-editor-action-value = Value
+image-editor-action-value-description = The adjustment's exact value
+image-editor-action-move = Move step
+image-editor-action-move-description = Move this step in the graph
+image-editor-action-move-x = Horizontal position in the graph
+image-editor-action-move-y = Vertical position in the graph
+image-editor-action-remove-description = Remove this step and keep the steps after it connected
