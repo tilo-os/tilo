@@ -78,7 +78,7 @@ fn ago(time_ms: i64) -> String {
     else {
         return String::new();
     };
-    ui::widget::history::format_relative_time(at, ui::time::SystemTime::now())
+    ui::widget::history::format_relative_time(at, ui::time::wall())
 }
 
 /// The panel.
