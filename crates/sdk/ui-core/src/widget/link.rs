@@ -1,4 +1,4 @@
-//! A hyperlink: theme-driven, underlined accent-coloured text that opens a
+//! A hyperlink: primary ink with an underline, theme-driven, that opens a
 //! URL when clicked, activated by keyboard (Enter / Space), or triggered by
 //! an assistive-technology `Activate`.
 //!
