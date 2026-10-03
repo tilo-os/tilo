@@ -222,12 +222,20 @@ pub struct Agent {
 }
 
 /// One parsed request line: a [`Command`], optionally on behalf of an agent
-/// named by the line's `agent` (and `agent_label`) fields.
+/// named by the line's `agent` (and `agent_label`) fields, and optionally
+/// aimed at one app's window by its `window` field (the window's app id).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Request {
     pub command: Command,
     pub agent: Option<Agent>,
+    /// The app id of the window an agent acts in: its window takes focus, the
+    /// command's coordinates are relative to the window's top-left and its
+    /// screenshots show the window alone.
+    pub window: Option<String>,
 }
+
+/// Longest `window` app id a request may name.
+pub const MAX_WINDOW_CHARS: usize = 255;
 
 /// Top-level response envelope: an `ok` payload (per-command shape) or a structured `err`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1348,9 +1356,13 @@ pub fn parse_request(line: &str) -> Result<Request, Response> {
     };
     let mut value = serde_json::from_str::<serde_json::Value>(line.trim())
         .map_err(|e| parse_error(format!("invalid JSON command: {e}")))?;
-    let (agent, label) = match value.as_object_mut() {
-        Some(fields) => (fields.remove("agent"), fields.remove("agent_label")),
-        None => (None, None),
+    let (agent, label, window) = match value.as_object_mut() {
+        Some(fields) => (
+            fields.remove("agent"),
+            fields.remove("agent_label"),
+            fields.remove("window"),
+        ),
+        None => (None, None, None),
     };
     let command = serde_json::from_value::<Command>(value)
         .map_err(|e| parse_error(format!("invalid JSON command: {e}")))?;
@@ -1386,7 +1398,28 @@ pub fn parse_request(line: &str) -> Result<Request, Response> {
         }
         Some(_) => return Err(invalid("agent must be a string")),
     };
-    Ok(Request { command, agent })
+    let window = match window {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(app_id))
+            if !app_id.is_empty()
+                && app_id.chars().count() <= MAX_WINDOW_CHARS
+                && !app_id.chars().any(char::is_control) =>
+        {
+            Some(app_id)
+        }
+        Some(_) => {
+            return Err(Response::Err {
+                code: "invalid_window".to_string(),
+                message: "window must be an app id: 1 to 255 characters without control characters"
+                    .to_string(),
+            });
+        }
+    };
+    Ok(Request {
+        command,
+        agent,
+        window,
+    })
 }
 
 /// Protocol error for a command an agent-control connection may not send.
@@ -2889,6 +2922,7 @@ mod agent_request_tests {
                     id: "mcp:1".into(),
                     label: Some("Claude Code".into()),
                 }),
+                window: None,
             }
         );
         let plain =
@@ -2916,6 +2950,24 @@ mod agent_request_tests {
         }
         let error = parse_request(r#"{"op":"go_fishing","agent":"a"}"#).err();
         assert_eq!(error.map(code).as_deref(), Some("parse_error"));
+    }
+
+    #[test]
+    fn a_request_can_aim_at_one_apps_window() {
+        let request = parse_request(r#"{"op":"click_at","x":1,"y":2,"window":"so.tilo.canvas"}"#)
+            .unwrap_or_else(|error| panic!("{error:?}"));
+        assert_eq!(request.window.as_deref(), Some("so.tilo.canvas"));
+        assert_eq!(request.command, Command::ClickAt { x: 1.0, y: 2.0 });
+        for line in [
+            r#"{"op":"key","key":"a","window":""}"#,
+            r#"{"op":"key","key":"a","window":5}"#,
+            r#"{"op":"key","key":"a","window":"a\u0000b"}"#,
+        ] {
+            let error = parse_request(line)
+                .err()
+                .unwrap_or_else(|| panic!("{line}"));
+            assert_eq!(code(error), "invalid_window", "{line}");
+        }
     }
 
     #[test]

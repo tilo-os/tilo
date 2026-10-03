@@ -3713,9 +3713,109 @@ struct AgentScope {
     agent: String,
     peer: crate::network::protocol::PeerId,
     strip: crate::shell::state::StripId,
-    /// What the agent sees ([`agent_viewport`]): its coordinates' origin and
-    /// its screenshots' extent.
+    /// What the agent sees ([`agent_viewport`], or the window it aimed at):
+    /// its coordinates' origin and its screenshots' extent.
     viewport: Rect,
+    /// The app id of the window the command aimed at, when it named one.
+    window: Option<String>,
+}
+
+/// Where one app's window lives in the workspace tree.
+struct WindowTarget {
+    workspace: crate::shell::state::WorkspaceId,
+    strip: crate::shell::state::StripId,
+    group: crate::shell::state::GroupId,
+    tab: u64,
+    surface: foreign::SurfaceId,
+}
+
+/// The window of `app_id` that `agent` may act in: one in its own strip
+/// first, else one in a strip no other agent works in. Refusals name what
+/// the agent can aim at instead.
+#[allow(
+    clippy::result_large_err,
+    reason = "the refusal is the wire Response the transport writes back as is, like parse_request's"
+)]
+fn agent_window(
+    fb: &FrameBuilder,
+    agents: &crate::compositor::agent_seats::AgentSeats,
+    agent: &str,
+    app_id: &str,
+) -> Result<WindowTarget, test_control::Response> {
+    let own = agents.seat(agent).and_then(|seat| seat.strip);
+    let mut open = Vec::new();
+    let mut busy = false;
+    let mut found: Option<WindowTarget> = None;
+    {
+        let chrome = fb.chrome();
+        let tree = chrome.tree();
+        let Some(ws) = tree.desktop.active_workspace() else {
+            return Err(agent_refusal("no_workspace", "no active workspace"));
+        };
+        for strip in &ws.strips {
+            let owner = agents.strip_owner(strip.id).filter(|owner| *owner != agent);
+            for group in &strip.window_groups {
+                for tab in &group.tabs {
+                    let crate::shell::state::TileContent::Foreign {
+                        app_id: tab_app,
+                        surface_id,
+                    } = &tab.tile
+                    else {
+                        continue;
+                    };
+                    if tab_app != app_id {
+                        open.push(tab_app.clone());
+                        continue;
+                    }
+                    if owner.is_some() {
+                        busy = true;
+                        continue;
+                    }
+                    let better = found
+                        .as_ref()
+                        .is_none_or(|current| own == Some(strip.id) && own != Some(current.strip));
+                    if better {
+                        found = Some(WindowTarget {
+                            workspace: ws.id,
+                            strip: strip.id,
+                            group: group.id,
+                            tab: tab.id,
+                            surface: *surface_id,
+                        });
+                    }
+                }
+            }
+        }
+        drop(tree);
+        drop(chrome);
+    }
+    found.ok_or_else(|| {
+        if busy {
+            agent_refusal(
+                "window_busy",
+                &format!("another agent works in the strip holding {app_id}'s window"),
+            )
+        } else {
+            open.sort();
+            open.dedup();
+            agent_refusal(
+                "unknown_window",
+                &format!(
+                    "no window of {app_id} is open; open windows: [{}] (or none, for the whole screen)",
+                    open.join(", ")
+                ),
+            )
+        }
+    })
+}
+
+/// The rect `target`'s window is drawn into, on screen.
+fn window_viewport(fb: &FrameBuilder, target: &WindowTarget) -> Option<Rect> {
+    let screen = agent_viewport(fb)?;
+    let rect = foreign::store()
+        .placement(target.surface)?
+        .intersect(screen);
+    (rect.width() >= 1.0 && rect.height() >= 1.0).then_some(rect)
 }
 
 impl AgentScope {
@@ -3760,6 +3860,7 @@ fn run_as_participant(
 )]
 fn seat_agent(
     agent: &test_control::Agent,
+    window: Option<&str>,
     command: &test_control::Command,
     fb: &mut FrameBuilder,
     ctx: &mut TestControlCtx,
@@ -3770,6 +3871,9 @@ fn seat_agent(
         return Ok(None);
     }
     let label = agent.label.clone().unwrap_or_else(|| agent.id.clone());
+    let target = window
+        .map(|app_id| agent_window(fb, &ctx.agents, &agent.id, app_id))
+        .transpose()?;
     let mut strip = None;
     {
         let agents = &ctx.agents;
@@ -3787,8 +3891,17 @@ fn seat_agent(
         {
             current = Some(active);
         }
+        // Aiming at a window makes the strip holding it the agent's own.
+        if let Some(target) = &target {
+            current = Some(target.strip);
+        }
         fb.with_chrome(|chrome| {
-            chrome.set_single_strip(true);
+            // An agent seeing the whole screen sees its strip alone. One aimed
+            // at a window sees just that window, which keeps the size it has,
+            // so its app is not resized under it by the agent's arrival.
+            if target.is_none() {
+                chrome.set_single_strip(true);
+            }
             strip = chrome.agent_strip(current, claimed, &label);
         });
     }
@@ -3799,8 +3912,12 @@ fn seat_agent(
         seat.peer
     };
     fb.relayout();
-    let viewport = agent_viewport(fb)
+    let screen = agent_viewport(fb)
         .ok_or_else(|| agent_refusal("no_screen", "the compositor has no screen yet"))?;
+    let mut viewport = target
+        .as_ref()
+        .and_then(|target| window_viewport(fb, target))
+        .unwrap_or(screen);
     let handover = ctx.agents.hand_over(
         &agent.id,
         &label,
@@ -3811,10 +3928,37 @@ fn seat_agent(
         run_as_participant(*previous, releases, fb, ctx, state);
     }
     let mut focused = false;
-    fb.with_chrome(|chrome| focused = chrome.focus_strip(strip));
+    fb.with_chrome(|chrome| {
+        focused = match &target {
+            Some(target) if !window_focused(chrome, target) => {
+                chrome.focus_tab(target.workspace, target.strip, target.group, target.tab);
+                true
+            }
+            Some(_) => false,
+            None => chrome.focus_strip(strip),
+        };
+    });
     if focused {
         fb.relayout();
         fb.reconcile_native_focus(&mut ctx.focus);
+    }
+    if let Some(target) = &target
+        && let Some(screen) = agent_viewport(fb)
+        && foreign::store()
+            .placement(target.surface)
+            .is_some_and(|rect| rect.intersect(screen) != rect)
+        && fb.host_mut().reveal_group_now(target.strip, target.group)
+    {
+        // The window runs off the screen: bring all of it into view.
+        fb.relayout();
+    }
+    if let Some(target) = &target {
+        viewport = window_viewport(fb, target).ok_or_else(|| {
+            agent_refusal(
+                "window_not_shown",
+                "the window is not on screen yet; it may still be opening, try again",
+            )
+        })?;
     }
     client_input::sync_keyboard_focus(state, fb);
     run_as_participant(peer, &handover.restore, fb, ctx, state);
@@ -3826,7 +3970,24 @@ fn seat_agent(
         peer,
         strip,
         viewport,
+        window: window.map(str::to_owned),
     }))
+}
+
+/// Whether `target`'s tab is the one shown and focused already.
+fn window_focused(chrome: &crate::shell::chrome_state::ChromeState, target: &WindowTarget) -> bool {
+    let tree = chrome.tree();
+    let desktop = &tree.desktop;
+    let focused = desktop.active == target.workspace
+        && desktop.active_strip.get(&target.workspace) == Some(&target.strip)
+        && desktop.active_group.get(&target.strip) == Some(&target.group)
+        && desktop
+            .active_workspace()
+            .and_then(|ws| ws.strips.iter().find(|s| s.id == target.strip))
+            .and_then(|s| s.window_groups.iter().find(|g| g.id == target.group))
+            .is_some_and(|g| g.active_tab == target.tab);
+    drop(tree);
+    focused
 }
 
 /// Where an agent sees and acts: the whole screen. While agents drive the
@@ -3885,6 +4046,7 @@ fn dispatch_for_agent(
                     "agent": scope.agent,
                     "strip": scope.strip.0,
                     "viewport": [v.x0, v.y0, v.width(), v.height()],
+                    "window": scope.window,
                 })),
                 Vec::new(),
             );
@@ -3920,10 +4082,15 @@ fn dispatch_for_agent(
         .iter()
         .any(|action| matches!(action, PlannedAction::CursorMoved { x, y } if !inside(*x, *y)))
     {
-        return (
-            agent_refusal("outside_viewport", "the pointer would leave the screen"),
-            Vec::new(),
-        );
+        let message = match &scope.window {
+            Some(app_id) => format!(
+                "the pointer would leave {app_id}'s window, which is {}x{} pixels from its top-left",
+                viewport.width().round(),
+                viewport.height().round()
+            ),
+            None => "the pointer would leave the screen".to_owned(),
+        };
+        return (agent_refusal("outside_viewport", &message), Vec::new());
     }
     let response = match response {
         Response::Targets(targets) => Response::Targets(
@@ -4097,6 +4264,7 @@ fn pump_test_control_conn(
                             Some(agent) if !session.is_locked() => {
                                 match seat_agent(
                                     &agent,
+                                    request.window.as_deref(),
                                     &request.command,
                                     frame_builder,
                                     ctx,

@@ -415,7 +415,7 @@ fn a_result_another_process_was_handed_opens_through_the_action_host() {
                 let (stream, _) = listener.accept().unwrap();
                 super::serve_connection(
                     stream,
-                    crate::mcp::McpServer::new(host.clone(), "room".into(), "owner".into()),
+                    &mut crate::mcp::McpServer::new(host.clone(), "room".into(), "owner".into()),
                     &super::Status {
                         version: 1,
                         pid: 1,
