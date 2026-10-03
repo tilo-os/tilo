@@ -168,6 +168,8 @@ pub enum Icon {
     Droplet,
     /// A painter's palette. Lucide `palette`.
     Palette,
+    /// A side panel on the right, shown or hidden. Lucide `panel-right`.
+    PanelRight,
 }
 
 /// Lucide's fixed viewBox. Every stored path assumes this coordinate
@@ -807,6 +809,10 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             circle_path(6.5, 12.5, 0.5),
             circle_path(8.5, 7.5, 0.5),
         ],
+        Icon::PanelRight => vec![
+            rect_path(3.0, 3.0, 18.0, 18.0, 2.0),
+            line_path(15.0, 3.0, 15.0, 21.0),
+        ],
     }
 }
 
@@ -1384,6 +1390,7 @@ mod tests {
                 Icon::Flag,
                 Icon::Droplet,
                 Icon::Palette,
+                Icon::PanelRight,
             ] {
                 let sub = icon_subpaths(icon);
                 assert!(!sub.is_empty(), "{icon:?} produced no subpaths");

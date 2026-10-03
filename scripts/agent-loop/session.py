@@ -194,6 +194,11 @@ def start(args) -> int:
     display_file = session.run / "tilo-session" / "wayland-display"
     wait_for(display_file, compositor, args.timeout, "the compositor")
     env["WAYLAND_DISPLAY"] = display_file.read_text().strip()
+    # The app sees the desktop a Tilo login gives its apps, so it leaves
+    # History and its title to the shell's chrome as it does there, rather
+    # than drawing a standalone window's bar. The compositor is not told:
+    # a login's compositor exports its session to the user manager.
+    env["XDG_CURRENT_DESKTOP"] = "tilo:GNOME"
     dev = subprocess.Popen(
         [str(TILO_APP), "dev", str(app_dir), "--app-only"],
         env=env,
