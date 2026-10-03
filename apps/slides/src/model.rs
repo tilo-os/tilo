@@ -18,6 +18,7 @@
 
 use ui::ColorCompat;
 use ui::paint::with_alpha;
+use ui::tokens::colors::PresenceHue;
 use ui::widget::BlockContent;
 use ui::widget::marks::{Mark, MarkSpan};
 use uuid::Uuid;
@@ -444,8 +445,8 @@ impl Layout {
     pub fn label(self) -> &'static str {
         match self {
             Layout::Title => "Title",
-            Layout::TitleContent => "Title + Body",
-            Layout::TwoColumn => "Two Column",
+            Layout::TitleContent => "Title and body",
+            Layout::TwoColumn => "Two columns",
             Layout::Section => "Section",
             Layout::Blank => "Blank",
         }
@@ -640,21 +641,31 @@ pub struct Palette {
     pub warning: Color,
     pub danger: Color,
     pub info: Color,
+    /// The status colour of an image that could not be loaded.
+    pub failed: Color,
     /// The `text` and `text-dim` inks for each slide background, in
     /// [`Background::ALL`] order. See [`Palette::on`].
     inks: [(Color, Color); 3],
 }
 
+/// A deck's colours are content: they come from the presence palette's
+/// evenly spaced hues, never from the status colours, and a deck looks the
+/// same in either theme, so its hues are the light palette's (deep enough to
+/// carry white type).
+static DECK_HUES: std::sync::LazyLock<ui::tokens::colors::PresencePalette> =
+    std::sync::LazyLock::new(|| ui::tokens::Colors::light().presence);
+
 impl Palette {
     /// Build the resolved palette for `kind` against `theme`.
     pub fn resolve(kind: PaletteKind, theme: &ui::theme::Theme) -> Palette {
         let c = &theme.tokens.colors;
+        let hue = |h: PresenceHue| DECK_HUES.hue(h);
         let accent = match kind {
-            PaletteKind::Indigo => theme.accent_primary,
-            PaletteKind::Emerald => c.semantic.success,
-            PaletteKind::Amber => c.semantic.warning,
-            PaletteKind::Rose => c.semantic.danger,
-            PaletteKind::Sky => c.semantic.info,
+            PaletteKind::Indigo => hue(PresenceHue::Blue),
+            PaletteKind::Emerald => hue(PresenceHue::Green),
+            PaletteKind::Amber => hue(PresenceHue::Amber),
+            PaletteKind::Rose => hue(PresenceHue::Pink),
+            PaletteKind::Sky => hue(PresenceHue::Sky),
         };
         let mut palette = Palette {
             accent,
@@ -670,11 +681,17 @@ impl Palette {
             text: c.text_primary,
             text_dim: c.text_dim,
             // White on the accent where it reads, else the legible ink.
-            on_accent: c.readable_on(accent, Color::WHITE),
-            success: c.semantic.success,
-            warning: c.semantic.warning,
-            danger: c.semantic.danger,
-            info: c.semantic.info,
+            // White type on the accent, as slides set it large.
+            on_accent: c.ink_on_any(
+                &[accent],
+                Color::WHITE,
+                ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
+            ),
+            success: hue(PresenceHue::Green),
+            warning: hue(PresenceHue::Amber),
+            danger: hue(PresenceHue::Red),
+            info: hue(PresenceHue::Violet),
+            failed: c.semantic.danger,
             inks: [(c.text_primary, c.text_dim); 3],
         };
         // The theme's text colours are chosen for the theme's own surfaces;
@@ -767,6 +784,34 @@ impl Palette {
         }
     }
 
+    /// The `text` (or, with `dim`, `text-dim`) ink for text standing on
+    /// `ground`: the slide's own ink where it clears AA on that ground,
+    /// otherwise whichever of the palette's inks reads best on it.
+    pub fn ink_on(&self, ground: Color, dim: bool) -> Color {
+        use ui::a11y::contrast_ratio;
+        const AA: f64 = 4.5;
+        let text = if contrast_ratio(self.text, ground) >= AA {
+            self.text
+        } else {
+            std::iter::once(self.text)
+                .chain(self.inks.iter().map(|(ink, _)| *ink))
+                .max_by(|a, b| contrast_ratio(*a, ground).total_cmp(&contrast_ratio(*b, ground)))
+                .unwrap_or(self.text)
+        };
+        if !dim {
+            return text;
+        }
+        if text == self.text && contrast_ratio(self.text_dim, ground) >= AA {
+            return self.text_dim;
+        }
+        let soft = mix(text, ground, 0.3);
+        if contrast_ratio(soft, ground) >= AA {
+            soft
+        } else {
+            text
+        }
+    }
+
     /// Default body / heading text colour for a slide background: the ink
     /// the `text` role resolves to on it (see [`Palette::on`]).
     pub fn on_bg(&self, bg: Background) -> Color {
@@ -848,7 +893,7 @@ fn seed_slide_cover() -> Slide {
                the workshop is for."
         .into();
     s.add(
-        Element::text("CONCEPT REVIEW", 110.0, 250.0, 700.0, 70.0, 28.0).with(|e| {
+        Element::text("Concept review", 110.0, 250.0, 700.0, 70.0, 28.0).with(|e| {
             e.fill = "on-accent".into();
             e.bold = true;
         }),
@@ -869,7 +914,7 @@ fn seed_slide_cover() -> Slide {
     );
     s.add(
         Element::text(
-            "Design workshop  ·  spring review",
+            "Design workshop, spring review",
             110.0,
             500.0,
             900.0,
@@ -963,7 +1008,7 @@ fn seed_slide_two_column() -> Slide {
         }),
     );
     s.add(
-        Element::text("OPTION A", 128.0, 250.0, 460.0, 50.0, 28.0).with(|e| {
+        Element::text("Option A", 128.0, 250.0, 460.0, 50.0, 28.0).with(|e| {
             e.fill = "accent".into();
             e.bold = true;
         }),
@@ -983,7 +1028,7 @@ fn seed_slide_two_column() -> Slide {
         }),
     );
     s.add(
-        Element::text("OPTION B", 696.0, 250.0, 460.0, 50.0, 28.0).with(|e| {
+        Element::text("Option B", 696.0, 250.0, 460.0, 50.0, 28.0).with(|e| {
             e.fill = "white".into();
             e.bold = true;
         }),
@@ -1092,7 +1137,7 @@ fn seed_slide_closing() -> Slide {
     );
     s.add(
         Element::text(
-            "Share feedback by Friday  ·  prototype in April",
+            "Share feedback by Friday, prototype in April",
             110.0,
             450.0,
             1000.0,

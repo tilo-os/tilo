@@ -8,7 +8,8 @@ use vello::kurbo::{Affine, Ellipse, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Fill, ImageBrush};
 
 use ui::paint::PaintCtx;
-use ui::text_render::TextWeight;
+use ui::text_render::TextStyle;
+use vello::peniko::Color;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -42,6 +43,68 @@ pub fn element_dest(dest: Rect, s: f64, e: &Element) -> Rect {
 pub struct DeckAssets<'a> {
     pub palette: &'a Palette,
     pub images: &'a dyn ImageLookup,
+}
+
+/// The hairline that seats a slide on the window ground: derived from that
+/// ground, so a white slide on a white window keeps its edge.
+pub fn seat_slide(
+    scene: &mut Scene,
+    transform: Affine,
+    dest: Rect,
+    corner: f64,
+    theme: &ui::theme::Theme,
+) {
+    scene.stroke(
+        &Stroke::new(f64::from(theme.tokens.metrics.chrome_rule_px)),
+        transform,
+        ui::surface::edge_on(theme.tokens.colors.surfaces.content),
+        None,
+        &ui::surface::edge_outline(dest, corner),
+    );
+}
+
+/// The colour under the middle of text element `e`: the topmost filled
+/// shape beneath it on the slide, else the slide's background.
+fn ground_under(palette: &Palette, slide: &Slide, e: &Element) -> Color {
+    let centre = Point::new(e.x + e.w / 2.0, e.y + e.h / 2.0);
+    let mut ground = palette.slide_bg(slide.background);
+    for other in slide.z_sorted() {
+        if other.id == e.id {
+            break;
+        }
+        let covers = match other.kind {
+            ElementKind::Rect => {
+                Rect::new(other.x, other.y, other.x + other.w, other.y + other.h).contains(centre)
+            }
+            ElementKind::Ellipse => {
+                let (rx, ry) = (other.w / 2.0, other.h / 2.0);
+                if rx <= 0.0 || ry <= 0.0 {
+                    false
+                } else {
+                    let dx = (centre.x - (other.x + rx)) / rx;
+                    let dy = (centre.y - (other.y + ry)) / ry;
+                    dx * dx + dy * dy <= 1.0
+                }
+            }
+            ElementKind::Text | ElementKind::Line | ElementKind::Image => false,
+        };
+        if covers && let Some(fill) = palette.resolve_role(&other.fill) {
+            ground = fill;
+        }
+    }
+    ground
+}
+
+/// The ink a text element is drawn in. The `text` and `text-dim` roles
+/// resolve against what the text actually stands on (a shape's fill, or the
+/// slide's background), so a label on a node stays legible in every theme;
+/// every other role is the colour it names.
+pub fn text_ink(palette: &Palette, slide: &Slide, e: &Element) -> Color {
+    match e.fill.as_str() {
+        "text" => palette.ink_on(ground_under(palette, slide, e), false),
+        "text-dim" => palette.ink_on(ground_under(palette, slide, e), true),
+        role => palette.resolve_role(role).unwrap_or(palette.text),
+    }
 }
 
 /// Paint one slide into `dest`. `corner` is the slide-card corner radius
@@ -83,7 +146,11 @@ pub fn draw_slide_except(
         images: assets.images,
     };
     for el in slide.z_sorted() {
-        if el.kind == ElementKind::Text && editing == Some(el.id.as_str()) {
+        if el.kind == ElementKind::Text {
+            if editing == Some(el.id.as_str()) {
+                continue;
+            }
+            draw_text_element(ctx, text_ink(palette, slide, el), el, dest, s);
             continue;
         }
         draw_element(ctx, assets, el, dest, s);
@@ -173,7 +240,13 @@ fn draw_element(ctx: &mut PaintCtx<'_>, assets: DeckAssets<'_>, e: &Element, des
             draw_image_element(ctx, assets, e, er, s);
         }
         ElementKind::Text => {
-            draw_text_element(ctx, palette, e, dest, s);
+            draw_text_element(
+                ctx,
+                palette.resolve_role(&e.fill).unwrap_or(palette.text),
+                e,
+                dest,
+                s,
+            );
         }
     }
 }
@@ -224,21 +297,14 @@ fn draw_image_element(
         }
         ImageState::Loading => {
             scene.fill(Fill::NonZero, transform, palette.surface_dim, None, &frame);
-            let msg = "Loading image…";
-            let font = (14.0 * s).clamp(9.0, 15.0) as f32;
-            let (tw, th) = tr.measure_weighted(msg, font, None, TextWeight::Regular);
-            tr.draw_text_weighted(
+            draw_placeholder_line(
+                tr,
                 scene,
-                msg,
-                font,
-                with_alpha(palette.text_dim, 200),
-                transform
-                    * Affine::translate((
-                        er.center().x - f64::from(tw) / 2.0,
-                        er.center().y - f64::from(th) / 2.0,
-                    )),
-                None,
-                TextWeight::Regular,
+                transform,
+                palette,
+                er,
+                s,
+                &crate::strings::tr("slides-image-loading"),
             );
         }
         ImageState::Failed => {
@@ -246,28 +312,49 @@ fn draw_image_element(
             scene.stroke(
                 &Stroke::new((1.5 * s).max(0.75)),
                 transform,
-                with_alpha(palette.danger, 180),
+                palette.failed,
                 None,
                 &frame,
             );
-            let msg = "Image unavailable";
-            let font = (13.0 * s).clamp(9.0, 14.0) as f32;
-            let (tw, th) = tr.measure_weighted(msg, font, None, TextWeight::Regular);
-            tr.draw_text_weighted(
+            draw_placeholder_line(
+                tr,
                 scene,
-                msg,
-                font,
-                with_alpha(palette.text_dim, 210),
-                transform
-                    * Affine::translate((
-                        er.center().x - f64::from(tw) / 2.0,
-                        er.center().y - f64::from(th) / 2.0,
-                    )),
-                None,
-                TextWeight::Regular,
+                transform,
+                palette,
+                er,
+                s,
+                &crate::strings::tr("slides-image-unavailable"),
             );
         }
     }
+}
+
+/// One line centred in an image element that has no picture to show, set at
+/// the slide's own scale like the rest of its content.
+fn draw_placeholder_line(
+    tr: &mut ui::text_render::TextRenderer,
+    scene: &mut Scene,
+    transform: Affine,
+    palette: &Palette,
+    er: Rect,
+    s: f64,
+    message: &str,
+) {
+    // A caption-sized line in slide units, scaled with the slide.
+    let style = TextStyle::content((24.0 * s) as f32);
+    let (tw, th) = tr.measure_style(message, None, &style);
+    tr.draw_style(
+        scene,
+        message,
+        palette.text_dim,
+        transform
+            * Affine::translate((
+                er.center().x - f64::from(tw) / 2.0,
+                er.center().y - f64::from(th) / 2.0,
+            )),
+        None,
+        &style,
+    );
 }
 
 thread_local! {
@@ -313,7 +400,7 @@ pub fn text_box_rect(e: &Element) -> Rect {
     Rect::new(e.x, e.y, e.x + e.w.max(1.0), e.y)
 }
 
-fn draw_text_element(ctx: &mut PaintCtx<'_>, palette: &Palette, e: &Element, dest: Rect, s: f64) {
+fn draw_text_element(ctx: &mut PaintCtx<'_>, color: Color, e: &Element, dest: Rect, s: f64) {
     let PaintCtx {
         scene,
         transform,
@@ -321,7 +408,6 @@ fn draw_text_element(ctx: &mut PaintCtx<'_>, palette: &Palette, e: &Element, des
         theme,
     } = ctx;
     let (transform, theme) = (*transform, *theme);
-    let color = palette.resolve_role(&e.fill).unwrap_or(palette.text);
     // Slide text is sized in slide units, whatever the reader's text scale.
     let reader_scale = tr.text_scale();
     tr.set_text_scale(1.0);
