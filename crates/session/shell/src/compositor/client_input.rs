@@ -546,7 +546,17 @@ impl State {
     }
 
     /// Forward a scroll event to the surface the pointer is focused on.
-    pub fn forward_client_pointer_axis(&mut self, delta: MouseScrollDelta) -> bool {
+    ///
+    /// `wl_pointer.axis_stop` ends a finger scroll on that axis, so it goes
+    /// out once, when the fingers lift (`phase` ended). Sent with every
+    /// event for the axis that did not move, it told toolkits each wheel
+    /// notch was the end of a gesture: winit reported it as an ended
+    /// scroll, which a scroll view takes for a fling release and ignores.
+    pub fn forward_client_pointer_axis(
+        &mut self,
+        delta: MouseScrollDelta,
+        phase: winit::event::TouchPhase,
+    ) -> bool {
         if self.client_input.pointer_focus.is_none() {
             return false;
         }
@@ -573,11 +583,13 @@ impl State {
                 frame = frame.v120(Axis::Vertical, v120);
             }
         }
-        if h == 0.0 {
-            frame = frame.stop(Axis::Horizontal);
-        }
-        if v == 0.0 {
-            frame = frame.stop(Axis::Vertical);
+        if v120.is_none()
+            && matches!(
+                phase,
+                winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled
+            )
+        {
+            frame = frame.stop(Axis::Horizontal).stop(Axis::Vertical);
         }
         pointer.axis(self, frame);
         pointer.frame(self);
@@ -1235,7 +1247,9 @@ pub fn route_input(
             button,
             ..
         } => route_mouse_input(state, fb, chrome_captures_input(fb), *element, *button),
-        WindowEvent::MouseWheel { delta, .. } => route_mouse_wheel(state, fb, *delta, *modifiers),
+        WindowEvent::MouseWheel { delta, phase, .. } => {
+            route_mouse_wheel(state, fb, *delta, *phase, *modifiers)
+        }
         WindowEvent::KeyboardInput { .. } => {
             route_keyboard_input(state, fb, chrome_captures_input(fb), event, *modifiers)
         }
@@ -1452,6 +1466,7 @@ fn route_mouse_wheel(
     state: &mut State,
     fb: &mut FrameBuilder,
     delta: MouseScrollDelta,
+    phase: winit::event::TouchPhase,
     modifiers: Modifiers,
 ) -> bool {
     let mods = modifiers.state();
@@ -1488,7 +1503,7 @@ fn route_mouse_wheel(
         return true;
     }
     if state.client_input.pointer_focus.is_some() {
-        state.forward_client_pointer_axis(delta)
+        state.forward_client_pointer_axis(delta, phase)
     } else {
         false
     }

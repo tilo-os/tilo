@@ -488,13 +488,12 @@ impl RichTextLayout {
         }
     }
 
-    fn reuse_unchanged_paragraphs(buffer: &mut Buffer, previous: Buffer) {
-        // BufferLine caches do not carry their layout configuration. Moving
-        // them across a width/font/wrapping change would silently retain stale
-        // glyph geometry. All Buffer configuration that affects shaping or
-        // layout must agree, in addition to the exact per-paragraph attributes.
+    fn reuse_unchanged_paragraphs(buffer: &mut Buffer, mut previous: Buffer) {
+        // BufferLine has separate shaping and line-wrapping caches. Width
+        // changes only invalidate wrapping; retain shaping for paragraphs
+        // whose text and attributes still match. Keep all other compatibility
+        // checks conservative, including metrics and tab expansion.
         if buffer.metrics() != previous.metrics()
-            || buffer.size() != previous.size()
             || buffer.wrap() != previous.wrap()
             || buffer.ellipsize() != previous.ellipsize()
             || buffer.monospace_width() != previous.monospace_width()
@@ -502,6 +501,14 @@ impl RichTextLayout {
             || buffer.hinting() != previous.hinting()
         {
             return;
+        }
+        if buffer.size() != previous.size() {
+            // The new buffer's TEXT_SET dirty flag assumes its lines are fresh,
+            // so cosmic-text will not invalidate transferred layout caches.
+            // Explicitly discard wrapping while preserving each ShapeLine.
+            for line in &mut previous.lines {
+                line.reset_layout();
+            }
         }
         let same = |a: &BufferLine, b: &BufferLine| {
             a.text() == b.text()
@@ -1137,6 +1144,10 @@ impl RichTextLayout {
         self.line_starts.get(cursor.line).copied().unwrap_or(0) + cursor.index
     }
 }
+
+#[cfg(test)]
+#[path = "richtext/retained_layout_tests.rs"]
+mod retained_layout_tests;
 
 #[cfg(test)]
 mod tests {

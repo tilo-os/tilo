@@ -22,9 +22,18 @@ def session(ctx, res):
     res.metrics["displays"] = [(d["monitor"], d["width"], d["height"]) for d in displays]
     res.metrics["identity"] = st["chrome"].get("local_user_id")
     want = ctx.config["outputs"]
-    got = [f"{int(d['width'])}x{int(d['height'])}" for d in displays]
+    # Displays are laid out in logical pixels: a mode at scale S spans mode / S.
+    got = [f"{round(d['width'])}x{round(d['height'])}" for d in sorted(displays, key=lambda d: (d["x"], d["y"]))]
+    logical = [_logical(w) for w in want]
     expect(len(displays) == len(want), f"{len(want)} outputs requested, {len(displays)} present")
-    expect(all(w.split("@")[0] == g for w, g in zip(want, got)), f"output modes {got}, requested {want}")
+    expect(got == logical, f"outputs {got} in logical pixels, requested {want} (that is {logical})")
+
+
+def _logical(spec: str) -> str:
+    mode, _, scale = spec.partition("@")
+    w, h = (int(v) for v in mode.split("x"))
+    s = float(scale or 1)
+    return f"{round(w / s)}x{round(h / s)}"
 
 
 def _this_boot_restarts(journal: str) -> dict[str, int]:

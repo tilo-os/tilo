@@ -39,7 +39,9 @@ fn wants_standalone(args: impl Iterator<Item = String>) -> bool {
             }
             "--shots" | "--responsive-matrix" | "--native-audit" | "--headless" => return true,
             flag if flag.starts_with('-') => {}
-            _ => {}
+            // A `.flatpakref` or `tilo-store:app/<id>` argument is decoded by
+            // `live_root`, which opens the same worker-backed Store on it.
+            _ => return true,
         }
     }
     false
@@ -136,7 +138,27 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_store_uri;
+    use super::{parse_store_uri, wants_standalone};
+
+    fn args(values: &[&str]) -> impl Iterator<Item = String> {
+        values
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+
+    #[test]
+    fn opening_a_reference_or_store_link_keeps_its_argument() {
+        assert!(!wants_standalone(args(&[])));
+        assert!(!wants_standalone(args(&["--data-dir", "/profile"])));
+        assert!(wants_standalone(args(&["/downloads/notes.flatpakref"])));
+        assert!(wants_standalone(args(&[
+            "--data-dir",
+            "/profile",
+            "tilo-store:app/so.tilo.notes"
+        ])));
+    }
 
     #[test]
     fn store_deep_link_accepts_only_a_stable_app_identity() {
