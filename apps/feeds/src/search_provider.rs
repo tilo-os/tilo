@@ -152,11 +152,14 @@ fn article_label(article: &Article) -> String {
     }
 }
 
+/// The one secondary fact of an article hit: the feed it came from, or its
+/// author when the feed has no title.
 fn article_subtitle(article: &Article, feed: &Feed) -> String {
-    match (!feed.title.trim().is_empty(), article.author.trim()) {
-        (true, author) if !author.is_empty() => format!("{} · {author}", feed.title.trim()),
-        (true, _) => feed.title.trim().to_string(),
-        (false, author) => author.to_string(),
+    let feed = feed.title.trim();
+    if feed.is_empty() {
+        article.author.trim().to_string()
+    } else {
+        feed.to_string()
     }
 }
 
@@ -252,7 +255,12 @@ mod tests {
                 articles: vec![test_article(2, feed.id, "Über den Fluss".into())],
                 ..Store::default()
             };
-            let page = FeedsSearchProvider::new(&store).search_page("DEN FL", None, 8, 8);
+            let page = FeedsSearchProvider::new(&store).search_page(
+                &ui::search::SearchQuery::new("DEN FL"),
+                None,
+                8,
+                8,
+            );
             assert_eq!(page.results.len(), 1);
             assert_eq!(page.results[0].title, "Über den Fluss");
             assert!(page.inspected <= 8);
@@ -275,7 +283,8 @@ mod tests {
                 3_000,
             );
             assert_eq!(hit.title, format!("ordinary record 2999 {LATE_HIT_NEEDLE}"));
-            let page = provider.search_page(LATE_HIT_NEEDLE, None, 4, 4);
+            let page =
+                provider.search_page(&ui::search::SearchQuery::new(LATE_HIT_NEEDLE), None, 4, 4);
             assert_eq!(page.inspected, 1, "rare posting avoids a corpus scan");
             assert_eq!(provider.stats().records, 3_001);
         }
@@ -294,7 +303,12 @@ mod tests {
             let mut cursor = None;
             let mut seen = 0;
             loop {
-                let page = provider.search_page("common", cursor.as_ref(), 17, 5);
+                let page = provider.search_page(
+                    &ui::search::SearchQuery::new("common"),
+                    cursor.as_ref(),
+                    17,
+                    5,
+                );
                 assert!(page.inspected <= 17, "query work must be bounded");
                 assert!(page.results.len() <= 5, "result materialisation is paged");
                 seen += page.results.len();
