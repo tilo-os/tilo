@@ -74,6 +74,9 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
         if args.has("--timer-running") {
             std::env::set_var("CAMERA_SHOT_TIMER_RUNNING", "1");
         }
+        if args.has("--recording") {
+            std::env::set_var("CAMERA_SHOT_RECORDING", "1");
+        }
         if let Some(state) = args.value("--camera-state") {
             std::env::set_var("CAMERA_SHOT_CAMERA_STATE", state);
         }
@@ -102,13 +105,18 @@ fn render_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         .and_then(|value| value.parse().ok())
         .unwrap_or(default_height);
     let theme = ui::launch::shot_theme(args);
-    ui::headless::FrameHarness::new_with_theme(
+    let mut harness = ui::headless::FrameHarness::new_with_theme(
         ui::State::new(),
         shot_root(args)?,
         (width, height),
         theme,
-    )
-    .render_png(out);
+    );
+    // A few frames let what settles on its own first frame (the settings
+    // sheet fitting the window) take its place before the capture.
+    for _ in 0..3 {
+        harness.relayout();
+    }
+    harness.render_png(out);
     println!("so.tilo.camera: wrote shot to {}", out.display());
     Ok(())
 }
@@ -121,7 +129,13 @@ pub fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new("so.tilo.camera", camera::app_root)
             .shot_handler(render_shot)
-            .allowed_flags(&["--scan-first", "--disk", "--crop", "--timer-running"])
+            .allowed_flags(&[
+                "--scan-first",
+                "--disk",
+                "--crop",
+                "--timer-running",
+                "--recording",
+            ])
             .allowed_options(&[
                 "--screen",
                 "--mode",

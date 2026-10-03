@@ -2981,6 +2981,17 @@ impl Widget for CameraApp {
                     mode: self.mode,
                 });
             }
+            // A clip twelve seconds in, recorded from the sample feed.
+            if std::env::var_os("CAMERA_SHOT_RECORDING").is_some()
+                && self.recording.is_none()
+                && !self.video_finalizing
+            {
+                self.mode = CaptureMode::Video;
+                self.start_recording();
+                if let Some(recording) = self.recording.as_mut() {
+                    recording.started -= 12;
+                }
+            }
         }
 
         // Offscreen fixtures may request a concrete unavailable state without
@@ -3059,6 +3070,11 @@ impl Widget for CameraApp {
             && y.is_finite()
         {
             self.last_mouse = Point::new(x, y);
+            // The tooltip shows at once, without waiting out the dwell a
+            // capture has no time for.
+            if self.tooltip.visible().is_none() {
+                self.tooltip = ui::widget::TooltipHost::new().with_dwell(Duration::ZERO);
+            }
         }
         self.present_controls();
     }
@@ -3141,33 +3157,29 @@ impl Widget for CameraApp {
         // Camera is an immersive capture surface: the viewfinder fills the
         // window and the settings sheet floats over it.
         let full = self.rect;
-        let m = hud::HudMetrics::of(theme);
-        // A toast rises above the bottom controls of the screen it reports on.
+        // A toast never covers what it reports on: over the viewfinder it
+        // rises above the shutter row; on the scanner and the documents,
+        // whose lower half is content, it sits in the top band beside the
+        // corner cluster.
         let toast_area = match self.base_screen() {
             Screen::Camera | Screen::Settings => {
-                self.draw_camera(scene, t, tr, theme, full);
-                let reserved = 2.0 * m.edge
-                    + m.bar()
-                    + f64::from(theme.tokens.spacing.s4)
-                    + 2.0 * f64::from(theme.tokens.metrics.min_pointer_target);
-                Rect::new(full.x0, full.y0, full.x1, full.y1 - reserved)
+                let controls_top = self.draw_camera(scene, t, tr, theme, full);
+                Rect::new(full.x0, full.y0, full.x1, controls_top)
             }
             Screen::Scanner => {
-                self.draw_scanner(scene, t, tr, theme, full);
-                Rect::new(full.x0, full.y0, full.x1, full.y1 - 2.0 * m.edge - m.bar())
+                let corner = self.draw_scanner(scene, t, tr, theme, full);
+                hud::top_band_toast_area(full, corner, theme)
             }
             Screen::Document => {
-                self.draw_document_scanner(scene, t, tr, theme, presence, full);
-                let page = Self::document_layout(full, theme).page;
-                let actions = ui::widget::ControlSize::Regular.height(theme)
-                    + f64::from(theme.tokens.spacing.s4);
-                Rect::new(page.x0, full.y0, page.x1, page.y1 - actions)
+                let corner = self.draw_document_scanner(scene, t, tr, theme, presence, full);
+                hud::top_band_toast_area(full, corner, theme)
             }
         };
         if self.screen == Screen::Settings {
             // Under the modal sheet only the sheet is operable.
             self.regions.clear();
             self.tooltip_targets.clear();
+            self.settings_sheet.fit(full, tr, theme);
         } else {
             self.draw_tooltip(scene, t, tr, theme);
         }
@@ -3191,6 +3203,7 @@ impl Widget for CameraApp {
         let path = ctx.path;
         // The settings sheet is modal: it takes every event while it is up.
         if self.screen == Screen::Settings {
+            self.settings_sheet.scroll(event, ctx);
             self.settings_sheet.dialog.handle_detached(
                 event,
                 ctx.scale_factor,
@@ -3488,7 +3501,7 @@ impl Widget for CameraApp {
         }
     }
     fn needs_redraw(&self) -> bool {
-        let mut dirty = self.dirty || self.tooltip.needs_frame();
+        let mut dirty = self.dirty || self.tooltip.needs_frame() || self.settings_sheet.fitting();
         self.for_each_child(&mut |child| dirty |= child.needs_redraw());
         dirty
     }
@@ -3978,6 +3991,18 @@ mod tests {
                 "{w}x{h}: card {card:?} covers the guide {:?}",
                 layout.guide
             );
+            let recent = layout.recent.expect("the recent scans show at every size");
+            assert!(
+                recent.intersect(layout.guide).area() <= 0.0
+                    && recent.intersect(card).area() <= 0.0,
+                "{w}x{h}: the recent scans {recent:?} overlap the guide or the card"
+            );
+            assert!(
+                layout.hint.y1 <= layout.guide.y0,
+                "{w}x{h}: the detected tag {:?} sits above the guide {:?}",
+                layout.hint,
+                layout.guide
+            );
             let (gw, gh) = app.scan_gen;
             let sx = app.rect.width() / f64::from(gw);
             let sy = app.rect.height() / f64::from(gh);
@@ -4053,6 +4078,65 @@ mod tests {
             assert_eq!(settings.hdr, !Settings::default().hdr);
             assert_eq!(settings.default_facing, Facing::Front);
             assert_eq!(app.screen, Screen::Settings, "changes keep the sheet open");
+        }
+    }
+
+    #[test]
+    fn a_short_window_scrolls_the_settings_sheet_to_its_last_row() {
+        // Phase `tall_window_shows_the_whole_form`.
+        {
+            let (mut app, mut doc, root) = sample_app();
+            app.apply(Action::Nav(Screen::Settings), &mut doc, &root);
+            let mut app = render_at(app, doc, 1280.0, 800.0);
+            rerender_at(&mut app, 1280.0, 800.0);
+            rerender_at(&mut app, 1280.0, 800.0);
+            assert!(
+                !app.settings_sheet.dialog.content().vertical_overflows(),
+                "the whole form fits a 1280x800 window"
+            );
+        }
+        // Phase `short_window_scrolls`.
+        {
+            let (mut app, mut doc, root) = sample_app();
+            app.apply(Action::Nav(Screen::Settings), &mut doc, &root);
+            let mut app = render_at(app, doc, 800.0, 600.0);
+            rerender_at(&mut app, 800.0, 600.0);
+            rerender_at(&mut app, 800.0, 600.0);
+            let sheet = app.settings_sheet.dialog.dialog_rect();
+            assert!(
+                sheet.y0 >= 0.0 && sheet.y1 <= 600.0,
+                "the sheet stays inside the window: {sheet:?}"
+            );
+            assert!(
+                app.settings_sheet.dialog.content().vertical_overflows(),
+                "the form is taller than a 600 px window allows"
+            );
+            let centre = sheet.center();
+            let device_id = unsafe { std::mem::zeroed() };
+            let moved = WindowEvent::CursorMoved {
+                device_id,
+                position: winit::dpi::PhysicalPosition::new(centre.x, centre.y),
+            };
+            let wheel = WindowEvent::MouseWheel {
+                device_id,
+                delta: winit::event::MouseScrollDelta::LineDelta(0.0, -10.0),
+                phase: winit::event::TouchPhase::Moved,
+            };
+            let (camera, state) = Framed::split(&mut app);
+            drive(camera, &moved, &mut state.doc, &root);
+            drive(camera, &wheel, &mut state.doc, &root);
+            let content = camera.settings_sheet.dialog.content();
+            assert!(
+                content.offset_y() > 0.0 && content.offset_y() >= content.max_offset_y() - 0.5,
+                "the wheel scrolls the form to its end: {} of {}",
+                content.offset_y(),
+                content.max_offset_y()
+            );
+            assert_eq!(
+                camera.screen,
+                Screen::Settings,
+                "scrolling keeps the sheet open"
+            );
         }
     }
 
