@@ -1,0 +1,10 @@
+# Dev image only: Chromium on its native Wayland platform (ozone), the way
+# Electron apps run, opened by the VM acceptance suite (scripts/vm-acceptance).
+[Desktop Entry]
+Type=Application
+Name=Chromium on Wayland (acceptance)
+Comment=Chromium with --ozone-platform=wayland on a page with a text field
+Exec=chromium-browser --ozone-platform=wayland --no-first-run --no-default-browser-check --password-store=basic file:///usr/share/tilo-vm/acceptance/text.html
+Icon=chromium-browser
+StartupWMClass=chromium-browser
+Categories=Development;
