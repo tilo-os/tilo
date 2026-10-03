@@ -122,14 +122,13 @@ pub struct ViewCx<R: Resource, T: 'static = <R as Resource>::State> {
 }
 
 impl<R: Resource> ViewCx<R> {
+    /// The scope of a freshly built root view: its own updaters, save status
+    /// and staging, none of which another root shares.
     pub(crate) fn root(
         live: Live<R>,
-        updaters: Updaters<R>,
         alive: &Rc<()>,
         dispatch: Dispatcher<R>,
         published: tilo_actions::Resource,
-        saved: LocalState<RecordSaveStatus>,
-        stages: Stages,
         run: Run,
         storage: Rc<ViewStorage>,
     ) -> Self {
@@ -143,14 +142,14 @@ impl<R: Resource> ViewCx<R> {
         Self {
             live,
             focus: Rc::new(|state| Some(state)),
-            updaters,
+            updaters: Updaters::new(),
             alive: Rc::downgrade(alive),
             dispatch,
             published: Rc::new(published),
             item: None,
             controls: Rc::default(),
-            saved,
-            stages,
+            saved: LocalState::new(RecordSaveStatus::Saved),
+            stages: Stages::new(),
             feeds: super::history::HistoryFeeds::default(),
             run,
             storage,
