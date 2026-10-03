@@ -2,21 +2,20 @@
 //! clusters on the floating material, the mode switcher, the shutter, the
 //! tooltip and the toast.
 //!
-//! The viewfinder is media: what is drawn straight onto it (guides, the fade
-//! under the controls) takes the theme's media colours, and every control
+//! The viewfinder is media: what is drawn straight onto it (the guides)
+//! takes the theme's media colours, and every control
 //! stands on a floating panel inked from the theme (`docs/ui-migration.md`,
 //! "Scrims and media").
 
 use ui::TextRole;
-use ui::chrome::{SelectionState, paint_row_selection, panel_ground};
+use ui::chrome::panel_ground;
 use ui::icons::Icon;
-use ui::overlay::scrim::{FadeEdge, vertical_fade};
 use ui::paint::PaintCtx;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::tooltip::draw_hover_tooltip;
 use ui::widget::{
     BadgeFace, Button, ButtonFace, ButtonRole, ChipStyle, ControlSize, EmptyState,
-    EmptyStateContent, SegmentedFace, SegmentedStyle, ToggleGroup, floating_surface,
+    EmptyStateContent, SegmentedFace, ToggleGroup, floating_surface,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -33,22 +32,27 @@ use ui::theme::Theme;
 pub(super) struct HudMetrics {
     /// Inset of floating chrome from the window edge.
     pub edge: f64,
-    /// Inset of controls inside their panel.
+    /// Inset of controls inside their panel. It keeps the radii
+    /// concentric: a control's radius plus this inset is the panel's.
     pub pad: f64,
     /// Height of one control.
     pub control: f64,
     /// Between two clusters.
     pub gap: f64,
+    /// Between two controls of one cluster.
+    pub item_gap: f64,
 }
 
 impl HudMetrics {
     pub(super) fn of(theme: &Theme) -> Self {
         let spacing = &theme.tokens.spacing;
+        let radii = &theme.tokens.radii;
         Self {
             edge: f64::from(spacing.s4),
-            pad: f64::from(spacing.s1),
+            pad: f64::from((radii.panel - radii.control).max(spacing.s1)),
             control: ButtonFace::height(ControlSize::Regular, theme),
             gap: f64::from(spacing.s2),
+            item_gap: f64::from(spacing.s1),
         }
     }
 
@@ -78,7 +82,11 @@ impl HudItem<'_> {
             (_, Some(icon)) => ButtonFace::new(rect, self.label).icon(icon),
             (_, None) => ButtonFace::new(rect, self.label),
         };
-        face.role(ButtonRole::Plain)
+        let face = face.role(ButtonRole::Plain);
+        match self.on {
+            Some(on) => face.toggled(on),
+            None => face,
+        }
     }
 
     fn width(&self, tr: &mut TextRenderer, theme: &Theme) -> f64 {
@@ -101,7 +109,44 @@ pub(super) fn on_panel(theme: &Theme) -> Theme {
 /// The width a cluster of `items` takes, panel padding included.
 pub(super) fn cluster_width(items: &[HudItem<'_>], tr: &mut TextRenderer, theme: &Theme) -> f64 {
     let m = HudMetrics::of(theme);
-    items.iter().map(|item| item.width(tr, theme)).sum::<f64>() + 2.0 * m.pad
+    let gaps = items.len().saturating_sub(1) as f64 * m.item_gap;
+    items.iter().map(|item| item.width(tr, theme)).sum::<f64>() + gaps + 2.0 * m.pad
+}
+
+/// Photos and the settings: the top-trailing cluster of every screen.
+pub(super) fn corner_actions() -> [HudItem<'static>; 2] {
+    [
+        HudItem {
+            label: "",
+            icon: Some(Icon::Image),
+            name: "Open Photos",
+            on: None,
+            action: Action::OpenPhotos,
+        },
+        HudItem {
+            label: "",
+            icon: Some(Icon::Settings),
+            name: "Camera settings",
+            on: None,
+            action: Action::Nav(Screen::Settings),
+        },
+    ]
+}
+
+/// Where a toast goes on a screen whose top band holds only the
+/// top-trailing cluster: centred in the band, clear of the cluster. The
+/// toast is placed at the bottom of the returned area.
+pub(super) fn top_band_toast_area(full: Rect, cluster: Rect, theme: &Theme) -> Rect {
+    let m = HudMetrics::of(theme);
+    let gutter = f64::from(theme.tokens.spacing.s6);
+    // `paint_transient` keeps a gutter on each side of its area already.
+    let inset = (full.x1 - cluster.x0 + m.gap - gutter).max(0.0);
+    Rect::new(
+        full.x0 + inset,
+        full.y0,
+        full.x1 - inset,
+        cluster.y1 + gutter,
+    )
 }
 
 impl CameraApp {
@@ -121,22 +166,19 @@ impl CameraApp {
         let panel = Rect::new(origin.x, origin.y, origin.x + width, origin.y + m.bar());
         floating_surface::paint(scene, t, panel, theme);
         let local = on_panel(theme);
-        let ground = local.tokens.colors.surfaces.content;
         let mut x = panel.x0 + m.pad;
         for item in items {
             let w = item.width(tr, theme);
             let rect = Rect::new(x, panel.y0 + m.pad, x + w, panel.y0 + m.pad + m.control);
-            let on = item.on == Some(true);
-            if on {
-                paint_row_selection(scene, t, rect, SelectionState::active(true), ground, &local);
-            }
-            let hovered = rect.contains(self.last_mouse) && !on;
-            Button::paint(scene, t, tr, &local, &item.face(rect).hovered(hovered));
+            let face = item.face(rect);
+            let hit = face.hit_rect(&local);
+            let hovered = face.contains(&local, self.last_mouse);
+            Button::paint(scene, t, tr, &local, &face.hovered(hovered));
             if item.label.is_empty() {
-                self.tooltip_targets.push((rect, item.name.to_owned()));
+                self.tooltip_targets.push((hit, item.name.to_owned()));
             }
-            self.push_region(rect, item.action.clone());
-            x += w;
+            self.push_region(hit, item.action.clone());
+            x += w + m.item_gap;
         }
         panel
     }
@@ -196,9 +238,7 @@ impl CameraApp {
             t,
             tr,
             &local,
-            &SegmentedFace::new(&segments, &labels, selected)
-                .style(SegmentedStyle::Quiet)
-                .hovered(hovered),
+            &SegmentedFace::new(&segments, &labels, selected).hovered(hovered),
         );
         for (rect, (_, action)) in segments.into_iter().zip(entries) {
             self.push_region(rect, action);
@@ -274,35 +314,21 @@ impl CameraApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         full: Rect,
-    ) {
+    ) -> f64 {
         let m = HudMetrics::of(theme);
         let live = self.feed_active();
         if live {
             self.paint_viewfinder(scene, t, full);
-            self.draw_viewfinder_guides(scene, t, theme, full);
-            // One smooth fade under each control band keeps the controls'
-            // edges and the guides legible over a bright scene.
-            let top = m.edge + m.bar() + f64::from(theme.tokens.spacing.s6);
-            vertical_fade(
-                scene,
-                t,
-                Rect::new(full.x0, full.y0, full.x1, full.y0 + top),
-                FadeEdge::Top,
-                0.45,
-                theme,
-            );
-            let bottom =
-                3.0 * m.edge + m.bar() + 4.0 * f64::from(theme.tokens.metrics.min_pointer_target);
-            vertical_fade(
-                scene,
-                t,
-                Rect::new(full.x0, full.y1 - bottom, full.x1, full.y1),
-                FadeEdge::Bottom,
-                0.6,
-                theme,
-            );
         } else {
             p::fill_rect(scene, t, full, theme.tokens.colors.media.letterbox);
+        }
+        // Under the settings sheet only the picture shows: the sheet is the
+        // one thing that can be operated.
+        if self.screen == Screen::Settings {
+            return full.y1;
+        }
+        if live {
+            self.draw_viewfinder_guides(scene, t, theme, full);
         }
 
         let top = self.draw_camera_top_controls(scene, t, tr, theme, full);
@@ -333,6 +359,7 @@ impl CameraApp {
         } else if self.is_counting_down() {
             self.draw_countdown(scene, t, tr, theme, full, top);
         }
+        shutter.y0
     }
 
     fn paint_viewfinder(&mut self, scene: &mut Scene, t: Affine, full: Rect) {
@@ -374,13 +401,14 @@ impl CameraApp {
         }
     }
 
-    /// The rule-of-thirds grid and the level guide, drawn on the picture in
-    /// media ink.
+    /// The rule-of-thirds grid and the level guide, drawn on the picture.
+    /// The grid is the panel edge measured on media, so it reads on any
+    /// picture without covering it; the level is in media ink.
     fn draw_viewfinder_guides(&self, scene: &mut Scene, t: Affine, theme: &Theme, vf: Rect) {
         let media = &theme.tokens.colors.media;
         let hairline = f64::from(theme.tokens.metrics.chrome_rule_px);
         if self.settings.grid {
-            let guide = media.ink_dim;
+            let guide = ui::surface::edge_on_with(media.letterbox, ui::chrome::PANEL_BORDER_ALPHA);
             for k in 1..3 {
                 let x = vf.x0 + vf.width() * f64::from(k) / 3.0;
                 p::line(
@@ -448,22 +476,7 @@ impl CameraApp {
             Timer::S10 => "10 s",
         };
         let next_timer = super::cycle(&Timer::ALL, self.settings.timer);
-        let trailing = [
-            HudItem {
-                label: "",
-                icon: Some(Icon::Image),
-                name: "Open Photos",
-                on: None,
-                action: Action::OpenPhotos,
-            },
-            HudItem {
-                label: "",
-                icon: Some(Icon::Settings),
-                name: "Camera settings",
-                on: None,
-                action: Action::Nav(Screen::Settings),
-            },
-        ];
+        let trailing = corner_actions();
         let mut leading = vec![
             HudItem {
                 label: self.settings.resolution.label(),
@@ -507,15 +520,7 @@ impl CameraApp {
         }
         let origin = Point::new(full.x0 + m.edge, full.y0 + m.edge);
         let lead = self.draw_cluster(scene, t, tr, theme, origin, &leading);
-        let trailing_w = cluster_width(&trailing, tr, theme);
-        let trail = self.draw_cluster(
-            scene,
-            t,
-            tr,
-            theme,
-            Point::new(full.x1 - m.edge - trailing_w, full.y0 + m.edge),
-            &trailing,
-        );
+        let trail = self.draw_corner_actions(scene, t, tr, theme, full);
         lead.union(trail)
     }
 
@@ -563,7 +568,7 @@ impl CameraApp {
             theme
                 .tokens
                 .radii
-                .concentric(theme.tokens.radii.panel, theme.tokens.spacing.s1),
+                .concentric(theme.tokens.radii.panel, m.pad as f32),
         );
         p::push_clip_round(scene, t, preview, radius);
         if let Some(img) = self.thumbs.get_mut(&capture.id) {
@@ -746,8 +751,8 @@ impl CameraApp {
     }
 
     /// An empty or error state straight on the letterbox: its text in media
-    /// ink, and its one action on the floating material where the empty
-    /// state places it. Returns the action's rect.
+    /// ink, and its one action where the empty state places it. Returns the
+    /// action's rect.
     pub(super) fn draw_media_empty_state(
         &mut self,
         scene: &mut Scene,
@@ -793,27 +798,19 @@ impl CameraApp {
             &text_only,
             self.last_mouse,
         );
-        let item = [HudItem {
-            label,
-            icon: None,
-            name: label,
-            on: None,
-            action,
-        }];
-        let m = HudMetrics::of(theme);
-        let width = cluster_width(&item, tr, theme);
-        let panel = self.draw_cluster(
-            scene,
-            t,
-            tr,
-            theme,
-            Point::new(
-                slot.center().x - width / 2.0,
-                slot.center().y - m.bar() / 2.0,
-            ),
-            &item,
-        );
-        Some(panel)
+        // The action is a secondary control: its own raised face and ink
+        // read on the letterbox in every theme.
+        let width = ButtonFace::new(Rect::ZERO, label)
+            .role(ButtonRole::Secondary)
+            .intrinsic_width(tr, theme);
+        let height = ButtonFace::height(ControlSize::Regular, theme);
+        let rect = Rect::from_center_size(slot.center(), (width, height));
+        let face = ButtonFace::new(rect, label).role(ButtonRole::Secondary);
+        let hit = face.hit_rect(theme);
+        let hovered = face.contains(theme, self.last_mouse);
+        Button::paint(scene, t, tr, theme, &face.hovered(hovered));
+        self.push_region(hit, action);
+        Some(rect)
     }
 
     /// The one recovery a no-feed state offers.
@@ -850,7 +847,30 @@ impl CameraApp {
         }
     }
 
-    /// The transient result of the last action, above the bottom controls.
+    /// Photos and the settings, the top-trailing cluster of the scanner and
+    /// document screens. Returns its panel.
+    pub(super) fn draw_corner_actions(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        full: Rect,
+    ) -> Rect {
+        let m = HudMetrics::of(theme);
+        let items = corner_actions();
+        let width = cluster_width(&items, tr, theme);
+        self.draw_cluster(
+            scene,
+            t,
+            tr,
+            theme,
+            Point::new(full.x1 - m.edge - width, full.y0 + m.edge),
+            &items,
+        )
+    }
+
+    /// The transient result of the last action, at the bottom of `area`.
     pub(super) fn draw_toast(
         &self,
         scene: &mut Scene,
