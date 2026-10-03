@@ -1636,6 +1636,8 @@ impl Renderer {
         engine.build_shaders_if_needed(device, options.num_init_threads);
         #[cfg(feature = "debug_layers")]
         let debug = debug::DebugRenderer::new(device, wgpu::TextureFormat::Rgba8Unorm, &mut engine);
+        let mut budget = bump_budget::BudgetTracker::new();
+        budget.set_device_limits(&device.limits());
 
         Ok(Self {
             options,
@@ -1645,7 +1647,7 @@ impl Renderer {
             recording: Recording::default(),
             packed_scene: Vec::new(),
             shaders,
-            budget: bump_budget::BudgetTracker::new(),
+            budget,
             unsettled_bump_overflow: OverflowLatch::default(),
             sparse_masks: Vec::new(),
             sparse_records: Vec::new(),
@@ -1682,6 +1684,31 @@ impl Renderer {
                 .as_ref()
                 .map_or(0, |upload| upload.capacity_bytes),
         }
+    }
+
+    /// Limit the image atlas to `max_size` pixels per side (8192 by
+    /// default). Images that do not fit after eviction are omitted and
+    /// reported, instead of a 256 MB atlas taking a browser's GPU process
+    /// past its memory limit.
+    pub fn set_image_atlas_max(&mut self, max_size: u32) {
+        self.resolver.set_image_atlas_max(max_size);
+    }
+
+    /// Grow the bump buffers at most once, straight to the
+    /// [`Self::set_bump_budget_limit`] total, instead of doubling as a scene
+    /// fills up. Each growth reallocates every buffer, which a browser's GPU
+    /// process briefly holds twice.
+    pub fn set_bump_budget_grow_once(&mut self, grow_once: bool) {
+        self.budget.set_grow_once(grow_once);
+    }
+
+    /// Limit the adaptive bump buffers to `bytes` in total, whatever frames
+    /// report using. Scenes past it drop geometry, which the shaders report,
+    /// instead of taking a browser's GPU process past its memory limit.
+    /// Viewport floors come on top.
+    pub fn set_bump_budget_limit(&mut self, bytes: u64) {
+        self.budget.set_max_total_bytes(bytes);
+        self.engine.clear_pool();
     }
 
     /// Drop transient GPU buffers held only for reuse. In-flight command
@@ -2346,6 +2373,81 @@ impl Renderer {
         }
 
         Ok(())
+    }
+
+    /// As [`Self::render_to_texture_with_post_render_checked`], returning the
+    /// exact queue submission that contains both Vello and `post_render` work.
+    #[doc(hidden)]
+    pub fn render_to_texture_with_post_render_checked_indexed<F, G>(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        scene: &Scene,
+        texture: &TextureView,
+        params: &RenderParams,
+        post_render: F,
+        before_submit: G,
+    ) -> Result<wgpu::SubmissionIndex>
+    where
+        F: FnOnce(&mut wgpu::CommandEncoder),
+        G: FnOnce() -> bool,
+    {
+        self.last_canonical_segment_order_selected = false;
+        self.last_area_ppt8_selected = false;
+        self.last_clip_single_group_selected = false;
+        self.budget.set_viewport(params.width, params.height);
+        let (changed, overflowed) = self.budget.collect(device, &mut self.engine);
+        self.unsettled_bump_overflow.record(overflowed);
+        if changed {
+            self.engine.clear_pool();
+        }
+        let measure = !self.options.use_cpu && self.budget.wants_readback();
+        let canonical_segment_order = self.canonical_segment_order_selected_for(params, measure);
+        let area_ppt8 = self.area_ppt8_selected_for(params);
+        let defer_bump_readback = self.defer_bump_readback_enabled() || canonical_segment_order;
+        let zero_gradient = self
+            .engine
+            .zero_gradient_reuse_enabled()
+            .then(|| self.engine.ensure_zero_gradient(device, queue));
+        let (target, bump_buf, canonical, ppt8, clip_single) = render::render_full(
+            scene,
+            &mut self.resolver,
+            &self.shaders,
+            &mut self.image_atlas,
+            &mut self.recording,
+            &mut self.packed_scene,
+            params,
+            self.budget.budget(),
+            measure,
+            canonical_segment_order,
+            area_ppt8,
+            defer_bump_readback,
+            zero_gradient,
+        );
+        let external_resources = [ExternalResource::Image(
+            *target.as_image().unwrap(),
+            texture,
+        )];
+        let submission = self
+            .engine
+            .run_recording_with_post_render_checked_indexed(
+                device,
+                queue,
+                &self.recording,
+                &external_resources,
+                "render_to_texture",
+                post_render,
+                before_submit,
+                #[cfg(feature = "wgpu-profiler")]
+                &mut self.profiler,
+            )?;
+        if let Some(bump_buf) = bump_buf {
+            self.budget.begin_readback(&self.engine, bump_buf);
+        }
+        self.last_canonical_segment_order_selected = canonical;
+        self.last_area_ppt8_selected = ppt8;
+        self.last_clip_single_group_selected = clip_single;
+        Ok(submission)
     }
 
     /// Append post-render commands to the same unconditional Vello submission.

@@ -2213,6 +2213,38 @@ impl WgpuEngine {
         F: FnOnce(&mut CommandEncoder),
         G: FnOnce() -> bool,
     {
+        self.run_recording_with_post_render_checked_indexed(
+            device,
+            queue,
+            recording,
+            external_resources,
+            label,
+            post_render,
+            before_submit,
+            #[cfg(feature = "wgpu-profiler")]
+            profiler,
+        )?;
+        Ok(())
+    }
+
+    /// The indexed form exposes the exact submission containing the render
+    /// and caller-appended commands. Most callers intentionally discard it.
+    #[doc(hidden)]
+    pub fn run_recording_with_post_render_checked_indexed<F, G>(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        recording: &Recording,
+        external_resources: &[ExternalResource<'_>],
+        label: &'static str,
+        post_render: F,
+        before_submit: G,
+        #[cfg(feature = "wgpu-profiler")] profiler: &mut wgpu_profiler::GpuProfiler,
+    ) -> Result<wgpu::SubmissionIndex>
+    where
+        F: FnOnce(&mut CommandEncoder),
+        G: FnOnce() -> bool,
+    {
         let cpu_pathtag_reuse_active = self.cpu_pathtag_reuse_active();
         let cpu_metadata_active = self.cpu_metadata_active();
         let cpu_draw_prefix_active = self.cpu_draw_prefix_active();
@@ -2692,7 +2724,7 @@ impl WgpuEngine {
             self.gpu_dispatch_timestamps = GpuDispatchTimestampTracker::Disabled;
             return Err(Error::SubmissionAborted);
         }
-        queue.submit(Some(command_buffer));
+        let submission = queue.submit(Some(command_buffer));
         if timestamp_readback {
             self.gpu_timestamps.map_after_submit();
         }
@@ -2738,11 +2770,14 @@ impl WgpuEngine {
             if Some(id) == zero_gradient_id {
                 continue;
             }
-            if let Some((_texture, _view)) = self.bind_map.image_map.remove(&id) {
+            if let Some((texture, _view)) = self.bind_map.image_map.remove(&id) {
                 // TODO: have a pool to avoid needless re-allocation
+                // Release it once the submitted work is done; dropping alone
+                // leaves a browser's GPU memory to its garbage collector.
+                texture.destroy();
             }
         }
-        Ok(())
+        Ok(submission)
     }
 
     pub fn get_download(&self, buf: BufferProxy) -> Option<&Buffer> {
@@ -2764,7 +2799,12 @@ impl WgpuEngine {
     /// from under a frame in flight.
     pub fn clear_pool(&mut self) {
         self.bind_group_cache.clear();
-        self.pool.bufs.clear();
+        // On WebGPU a dropped buffer lives until JavaScript collects it, so a
+        // cleared pool would stay resident beside its replacements. destroy()
+        // waits for submitted work that still uses the buffer.
+        for buffer in self.pool.bufs.drain().flat_map(|(_, buffers)| buffers) {
+            buffer.destroy();
+        }
         self.cpu_pathtag_pool.clear();
         self.cpu_metadata_pool.clear();
         self.cpu_draw_prefix_pool.clear();
@@ -2834,7 +2874,9 @@ impl WgpuEngine {
 
     /// Drop a completed download.
     pub fn free_download(&mut self, buf: BufferProxy) {
-        self.downloads.remove(&buf.id);
+        if let Some(buffer) = self.downloads.remove(&buf.id) {
+            buffer.destroy();
+        }
     }
 
     /// Recycle the fixed-size adaptive bump-counter download.
