@@ -24,7 +24,8 @@
 //! Run:  `cargo run -p ui-examples --example ui-shots -- widget_states [OUT_DIR]`
 //! Out:  `OUT_DIR` (default `/tmp/widget_states`): `<page>-<theme>.png` for
 //!       the pages `controls`, `sizes`, `inputs`, `rows`, `panes`,
-//!       `content`, `overlays`, `overlays-opaque` and `modal`.
+//!       `content`, `editor` (and `editor-large` at 200 % text), `overlays`,
+//!       `overlays-opaque` and `modal`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -814,7 +815,27 @@ fn table() -> Element {
             owner: "Chloé Martin",
             hours: None,
         },
+        Task {
+            name: "Plan the launch",
+            owner: "Dara Park",
+            hours: Some(24),
+        },
+        Task {
+            name: "Record the walkthrough",
+            owner: "Ana Lima",
+            hours: Some(6),
+        },
+        Task {
+            name: "Archive the old site",
+            owner: "Ben Okafor",
+            hours: Some(3),
+        },
     ]);
+    // A selected row between two striped ones, and more rows than the body
+    // shows, so the lift, the stripes and the scroll bar meet in one cell.
+    let mut tasks = tasks.selectable(true);
+    tasks.selection_mut().select_only(2);
+    tasks.set_viewport(4.0 * 32.0, 32.0);
     Box::new(tasks)
 }
 
@@ -988,6 +1009,45 @@ fn pane_blocks() -> Vec<Block> {
             )
         }),
     ]
+}
+
+/// A note in the block editor: every block kind on the one content edge,
+/// with its drag handles, checklist ticks and an embedded note.
+fn editor_blocks() -> Vec<Block> {
+    vec![block("Block editor", 1100.0, 760.0, |_| {
+        let mut editor = tilo_ui::widget::BlockEditor::from_markdown(
+            "What has to land before we ship.\n\n\
+             - [x] Finalise the onboarding copy\n\
+             - [ ] Write the migration guide\n\n\
+             - Owners sign off\n\n\
+             1. Cut the release branch\n\n\
+             > Good notes keep the reason behind a decision.\n\n\
+             ```sh\ngit tag -a v1.0\n```\n\n\
+             | Stage | Owner |\n| --- | --- |\n| Beta | Ana |\n\n\
+             Reading list",
+        )
+        .with_wrap_lines(true);
+        let page = tilo_ui::widget::marks::PageId::from_u128(1);
+        if let Some(last) = editor.blocks_mut().last_mut() {
+            let end = last.line.value().len();
+            last.line.add_mark(tilo_ui::widget::MarkSpan::new(
+                0..end,
+                tilo_ui::widget::Mark::Transclusion(page),
+            ));
+        }
+        editor.set_transclusion_previews(
+            [(
+                page,
+                tilo_ui::widget::TransclusionPreview {
+                    title: "Reading list".to_owned(),
+                    excerpt: "Things worth coming back to.".to_owned(),
+                },
+            )]
+            .into_iter()
+            .collect(),
+        );
+        Box::new(editor)
+    })]
 }
 
 fn content_blocks() -> Vec<Block> {
@@ -1243,6 +1303,7 @@ fn overlays(theme: &Theme, out: &Path) {
     context.push(MenuItem::separator());
     context.push(MenuItem::destructive_selection("Move to bin").with_icon(Icon::Trash));
     context.open_at([600.0, 60.0]);
+    context.focus_item(1);
     let dropdown = Dropdown::from_state(
         vec!["Low".into(), "Medium".into(), "High".into()],
         &LocalState::new("Medium".to_owned()),
@@ -1311,6 +1372,12 @@ pub fn run(args: &[String]) {
         grid_page(&theme, ROW_COLS, &row_specs(), &file("rows"));
         block_page(&theme, &pane_blocks(), &file("panes"));
         block_page(&theme, &content_blocks(), &file("content"));
+        block_page(&theme, &editor_blocks(), &file("editor"));
+        block_page(
+            &theme.clone().with_text_scale(2.0),
+            &editor_blocks(),
+            &file("editor-large"),
+        );
         overlays(&theme, &file("overlays"));
         overlays(
             &theme.clone().with_reduce_transparency(true),
