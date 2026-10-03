@@ -130,7 +130,7 @@ class DevelopmentTarget(unittest.TestCase):
         self.dtb.write_bytes(DTB[:-1] + b'X')
         with self.assertRaisesRegex(ValueError, 'pinned SHA-256'):
             dev.image_inputs(self.image)
-        (dev.PROFILE_TOOLS / 'uki_hardware_profile.py').unlink()
+        (dev.PROFILE_TOOLS / 'hardware_profile.py').unlink()
         with self.assertRaises(FileNotFoundError):
             dev.image_inputs(self.image)
 

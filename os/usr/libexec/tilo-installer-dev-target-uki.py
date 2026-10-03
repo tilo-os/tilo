@@ -92,7 +92,7 @@ def image_inputs(root):
     initrd = regular(root, kernel_directory + '/initramfs.img')
     require(not (root / 'boot/tilo-target').exists(), 'development target already has a target boot bundle')
     sys.path.insert(0, str(PROFILE_TOOLS))
-    profile = load_module(PROFILE_TOOLS / 'uki_hardware_profile.py', 'dev_target_profile')
+    profile = load_module(PROFILE_TOOLS / 'hardware_profile.py', 'dev_target_profile')
     dtb = profile.resolve_profile(root, version, 'aarch64')
     uki_paths = list((root / 'boot/EFI/Linux').glob('*.efi'))
     ukis = [regular(root, path.relative_to(root)) for path in uki_paths]
