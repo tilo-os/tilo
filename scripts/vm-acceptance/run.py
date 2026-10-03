@@ -40,8 +40,10 @@ BUDGETS = {
     "idle_shell_cpu_pct": 1.0, "idle_frames": 2, "idle_user_cpu_pct": 3.0,
     "idle_apps_shell_cpu_pct": 1.5, "idle_apps_frames": 2, "idle_apps_user_cpu_pct": 5.0,
     "idle_loop_ticks_per_s": 2.0,
-    # Memory, PSS.
-    "shell_pss_mb": 700, "process_pss_mb": 300, "session_pss_mb": 2500,
+    # Memory. An app is budgeted by its own cgroup (memory.current, and its anon share);
+    # processes and the compositor by anonymous RSS, the memory they hold privately.
+    "app_memory_mb": 400, "app_anon_mb": 250,
+    "shell_anon_mb": 500, "process_anon_mb": 300, "session_memory_mb": 2500,
     # Frames at 60 Hz.
     "work_ms_p95": 16.7, "work_ms_p99": 33.4,
     "paint_period_ms_p95": 33.4, "paint_gap_ms_max": 100.0, "animation_min_frames": 8,
