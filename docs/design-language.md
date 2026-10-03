@@ -171,7 +171,9 @@ one header row across the top of the window that holds each column's header:
 sidebar, list title and detail toolbar together read as one unified toolbar.
 The sidebar toggle sits at the top-leading corner of the sidebar; when the
 sidebar is hidden it moves to the leading edge of the next column. One
-system-wide shortcut toggles it in every app. Narrow windows collapse the
+system-wide shortcut toggles it in every app. History, where an app has it,
+is one glyph at the row's trailing edge that reads as on while History
+shows; no app draws a History button of its own. Narrow windows collapse the
 sidebar into a floating drawer instead of squeezing content.
 
 ## Space and density
