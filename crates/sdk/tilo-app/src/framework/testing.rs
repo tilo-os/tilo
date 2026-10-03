@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use tilo_resource::{Effect, Invoke, Resource};
-use ui_core::application::{ApplicationHost, ComponentRunnerInputs};
+use ui_core::application::{ApplicationHost, ComponentRunnerInputs, PreparedComponentInputs};
 use ui_core::bound_dispatch::BoundActionAddress;
 use ui_core::headless::FrameHarness;
 use ui_core::launch::LaunchError;
@@ -31,6 +31,36 @@ enum Profile {
     Temporary(Rc<tempfile::TempDir>),
     /// An explicit `--data-dir` profile the app itself would open.
     DataDir(PathBuf),
+}
+
+/// A component prepared on a private or explicit profile keeps its settings
+/// in that profile too, never in the person's session document.
+pub(crate) fn with_settings_file(
+    mut prepared: PreparedComponentInputs,
+    file: std::path::PathBuf,
+) -> PreparedComponentInputs {
+    prepared
+        .context
+        .provide_settings(ui_core::storage::SettingsDocument::File(file));
+    prepared
+}
+
+/// The settings document of a `--data-dir` profile.
+pub(crate) fn data_dir_settings(directory: &std::path::Path) -> std::path::PathBuf {
+    std::path::absolute(directory)
+        .unwrap_or_else(|_| directory.to_path_buf())
+        .join("settings.json")
+}
+
+impl Profile {
+    /// The profile's settings document, which the app's typed settings use
+    /// instead of the person's.
+    fn settings(&self) -> PathBuf {
+        match self {
+            Self::Temporary(directory) => directory.path().join("settings.json"),
+            Self::DataDir(directory) => data_dir_settings(directory),
+        }
+    }
 }
 
 /// One framework app mounted headlessly: a test, a fixture seeder or an
@@ -116,6 +146,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             None,
             ComponentRunnerInputs::from_native_process(),
         )?;
+        let prepared = with_settings_file(prepared, profile.settings());
         let component =
             definition.instantiate(prepared.context, prepared.target, prepared.restore)?;
         let harness =
@@ -131,6 +162,13 @@ impl<A: ResourceApp> HeadlessApp<A> {
             permissions,
             marker: std::marker::PhantomData,
         })
+    }
+
+    /// The app's typed settings in this profile's settings document, which
+    /// the running app follows: a write here is what another window, the
+    /// Settings app or another of the person's devices writing them does.
+    pub fn settings<T: ui_core::storage::SettingsSchema>(&self) -> ui_core::storage::Settings<T> {
+        ui_core::storage::Settings::for_app(A::ID).in_file(self.profile.settings())
     }
 
     /// Change the participant's role while the app runs, as the record's
