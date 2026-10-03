@@ -307,6 +307,9 @@ pub struct AccessibilityLayer {
     pub ui_scale: f32,
     #[serde(default)]
     pub reduce_motion: bool,
+    /// Floating chrome is opaque instead of blurred and tinted.
+    #[serde(default)]
+    pub reduce_transparency: bool,
     #[serde(default)]
     pub thick_caret: bool,
 }
@@ -378,6 +381,7 @@ impl Default for AccessibilityLayer {
             text_scale: 1.0,
             ui_scale: 1.0,
             reduce_motion: false,
+            reduce_transparency: false,
             thick_caret: false,
         }
     }
@@ -462,6 +466,7 @@ fn accessibility_layer(
         text_scale: scale_field(appearance, "text_scale"),
         ui_scale: scale_field(appearance, "ui_scale"),
         reduce_motion: bool_field(appearance, "reduce_motion"),
+        reduce_transparency: bool_field(appearance, "reduce_transparency"),
         thick_caret: document
             .and_then(|value| {
                 value
@@ -595,6 +600,7 @@ pub fn resolve_theme_layers(stack: &ThemeLayerStack) -> Theme {
         .with_ui_scale(access.ui_scale)
         .with_text_scale(access.text_scale)
         .with_reduce_motion(access.reduce_motion)
+        .with_reduce_transparency(access.reduce_transparency)
 }
 
 /// Built-in defaults, distribution defaults, and the user theme carry the
@@ -1001,6 +1007,7 @@ mod tests {
             text_scale: 2.0,
             ui_scale: 1.5,
             reduce_motion: true,
+            reduce_transparency: true,
             thick_caret: true,
         };
         assert!(rejected.validate().is_err());

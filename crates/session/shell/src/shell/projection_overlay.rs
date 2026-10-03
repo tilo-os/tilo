@@ -39,7 +39,6 @@ use crate::shell::projection::{
 
 const OPEN_ANIM_MS: u64 = 220;
 const SCRIM_ALPHA: f32 = 0.45;
-const SURFACE_ALPHA: f32 = ui::chrome::shell::CHROME_SURFACE_ALPHA;
 /// How often an open sheet re-reads the compositor's display snapshot and
 /// the transaction it staged. Bounded so an open sheet never turns into
 /// per-frame settings I/O.
@@ -71,10 +70,6 @@ fn f64_floor_to_usize_saturating(v: f64) -> usize {
 )]
 fn f32_to_u8_saturating(v: f32) -> u8 {
     v.clamp(0.0, 255.0) as u8
-}
-
-fn panel_surface(theme: &Theme) -> Color {
-    ui::chrome::shell::panel_ground(theme).with_alpha_factor(SURFACE_ALPHA)
 }
 
 fn draw_scrim(scene: &mut Scene, transform: Affine, rect: Rect, openness: f32, theme: &Theme) {
@@ -1118,7 +1113,13 @@ impl ProjectionOverlay {
         let radius = ui::chrome::ChromeRole::Panel.radius(theme, r.height());
         let card = RoundedRect::from_rect(r, radius);
         ui::chrome::shell::panel_shadow(scene, transform, r, radius, theme, 1.0);
-        scene.fill(Fill::NonZero, transform, panel_surface(theme), None, &card);
+        ui::floating_surface::paint_material(
+            scene,
+            transform,
+            &card,
+            ui::floating_surface::Material::Floating,
+            theme,
+        );
         // Panel edge derived against the ground (HIG §9.5), not declared.
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),

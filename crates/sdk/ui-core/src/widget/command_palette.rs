@@ -2093,12 +2093,12 @@ impl Widget for CommandPalette {
         // edge at all.
         let radius = self.surface_radius_px();
         let shape = RoundedRect::from_rect(self.rect, radius);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
+        crate::floating_surface::paint_material(
+            scene,
             transform,
-            crate::chrome::panel_ground(theme),
-            None,
             &shape,
+            crate::floating_surface::Material::Floating,
+            theme,
         );
         scene.stroke(
             &Stroke::new(1.0),

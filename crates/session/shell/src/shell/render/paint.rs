@@ -13,7 +13,10 @@
 //! Tests need a wgpu device (`llvmpipe`/`vulkan_lvp` inside the distrobox); no real DRM device is touched.
 
 use std::{
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -173,6 +176,10 @@ pub struct BridgePhaseTiming {
     pub readback_bytes: u64,
     /// Bytes actually swizzled into the caller's output, after destination truncation.
     pub cpu_output_bytes: u64,
+    /// CPU time to render, blur and substitute the backdrops of the frame's floating
+    /// surfaces, before the frame's own submission. Their GPU work completes inside
+    /// `completed_readback_map_us`.
+    pub backdrop_us: u128,
 }
 
 impl BridgePhaseTiming {
@@ -182,6 +189,7 @@ impl BridgePhaseTiming {
     #[must_use]
     pub fn total_us(self) -> u128 {
         self.submit_us
+            .saturating_add(self.backdrop_us)
             .saturating_add(self.completed_readback_map_us)
             .saturating_add(self.settle_us)
             .saturating_add(self.cpu_copy_swizzle_us)
@@ -466,6 +474,12 @@ pub struct RetainedGpuTarget {
     /// scene with the layer images in their channel colours, then the frame
     /// itself with them black.
     hdr_pass: Option<HdrPass>,
+    /// What the floating surfaces of the frames rendered from now on are
+    /// drawn over. Each render attempt blurs it first, so a recovery retry
+    /// redraws the backdrop with the grown budget too.
+    backdrop: Option<Arc<ui::backdrop::BackdropFrame>>,
+    /// Built with the first frame that has a backdrop.
+    backdrop_blur: Option<ui::backdrop::BackdropBlur>,
     /// Full submissions from the latest paint that actually selected the experimental Area PPT8
     /// shader. This is route-attempt telemetry only, not a completion or speed claim.
     last_area_ppt8_full_attempts: usize,
@@ -529,6 +543,8 @@ impl RetainedGpuTarget {
             last_canonical_segment_order_full_attempts: 0,
             last_canonical_segment_order_sparse_attempts: 0,
             hdr_pass: None,
+            backdrop: None,
+            backdrop_blur: None,
             last_area_ppt8_full_attempts: 0,
             last_area_ppt8_sparse_attempts: 0,
             last_clip_single_group_full_attempts: 0,
@@ -796,6 +812,9 @@ impl RetainedGpuTarget {
                 self.renderer.override_image(&substitution.image, None);
             }
         }
+        if let Some(blur) = self.backdrop_blur.as_mut() {
+            blur.release(&mut self.renderer);
+        }
         match &result {
             Ok(_) => {
                 self.retained_target_valid = true;
@@ -864,6 +883,8 @@ impl RetainedGpuTarget {
 
         let (width, height) = self.size;
         let (band_texture, band_view) = self.band_target(rows);
+        // Every band draws the same substituted placeholders.
+        self.prepare_backdrop(timing.as_deref_mut());
         let mut top = 0;
         while top < height {
             let band_height = rows.min(height.saturating_sub(top));
@@ -997,6 +1018,30 @@ impl RetainedGpuTarget {
         Err(BridgeError::InvalidSize(format!("{width}x{height}")))
     }
 
+    /// Render, blur and substitute the backdrops of the frame about to be
+    /// rendered, when it has any.
+    fn prepare_backdrop(&mut self, timing: Option<&mut BridgePhaseTiming>) {
+        let Some(frame) = self.backdrop.as_deref().filter(|frame| !frame.is_empty()) else {
+            return;
+        };
+        let stats = self
+            .backdrop_blur
+            .get_or_insert_with(|| ui::backdrop::BackdropBlur::new(&self.device))
+            .prepare(
+                &self.device,
+                &self.queue,
+                &mut self.renderer,
+                frame,
+                self.size,
+                self.base_color,
+            );
+        if let Some(timing) = timing {
+            timing.backdrop_us = timing
+                .backdrop_us
+                .saturating_add(u128::from(stats.encode_us));
+        }
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "one ordered render/recovery transaction serves both output paths"
@@ -1027,6 +1072,7 @@ impl RetainedGpuTarget {
                 height: self.size.1,
                 antialiasing_method: AaConfig::Area,
             };
+            self.prepare_backdrop(timing.as_deref_mut());
             if let Some(pass) = self.hdr_pass.as_ref() {
                 for substitution in &pass.substitutions {
                     self.renderer
@@ -1722,6 +1768,13 @@ impl VelloDrmBridge {
             #[cfg(test)]
             fail_next_tracked_swizzle: false,
         })
+    }
+
+    /// Draw the floating surfaces of the frames rendered from now on over
+    /// `backdrop` (see [`crate::compositor::frame::FramePaint::backdrop`]).
+    /// `None` draws them opaque.
+    pub fn set_backdrop(&mut self, backdrop: Option<Arc<ui::backdrop::BackdropFrame>>) {
+        self.target.backdrop = backdrop;
     }
 
     /// Whether [`Self::paint`] has stored a complete tight RGBA frame.
