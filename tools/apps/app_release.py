@@ -62,8 +62,6 @@ VERIFICATION_INPUTS = {
 }
 GLOBAL_INPUTS = BINARY_INPUTS | PACKAGING_INPUTS | VERIFICATION_INPUTS
 GLOBAL_PREFIXES = (".cargo/", "vendor/")
-# Font sources under vendor/fonts/ build with their own toolchain; no app reads them.
-NON_CARGO_VENDOR = ("vendor/fonts/",)
 FULL_REBUILD_PREFIXES = (
     ".forgejo/actions/restore-cargo-downloads/",
     "dist/apps/",
@@ -228,7 +226,7 @@ def input_classification(paths: list[str], metadata: dict | None = None,
     allows a later trusted replay worker to reuse binaries for receipt-only work.
     """
     classified = {
-        "binary": sorted({p for p in paths if p in BINARY_INPUTS or (p.startswith(GLOBAL_PREFIXES) and not p.startswith(NON_CARGO_VENDOR))}),
+        "binary": sorted({p for p in paths if p in BINARY_INPUTS or p.startswith(GLOBAL_PREFIXES)}),
         "packaging": sorted(set(paths) & PACKAGING_INPUTS),
         "verification": sorted(set(paths) & VERIFICATION_INPUTS),
     }
@@ -263,8 +261,7 @@ def apps_from_changes(
             path in GLOBAL_INPUTS
             and not (path == "Cargo.lock" and lock_affected_packages is not None)
         )
-        or (path.startswith(GLOBAL_PREFIXES + FULL_REBUILD_PREFIXES)
-            and not path.startswith(NON_CARGO_VENDOR))
+        or path.startswith(GLOBAL_PREFIXES + FULL_REBUILD_PREFIXES)
         for path in paths
     ):
         return sorted(set(catalog).difference(OS_INTEGRATED_APPS))
