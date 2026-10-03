@@ -22,45 +22,27 @@
     )
 )]
 
-use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
-use ui::widget::Widget;
+use ui::launch::LaunchSpec;
 
-#[allow(
-    clippy::unnecessary_wraps,
-    reason = "must match ui::launch::ShotFactory's fn(&LaunchArgs) -> Result<..> signature"
-)]
-fn shot_root(_: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    Ok(hex_editor::app_root())
-}
-
-fn wants_standalone() -> bool {
+/// Whether the command line names an existing file to open: a positional
+/// argument that is not the value of a flag.
+fn names_a_file() -> bool {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
-        if arg == "--shots" {
+        if ["--shots", "--scenario", "--viewport", "--theme"].contains(&arg.as_str()) {
             let _ = args.next();
-            return true;
-        }
-        if ["--responsive-matrix", "--native-audit", "--headless"]
-            .iter()
-            .any(|mode| arg == *mode || arg.starts_with(&format!("{mode}=")))
-            || arg.starts_with("--shots=")
-        {
-            return true;
-        }
-        if arg.starts_with('-') {
             continue;
         }
-        if std::path::Path::new(&arg).exists() {
+        if !arg.starts_with('-') && std::path::Path::new(&arg).exists() {
             return true;
         }
     }
     false
 }
 
-fn shot_spec() -> LaunchSpec {
+fn file_spec() -> LaunchSpec {
     LaunchSpec::new("so.tilo.hex-editor", hex_editor::app_root)
         .max_positionals(1)
-        .shot_root(shot_root)
         .configure_app(|app| hex_editor::actions::register(app.action_registry_mut()))
 }
 
@@ -68,10 +50,11 @@ fn shot_spec() -> LaunchSpec {
 extern crate runtime_dylib;
 
 pub fn main() {
-    // A positional file or `--shots` stays on the standalone widget path.
-    if wants_standalone() {
-        ui::launch::run_or_exit(&shot_spec());
+    // A positional file opens straight into the editor; everything else, the
+    // window and `--shots` with its scenarios, is the framework app.
+    if names_a_file() {
+        ui::launch::run_or_exit(&file_spec());
         return;
     }
-    ui::launch::run_or_exit(&hex_editor::launch_spec());
+    ui::framework::run::<hex_editor::HexEditorShell>();
 }
