@@ -167,9 +167,7 @@ mod tests {
     /// frame composed at `size`. A whole independent build of the app, the
     /// record and the scene, which is what a second process would do.
     fn capture(scenario: Option<&str>, size: (u32, u32)) -> TestApp<VideoEditor> {
-        let mut app = TestApp::<VideoEditor>::capture(scenario).expect("the scenario stages");
-        app.harness().resize(size).expect("the viewport lays out");
-        app
+        TestApp::<VideoEditor>::capture_at(scenario, size).expect("the scenario stages")
     }
 
     fn print_of(scenario: Option<&str>, size: (u32, u32)) -> u64 {

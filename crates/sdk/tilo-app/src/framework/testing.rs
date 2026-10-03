@@ -82,11 +82,19 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// Returns any launch failure, or the host's refusal of a scenario
     /// action.
     pub fn capture(scenario: Option<&str>) -> Result<Self, LaunchError> {
+        Self::capture_at(scenario, A::shot_viewport(scenario))
+    }
+
+    /// [`Self::capture`] at `viewport`, as `--shots --viewport` draws it.
+    ///
+    /// # Errors
+    /// As [`Self::capture`].
+    pub fn capture_at(scenario: Option<&str>, viewport: (u32, u32)) -> Result<Self, LaunchError> {
         let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
         let mut app = Self::open(
             Profile::Temporary(profile),
             Role::Owner,
-            Some(Capture::new(scenario.map(str::to_owned))),
+            Some((Capture::new(scenario.map(str::to_owned)), viewport)),
         )?;
         super::stage::stage::<A>(app.harness(), scenario)?;
         Ok(app)
@@ -102,7 +110,11 @@ impl<A: ResourceApp> HeadlessApp<A> {
         Self::open(Profile::DataDir(directory.to_path_buf()), Role::Owner, None)
     }
 
-    fn open(profile: Profile, role: Role, capture: Option<Capture>) -> Result<Self, LaunchError> {
+    fn open(
+        profile: Profile,
+        role: Role,
+        capture: Option<(Capture, (u32, u32))>,
+    ) -> Result<Self, LaunchError> {
         let author = UserId(AUTHOR.into());
         let permissions = role_permissions(AUTHOR, role);
         let (mut host, instance) = match &profile {
@@ -133,10 +145,13 @@ impl<A: ResourceApp> HeadlessApp<A> {
             None,
             ComponentRunnerInputs::from_native_process(),
         )?;
-        let viewport = A::shot_viewport(capture.as_ref().and_then(Capture::scenario));
-        if let Some(capture) = capture {
-            prepared.context.provide_capture(capture);
-        }
+        let viewport = match capture {
+            Some((capture, viewport)) => {
+                prepared.context.provide_capture(capture);
+                viewport
+            }
+            None => A::shot_viewport(None),
+        };
         let component =
             definition.instantiate(prepared.context, prepared.target, prepared.restore)?;
         let harness = FrameHarness::from_component(component, viewport, prepared.runner_inputs)?;
