@@ -19,12 +19,7 @@ fn fixture(count: usize) -> (App, Rc<RefCell<Vec<usize>>>) {
         .with_no_padding()
         .with_intrinsic_height()
         .with_gap(20.0)
-        .push(Box::new(
-            CardGrid::new(cards)
-                .with_min_card_width(260.0)
-                .with_card_height(180.0)
-                .with_gap(16.0),
-        ))
+        .push(Box::new(CardGrid::new(cards)))
         .push(Box::new(
             Container::new().with_no_padding().with_height(10.0),
         ));
@@ -51,7 +46,7 @@ fn button_rects(app: &App) -> Vec<KurboRect> {
     app.root_widget.children()[0]
         .children()
         .iter()
-        .map(|card| card.children()[0].children()[0].get_rect())
+        .map(|card| card.children()[0].get_rect())
         .collect()
 }
 
@@ -119,8 +114,11 @@ fn card_grid_has_geometry_focus_and_input_before_paint() {
         );
         let snapshot = driver.inspection();
         let grid = &snapshot.root.children[0];
-        assert_eq!(grid.rect, [0.0, 0.0, 200.0, 376.0]);
-        assert_eq!(grid.children[1].rect, [0.0, 196.0, 200.0, 180.0]);
+        let [_, first_y, first_w, first_h] = grid.children[0].rect;
+        let [_, second_y, second_w, _] = grid.children[1].rect;
+        let gap = f64::from(Theme::dark().tokens.spacing.rhythm.sibling);
+        assert_eq!((first_w, second_w), (200.0, 200.0), "one full-width column");
+        assert!((second_y - (first_y + first_h + gap)).abs() < 0.5);
         driver.click_named("card-1").unwrap();
         assert_eq!(*clicks.borrow(), vec![1]);
     }
@@ -135,8 +133,8 @@ fn card_grid_has_geometry_focus_and_input_before_paint() {
         let root_node = app.layout.root_node.unwrap();
         run_layout_pass(&mut app, root_node, 200, 190, 1.0, true, None).unwrap();
         let root = app.root_widget.children()[0];
-        assert_eq!(root.children()[0].get_rect().height(), 1160.0);
-        let hidden_button = root.children()[0].children()[1].children()[0].children()[0].get_rect();
+        assert!(root.children()[0].get_rect().height() > 190.0);
+        let hidden_button = root.children()[0].children()[5].children()[0].get_rect();
         assert!(hidden_button.y0 >= 190.0);
         let target = hidden_button.center();
         app.dispatch_semantic_click(target.x, target.y);
@@ -144,10 +142,10 @@ fn card_grid_has_geometry_focus_and_input_before_paint() {
             clicks.borrow().is_empty(),
             "off-viewport card must not receive pointer activation"
         );
-        let visible_button =
-            app.root_widget.children()[0].children()[0].children()[0].children()[0].children()[0]
-                .get_rect()
-                .center();
+        let visible_button = app.root_widget.children()[0].children()[0].children()[0].children()
+            [0]
+        .get_rect()
+        .center();
         app.dispatch_semantic_click(visible_button.x, visible_button.y);
         assert_eq!(*clicks.borrow(), vec![0]);
     }
@@ -165,9 +163,7 @@ fn card_grid_has_geometry_focus_and_input_before_paint() {
         };
         let mut app = App::new_with_controlled_inputs(
             State::new(),
-            Box::new(
-                CardGrid::new(vec![Box::new(Card::new(Box::new(body)))]).with_card_height(180.0),
-            ),
+            Box::new(CardGrid::new(vec![Box::new(Card::new(Box::new(body)))])),
         );
         app.root_widget.update(&mut app.state.doc, &app.state.root);
         app.init_layout();
@@ -215,22 +211,18 @@ fn card_grid_has_geometry_focus_and_input_before_paint() {
             Box::new(Button::new("nested-a", "A", None)),
             Box::new(Button::new("nested-b", "B", None)),
         ])
-        .with_min_card_width(300.0)
-        .with_card_height(60.0)
-        .with_gap(16.0);
-        let outer = CardGrid::new(vec![Box::new(Card::new(Box::new(nested)))])
-            .with_min_card_width(260.0)
-            .with_card_height(180.0);
+        .with_card_width(crate::widget::CardWidth::Wide);
+        let outer = CardGrid::new(vec![Box::new(Card::new(Box::new(nested)))]);
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(outer));
         app.init_layout();
         layout(&mut app, 200);
         let card = app.root_widget.children()[0];
-        let surface = card.children()[0];
-        let nested = surface.children()[0];
+        let nested = card.children()[0];
         assert_eq!(card.get_rect().width(), 200.0);
         assert!(nested.get_rect().width() < 200.0);
         let buttons = nested.children();
-        assert_eq!(buttons[1].get_rect().y0 - buttons[0].get_rect().y0, 76.0);
+        let gap = f64::from(Theme::dark().tokens.spacing.rhythm.sibling);
+        assert_eq!(buttons[1].get_rect().y0 - buttons[0].get_rect().y1, gap);
         assert!(
             buttons
                 .iter()
@@ -248,15 +240,11 @@ fn card_grid_reflows_rows_and_retains_edit_state() {
         layout(&mut app, 900);
         let order = app.focusable_order.clone();
         app.set_focused_node(Some(order[4]));
-        for (width, height, second_row_y) in [
-            (900, 376.0, 196.0),
-            (600, 572.0, 196.0),
-            (200, 1160.0, 196.0),
-            (900, 376.0, 196.0),
-        ] {
+        let gap = f64::from(Theme::dark().tokens.spacing.rhythm.sibling);
+        for width in [900, 600, 200, 900] {
             layout(&mut app, width);
             let grid = app.root_widget.children()[0];
-            assert_eq!(grid.get_rect().height(), height);
+            let height = grid.get_rect().height();
             assert_eq!(grid.get_rect().width(), f64::from(width));
             let cards = grid.children();
             let columns = match width {
@@ -264,9 +252,12 @@ fn card_grid_reflows_rows_and_retains_edit_state() {
                 600 => 2,
                 _ => 1,
             };
-            assert_eq!(cards[columns].get_rect().y0, second_row_y);
+            let card_h = cards[0].get_rect().height();
+            let rows = 6_usize.div_ceil(columns);
+            assert!((height - (crate::num::f64_of_usize(rows) * (card_h + gap) - gap)).abs() < 0.5);
+            assert!((cards[columns].get_rect().y0 - (card_h + gap)).abs() < 0.5);
             for card in cards {
-                assert_eq!(card.get_rect().height(), 180.0);
+                assert_eq!(card.get_rect().height(), card_h);
                 assert!(card.get_rect().x1 <= f64::from(width));
             }
             assert_eq!(app.root_widget.children()[1].get_rect().y0, height + 20.0);
@@ -278,7 +269,7 @@ fn card_grid_reflows_rows_and_retains_edit_state() {
         }
     }
 
-    // Case `card_grid_long_content_does_not_turn_fixed_rows_into_minimums`.
+    // Case `card_grid_long_content_grows_its_row`.
     {
         let body = Column::new()
             .with_no_padding()
@@ -287,14 +278,13 @@ fn card_grid_reflows_rows_and_retains_edit_state() {
                 &"Long content wraps across lines. ".repeat(80),
             )))
             .push(Box::new(Button::new("long-action", "Action", None)));
-        let root = CardGrid::new(vec![Box::new(Card::new(Box::new(body)))])
-            .with_card_height(180.0)
-            .with_min_card_width(260.0);
+        let root = CardGrid::new(vec![Box::new(Card::new(Box::new(body)))]);
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
         app.init_layout();
         layout(&mut app, 200);
-        assert_eq!(app.root_widget.get_rect().height(), 180.0);
-        assert_eq!(app.root_widget.children()[0].get_rect().height(), 180.0);
+        let card = app.root_widget.children()[0].get_rect();
+        assert!(card.height() > 400.0, "content decides the card height");
+        assert_eq!(app.root_widget.get_rect().height(), card.height());
     }
 
     // Case `card_grid_retains_local_edit_state_across_width_changes`.
@@ -408,10 +398,15 @@ fn card_grid_reflows_rows_and_retains_edit_state() {
 
     // Case `card_grid_empty_and_single_keep_intrinsic_height`.
     {
-        for (count, height) in [(0, 0.0), (1, 180.0)] {
+        for count in [0, 1] {
             let (mut app, _) = fixture(count);
             layout(&mut app, 200);
-            assert_eq!(app.root_widget.children()[0].get_rect().height(), height);
+            let grid = app.root_widget.children()[0];
+            let expected = grid
+                .children()
+                .first()
+                .map_or(0.0, |c| c.get_rect().height());
+            assert_eq!(grid.get_rect().height(), expected);
             assert_eq!(app.focusable_order.len(), count);
         }
     }

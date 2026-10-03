@@ -2683,6 +2683,16 @@ impl CaptureStudio {
     }
 
     /// The tint a capture in the current mode marks its selection with.
+    /// What the selection's metadata chips say: a recording is live, a
+    /// picture-in-picture is information, a screenshot is neutral.
+    fn selection_tone(&self) -> Tone {
+        match self.mode {
+            CaptureMode::Screenshot => Tone::Neutral,
+            CaptureMode::Recording => Tone::Danger,
+            CaptureMode::Pip => Tone::Info,
+        }
+    }
+
     fn selection_color(&self, theme: &Theme) -> Color {
         let c = &theme.tokens.colors;
         match self.mode {
@@ -4882,7 +4892,7 @@ impl Widget for CaptureStudio {
                         chrome.metadata.y1,
                     );
                     ChipFace::new(rect, label)
-                        .style(ChipStyle::Tinted(Tone::Presence(selection_color)))
+                        .style(ChipStyle::Tinted(self.selection_tone()))
                         .paint(s, t, tr, theme);
                     metadata_x = rect.x1 + 4.0;
                 }

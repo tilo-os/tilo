@@ -521,6 +521,47 @@ fn form_overrides_apply_and_reset_independently() {
     page_width_override_and_reset_leave_label_adaptation_active();
     clearing_section_and_field_overrides_restores_only_the_selected_property();
 }
+#[test]
+fn grouped_sections_are_settings_rows_with_separators() {
+    use crate::widget::{Dropdown, Toggle};
+    let theme = Theme::dark();
+    let section = FormSection::new("Camera")
+        .grouped()
+        .field(Field::new("Grid lines", Toggle::new("grid", "grid")))
+        .field(Field::new(
+            "Photo format",
+            Dropdown::new(vec!["HEIF".into(), "JPEG".into()], "format"),
+        ));
+    let harness = FrameHarness::new_with_theme(
+        crate::State::new(),
+        Box::new(Form::new().section(section)),
+        (720, 400),
+        theme.clone(),
+    );
+    let snapshot = harness.inspection();
+    let mut fields = Vec::new();
+    collect(&snapshot.root, "Field", &mut fields);
+    assert_eq!(fields.len(), 2);
+    let row = f64::from(theme.tokens.metrics.panel_row_height + theme.tokens.spacing.s2);
+    for field in &fields {
+        assert!(
+            field.rect[3] >= row - 0.5,
+            "a grouped row is at least {row} tall"
+        );
+    }
+    // Rows sit edge to edge; the separator lives between them.
+    let gap = fields[1].rect[1] - (fields[0].rect[1] + fields[0].rect[3]);
+    assert!(gap.abs() < 0.5, "rows touch, got {gap}");
+    let mut titles = Vec::new();
+    collect(&snapshot.root, "Text", &mut titles);
+    let title = titles.first().expect("section title");
+    let expected = f64::from(theme.text(TextRole::Heading).line_height_px());
+    assert!(
+        (title.rect[3] - expected).abs() < 1.0,
+        "the title is a Heading"
+    );
+}
+
 fn trailing_fixture() -> Element {
     use crate::widget::Dropdown;
     Box::new(

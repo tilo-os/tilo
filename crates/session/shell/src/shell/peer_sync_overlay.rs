@@ -1626,19 +1626,14 @@ fn draw_person(ctx: &mut PaintCtx<'_>, rect: Rect, who: &str, sub: &str, named: 
             .next()
             .map(|c| c.to_uppercase().to_string())
             .unwrap_or_default();
-        ui::widget::Avatar::draw_at(
-            scene,
-            transform,
+        ui::widget::AvatarFace::new(&initial, who).paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, text, theme),
             Rect::new(
                 center.x - 16.0,
                 center.y - 16.0,
                 center.x + 16.0,
                 center.y + 16.0,
             ),
-            &initial,
-            colors.intent.inverted,
-            theme,
-            text,
         );
     } else {
         scene.stroke(
