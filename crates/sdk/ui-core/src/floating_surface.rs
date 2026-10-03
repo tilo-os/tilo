@@ -310,89 +310,6 @@ impl FloatingSurfaceHostMessage {
     }
 }
 
-/// Wakes the app's event loop when the shell has written to an idle
-/// connection: one wake, then nothing until the app has read
-/// ([`Self::rearm`]), so unread bytes never spin it.
-#[cfg(all(unix, any(test, feature = "local-daemons")))]
-struct ReadableWake {
-    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    rearm: std::sync::mpsc::Sender<()>,
-}
-
-#[cfg(all(unix, any(test, feature = "local-daemons")))]
-impl ReadableWake {
-    const POLL: std::time::Duration = std::time::Duration::from_millis(500);
-
-    fn spawn(stream: &UnixStream, wake: impl Fn() + Send + 'static) -> std::io::Result<Self> {
-        use std::os::fd::AsRawFd as _;
-        use std::sync::atomic::Ordering;
-        // Its own descriptor for the same socket: closing the client's never
-        // leaves this thread polling a number the process reused.
-        let watched = stream.try_clone()?;
-        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (rearm, armed) = std::sync::mpsc::channel::<()>();
-        let stopped = std::sync::Arc::clone(&stop);
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "the watcher waits on the shell's socket for the connection's lifetime; \
-                      a pool thread would be held as long"
-        )]
-        std::thread::Builder::new()
-            .name("tilo-shell-ui-wake".into())
-            .spawn(move || {
-                loop {
-                    if stopped.load(Ordering::Acquire) {
-                        return;
-                    }
-                    let mut readable = libc::pollfd {
-                        fd: watched.as_raw_fd(),
-                        events: libc::POLLIN,
-                        revents: 0,
-                    };
-                    let timeout = libc::c_int::try_from(Self::POLL.as_millis()).unwrap_or(500);
-                    // SAFETY: one valid pollfd for a descriptor this thread owns.
-                    let ready = unsafe { libc::poll(&raw mut readable, 1, timeout) };
-                    if ready < 0 {
-                        if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
-                        {
-                            continue;
-                        }
-                        return;
-                    }
-                    if ready == 0 {
-                        continue;
-                    }
-                    wake();
-                    if readable.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
-                        return;
-                    }
-                    loop {
-                        match armed.recv_timeout(Self::POLL) {
-                            Ok(()) => break,
-                            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-                                if !stopped.load(Ordering::Acquire) => {}
-                            Err(_) => return,
-                        }
-                    }
-                    while armed.try_recv().is_ok() {}
-                }
-            })?;
-        Ok(Self { stop, rearm })
-    }
-
-    /// The app read what was there; wake it for the next arrival.
-    fn rearm(&self) {
-        let _ = self.rearm.send(());
-    }
-}
-
-#[cfg(all(unix, any(test, feature = "local-daemons")))]
-impl Drop for ReadableWake {
-    fn drop(&mut self) {
-        self.stop.store(true, std::sync::atomic::Ordering::Release);
-    }
-}
-
 /// Non-blocking app-side connection to the session shell. The launcher hands
 /// the already-connected socket into the sandbox as
 /// `TILO_SVC_SHELL-UI_FD`; newline-delimited JSON keeps the tiny lifecycle
@@ -405,8 +322,10 @@ pub struct FloatingSurfaceServiceClient {
     outgoing: VecDeque<Vec<u8>>,
     outgoing_offset: usize,
     outgoing_bytes: usize,
+    /// Tells the readable watcher ([`Self::from_stream_waking`]) the app
+    /// has read; dropping it stops the watcher.
     #[cfg(any(test, feature = "local-daemons"))]
-    readable: Option<ReadableWake>,
+    rearm_wake: Option<std::sync::mpsc::Sender<()>>,
 }
 
 #[cfg(unix)]
@@ -426,15 +345,61 @@ impl FloatingSurfaceServiceClient {
     }
 
     /// [`Self::from_stream`], calling `wake` whenever the shell has written
-    /// something the app has not read yet.
+    /// something the app has not read yet: one wake, then nothing until the
+    /// app has read ([`Self::pump`] rearms it), so unread bytes never spin
+    /// it. Dropping the client stops the watcher within one poll interval.
     #[cfg(any(test, feature = "local-daemons"))]
     fn from_stream_waking(
         stream: UnixStream,
         wake: impl Fn() + Send + 'static,
     ) -> std::io::Result<Self> {
-        let readable = ReadableWake::spawn(&stream, wake)?;
+        use std::os::fd::AsRawFd as _;
+        use std::sync::mpsc::{RecvTimeoutError, TryRecvError};
+        const POLL: std::time::Duration = std::time::Duration::from_millis(500);
+        // Its own descriptor for the same socket: closing the client's never
+        // leaves the watcher polling a number the process reused.
+        let watched = stream.try_clone()?;
+        let (rearm, armed) = std::sync::mpsc::channel::<()>();
+        tilo_rt::spawn_thread("tilo-shell-ui-wake", move || {
+            loop {
+                let mut readable = libc::pollfd {
+                    fd: watched.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                let timeout = libc::c_int::try_from(POLL.as_millis()).unwrap_or(500);
+                // SAFETY: one valid pollfd for a descriptor this thread owns.
+                let ready = unsafe { libc::poll(&raw mut readable, 1, timeout) };
+                if ready < 0 {
+                    if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    return;
+                }
+                if ready == 0 {
+                    // Idle: stop once the client is gone. A rearm that
+                    // arrives while armed means nothing.
+                    match armed.try_recv() {
+                        Err(TryRecvError::Disconnected) => return,
+                        Ok(()) | Err(TryRecvError::Empty) => continue,
+                    }
+                }
+                wake();
+                if readable.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+                    return;
+                }
+                loop {
+                    match armed.recv_timeout(POLL) {
+                        Ok(()) => break,
+                        Err(RecvTimeoutError::Timeout) => {}
+                        Err(RecvTimeoutError::Disconnected) => return,
+                    }
+                }
+                while armed.try_recv().is_ok() {}
+            }
+        })?;
         let mut client = Self::from_stream(stream)?;
-        client.readable = Some(readable);
+        client.rearm_wake = Some(rearm);
         Ok(client)
     }
 
@@ -453,7 +418,7 @@ impl FloatingSurfaceServiceClient {
             outgoing: VecDeque::new(),
             outgoing_offset: 0,
             outgoing_bytes: 0,
-            readable: None,
+            rearm_wake: None,
         })
     }
 
@@ -516,8 +481,8 @@ impl FloatingSurfaceServiceClient {
             }
         }
         #[cfg(any(test, feature = "local-daemons"))]
-        if let Some(readable) = &self.readable {
-            readable.rearm();
+        if let Some(rearm) = &self.rearm_wake {
+            let _ = rearm.send(());
         }
 
         let mut messages = Vec::new();
