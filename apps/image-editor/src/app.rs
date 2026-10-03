@@ -11,7 +11,6 @@ use crate::{
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use std::{cell::Cell, rc::Rc};
-use ui::widget::scrollbar::{ScrollMetrics, Scrollbar};
 use ui::widget::{AppModel, ModelPath};
 use ui::{
     a11y::{AccessNode, AccessState, Role},
@@ -35,9 +34,9 @@ use ui::{
     theme::Theme,
     tokens::TextRole,
     widget::{
-        AvatarFace, Button, ButtonFace, ButtonRole, ControlSize, CropSelection, EmptyState, Image,
-        ImageCropEditor, ListRowFace, RowLeading, Slider, SliderFace, TaffyTreeExt, Toolbar,
-        Widget, toolbar::Orientation,
+        AvatarFace, Button, ButtonFace, ButtonRole, ControlSize, CropSelection, Embedded,
+        EmptyState, Image, ImageCropEditor, ListRowFace, RowLeading, Scrollable, Slider,
+        SliderFace, TaffyTreeExt, Toolbar, Widget, toolbar::Orientation,
     },
 };
 
@@ -226,6 +225,68 @@ enum StepControls {
     RemoveOnly,
 }
 
+/// The buttons under the selected step.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum InspectorCommand {
+    RotateLeft,
+    RotateRight,
+    Remove,
+}
+
+impl InspectorCommand {
+    /// The stable target assistive technology and agents address.
+    fn target(self) -> &'static str {
+        match self {
+            Self::RotateLeft => "image-editor.adjust.decrease",
+            Self::RotateRight => "image-editor.adjust.increase",
+            Self::Remove => "image-editor.adjust.remove",
+        }
+    }
+
+    fn label_key(self) -> &'static str {
+        match self {
+            Self::RotateLeft => "image-editor-rotate-left",
+            Self::RotateRight => "image-editor-rotate-right",
+            Self::Remove => "image-editor-remove",
+        }
+    }
+
+    const ALL: [Self; 3] = [Self::RotateLeft, Self::RotateRight, Self::Remove];
+}
+
+/// One of the buttons under the selected step, reporting its click to
+/// `pending`.
+fn inspector_button(
+    pending: &Rc<Cell<Option<InspectorCommand>>>,
+    command: InspectorCommand,
+) -> Button {
+    let sink = Rc::clone(pending);
+    let id = command.target();
+    let label = t(command.label_key());
+    let button = match command {
+        InspectorCommand::RotateLeft => {
+            Button::icon_only(id, ui::icons::Icon::RotateCcw, &label).role(ButtonRole::Secondary)
+        }
+        InspectorCommand::RotateRight => {
+            Button::icon_only(id, ui::icons::Icon::RotateCw, &label).role(ButtonRole::Secondary)
+        }
+        InspectorCommand::Remove => Button::new(id, &label, None)
+            .with_icon(ui::icons::Icon::Trash2)
+            .role(ButtonRole::Destructive),
+    };
+    button.on_click(move || sink.set(Some(command)))
+}
+
+/// The inspector's slider, reporting every value a person sets to `change`.
+fn step_slider(change: &Rc<Cell<Option<f64>>>) -> Embedded<Slider> {
+    let sink = Rc::clone(change);
+    Embedded::new(
+        Slider::from_state(&ui::LocalState::new(0.5))
+            .with_id("image-editor.adjust.slider")
+            .on_change(move |value| sink.set(Some(value))),
+    )
+}
+
 pub struct ImageEditorApp {
     project: Project,
     search: crate::search::ProjectSearch,
@@ -260,11 +321,17 @@ pub struct ImageEditorApp {
     list_rect: Rect,
     /// The selected step's settings under the list.
     controls_rect: Rect,
+    /// Where the selected step's slider sits, its track flush with the
+    /// inspector's text edges.
     slider_rect: Rect,
-    rotate_rects: (Rect, Rect),
-    remove_rect: Rect,
-    inspector_dragging: bool,
-    inspector_focused: bool,
+    /// The selected step's slider: the toolkit's own, hosted in the
+    /// inspector. A value it reports lands in `slider_change`.
+    slider: Embedded<Slider>,
+    slider_change: Rc<Cell<Option<f64>>>,
+    /// Rotate left, rotate right and Remove, under the selected step.
+    inspector_buttons: Vec<(InspectorCommand, Button)>,
+    inspector_pending: Rc<Cell<Option<InspectorCommand>>>,
+    /// A finger dragging the slider.
     inspector_touch: Option<u64>,
     graph_touch: Option<u64>,
     graph_pan_touch: Option<u64>,
@@ -275,8 +342,10 @@ pub struct ImageEditorApp {
     /// The graph's how-to line shows until the person first works in it.
     graph_hint_seen: bool,
     step_rects: Vec<(String, Rect)>,
-    stack_scroll: f64,
-    stack_content: f64,
+    /// The adjustment list's scrolling: offset, momentum and scroll bar.
+    list_scroll: Scrollable,
+    /// The step the list last scrolled into view.
+    revealed_step: Option<String>,
     stack_touch: Option<u64>,
     stack_touch_y: f64,
     advanced_graph: bool,
@@ -320,6 +389,12 @@ impl ImageEditorApp {
         .into_iter()
         .map(|command| (command, header_button(&pending, command)))
         .collect();
+        let inspector_pending = Rc::new(Cell::new(None));
+        let inspector_buttons = InspectorCommand::ALL
+            .into_iter()
+            .map(|command| (command, inspector_button(&inspector_pending, command)))
+            .collect();
+        let slider_change = Rc::new(Cell::new(None));
         let empty_state = EmptyState::new(t("image-editor-empty-title"))
             .with_icon(ui::icons::Icon::Image)
             .with_message(t("image-editor-empty-message"))
@@ -357,10 +432,10 @@ impl ImageEditorApp {
             list_rect: Rect::ZERO,
             controls_rect: Rect::ZERO,
             slider_rect: Rect::ZERO,
-            rotate_rects: (Rect::ZERO, Rect::ZERO),
-            remove_rect: Rect::ZERO,
-            inspector_dragging: false,
-            inspector_focused: false,
+            slider: step_slider(&slider_change),
+            slider_change,
+            inspector_buttons,
+            inspector_pending,
             inspector_touch: None,
             graph_touch: None,
             graph_pan_touch: None,
@@ -369,8 +444,8 @@ impl ImageEditorApp {
             graph_moved: false,
             graph_hint_seen: false,
             step_rects: Vec::new(),
-            stack_scroll: 0.0,
-            stack_content: 0.0,
+            list_scroll: Scrollable::new_vertical().with_semantic_key("image-editor.adjustments"),
+            revealed_step: None,
             stack_touch: None,
             stack_touch_y: 0.0,
             advanced_graph: false,
@@ -403,6 +478,7 @@ impl ImageEditorApp {
         let select = match scenario {
             "crop" => "crop-sample",
             "long-stack" => "touch-7",
+            "rotate" => "rotate-sample",
             _ => "colour-sample",
         };
         if self.project.graph.nodes.contains_key(select) {
@@ -982,7 +1058,7 @@ impl ImageEditorApp {
                             invocation,
                             error: tilo_actions::ActionFailure {
                                 code: "image-editor.unsupported-image".into(),
-                                message: "That file is not a supported image".into(),
+                                message: t("image-editor-unsupported"),
                                 details: None,
                                 retryable: false,
                             },
@@ -1236,15 +1312,6 @@ impl ImageEditorApp {
             .collect()
     }
 
-    /// The furthest the adjustment list scrolls.
-    fn max_stack_scroll(&self) -> f64 {
-        (self.stack_content - self.list_rect.height().max(0.0)).max(0.0)
-    }
-
-    fn scroll_stack_by(&mut self, delta: f64) {
-        self.stack_scroll = (self.stack_scroll + delta).clamp(0.0, self.max_stack_scroll());
-    }
-
     /// What the selected step offers in the inspector.
     fn step_controls(&self) -> StepControls {
         let Some(id) = self.editor.selection.iter().next() else {
@@ -1264,12 +1331,6 @@ impl ImageEditorApp {
             Some(Operation::Grayscale) => StepControls::RemoveOnly,
             _ => StepControls::None,
         }
-    }
-
-    fn selected_is_removable(&self) -> bool {
-        self.editor.selection.iter().next().is_some_and(|id| {
-            id != "source" && id != &self.project.output && self.project.operations.contains_key(id)
-        })
     }
 
     fn remove_selected(&mut self, state: &mut AutoCommit) -> bool {
@@ -1484,39 +1545,94 @@ impl ImageEditorApp {
         self.advanced_graph && self.has_image()
     }
 
-    /// A press in the inspector: a step in the list, the slider, the rotate
-    /// buttons or Remove. `touch` names the finger that drags the slider.
-    fn press_inspector(&mut self, state: &mut AutoCommit, point: Point, touch: Option<u64>) {
-        let (left, right) = self.rotate_rects;
-        if self.selected_is_removable() && self.remove_rect.contains(point) {
-            self.inspector_focused = false;
-            self.remove_selected(state);
-        } else if self.selected_slider().is_some() && self.slider_rect.contains(point) {
-            self.begin_gesture();
-            match touch {
-                Some(id) => self.inspector_touch = Some(id),
-                None => self.inspector_dragging = true,
-            }
-            self.inspector_focused = true;
-            self.panning_from = None;
-            self.set_selected_slider(state, self.inspector_value_at(point.x));
-        } else if left.contains(point) {
-            self.inspector_focused = false;
-            self.adjust_selected(state, -1.0);
-        } else if right.contains(point) {
-            self.inspector_focused = false;
-            self.adjust_selected(state, 1.0);
-        } else if self.list_rect.contains(point)
+    /// A press in the inspector's list selects the step under it. The
+    /// slider and the buttons under the list take their own presses.
+    fn press_inspector(&mut self, point: Point) {
+        if self.list_rect.contains(point)
             && let Some((id, _)) = self
                 .step_rects
                 .iter()
                 .find(|(_, rect)| rect.contains(point))
                 .cloned()
         {
-            self.inspector_focused = false;
+            self.slider.widget_mut().set_focus(false);
             self.editor.select_only(id);
             self.rebuild_crop_editor();
         }
+    }
+
+    /// Run a button under the selected step.
+    fn run_inspector(&mut self, state: &mut AutoCommit, command: InspectorCommand) {
+        match command {
+            InspectorCommand::RotateLeft => self.adjust_selected(state, -1.0),
+            InspectorCommand::RotateRight => self.adjust_selected(state, 1.0),
+            InspectorCommand::Remove => {
+                self.remove_selected(state);
+            }
+        }
+    }
+
+    /// The inspector's slider and buttons see `e` before the editor does.
+    /// A drag on the slider is one undoable gesture.
+    fn route_inspector_event(&mut self, e: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if self.inspector_rect.area() <= 0.0 {
+            return;
+        }
+        for (_, button) in &mut self.inspector_buttons {
+            if button.get_rect().area() > 0.0 {
+                button.handle_event(
+                    e,
+                    &mut ui::widget::EventCtx {
+                        modifiers: &ui::winit::event::Modifiers::default(),
+                        ..ctx.reborrow(&automerge::ROOT, ctx.node_id)
+                    },
+                );
+            }
+        }
+        if let Some(command) = self.inspector_pending.take() {
+            self.slider.widget_mut().set_focus(false);
+            self.run_inspector(ctx.state, command);
+            *ctx.handled = true;
+            return;
+        }
+        if self.slider_rect.area() <= 0.0 {
+            return;
+        }
+        let was_dragging = self.slider.widget().wants_pointer_capture();
+        let pressing = matches!(
+            e,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            }
+        ) && self.slider.rect().contains(self.cursor);
+        if pressing {
+            self.begin_gesture();
+            self.panning_from = None;
+        }
+        let mut handled = false;
+        self.slider.handle_event(
+            e,
+            ctx.scale_factor,
+            ctx.modifiers,
+            ctx.state,
+            &automerge::ROOT,
+            &mut handled,
+        );
+        if pressing {
+            self.slider.widget_mut().set_focus(handled);
+        }
+        if let Some(value) = self.slider_change.take() {
+            self.set_selected_slider(ctx.state, value);
+        }
+        if was_dragging && !self.slider.widget().wants_pointer_capture() {
+            self.finish_gesture();
+        }
+        if pressing && !handled {
+            self.finish_gesture();
+        }
+        *ctx.handled |= handled;
     }
 
     /// Keep the toolbar's commands and toggles, and the header buttons'
@@ -1575,7 +1691,16 @@ impl ImageEditorApp {
         let control_h = ButtonFace::height(ControlSize::Regular, theme);
         let control_y = band.center().y - control_h / 2.0;
         let mut x = band.x1 - s4;
+        // With no image the empty state's one action opens it, so the
+        // header holds no second Open.
+        let mut gap = 0.0;
         for (command, button) in self.header_buttons.iter_mut().rev() {
+            if *command == ToolbarCommand::Open && !has_image {
+                button.apply_layout_external(Rect::ZERO);
+                gap = s4;
+                continue;
+            }
+            x -= gap;
             let label = t(command.label_key());
             let face = match command {
                 ToolbarCommand::Undo => {
@@ -1588,13 +1713,14 @@ impl ImageEditorApp {
             };
             let width = face.intrinsic_width(tr, theme);
             button.apply_layout_external(Rect::new(x - width, control_y, x, control_y + control_h));
-            x -= width
-                + match command {
-                    ToolbarCommand::Open => s4,
-                    ToolbarCommand::Redo => s1,
-                    _ => s2,
-                };
+            x -= width;
+            gap = match command {
+                ToolbarCommand::Open => s4,
+                ToolbarCommand::Redo => s1,
+                _ => s2,
+            };
         }
+        x -= gap;
         // History shows its name while the toolbar has room for every
         // command, and only its icon when that keeps a command out of More.
         let history_label = ui::i18n::I18nManager::lookup_plain("standalone-history-title");
@@ -1684,12 +1810,17 @@ impl ImageEditorApp {
         // The inspector: the "Adjustments" heading, the list of steps, and
         // the selected step's settings under it.
         self.slider_rect = Rect::ZERO;
-        self.rotate_rects = (Rect::ZERO, Rect::ZERO);
-        self.remove_rect = Rect::ZERO;
+        let mut button_rects = [Rect::ZERO; 3];
         self.controls_rect = Rect::ZERO;
         self.list_rect = Rect::ZERO;
         self.inspector_text = InspectorText::default();
+        let place_buttons = |buttons: &mut Vec<(InspectorCommand, Button)>, rects: [Rect; 3]| {
+            for ((_, button), rect) in buttons.iter_mut().zip(rects) {
+                button.apply_layout_external(rect);
+            }
+        };
         if inspector.area() <= 0.0 {
+            place_buttons(&mut self.inspector_buttons, button_rects);
             return;
         }
         let content_x0 = inspector.x0 + s2 + s3;
@@ -1710,27 +1841,30 @@ impl ImageEditorApp {
         // A parameter is one line naming it and showing its value, then
         // its control across the whole column.
         let label_line = line(TextRole::Label, tr);
+        let crop_hint_h = |tr: &mut TextRenderer| {
+            let hint = t("image-editor-crop-hint");
+            let (_, h) = tr.measure_style(
+                &hint,
+                Some((content_x1 - content_x0).max(1.0) as f32),
+                &theme.text(TextRole::Caption),
+            );
+            f64::from(h)
+        };
         let body_h = match controls {
             StepControls::None => 0.0,
             StepControls::RemoveOnly => remove_h,
-            StepControls::Crop => {
-                let hint = t("image-editor-crop-hint");
-                let (_, h) = tr.measure_style(
-                    &hint,
-                    Some((content_x1 - content_x0).max(1.0) as f32),
-                    &theme.text(TextRole::Caption),
-                );
-                f64::from(h) + s3 + remove_h
-            }
+            StepControls::Crop => crop_hint_h(tr) + s3 + remove_h,
             StepControls::Slider | StepControls::Rotate => label_line + s2 + row_h + s4 + remove_h,
         };
         if body_h <= 0.0 {
             self.list_rect = Rect::new(inspector.x0, list_top, inspector.x1, inspector.y1 - s2);
+            place_buttons(&mut self.inspector_buttons, button_rects);
             return;
         }
         let controls_top = (inspector.y1 - body_h - 2.0 * s4).max(list_top);
         self.controls_rect = Rect::new(inspector.x0, controls_top, inspector.x1, inspector.y1);
-        self.list_rect = Rect::new(inspector.x0, list_top, inspector.x1, controls_top);
+        // A row cut by the list's end stops short of the settings' rule.
+        self.list_rect = Rect::new(inspector.x0, list_top, inspector.x1, controls_top - s2);
         let mut y = controls_top + s4;
         match controls {
             StepControls::Slider | StepControls::Rotate => {
@@ -1740,22 +1874,27 @@ impl ImageEditorApp {
                 y = band.y1 + s2;
                 let row = Rect::new(content_x0, y, content_x1, y + row_h);
                 if controls == StepControls::Slider {
-                    self.slider_rect = row;
+                    // The slider's track, not its knob's travel margin,
+                    // lines up with the text above it and the button below.
+                    let track = SliderFace::new(row, 0.0).track_rect();
+                    self.slider_rect = Rect::new(
+                        row.x0 - (track.x0 - row.x0),
+                        row.y0,
+                        row.x1 + (row.x1 - track.x1),
+                        row.y1,
+                    );
                 } else {
                     let left = Rect::new(row.x0, row.y0, row.x0 + row_h, row.y1);
                     let right = Rect::new(left.x1 + s2, row.y0, left.x1 + s2 + row_h, row.y1);
-                    self.rotate_rects = (left, right);
+                    button_rects[0] = left;
+                    button_rects[1] = right;
                 }
                 y = row.y1 + s4;
             }
             StepControls::Crop => {
-                let hint = t("image-editor-crop-hint");
-                let width = (content_x1 - content_x0).max(1.0);
-                let (_, h) =
-                    tr.measure_style(&hint, Some(width as f32), &theme.text(TextRole::Caption));
-                self.inspector_text.hint =
-                    Some(Rect::new(content_x0, y, content_x1, y + f64::from(h)));
-                y += f64::from(h) + s3;
+                let h = crop_hint_h(tr);
+                self.inspector_text.hint = Some(Rect::new(content_x0, y, content_x1, y + h));
+                y += h + s3;
             }
             StepControls::RemoveOnly | StepControls::None => {}
         }
@@ -1764,7 +1903,18 @@ impl ImageEditorApp {
             let width = ButtonFace::new(Rect::ZERO, &label)
                 .icon(ui::icons::Icon::Trash2)
                 .intrinsic_width(tr, theme);
-            self.remove_rect = Rect::new(content_x0, y, content_x0 + width, y + remove_h);
+            button_rects[2] = Rect::new(content_x0, y, content_x0 + width, y + remove_h);
+        }
+        place_buttons(&mut self.inspector_buttons, button_rects);
+        if self.slider_rect.area() > 0.0 {
+            if let Some((value, _)) = self.selected_slider()
+                && !self.slider.widget().wants_pointer_capture()
+            {
+                self.slider.widget_mut().set_value(value);
+            }
+            self.slider.layout(self.slider_rect, theme, tr);
+        } else {
+            self.slider.widget_mut().set_focus(false);
         }
     }
 
@@ -1792,10 +1942,60 @@ impl ImageEditorApp {
         }
     }
 
-    /// Fit the graph into its canvas, centred, until the person moves it.
-    /// A graph too long for the canvas, even at its smallest legible size,
+    /// A graph card's name: what the step does, "Original" for the open
+    /// image and "Result" for what is exported.
+    fn node_title(&self, id: &str) -> String {
+        match id {
+            "source" => t("image-editor-original"),
+            _ => operation_label(self.project.operations.get(id))
+                .or_else(|| self.project.graph.nodes.get(id).map(|n| n.title.clone()))
+                .unwrap_or_default(),
+        }
+    }
+
+    /// The widest card name in the graph.
+    fn widest_node_title(&self, tr: &mut TextRenderer, theme: &Theme) -> f64 {
+        let style = theme.text(TextRole::Label).strong();
+        self.project
+            .graph
+            .nodes
+            .keys()
+            .map(|id| f64::from(tr.measure_style(&self.node_title(id), None, &style).0))
+            .fold(0.0, f64::max)
+    }
+
+    /// The inset inside a graph card at the current zoom: the regular one
+    /// while every name fits within it, the tight one on small cards.
+    fn node_inset(&self, widest: f64, theme: &Theme) -> f64 {
+        let spacing = &theme.tokens.spacing;
+        let (s1, s2) = (f64::from(spacing.s1), f64::from(spacing.s2));
+        if Self::node_size().0 * self.editor.zoom >= widest + 2.0 * s2 {
+            s2
+        } else {
+            s1
+        }
+    }
+
+    /// How much of the graph's top the how-to line takes while it shows.
+    fn graph_hint_height(&self, tr: &mut TextRenderer, theme: &Theme) -> f64 {
+        if self.graph_hint_seen {
+            return 0.0;
+        }
+        let s4 = f64::from(theme.tokens.spacing.s4);
+        let width = (self.graph_rect.width() - 2.0 * s4).max(1.0) as f32;
+        let (_, height) = tr.measure_style(
+            &t("image-editor-graph-hint"),
+            Some(width),
+            &theme.text(TextRole::Caption),
+        );
+        s4 + f64::from(height)
+    }
+
+    /// Fit the graph into its canvas, centred under the how-to line, until
+    /// the person moves it. Cards never shrink below the size at which
+    /// every name reads in full; a graph too long for the canvas even then
     /// starts at its first step and pans from there.
-    fn centre_graph(&mut self, theme: &Theme) {
+    fn centre_graph(&mut self, tr: &mut TextRenderer, theme: &Theme) {
         if self.graph_moved || self.graph_rect.area() <= 0.0 {
             return;
         }
@@ -1813,18 +2013,37 @@ impl ImageEditorApp {
         let Some(bounds) = bounds else {
             return;
         };
-        let margin = f64::from(theme.tokens.spacing.s8);
-        let area = self.graph_rect;
-        let room_w = (area.width() - 2.0 * margin).max(1.0);
-        let room_h = (area.height() - 2.0 * margin).max(1.0);
-        let zoom = (room_w / bounds.width())
-            .min(room_h / bounds.height())
-            .clamp(0.6, 1.0);
+        let spacing = &theme.tokens.spacing;
+        let (s1, s2, s4, s8) = (
+            f64::from(spacing.s1),
+            f64::from(spacing.s2),
+            f64::from(spacing.s4),
+            f64::from(spacing.s8),
+        );
+        let widest = self.widest_node_title(tr, theme);
+        let legible = ((widest + 2.0 * s1) / width).min(1.0);
+        let hint = self.graph_hint_height(tr, theme);
+        let area = Rect::new(
+            self.graph_rect.x0,
+            self.graph_rect.y0 + hint,
+            self.graph_rect.x1,
+            self.graph_rect.y1.max(self.graph_rect.y0 + hint),
+        );
+        let fit = |margin: f64| {
+            ((area.width() - 2.0 * margin).max(1.0) / bounds.width())
+                .min((area.height() - 2.0 * margin).max(1.0) / bounds.height())
+                .min(1.0)
+        };
+        let margin = [s8, s4, s2]
+            .into_iter()
+            .find(|margin| fit(*margin) >= legible)
+            .unwrap_or(s4);
+        let zoom = fit(margin).max(legible);
         self.editor.zoom = zoom;
         let fit_x = (area.width() - bounds.width() * zoom) / 2.0;
         let fit_y = (area.height() - bounds.height() * zoom) / 2.0;
         self.editor.pan.x = fit_x.max(margin) - bounds.x0 * zoom;
-        self.editor.pan.y = fit_y.max(margin) - bounds.y0 * zoom;
+        self.editor.pan.y = hint + fit_y.max(margin) - bounds.y0 * zoom;
     }
 }
 
@@ -1870,7 +2089,14 @@ impl ImageEditorApp {
 
     /// The inspector region: the adjustment list, latest step first, and the
     /// selected step's settings under it.
-    fn draw_inspector(&mut self, s: &mut Scene, a: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    fn draw_inspector(
+        &mut self,
+        s: &mut Scene,
+        a: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
         let ground = ui::surface::region(s, a, self.inspector_rect, Region::Inspector, theme);
         let local = theme.in_region(Region::Inspector);
         let spacing = &local.tokens.spacing;
@@ -1930,9 +2156,28 @@ impl ImageEditorApp {
             .iter()
             .map(|face| face.height(ctx.text, ctx.theme))
             .collect();
-        self.stack_content = heights.iter().sum();
-        self.stack_scroll = self.stack_scroll.clamp(0.0, self.max_stack_scroll());
-        let overflows = self.stack_content > list.height();
+        let content: f64 = heights.iter().sum();
+        self.list_scroll.set_viewport_rect(list);
+        self.list_scroll
+            .set_content_size(list.width() as f32, content as f32);
+        // A step chosen from the keyboard or the graph scrolls into view.
+        let selected_id = rows
+            .iter()
+            .zip(&selected)
+            .find_map(|((id, _, _), on)| on.then(|| id.clone()));
+        if selected_id != self.revealed_step {
+            let mut top = 0.0;
+            for ((id, _, _), height) in rows.iter().zip(&heights) {
+                if Some(id) == selected_id.as_ref() {
+                    self.list_scroll
+                        .scroll_into_view(0.0, top as f32, 1.0, *height as f32);
+                    break;
+                }
+                top += height;
+            }
+            self.revealed_step = selected_id;
+        }
+        let overflows = self.list_scroll.vertical_overflows();
         let row_x0 = list.x0 + s2;
         let row_x1 = if overflows {
             list.x1 - gutter
@@ -1941,7 +2186,7 @@ impl ImageEditorApp {
         };
         self.step_rects.clear();
         ctx.scene.push_clip_layer(Fill::NonZero, a, &list);
-        let mut y = list.y0 - self.stack_scroll;
+        let mut y = list.y0 - f64::from(self.list_scroll.offset_y());
         for ((face, height), (id, _, _)) in faces.iter().zip(&heights).zip(&rows) {
             let row = Rect::new(row_x0, y, row_x1, y + height);
             y += height;
@@ -1958,17 +2203,7 @@ impl ImageEditorApp {
             self.step_rects.push((id.clone(), row));
         }
         ctx.scene.pop_layer();
-        if overflows {
-            let track = Rect::new(list.x1 - gutter, list.y0, list.x1, list.y1);
-            Scrollbar::vertical().draw(
-                ctx.scene,
-                a,
-                track,
-                ScrollMetrics::new(self.stack_content, list.height(), self.stack_scroll),
-                &local,
-                false,
-            );
-        }
+        self.list_scroll.draw_bar_overlay(ctx.scene, a, &local);
 
         // The selected step's settings.
         if self.controls_rect.area() <= 0.0 {
@@ -2020,53 +2255,13 @@ impl ImageEditorApp {
                 Some(hint.width() as f32),
             );
         }
-        if let Some((value, _)) = self.selected_slider()
-            && self.slider_rect.area() > 0.0
-        {
-            Slider::paint(
-                ctx.scene,
-                a,
-                &local,
-                &SliderFace::new(self.slider_rect, value)
-                    .hovered(self.slider_rect.contains(self.cursor))
-                    .dragging(self.inspector_dragging)
-                    .focused(self.inspector_focused),
-            );
+        if self.slider_rect.area() > 0.0 {
+            self.slider.draw(ctx.scene, a, ctx.text, &local, presence);
         }
-        let (left, right) = self.rotate_rects;
-        for (rect, icon, key) in [
-            (left, ui::icons::Icon::RotateCcw, "image-editor-rotate-left"),
-            (
-                right,
-                ui::icons::Icon::RotateCw,
-                "image-editor-rotate-right",
-            ),
-        ] {
-            if rect.area() > 0.0 {
-                let label = t(key);
-                Button::paint(
-                    ctx.scene,
-                    a,
-                    ctx.text,
-                    &local,
-                    &ButtonFace::icon_only(rect, icon, &label)
-                        .role(ButtonRole::Secondary)
-                        .hovered(rect.contains(self.cursor)),
-                );
+        for (_, button) in &mut self.inspector_buttons {
+            if button.get_rect().area() > 0.0 {
+                button.draw(ctx.scene, a, ctx.text, &local, presence);
             }
-        }
-        if self.remove_rect.area() > 0.0 {
-            let label = t("image-editor-remove");
-            Button::paint(
-                ctx.scene,
-                a,
-                ctx.text,
-                &local,
-                &ButtonFace::new(self.remove_rect, &label)
-                    .icon(ui::icons::Icon::Trash2)
-                    .role(ButtonRole::Destructive)
-                    .hovered(self.remove_rect.contains(self.cursor)),
-            );
         }
     }
 
@@ -2075,11 +2270,7 @@ impl ImageEditorApp {
     fn draw_graph(&self, s: &mut Scene, a: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let colors = &theme.tokens.colors;
         let spacing = &theme.tokens.spacing;
-        let (s2, s3, s4) = (
-            f64::from(spacing.s2),
-            f64::from(spacing.s3),
-            f64::from(spacing.s4),
-        );
+        let (s2, s4) = (f64::from(spacing.s2), f64::from(spacing.s4));
         s.push_clip_layer(Fill::NonZero, a, &self.graph_rect);
         let contributing = self.project.graph.contributing_nodes("output");
         let curve = |from: Point, to: Point| {
@@ -2126,8 +2317,13 @@ impl ImageEditorApp {
         }
         let radius = f64::from(theme.tokens.radii.tile);
         let order = self.steps();
+        let s1 = f64::from(spacing.s1);
+        let title_style = theme.text(TextRole::Label).strong();
+        let inset = self.node_inset(self.widest_node_title(tr, theme), theme);
         let mut ctx = PaintCtx::new(s, a, tr, theme);
-        for (id, n) in &self.project.graph.nodes {
+        let title_h = f64::from(ctx.text.measure_style("Ag", None, &title_style).1);
+        let caption_h = ctx.line_box(TextRole::Caption);
+        for id in self.project.graph.nodes.keys() {
             let Some(r) = self.node_rect(id) else {
                 continue;
             };
@@ -2140,13 +2336,27 @@ impl ImageEditorApp {
                 raised
             };
             ui::surface::card(ctx.scene, a, r, radius, fill);
-            let title = match id.as_str() {
-                "source" => self.project.name.clone(),
-                _ => operation_label(self.project.operations.get(id))
-                    .unwrap_or_else(|| n.title.clone()),
+            let ink = if active {
+                theme.text_primary
+            } else {
+                theme.text_tertiary
             };
+            let width = (r.width() - 2.0 * inset).max(0.0);
+            let title =
+                ctx.text
+                    .elide_to_width_style(&self.node_title(id), width as f32, &title_style);
+            ctx.text(
+                &title,
+                &title_style,
+                ink,
+                Point::new(r.x0 + inset, r.y0 + inset),
+                None,
+            );
+            // The secondary line shows only where the card has room for it
+            // whole: the image's name, the step's place, or that the step
+            // does not reach the result.
             let state = match id.as_str() {
-                "source" => t("image-editor-original"),
+                "source" => self.project.name.clone(),
                 "output" => String::new(),
                 _ if !active => t("image-editor-unused"),
                 _ => order
@@ -2155,35 +2365,26 @@ impl ImageEditorApp {
                     .map(|index| t_args("image-editor-step", &[("number", (index + 1).into())]))
                     .unwrap_or_default(),
             };
-            let ink = if active {
-                theme.text_primary
-            } else {
-                theme.text_tertiary
-            };
-            let width = (r.width() - 2.0 * s3) as f32;
-            let title_style = theme.text(TextRole::Label).strong();
-            let title = ctx.text.elide_to_width_style(&title, width, &title_style);
-            let title_h = f64::from(ctx.text.measure_style("Ag", None, &title_style).1);
-            ctx.text(
-                &title,
-                &title_style,
-                ink,
-                Point::new(r.x0 + s3, r.y0 + s3),
-                None,
-            );
-            let caption_h = ctx.line_box(TextRole::Caption);
-            if !state.is_empty() {
+            let caption_fits = !state.is_empty()
+                && r.height() - 2.0 * inset - title_h - caption_h - s1 >= 2.0 * title_h
+                && f64::from(
+                    ctx.text
+                        .measure_style(&state, None, &theme.text(TextRole::Caption))
+                        .0,
+                ) <= width;
+            let mut thumb_top = r.y0 + inset + title_h + s1;
+            if caption_fits {
                 ctx.text_role(
                     &state,
                     TextRole::Caption,
                     theme.text_dim,
-                    Point::new(r.x0 + s3, r.y0 + s3 + title_h),
-                    Some(width),
+                    Point::new(r.x0 + inset, r.y0 + inset + title_h),
+                    None,
                 );
+                thumb_top += caption_h;
             }
-            let thumb_top = r.y0 + s3 + title_h + caption_h + s2;
             if let Some((_, preview)) = self.step_previews.iter().find(|(step, _)| step == id) {
-                let thumb = Rect::new(r.x0 + s2, thumb_top, r.x1 - s2, r.y1 - s2);
+                let thumb = Rect::new(r.x0 + inset, thumb_top, r.x1 - inset, r.y1 - inset);
                 ui::image_store::paint_image_cover(
                     ctx.scene,
                     a,
@@ -2192,7 +2393,7 @@ impl ImageEditorApp {
                     theme
                         .tokens
                         .radii
-                        .concentric(theme.tokens.radii.tile, spacing.s2)
+                        .concentric(theme.tokens.radii.tile, inset as f32)
                         .into(),
                 );
             }
@@ -2209,8 +2410,9 @@ impl ImageEditorApp {
             .filter_map(|(center, focused)| center.map(|center| (center, focused)))
             {
                 // A port is a dot on the card's edge, hollow on the canvas
-                // ground and ringed in the ink of its connection.
-                let port = s2 * 0.75;
+                // ground and ringed in the ink of its connection; it shrinks
+                // with the cards so neighbouring ports keep a gap.
+                let port = (s2 * 0.75 * self.editor.zoom).max(s1 * 0.75);
                 let dot = Rect::from_center_size(center, (2.0 * port, 2.0 * port));
                 ctx.fill_round(dot, port, colors.surfaces.content);
                 ctx.stroke_round(
@@ -2251,6 +2453,8 @@ impl Widget for ImageEditorApp {
     );
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        // Paging held on the list's scroll track repeats while frames run.
+        self.list_scroll.sync(state, path);
         let (state, _) = ui::doc::document(state, path);
         ProjectDoc::open_shared(state);
         self.project = ProjectDoc::read(state);
@@ -2330,7 +2534,9 @@ impl Widget for ImageEditorApp {
         }
         self.toolbar.draw(s, a, tr, theme, presence);
         for (_, button) in &mut self.header_buttons {
-            button.draw(s, a, tr, theme, presence);
+            if button.get_rect().area() > 0.0 {
+                button.draw(s, a, tr, theme, presence);
+            }
         }
         self.history.draw(s, a, tr, theme, presence);
 
@@ -2341,7 +2547,7 @@ impl Widget for ImageEditorApp {
             self.canvas_rect
         };
         if self.graph_shown() {
-            self.centre_graph(theme);
+            self.centre_graph(tr, theme);
             self.draw_graph(s, a, tr, theme);
         } else if self.has_image() && self.preview.is_some() {
             self.draw_canvas(s, a, theme);
@@ -2349,7 +2555,7 @@ impl Widget for ImageEditorApp {
             self.empty_state.draw(s, a, tr, theme, presence);
         }
         if self.inspector_rect.area() > 0.0 {
-            self.draw_inspector(s, a, tr, theme);
+            self.draw_inspector(s, a, tr, theme, presence);
         }
         self.status.paint(s, a, tr, theme, main, ui::time::now());
     }
@@ -2366,7 +2572,12 @@ impl Widget for ImageEditorApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.status.needs_frame(ui::time::now())
+        self.status.needs_frame(ui::time::now()) || self.list_scroll.needs_animation_frame()
+    }
+
+    /// The adjustment list coasts after a fling.
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+        self.list_scroll.update(state, path)
     }
 
     fn modal_capture(&self) -> Option<Rect> {
@@ -2400,6 +2611,9 @@ impl Widget for ImageEditorApp {
             return;
         }
         for button in self.retained_buttons_mut() {
+            if button.get_rect().area() <= 0.0 {
+                continue;
+            }
             button.handle_event(
                 e,
                 &mut ui::widget::EventCtx {
@@ -2421,6 +2635,14 @@ impl Widget for ImageEditorApp {
             *ctx.handled = true;
             return;
         }
+        if *ctx.handled {
+            return;
+        }
+        if self.list_rect.area() > 0.0 {
+            self.list_scroll
+                .handle_event(e, &mut ctx.reborrow(&automerge::ROOT, ctx.node_id));
+        }
+        self.route_inspector_event(e, ctx);
         if *ctx.handled {
             return;
         }
@@ -2495,9 +2717,6 @@ impl Widget for ImageEditorApp {
                     }) {
                         *ctx.handled = true;
                     }
-                } else if self.inspector_dragging {
-                    self.set_selected_slider(ctx.state, self.inspector_value_at(next.x));
-                    *ctx.handled = true;
                 } else if let Some(last) = self.panning_from {
                     self.pan += next - last;
                     self.panning_from = Some(next);
@@ -2519,16 +2738,6 @@ impl Widget for ImageEditorApp {
                     },
                     1.12_f64.powf(amount),
                 );
-                *ctx.handled = true;
-            }
-            WindowEvent::MouseWheel { delta, .. }
-                if self.list_rect.contains(self.cursor) && self.max_stack_scroll() > 0.0 =>
-            {
-                let amount = match delta {
-                    ui::winit::event::MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 44.0,
-                    ui::winit::event::MouseScrollDelta::PixelDelta(point) => -point.y,
-                };
-                self.scroll_stack_by(amount);
                 *ctx.handled = true;
             }
             WindowEvent::MouseWheel { delta, .. } if self.canvas_rect.contains(self.cursor) => {
@@ -2569,10 +2778,6 @@ impl Widget for ImageEditorApp {
                 if self.editor.end_pan() {
                     *ctx.handled = true;
                 }
-                if self.inspector_dragging {
-                    self.inspector_dragging = false;
-                    *ctx.handled = true;
-                }
                 self.finish_gesture();
                 self.panning_from = None;
             }
@@ -2584,10 +2789,10 @@ impl Widget for ImageEditorApp {
                 if self.header_rect.contains(self.cursor) {
                     *ctx.handled = true;
                 } else if self.inspector_rect.contains(self.cursor) {
-                    self.press_inspector(ctx.state, self.cursor, None);
+                    self.press_inspector(self.cursor);
                 } else if !self.graph_shown() {
                     if self.canvas_rect.contains(self.cursor) {
-                        self.inspector_focused = false;
+                        self.slider.widget_mut().set_focus(false);
                         self.panning_from = Some(self.cursor);
                     }
                 } else if self.graph_touch.is_none()
@@ -2652,8 +2857,17 @@ impl Widget for ImageEditorApp {
                             if self.list_rect.contains(point) {
                                 self.stack_touch = Some(touch.id);
                                 self.stack_touch_y = point.y;
+                                self.press_inspector(point);
+                            } else if self.slider_rect.contains(point)
+                                && self.selected_slider().is_some()
+                            {
+                                self.begin_gesture();
+                                self.inspector_touch = Some(touch.id);
+                                self.set_selected_slider(
+                                    ctx.state,
+                                    self.inspector_value_at(point.x),
+                                );
                             }
-                            self.press_inspector(ctx.state, point, Some(touch.id));
                             *ctx.handled = true;
                             return;
                         }
@@ -2711,7 +2925,7 @@ impl Widget for ImageEditorApp {
                         }
                         self.touches.insert(touch.id, point);
                         if self.canvas_rect.contains(point) {
-                            self.inspector_focused = false;
+                            self.slider.widget_mut().set_focus(false);
                             self.panning_from = Some(point);
                         }
                         if self.touches.len() == 2 {
@@ -2744,7 +2958,7 @@ impl Widget for ImageEditorApp {
                         if self.stack_touch == Some(touch.id) {
                             let delta = self.stack_touch_y - point.y;
                             self.stack_touch_y = point.y;
-                            self.scroll_stack_by(delta);
+                            self.list_scroll.scroll_by(0.0, delta as f32);
                         } else if self.graph_touch == Some(touch.id) {
                             let graph_point = ui::graph_editor::GraphPoint {
                                 x: point.x - self.graph_rect.x0,
@@ -3005,7 +3219,7 @@ impl Widget for ImageEditorApp {
         }
     }
     fn name(&self) -> &str {
-        "Image Editor"
+        "ImageEditor"
     }
     fn test_id(&self) -> Option<&str> {
         Some("image-editor.graph")
@@ -3031,7 +3245,8 @@ impl Widget for ImageEditorApp {
     fn wants_pointer_capture(&self) -> bool {
         self.editor.is_dragging_node()
             || self.editor.is_connecting()
-            || self.inspector_dragging
+            || self.slider.widget().wants_pointer_capture()
+            || self.list_scroll.wants_pointer_capture()
             || self.inspector_touch.is_some()
             || self.graph_touch.is_some()
             || self.graph_pan_touch.is_some()
@@ -3134,6 +3349,7 @@ impl Widget for ImageEditorApp {
             .iter()
             .map(|(_, button)| button)
             .chain(std::iter::once(&self.history))
+            .filter(|button| button.get_rect().area() > 0.0)
             .filter_map(Widget::accessibility)
             .collect::<Vec<_>>();
         if let Some(toolbar) = self.toolbar.accessibility()
@@ -3242,45 +3458,30 @@ impl Widget for ImageEditorApp {
                 }
             }
         }
+        // The slider and buttons under the list are the toolkit's own; the
+        // slider reads out the adjustment's real value, not a percentage of
+        // its travel.
         if let Some((_, value)) = self.selected_slider()
             && self.slider_rect.area() > 0.0
+            && let Some(node) = self.slider.widget().accessibility()
         {
             children.push(
-                AccessNode::new(Role::Slider)
+                node.with_semantic_key("image-editor.adjust.slider")
                     .with_name(self.selected_parameter_label())
                     .with_value(value)
                     .with_action_target("image-editor.adjust.slider")
-                    .with_bounds(self.slider_rect)
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .focused(self.inspector_focused),
-                    ),
+                    .with_bounds(self.slider.rect()),
             );
         }
-        let (left, right) = self.rotate_rects;
-        if left.area() > 0.0 {
-            children.extend([
-                AccessNode::new(Role::Button)
-                    .with_name(t("image-editor-rotate-left"))
-                    .with_action_target("image-editor.adjust.decrease")
-                    .with_bounds(left)
-                    .with_state(AccessState::new().focusable(true)),
-                AccessNode::new(Role::Button)
-                    .with_name(t("image-editor-rotate-right"))
-                    .with_action_target("image-editor.adjust.increase")
-                    .with_bounds(right)
-                    .with_state(AccessState::new().focusable(true)),
-            ]);
-        }
-        if self.selected_is_removable() && self.remove_rect.area() > 0.0 {
-            children.push(
-                AccessNode::new(Role::Button)
-                    .with_name(t("image-editor-remove"))
-                    .with_action_target("image-editor.adjust.remove")
-                    .with_bounds(self.remove_rect)
-                    .with_state(AccessState::new().focusable(true)),
-            );
+        for (command, button) in &self.inspector_buttons {
+            if button.get_rect().area() > 0.0
+                && let Some(node) = button.accessibility()
+            {
+                children.push(
+                    node.with_action_target(command.target())
+                        .with_bounds(button.get_rect()),
+                );
+            }
         }
         // Action targets already have stable keys. Key passive/container
         // siblings too so this custom canvas never mixes identity- and
@@ -3356,7 +3557,7 @@ impl Widget for ImageEditorApp {
                     parsed
                 }
                 ui::a11y::Action::Focus => {
-                    self.inspector_focused = true;
+                    self.slider.widget_mut().set_focus(true);
                     return true;
                 }
                 _ => return false,
@@ -3469,7 +3670,7 @@ impl ImageEditorApp {
             self.project.clone()
         };
         let label = if project.name.is_empty() {
-            "Image Editor".to_string()
+            t("image-editor-untitled")
         } else {
             project.name.clone()
         };
@@ -3975,8 +4176,17 @@ mod portal_tests {
         let project = sample_project(&[("rotate", Operation::Rotate { quarter_turns: 1 })]);
         let mut app = framed_project(&project, 390.0, 760.0);
         select(&mut app, "rotate");
-        let (minus, plus) = app.rotate_rects;
-        let remove = app.remove_rect;
+        let rect_of = |wanted: InspectorCommand| {
+            app.inspector_buttons
+                .iter()
+                .find_map(|(command, button)| (*command == wanted).then(|| button.get_rect()))
+                .unwrap_or_default()
+        };
+        let (minus, plus) = (
+            rect_of(InspectorCommand::RotateLeft),
+            rect_of(InspectorCommand::RotateRight),
+        );
+        let remove = rect_of(InspectorCommand::Remove);
         let target = f64::from(ui::Theme::dark().tokens.metrics.min_pointer_target);
         for rect in [minus, plus] {
             assert!(rect.width() >= target && rect.height() >= target);
@@ -4157,12 +4367,12 @@ mod portal_tests {
         let project = sample_project(&steps);
         let mut app = framed_project(&project, 390.0, 760.0);
 
-        let maximum = app.max_stack_scroll();
+        let maximum = app.list_scroll.max_offset_y();
         assert!(maximum > 0.0);
-        app.scroll_stack_by(f64::MAX);
-        assert_eq!(app.stack_scroll, maximum);
-        app.scroll_stack_by(-f64::MAX);
-        assert_eq!(app.stack_scroll, 0.0);
+        app.list_scroll.scroll_by(0.0, f32::MAX);
+        assert_eq!(app.list_scroll.offset_y(), maximum);
+        app.list_scroll.scroll_by(0.0, -f32::MAX);
+        assert_eq!(app.list_scroll.offset_y(), 0.0);
     }
 
     fn graph_previews_include_original_intermediate_and_final_states() {

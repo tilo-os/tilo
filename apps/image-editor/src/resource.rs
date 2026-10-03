@@ -98,6 +98,13 @@ impl ResourceApp for ImageEditorShell {
         if name == Some("long-stack") {
             actions.extend(long_stack_actions());
         }
+        if name == Some("rotate") {
+            actions.push(ImageEditorAction::Add(crate::actions::AddAdjustment {
+                id: "rotate-sample".into(),
+                title: crate::i18n::t("image-editor-rotate"),
+                operation: crate::model::Operation::Rotate { quarter_turns: 1 },
+            }));
+        }
         actions
             .iter()
             .filter_map(|action| ui::tilo_resource::Invoke::apply(action).ok())
@@ -106,7 +113,7 @@ impl ResourceApp for ImageEditorShell {
 
     fn label(state: &Project) -> String {
         if state.name.is_empty() {
-            "Image Editor".into()
+            crate::i18n::t("image-editor-untitled")
         } else {
             state.name.clone()
         }
@@ -300,7 +307,7 @@ fn sample_actions() -> Vec<ImageEditorAction> {
     ]
 }
 
-/// A longer edit history: alternating contrast and exposure touches.
+/// A longer edit history: small alternating contrast and colour touches.
 fn long_stack_actions() -> Vec<ImageEditorAction> {
     use crate::actions::AddAdjustment;
     use crate::model::Operation;
@@ -309,10 +316,13 @@ fn long_stack_actions() -> Vec<ImageEditorAction> {
             let (title, operation) = if index % 2 == 0 {
                 (
                     "image-editor-contrast",
-                    Operation::Contrast { amount: 0.05 },
+                    Operation::Contrast { amount: 0.03 },
                 )
             } else {
-                ("image-editor-exposure", Operation::Exposure { stops: -0.1 })
+                (
+                    "image-editor-colour",
+                    Operation::Saturation { amount: 1.02 },
+                )
             };
             ImageEditorAction::Add(AddAdjustment {
                 id: format!("touch-{index}"),
@@ -331,6 +341,7 @@ pub const SCENARIOS: &[&str] = &[
     "compare",
     "graph",
     "long-stack",
+    "rotate",
     "narrow",
     "narrow-more",
     "narrow-graph",
