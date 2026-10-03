@@ -3,4 +3,4 @@
 # Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
 apps/weather/src/chart.rs raw_paint 4
 apps/weather/src/core.rs raw_paint 2
-apps/weather/src/icon.rs raw_paint 10
+apps/weather/src/icon.rs raw_paint 9

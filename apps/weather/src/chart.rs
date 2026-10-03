@@ -88,17 +88,15 @@ pub struct StripRows {
 /// and the measured line boxes of its roles).
 pub fn strip_rows(theme: &Theme, tr: &mut TextRenderer) -> StripRows {
     let text = StripText::of(theme);
-    let sp = &theme.tokens.spacing;
-    let m = &theme.tokens.metrics;
-    let s1 = f64::from(sp.s1);
-    // The curve band, the per-hour glyph and the "now" point are content
-    // marks sized on the theme's grid: the curve a little taller than the
-    // largest icon, the glyph one step past it.
-    let curve_h = f64::from(sp.s8) + s1;
-    let icon_edge = f64::from(m.icon_lg) + s1;
-    let now_dot_r = s1;
+    let s1 = f64::from(theme.tokens.spacing.s1);
     let value_h = f64::from(tr.measure_style("Ag", None, &text.value).1);
     let small_h = f64::from(tr.measure_style("Ag", None, &text.small).1);
+    // The curve band and the per-hour glyph are content marks that grow
+    // with the text they stand among: the curve two value lines tall, the
+    // glyph two small lines.
+    let curve_h = 2.0 * value_h;
+    let icon_edge = 2.0 * small_h;
+    let now_dot_r = s1;
     let value_y = 0.0;
     let curve_top = value_y + value_h + s1 + now_dot_r;
     let curve_bottom = curve_top + curve_h;
@@ -120,9 +118,10 @@ pub fn strip_rows(theme: &Theme, tr: &mut TextRenderer) -> StripRows {
 }
 
 /// The narrowest an hour column may be before the strip scrolls: wide enough
-/// for the widest value and hour label the strip sets, plus an `s3` between
-/// neighbours.
+/// for its glyph and the widest value and hour label the strip sets, plus an
+/// `s3` between neighbours.
 pub fn min_column_width(theme: &Theme, tr: &mut TextRenderer) -> f64 {
+    let rows = strip_rows(theme, tr);
     let text = StripText::of(theme);
     let widest = ["-00°", "00:00", "100%"]
         .iter()
@@ -134,7 +133,7 @@ pub fn min_column_width(theme: &Theme, tr: &mut TextRenderer) -> f64 {
             };
             f64::from(tr.measure_style(sample, None, style).0)
         })
-        .fold(f64::from(theme.tokens.metrics.icon_lg), f64::max);
+        .fold(rows.icon_edge, f64::max);
     (widest + 2.0 * f64::from(theme.tokens.spacing.s3)).ceil()
 }
 
@@ -295,7 +294,8 @@ impl HourlyStrip<'_> {
             if p.precip >= 5.0 {
                 let chance = format!("{}%", p.precip.round() as i64);
                 let (pw, ph) = tr.measure_style(&chance, None, &text.small);
-                let drop = f64::from(theme.tokens.metrics.icon_sm) * 0.75;
+                let drop = f64::from(ph) * 0.75;
+
                 let cluster_w = drop + gap + f64::from(pw);
                 let x0 = cx - cluster_w / 2.0;
                 let top = geo.y(geo.rows.precip_y);

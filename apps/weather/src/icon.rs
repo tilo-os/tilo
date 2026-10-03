@@ -10,8 +10,8 @@
 //! square-ish `rect` and is cut out of nothing, so it sits on any ground.
 
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Shape, Stroke};
-use vello::peniko::{BlendMode, Color, Compose, Fill, Mix};
+use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Shape, Stroke, Vec2};
+use vello::peniko::{Color, Fill};
 
 use ui::color::Oklch;
 use ui::theme::Theme;
@@ -131,26 +131,53 @@ fn draw_sun(scene: &mut Scene, t: Affine, center: Point, r: f64, p: &IconPalette
 }
 
 fn draw_moon(scene: &mut Scene, t: Affine, center: Point, r: f64, p: &IconPalette) {
-    // Full disc, then cut the crescent out of it with an offset disc, inside
-    // a layer of its own so the cut never reaches the ground beneath.
-    let disc = Circle::new(center, r);
-    let bounds = Rect::from_center_size(center, (2.0 * r, 2.0 * r));
-    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &bounds);
-    scene.fill(Fill::NonZero, t, p.moon, None, &disc);
-    let carve = Circle::new(
-        Point::new(center.x + r * 0.55, center.y - r * 0.18),
-        r * 0.92,
+    scene.fill(Fill::NonZero, t, p.moon, None, &crescent(center, r));
+}
+
+/// The crescent of a moon of radius `r`: the disc less an offset disc, as
+/// one outline (the disc's arc outside the cut, then the cut's arc back),
+/// so it is a shape of its own and sits on any ground.
+fn crescent(center: Point, r: f64) -> BezPath {
+    use std::f64::consts::TAU;
+    let cut = center + Vec2::new(r * 0.55, -r * 0.18);
+    let cut_r = r * 0.92;
+    let axis = cut - center;
+    let d = axis.hypot();
+    let u = axis / d;
+    let across = Vec2::new(-u.y, u.x);
+    // Where the two circles cross.
+    let along = (r * r - cut_r * cut_r + d * d) / (2.0 * d);
+    let half = (r * r - along * along).max(0.0).sqrt();
+    let (p1, p2) = (
+        center + u * along + across * half,
+        center + u * along - across * half,
     );
-    scene.push_layer(
-        Fill::NonZero,
-        BlendMode::new(Mix::Normal, Compose::DestOut),
-        1.0,
-        t,
-        &bounds,
-    );
-    scene.fill(Fill::NonZero, t, p.moon, None, &carve);
-    scene.pop_layer();
-    scene.pop_layer();
+    let angle = |c: Point, q: Point| (q.y - c.y).atan2(q.x - c.x);
+    // The arc of a circle from `from` to `to` that passes `via`.
+    let arc = |c: Point, radius: f64, from: Point, to: Point, via: Point| {
+        let start = angle(c, from);
+        let span = (angle(c, to) - start).rem_euclid(TAU);
+        let sweep = if (angle(c, via) - start).rem_euclid(TAU) < span {
+            span
+        } else {
+            span - TAU
+        };
+        let steps = 24;
+        (0..=steps).map(move |i| {
+            let a = start + sweep * f64::from(i) / f64::from(steps);
+            c + Vec2::new(a.cos(), a.sin()) * radius
+        })
+    };
+    let mut path = BezPath::new();
+    path.move_to(p1);
+    for q in arc(center, r, p1, p2, center - u * r) {
+        path.line_to(q);
+    }
+    for q in arc(cut, cut_r, p2, p1, cut - u * cut_r) {
+        path.line_to(q);
+    }
+    path.close_path();
+    path
 }
 
 /// A raindrop filling `rect`: the mark beside a chance of precipitation.

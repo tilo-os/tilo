@@ -576,7 +576,10 @@ impl Hero {
         let theme = ctx.theme;
         let sp = &theme.tokens.spacing;
         let s1 = f64::from(sp.s1);
-        let glyph = f64::from(sp.s16);
+        // The glyph stands as tall as the temperature and the condition
+        // beside it.
+        let glyph = (ctx.line_box(TextRole::Display) + ctx.line_box(TextRole::Heading)).round();
+
         let (sky, temperature, condition, range) = snapshot.map_or_else(
             || (None, String::new(), String::new(), String::new()),
             |snap| {
@@ -890,6 +893,8 @@ impl<'a> Days<'a> {
 pub(super) struct DayColumns {
     pub(super) label_w: f64,
     pub(super) icon_edge: f64,
+    /// The edge of the raindrop beside a chance of precipitation.
+    pub(super) drop: f64,
     pub(super) cond_min_w: f64,
     pub(super) precip_w: f64,
     pub(super) uv_w: f64,
@@ -904,6 +909,10 @@ impl DayColumns {
         let numeric = theme.text(TextRole::Body).numeric();
         let strong = theme.text(TextRole::Body).numeric().strong();
         let caption = theme.text(TextRole::Caption).numeric();
+        // The glyph is two caption lines tall and the drop three quarters of
+        // one, so both grow with the text beside them.
+        let caption_h = f64::from(ctx.text.measure_style("Ag", None, &caption).1);
+        let drop = (caption_h * 0.75).round();
         let mut width =
             |text: &str, style: &TextStyle| f64::from(ctx.text.measure_style(text, None, style).0);
         let mut label_w = width("Tomorrow", &body);
@@ -918,10 +927,10 @@ impl DayColumns {
                     .max(width(&format!("{hi}°"), &strong));
             }
         }
-        let drop = drop_edge(theme);
         Self {
             label_w: label_w.ceil(),
-            icon_edge: f64::from(theme.tokens.metrics.icon_lg) + f64::from(theme.tokens.spacing.s1),
+            icon_edge: (2.0 * caption_h).round(),
+            drop,
             cond_min_w: width("Mainly clear", &body).ceil(),
             precip_w: (drop + f64::from(theme.tokens.spacing.s1) + width("100%", &caption)).ceil(),
             uv_w: width("UV 10", &caption).ceil(),
@@ -929,11 +938,6 @@ impl DayColumns {
             temp_w: temp_w.ceil(),
         }
     }
-}
-
-/// The edge of the raindrop beside a chance of precipitation.
-fn drop_edge(theme: &Theme) -> f64 {
-    f64::from(theme.tokens.metrics.icon_sm)
 }
 
 /// "Today", "Tomorrow", then the weekday.
@@ -1111,7 +1115,7 @@ impl ForecastRows<'_> {
             );
         }
         if geo.show_precip {
-            let drop = drop_edge(theme);
+            let drop = geo.columns.drop;
             icon::draw_drop(
                 ctx.scene,
                 ctx.transform,
@@ -1355,6 +1359,7 @@ mod day_row_geometry_tests {
         DayColumns {
             label_w: 72.0,
             icon_edge: 28.0,
+            drop: 12.0,
             cond_min_w: 80.0,
             precip_w: 46.0,
             uv_w: 36.0,
