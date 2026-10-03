@@ -104,6 +104,15 @@ impl Language {
             .unwrap_or(Language::PlainText)
     }
 
+    /// The language's name in the person's language: the proper names of
+    /// programming languages stay as they are; plain text is translated.
+    pub fn name(self) -> String {
+        match self {
+            Language::PlainText => crate::tr("snippets-language-plain-text"),
+            other => other.label().to_string(),
+        }
+    }
+
     /// The short name the list-row badge shows: the language's own
     /// abbreviation where it has one, otherwise its name.
     pub fn badge(self) -> &'static str {
@@ -152,7 +161,7 @@ impl Snippet {
     pub fn blank(folder: &str) -> Self {
         Self {
             id: Uuid::new_v4(),
-            title: "Untitled snippet".to_string(),
+            title: crate::tr("snippets-untitled"),
             language: Language::PlainText,
             folder: folder.to_string(),
             tags: Vec::new(),
@@ -261,12 +270,23 @@ pub enum SmartFolder {
 }
 
 impl SmartFolder {
-    pub fn label(self) -> &'static str {
+    /// The stable, locale-independent key of the folder: control ids and
+    /// sidebar item ids are built from it.
+    pub fn key(self) -> &'static str {
         match self {
-            SmartFolder::All => "All snippets",
-            SmartFolder::Favorites => "Favorites",
-            SmartFolder::MostUsed => "Most used",
+            SmartFolder::All => "all",
+            SmartFolder::Favorites => "favorites",
+            SmartFolder::MostUsed => "most-used",
         }
+    }
+
+    /// The folder's name in the person's language.
+    pub fn label(self) -> String {
+        crate::tr(match self {
+            SmartFolder::All => "snippets-folder-all",
+            SmartFolder::Favorites => "snippets-folder-favorites",
+            SmartFolder::MostUsed => "snippets-folder-most-used",
+        })
     }
 }
 
