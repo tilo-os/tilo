@@ -2145,9 +2145,10 @@ fn run_with_context(
     let seccomp_fds = stage_seccomp(manifest)?;
 
     // 2b. D-Bus proxy decision. Failure leaves the bus unavailable; there is
-    // no raw-session-bus fallback. `_dbus_guard` stays alive until bwrap is
-    // waited on so Drop can SIGTERM the proxy.
-    let (dbus_plan, _dbus_guard) = resolve_dbus_bind(&manifest.sandbox.portals);
+    // no raw-session-bus fallback. `_dbus_guards` stay alive until bwrap is
+    // waited on so Drop can SIGTERM the proxies.
+    let (dbus_plan, _dbus_guards) =
+        resolve_dbus_bind(&manifest.sandbox.portals, opts.wayland_socket.is_some());
 
     // 3. Argv. Runtime bundle resolution: a resolved bundle wins over
     // --minimal-libs and skips the loader-bind stopgap entirely.
@@ -2785,7 +2786,8 @@ fn run_with_capture_spawn<T>(
         .as_ref()
         .map(|(p, v)| (p.as_path(), v.as_str()));
     // D-Bus plan (same decision path as `run_with`).
-    let (dbus_plan, _dbus_guard) = resolve_dbus_bind(&manifest.sandbox.portals);
+    let (dbus_plan, _dbus_guards) =
+        resolve_dbus_bind(&manifest.sandbox.portals, opts.wayland_socket.is_some());
     let capabilities = resolve_capabilities(manifest, opts);
     let (identity_broker_app, identity_broker_control, identity_broker_thread, identity_host) =
         resolve_identity_broker(&capabilities, opts)?;
@@ -2990,64 +2992,112 @@ fn minimal_loader_binds() -> &'static [&'static str] {
 /// to be exec'd as the Landlock shim. Kept out of `/usr` and `/tmp`.
 pub const SHIM_MOUNT_PATH: &str = "/tilo-launcher";
 
-/// Decide how to expose D-Bus per the manifest's portal declaration.
-/// Spawn `xdg-dbus-proxy` filtered to portals/notifications/MPRIS.
+/// Decide how to expose D-Bus: the manifest's portal declaration, and for
+/// every graphical app the accessibility buses.
 ///
-/// There is deliberately no raw-session-bus fallback. Giving an untrusted
-/// sandbox the complete user bus because a filtering helper is missing turns
-/// an availability problem into a privilege-escalation path (and lets the app
-/// call portal *implementation* services directly). A failed proxy therefore
-/// means portals are unavailable for that launch.
+/// Each bus reaches the app only through its own filtered `xdg-dbus-proxy`
+/// ([`dbus_proxy`]). There is deliberately no raw-bus fallback. Giving an
+/// untrusted sandbox the complete user bus because a filtering helper is
+/// missing turns an availability problem into a privilege-escalation path
+/// (and lets the app call portal *implementation* services directly). A failed
+/// proxy therefore means that bus is unavailable for that launch.
 fn resolve_dbus_bind(
     portals: &std::collections::BTreeMap<String, PortalPolicy>,
-) -> (Option<DBusBindPlan>, Option<DBusProxyGuard>) {
-    let wants_bus = portals.values().any(|p| matches!(p, PortalPolicy::ViaHost));
-    if !wants_bus {
-        return (None, None);
+    graphical: bool,
+) -> (Option<DBusBindPlan>, Vec<DBusProxyGuard>) {
+    let wants_portals = portals.values().any(|p| matches!(p, PortalPolicy::ViaHost));
+    if !wants_portals && !graphical {
+        return (None, Vec::new());
     }
     let Ok(bus_addr) = std::env::var("DBUS_SESSION_BUS_ADDRESS") else {
         tracing::warn!(
-            "manifest declares a via-host portal but DBUS_SESSION_BUS_ADDRESS is unset; \
-             portals will be unavailable to the sandboxed app"
+            "DBUS_SESSION_BUS_ADDRESS is unset; portals and accessibility will be \
+             unavailable to the sandboxed app"
         );
-        return (None, None);
+        return (None, Vec::new());
     };
     if bus_addr.is_empty() {
-        return (None, None);
+        return (None, Vec::new());
     }
     let uid = current_uid();
-
-    // The only path: xdg-dbus-proxy filtered to portal-adjacent names.
-    if let Some(binary) = dbus_proxy::find_proxy_binary() {
-        let sock = dbus_proxy::proxy_socket_path(uid, std::process::id());
-        match dbus_proxy::spawn_dbus_proxy(&binary, &bus_addr, &sock) {
-            Ok(guard) => {
-                let plan = DBusBindPlan {
-                    host_socket: guard.socket_path().to_path_buf(),
-                    sandbox_path: dbus_proxy::sandbox_bus_path(uid),
-                };
-                tracing::info!(
-                    proxy_binary = %binary.display(),
-                    socket = %guard.socket_path().display(),
-                    "xdg-dbus-proxy spawned for portal access"
-                );
-                return (Some(plan), Some(guard));
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "xdg-dbus-proxy failed to spawn; portal access stays unavailable"
-                );
-            }
-        }
-    } else {
+    let Some(binary) = dbus_proxy::find_proxy_binary() else {
         tracing::warn!(
-            "xdg-dbus-proxy unavailable; portal access stays unavailable. \
-             Check TILO_LAUNCHER_DBUS_PROXY_BIN or install `flatpak-xdg-utils` \
-             to enable filtered portal traffic."
+            "xdg-dbus-proxy unavailable; portals and accessibility stay unavailable. \
+             Check TILO_LAUNCHER_DBUS_PROXY_BIN or install `xdg-dbus-proxy` \
+             to enable filtered bus traffic."
         );
+        return (None, Vec::new());
+    };
+
+    let sock = dbus_proxy::proxy_socket_path(uid, std::process::id());
+    let session = match dbus_proxy::spawn_filtered_proxy(
+        &binary,
+        &bus_addr,
+        &sock,
+        &dbus_proxy::session_filter_args(wants_portals, graphical),
+    ) {
+        Ok(guard) => guard,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "xdg-dbus-proxy failed to spawn; the session bus stays unavailable"
+            );
+            return (None, Vec::new());
+        }
+    };
+    let mut plan = DBusBindPlan {
+        host_socket: session.socket_path().to_path_buf(),
+        sandbox_path: dbus_proxy::sandbox_bus_path(uid),
+        atspi: None,
+    };
+    let mut guards = vec![session];
+    if graphical && let Some((atspi, guard)) = spawn_atspi_proxy(&binary, &bus_addr, uid) {
+        plan.atspi = Some(atspi);
+        guards.push(guard);
     }
-    (None, None)
+    tracing::info!(
+        proxy_binary = %binary.display(),
+        socket = %plan.host_socket.display(),
+        accessibility = plan.atspi.is_some(),
+        "filtered D-Bus proxies spawned"
+    );
+    (Some(plan), guards)
+}
+
+/// The filtered AT-SPI bus proxy for a graphical app, or `None` when the
+/// session runs no accessibility bus or the proxy cannot start; the app then
+/// stays invisible to assistive technology, never on the raw bus.
+fn spawn_atspi_proxy(
+    binary: &std::path::Path,
+    session_bus: &str,
+    uid: u32,
+) -> Option<(crate::sandbox::AtspiBindPlan, DBusProxyGuard)> {
+    let Some(atspi_addr) = dbus_proxy::host_atspi_address(session_bus) else {
+        tracing::info!("the session runs no accessibility bus");
+        return None;
+    };
+    let socket = dbus_proxy::atspi_proxy_socket_path(uid, std::process::id());
+    match dbus_proxy::spawn_filtered_proxy(
+        binary,
+        &atspi_addr,
+        &socket,
+        dbus_proxy::ATSPI_FILTER_ARGS,
+    ) {
+        Ok(guard) => Some((
+            crate::sandbox::AtspiBindPlan {
+                host_socket: guard.socket_path().to_path_buf(),
+                sandbox_path: dbus_proxy::sandbox_atspi_path(uid),
+            },
+            guard,
+        )),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "AT-SPI proxy failed to spawn; the app stays invisible to assistive technology"
+            );
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3067,10 +3117,10 @@ mod dbus_resolution_tests {
             PortalPolicy::ViaHost,
         )]);
 
-        let (plan, guard) = resolve_dbus_bind(&portals);
+        let (plan, guards) = resolve_dbus_bind(&portals, true);
 
         assert!(plan.is_none(), "a raw D-Bus bind must never be planned");
-        assert!(guard.is_none(), "no proxy process should have started");
+        assert!(guards.is_empty(), "no proxy process should have started");
     }
 }
 
