@@ -1126,8 +1126,13 @@ impl App {
             } => self.vm_ssh(name.or(vm).as_deref(), raw, &command),
             VmCommand::Status { name } => self.vm_status(name.as_deref()),
             VmCommand::Create(args) => self.vm_create(args),
+            VmCommand::Add { name, ssh } => self.vm_add(&name, &ssh),
             VmCommand::Start { name } => self.vm_start(name.as_deref()),
             VmCommand::Restart { name } => {
+                let vm = self.resolve_vm(name.as_deref())?;
+                if !Self::adapter(&vm)?.powers_on() {
+                    return self.vm_reboot(&vm);
+                }
                 let stopped = self.vm_stop(name.as_deref(), false)?;
                 if stopped.data.get("down") == Some(&json!(false)) {
                     return Ok(stopped);
@@ -1260,6 +1265,12 @@ impl App {
                 vm.name
             )),
         }
+        if !adapter.powers_on() {
+            self.warnings.push(format!(
+                "tilo-vm cannot power {} on: it stays off until someone does (tilo-vm vm restart reboots it instead)",
+                vm.name
+            ));
+        }
         let text = match down {
             Some(true) if lock.is_some() => format!(
                 "VM {} shut down (it held the VM lock until it was down)",
@@ -1338,7 +1349,12 @@ impl App {
             registry.default = None;
         }
         registry.save(&self.registry_path)?;
-        let mut text = if owned {
+        let mut text = if owned && !adapter.powers_on() {
+            format!(
+                "device {} unregistered and its key removed; the device itself is untouched",
+                vm.name
+            )
+        } else if owned {
             format!("VM {} deleted and unregistered", vm.name)
         } else {
             format!(
@@ -1636,6 +1652,15 @@ impl App {
         reason = "one linear sequence: preflight, download, adapter, registry"
     )]
     fn vm_create(&mut self, args: CreateArgs) -> Result<Outcome, CliError> {
+        if args.hypervisor.as_deref() == Some(hypervisor::DEVICE) {
+            return Err(CliError::Unsupported {
+                what: "creating a device".into(),
+                alternative: format!(
+                    "register one that runs a Tilo dev image: tilo-vm vm add {} --ssh root@<address>",
+                    args.name
+                ),
+            });
+        }
         let host = std::env::consts::ARCH;
         let arch = args.arch.clone().unwrap_or_else(|| host.to_owned());
         if arch != host && !args.emulated {
@@ -1991,6 +2016,180 @@ impl App {
             });
         }
         Ok(())
+    }
+
+    /// Register a device that runs a Tilo dev image: its address and its
+    /// own root key, which is installed once with the dev account.
+    fn vm_add(&mut self, name: &str, ssh: &str) -> Result<Outcome, CliError> {
+        let endpoint = SshEndpoint::parse(ssh).ok_or_else(|| CliError::Config {
+            path: "--ssh".into(),
+            detail: format!("'{ssh}' is not [user@]host[:port]"),
+        })?;
+        if endpoint.user != "root" {
+            return Err(CliError::Unsupported {
+                what: format!("reaching the device as {}", endpoint.user),
+                alternative: format!(
+                    "tilo-vmd runs as root: tilo-vm vm add {name} --ssh root@{}:{}   (vm add prints how to install root's key with the {} account)",
+                    endpoint.host,
+                    endpoint.port,
+                    sshkey::DEV_ACCOUNT
+                ),
+            });
+        }
+        let mut registry = self.registry()?;
+        if let Some(existing) = registry.vms.get(name) {
+            return Ok(Outcome::new(
+                format!(
+                    "{name} is already registered ({}, {}); nothing to do",
+                    existing.hypervisor,
+                    existing.ssh.as_deref().unwrap_or("no address")
+                ),
+                json!({ "vm": name, "added": false }),
+            )
+            .next(&[format!("tilo-vm vm status {name}").as_str()]));
+        }
+        let key = sshkey::key_path(&self.registry_path, name);
+        sshkey::ensure(&mut self.runner, &key, name)?;
+        // Another device of this name had other host keys.
+        let known_hosts = remote::known_hosts_path(&key.display().to_string());
+        match std::fs::remove_file(&known_hosts) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                return Err(CliError::io(format!("remove {known_hosts}"))(e));
+            }
+            _ => {}
+        }
+        registry.vms.insert(
+            name.to_owned(),
+            VmEntry {
+                hypervisor: hypervisor::DEVICE.into(),
+                ssh: Some(format!("root@{}:{}", endpoint.host, endpoint.port)),
+                key: Some(key.display().to_string()),
+                ..VmEntry::default()
+            },
+        );
+        if registry.default.is_none() {
+            registry.default = Some(name.to_owned());
+        }
+        registry.save(&self.registry_path)?;
+        let mut lines = vec![format!(
+            "device {name} ({}) registered in {}; its root key is {}",
+            endpoint.host,
+            self.registry_path.display(),
+            key.display()
+        )];
+        let vm = self.resolve_vm(Some(name))?;
+        let mut next = Vec::new();
+        let reachable = match self.connect(&vm) {
+            Ok(remote) => {
+                lines.push(format!(
+                    "  reachable; tilo-vmd {} ({})",
+                    remote.hello.daemon_version, remote.hello.arch
+                ));
+                true
+            }
+            Err(CliError::RootKeyRefused { install, .. }) => {
+                lines.push(format!(
+                    "  the device does not know the key yet. Install it once, with the dev account's password (os/account.env: {}, tilo):\n    {install}",
+                    sshkey::DEV_ACCOUNT
+                ));
+                next.push(install);
+                false
+            }
+            Err(error) => {
+                lines.push(format!("  not usable yet: {error}; {}", error.hint()));
+                false
+            }
+        };
+        next.push(format!("tilo-vm vm status {name}"));
+        next.push(format!("tilo-vm vm use {name}"));
+        next.push("tilo-vm swap --slot device shell --from sha:<commit>".into());
+        self.warnings.clear();
+        Ok(Outcome {
+            next,
+            ..Outcome::new(
+                lines.join("\n"),
+                json!({ "vm": name, "added": true, "ssh": ssh, "key": key, "reachable": reachable }),
+            )
+        })
+    }
+
+    /// Restart a device that tilo-vm cannot power on: reboot it over SSH
+    /// under the VM lock, wait for the new boot, then for tilo-vmd.
+    fn vm_reboot(&mut self, vm: &Resolved) -> Result<Outcome, CliError> {
+        let adapter = Self::adapter(vm)?;
+        let endpoint = adapter.ssh_endpoint(&vm.vm(), &mut self.runner)?;
+        let old_boot = self
+            .vm_sh(vm, &endpoint, "cat /proc/sys/kernel/random/boot_id")
+            .ok()
+            .filter(|o| o.success)
+            .map(|o| o.stdout.trim().to_owned())
+            .ok_or_else(|| CliError::Unreachable {
+                vm: vm.name.clone(),
+                detail: "no SSH answer, so it cannot be asked to reboot; power-cycle it, then tilo-vm vm start".into(),
+                debug: Vec::new(),
+            })?;
+        let lock = match remote::hold_vm_lock(&endpoint, vm.entry.key.as_deref()) {
+            LockOutcome::Held(lock) => lock,
+            LockOutcome::Busy => {
+                return Err(CliError::Busy {
+                    what: format!("VM {}", vm.name),
+                });
+            }
+            LockOutcome::Unreachable(detail) => {
+                return Err(CliError::Unreachable {
+                    vm: vm.name.clone(),
+                    detail,
+                    debug: Vec::new(),
+                });
+            }
+        };
+        if !self.json {
+            eprintln!("tilo-vm: rebooting {}", vm.name);
+        }
+        // The connection drops as the device goes down; its status says nothing.
+        let _ = self.vm_sh(vm, &endpoint, "systemctl reboot");
+        drop(lock);
+        let started = Instant::now();
+        let mut up = false;
+        while started.elapsed() < Duration::from_secs(600) {
+            std::thread::sleep(Duration::from_secs(2));
+            if let Ok(output) = self.vm_sh(vm, &endpoint, "cat /proc/sys/kernel/random/boot_id")
+                && output.success
+                && !output.stdout.trim().is_empty()
+                && output.stdout.trim() != old_boot
+            {
+                up = true;
+                break;
+            }
+        }
+        self.receipt
+            .record("reboot", started.elapsed().as_secs_f64());
+        if !up {
+            return Err(CliError::Unreachable {
+                vm: vm.name.clone(),
+                detail: "no SSH answer from a new boot within 600s of the reboot; if it is still booting, tilo-vm vm status tells when it answers".into(),
+                debug: Vec::new(),
+            });
+        }
+        let seconds = started.elapsed().as_secs_f64();
+        let daemon = self
+            .connect(vm)
+            .map(|remote| remote.hello.daemon_version.clone());
+        let text = match &daemon {
+            Ok(version) => format!(
+                "{} rebooted; SSH answered after {seconds:.0}s, tilo-vmd {version}",
+                vm.name
+            ),
+            Err(error) => format!(
+                "{} rebooted; SSH answered after {seconds:.0}s, but tilo-vmd did not: {error}",
+                vm.name
+            ),
+        };
+        Ok(Outcome::new(
+            text,
+            json!({ "vm": vm.name, "boot_seconds": seconds, "daemon": daemon.ok() }),
+        )
+        .next(&["tilo-vm status"]))
     }
 
     fn vm_start(&mut self, name: Option<&str>) -> Result<Outcome, CliError> {
@@ -3977,7 +4176,13 @@ impl App {
         });
         assembled?;
         let features = component.build_features(&extra);
-        let provenance = build::provenance(&mut self.runner, &worktree, component, features);
+        let provenance = build::provenance(
+            &mut self.runner,
+            &worktree,
+            component,
+            features,
+            &staging.tree(),
+        );
         let archive = staging.archive();
         let upload = self
             .receipt
@@ -6409,6 +6614,95 @@ mod tests {
             .unwrap();
         assert!(matches!(error, CliError::NoVm { .. }));
         assert!(error.render().contains("see: tilo-vm guide quickstart"));
+    }
+
+    /// `vm add` registers a device with its own key and refuses what cannot work.
+    #[test]
+    fn a_device_is_registered_with_its_own_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_empty_registry(dir.path());
+        // A key from an earlier run, so no ssh-keygen is needed here.
+        let key = sshkey::key_path(&app.registry_path, "opi");
+        std::fs::create_dir_all(key.parent().unwrap()).unwrap();
+        std::fs::write(&key, "private").unwrap();
+        std::fs::write(
+            sshkey::public_path(&key),
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA opi\n",
+        )
+        .unwrap();
+
+        // Phase `registered_with_its_address_and_key`.
+        {
+            // Nothing answers on port 1: registered, but not usable yet.
+            let added = app.vm_add("opi", "root@127.0.0.1:1").unwrap();
+            let registry = app.registry().unwrap();
+            let entry = &registry.vms["opi"];
+            assert_eq!(entry.hypervisor, "device");
+            assert_eq!(entry.ssh.as_deref(), Some("root@127.0.0.1:1"));
+            assert_eq!(entry.key.as_deref(), Some(key.to_str().unwrap()));
+            assert_eq!(registry.default.as_deref(), Some("opi"));
+            assert_eq!(added.data["reachable"], json!(false));
+            assert!(added.next.contains(&"tilo-vm vm use opi".to_owned()));
+            assert!(
+                added
+                    .next
+                    .iter()
+                    .any(|n| n.starts_with("tilo-vm swap --slot device shell")),
+                "{:?}",
+                added.next
+            );
+        }
+        // Phase `again_changes_nothing_and_bad_addresses_are_refused`.
+        {
+            let again = app.vm_add("opi", "root@127.0.0.1:1").unwrap();
+            assert_eq!(again.data["added"], json!(false));
+            let error = app.vm_add("pi2", "tester@10.0.0.109").err().unwrap();
+            assert!(
+                error.hint().contains("--ssh root@10.0.0.109:22"),
+                "{}",
+                error.hint()
+            );
+            assert!(app.vm_add("pi2", "root@").is_err());
+            let error = app
+                .vm_create(CreateArgs {
+                    hypervisor: Some("device".into()),
+                    ..create_args("pi3")
+                })
+                .err()
+                .unwrap();
+            assert!(
+                error.hint().contains("tilo-vm vm add pi3"),
+                "{}",
+                error.hint()
+            );
+        }
+        // Phase `the_device_adapter_has_no_power_control`.
+        {
+            let device = hypervisor::adapter("device").unwrap();
+            assert!(!device.powers_on());
+            assert!(hypervisor::adapter("libvirt").unwrap().powers_on());
+            let vm = app.resolve_vm(Some("opi")).unwrap();
+            assert!(device.start(&vm.vm()).is_empty());
+            assert_eq!(
+                device.ssh_endpoint(&vm.vm(), &mut app.runner).unwrap(),
+                SshEndpoint {
+                    user: "root".into(),
+                    host: "127.0.0.1".into(),
+                    port: 1
+                }
+            );
+        }
+        // Phase `removing_it_forgets_it_and_its_key_only`.
+        {
+            let removed = app.vm_rm("opi", false).unwrap();
+            assert!(
+                removed.text.contains("the device itself is untouched"),
+                "{}",
+                removed.text
+            );
+            assert!(!key.exists());
+            assert!(app.registry().unwrap().vms.is_empty());
+        }
     }
 
     /// Input arguments become validated actions and a direct-boot bundle resolves files and requires a

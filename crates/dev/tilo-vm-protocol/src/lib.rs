@@ -31,7 +31,7 @@ pub use input::{Button, InputAction, Stick};
 pub use manifest::{ComponentInfo, Manifest, Scope};
 
 /// Bumped on any incompatible change to a request, response or semantics.
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// Where in-VM builds keep one synced source tree per host worktree; its
 /// `target/` is the worktree's own, evictable build dir.
@@ -43,6 +43,11 @@ pub const UPLOAD_CHUNK_BYTES: usize = 1 << 20;
 
 /// The name of the pseudo-slot whose layers merge into the VM's own `/usr`.
 pub const VM_SLOT: &str = "vm";
+
+/// The name of the pseudo-slot that is the machine's own session: the
+/// session an image runs for its account without a greeter (a board's
+/// always-on session). Only images that run one have it.
+pub const DEVICE_SLOT: &str = "device";
 
 /// One request line.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -409,6 +414,8 @@ pub enum SlotKind {
     Headless,
     /// Only the reserved [`VM_SLOT`] has this kind.
     Vm,
+    /// Only the reserved [`DEVICE_SLOT`] has this kind.
+    Device,
 }
 
 impl SlotKind {
@@ -417,6 +424,7 @@ impl SlotKind {
             Self::Headful => "headful",
             Self::Headless => "headless",
             Self::Vm => "vm",
+            Self::Device => "device",
         }
     }
 }

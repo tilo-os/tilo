@@ -313,6 +313,11 @@ pub trait Hypervisor {
     fn power_off(&self, _vm: &Vm<'_>) -> Option<CommandLine> {
         None
     }
+    /// Can tilo-vm power the machine on? A physical device it only reaches
+    /// over SSH stays off once off, so it is restarted with a reboot.
+    fn powers_on(&self) -> bool {
+        true
+    }
 }
 
 /// # Errors
@@ -324,10 +329,11 @@ pub fn adapter(name: &str) -> Result<Box<dyn Hypervisor>, CliError> {
         "utm" => Ok(Box::new(Utm)),
         "hyperv" => Ok(Box::new(HyperV)),
         "whpx" => Ok(Box::new(Whpx)),
+        DEVICE => Ok(Box::new(Device)),
         other => Err(CliError::Unsupported {
             what: format!("hypervisor '{other}'"),
-            alternative: "set `hypervisor` to libvirt, qemu, utm, hyperv or whpx in vms.toml"
-                .into(),
+            alternative:
+                "set `hypervisor` to libvirt, qemu, utm, hyperv, whpx or device in vms.toml".into(),
         }),
     }
 }
@@ -370,6 +376,67 @@ pub fn vm_files(disk: &str) -> Vec<String> {
             .map(|suffix| whpx_file(disk, suffix)),
     );
     files
+}
+
+// ---- a dev device reached over SSH (a board) ---------------------------------
+
+/// The adapter of a machine that already runs a Tilo dev image, such as a
+/// board installed from its board dev disk, registered with `vm add`.
+pub const DEVICE: &str = "device";
+
+/// No hypervisor: tilo-vm reaches the device only at its SSH address. It
+/// cannot create, power on or reset it; `vm stop` shuts it down over SSH
+/// and `vm restart` reboots it.
+pub struct Device;
+
+impl Hypervisor for Device {
+    fn name(&self) -> &'static str {
+        DEVICE
+    }
+
+    fn create(&self, vm: &Vm<'_>, _root_key: &str) -> Result<Vec<CommandLine>, CliError> {
+        Err(CliError::Unsupported {
+            what: format!("creating device {}", vm.name),
+            alternative: format!(
+                "register a running device instead: tilo-vm vm add {} --ssh root@<address>",
+                vm.name
+            ),
+        })
+    }
+
+    fn start(&self, _vm: &Vm<'_>) -> Vec<CommandLine> {
+        Vec::new()
+    }
+
+    fn stop(&self, _vm: &Vm<'_>) -> Vec<CommandLine> {
+        Vec::new()
+    }
+
+    fn guest_shutdown_first(&self) -> bool {
+        true
+    }
+
+    fn destroy(&self, _vm: &Vm<'_>) -> Vec<CommandLine> {
+        Vec::new()
+    }
+
+    fn ssh_endpoint(&self, vm: &Vm<'_>, _runner: &mut dyn Runner) -> Result<SshEndpoint, CliError> {
+        vm.entry
+            .ssh
+            .as_deref()
+            .and_then(SshEndpoint::parse)
+            .ok_or_else(|| CliError::Config {
+                path: crate::config::registry_path().display().to_string(),
+                detail: format!(
+                    "device '{}' has no `ssh` address; register it again: tilo-vm vm add {} --ssh root@<address>",
+                    vm.name, vm.name
+                ),
+            })
+    }
+
+    fn powers_on(&self) -> bool {
+        false
+    }
 }
 
 // ---- libvirt (Linux) ----------------------------------------------------------

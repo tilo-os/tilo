@@ -50,6 +50,11 @@ pub const TOPICS: &[(&str, &str, &str)] = &[
         include_str!("../guide/platforms.md"),
     ),
     (
+        "devices",
+        "boards and other real machines: vm add, the device slot, aarch64 builds",
+        include_str!("../guide/devices.md"),
+    ),
+    (
         "troubleshooting",
         "when something does not work",
         include_str!("../guide/troubleshooting.md"),
@@ -99,6 +104,7 @@ mod tests {
                 "images",
                 "storage",
                 "platforms",
+                "devices",
                 "troubleshooting",
                 "fedora-loop",
             ] {
@@ -226,6 +232,18 @@ mod tests {
             assert!(swapping.contains("--slot vm fs"));
             assert!(swapping.contains("--profile dev"));
             assert!(swapping.contains("dev-overrides"));
+            let devices = topic("devices").unwrap();
+            for needle in [
+                "tilo-vm vm add opi --ssh root@",
+                "tilo-vm swap --slot device shell --from sha:",
+                "tilo-vm rollback --slot device --to 0",
+                "tilo-vm slot exec --slot device -- sha256sum /usr/bin/shell",
+                "TILO_VM_CARGO",
+                "registry.tilo.so/tilo/tilo-vm:main-<sha7>-ci",
+                "vm upgrade opi",
+            ] {
+                assert!(devices.contains(needle), "devices guide lacks {needle}");
+            }
             let platforms = topic("platforms").unwrap();
             assert!(platforms.contains("virt-manager"));
             assert!(platforms.contains("Release / Dev VM disk"));

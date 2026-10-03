@@ -21,6 +21,9 @@ watch it in virt-manager (File > Add Connection > QEMU/KVM user session).
 `vm create` needs a forge token (`FORGEJO_TOKEN`, or an fgj or tea login) to
 download the disk; `tilo-vm guide platforms` covers the rest.
 
+A board or another real machine that runs a Tilo dev image is registered
+instead: `tilo-vm vm add <name> --ssh root@<address>` (`tilo-vm guide devices`).
+
 ## Use it
 
 ```sh
