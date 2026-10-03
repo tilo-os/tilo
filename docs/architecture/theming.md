@@ -79,7 +79,7 @@ the one `docs/design-language.md` describes:
 | State veneers | `overlay_subtle` / `medium` / `strong`, `overlay_border_*` | `tokens/colors.rs` |
 | Shape | radii `tile` / `panel` / `control` / `item` / `detail` / `full`, `Radii::concentric` | `tokens/radii.rs` |
 | Density | spacing `s0`–`s16`, `Metrics` (pointer targets, panel widths) | `tokens/spacing.rs`, `tokens/metrics.rs` |
-| Type | families, scale `xs`–`x4l`, `font_size_base` | `tokens/typography.rs` |
+| Type | families, the ten `TextRole`s derived from one body size (`Theme::text(role)`) | `tokens/typography.rs` |
 | Motion | durations and easings, `reduce_motion` | `tokens/motion.rs` |
 | Depth | `elevation.floating`, `floating_edge` (only floating things cast a shadow) | `tokens/elevation.rs` |
 | Derived palettes | terminal ANSI palette, syntax palette, chart series | `tokens/terminal_palette.rs`, `tokens/syntax_palette.rs`, `PresencePalette::series` |
