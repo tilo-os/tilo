@@ -164,9 +164,16 @@ impl CameraApp {
             Screen::Scanner => 2,
             Screen::Document => 3,
         };
-        let labels: Vec<&str> = entries.iter().map(|(label, _)| *label).collect();
-        let natural = SegmentedFace::intrinsic_width(&labels, ControlSize::Regular, tr, &local);
         let room = (full.width() - 2.0 * (m.edge + m.pad)).max(1.0);
+        let mut labels: Vec<&str> = entries.iter().map(|(label, _)| *label).collect();
+        let mut natural = SegmentedFace::intrinsic_width(&labels, ControlSize::Regular, tr, &local);
+        if natural > room {
+            // The short form of the one long label, before anything elides.
+            if let Some(documents) = labels.last_mut() {
+                *documents = "Docs";
+            }
+            natural = SegmentedFace::intrinsic_width(&labels, ControlSize::Regular, tr, &local);
+        }
         let width = natural.min(room);
         let height = SegmentedFace::height(ControlSize::Regular, theme);
         let x0 = full.center().x - width / 2.0;
@@ -658,14 +665,14 @@ impl CameraApp {
         let duration = countdown.due.saturating_duration_since(ui::time::now());
         let remaining = (duration.as_secs() + u64::from(duration.subsec_nanos() != 0)).max(1);
         let count = remaining.to_string();
-        let hint = "Tap the shutter to cancel";
+        let hint = ui::i18n!("Tap the shutter to cancel");
         let local = on_panel(theme);
         let m = HudMetrics::of(theme);
         let gap = f64::from(theme.tokens.spacing.s2);
         let mut ctx = PaintCtx::new(scene, t, tr, &local);
         let number_style = local.text(TextRole::Title).numeric();
         let (nw, nh) = ctx.text.measure_style(&count, None, &number_style);
-        let hint_size = ctx.measure_role(hint, TextRole::Label, None);
+        let hint_size = ctx.measure_role(&hint, TextRole::Label, None);
         let pad_x = f64::from(theme.tokens.spacing.s3);
         let width = f64::from(nw) + gap + hint_size.width + 2.0 * pad_x;
         let height = f64::from(nh).max(m.bar());
@@ -680,7 +687,7 @@ impl CameraApp {
             None,
         );
         ctx.text_role_in_band(
-            hint,
+            &hint,
             TextRole::Label,
             local.text_dim,
             rect.x0 + pad_x + f64::from(nw) + gap,
