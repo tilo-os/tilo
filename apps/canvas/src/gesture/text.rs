@@ -57,6 +57,8 @@ impl TextSession {
                 align: None,
                 line_height: None,
                 width: None,
+                tracking: None,
+                path: None,
             },
             caret: EditCore::new(),
             fill,
