@@ -38,10 +38,9 @@ pub struct SetArtwork {
     pub texture: Option<String>,
     /// Ground colour, `#rrggbb`.
     pub ground_colour: Option<String>,
-    /// Crop to `[x, y, width, height]`: that corner becomes 0, 0 and every
-    /// mark moves with it.
+    /// Crop to `[x, y, width, height]`; marks move with it.
     pub crop: Option<[f64; 4]>,
-    /// Crop to what this mark or group shows (a photo after its crop).
+    /// Crop to what this mark or group shows.
     pub fit: Option<String>,
 }
 
@@ -79,8 +78,15 @@ pub struct EditLayer {
     pub to: Option<String>,
     /// `0..=1`: let the ground's tooth show through the layer's marks.
     pub texture: Option<f64>,
-    /// Colour and tone of everything on it; given steps replace.
-    pub adjust: Option<Adjust>,
+    /// Colour and tone of all on it; given steps replace, `{}` clears.
+    pub adjust: Option<Box<Adjust>>,
+    /// `reveal`, `hide` or `remove`: a mask layer `<id>-mask` to paint
+    /// greys on, white shows, black hides.
+    pub mask: Option<String>,
+    /// Invert the mask.
+    pub invert: Option<bool>,
+    /// Clip to the layer below.
+    pub clip: Option<bool>,
 }
 
 /// Remove a layer and everything on it.
@@ -140,7 +146,8 @@ pub struct NewMark {
     /// A group id: edits naming it change the members as one; `a/b`
     /// nests group b in a.
     pub group: Option<String>,
-    /// Cut to this mark's or group's shape (opacity 0 hides it).
+    /// Cut to this mark's or group's shape (opacity 0 hides it), or
+    /// `selection`.
     pub clip: Option<String>,
     /// An affine `[a, b, c, d, e, f]` on the geometry, as `inspect` shows.
     pub transform: Option<[f64; 6]>,
@@ -224,6 +231,7 @@ pub struct NewStroke {
     pub angle: Option<f64>,
     /// Keep the paint inside this mark's shape, as a painter cuts in
     /// against an edge: texture a rock or a crown within its silhouette.
+    /// Or `selection`.
     pub clip: Option<String>,
 }
 
@@ -287,12 +295,12 @@ pub struct EditMarks {
     pub transform: Option<[f64; 6]>,
     /// `horizontal` or `vertical`: mirror about each centre.
     pub flip: Option<String>,
-    /// Images: `[x, y, w, h]` fractions of the picture to show; the picture
-    /// stays put, its frame follows. `[]` shows it whole.
+    /// Images: fractions `[x, y, w, h]` of the picture to show (it stays
+    /// put); `[]` all of it.
     pub crop: Option<Vec<f64>>,
-    /// Images: degrees to turn the picture in its frame (-45 to 45).
+    /// Images: degrees, -45 to 45, to level it.
     pub straighten: Option<f64>,
-    /// Colour and tone; given steps replace.
+    /// Colour and tone; given steps replace, `{}` clears.
     pub adjust: Option<Adjust>,
 }
 
@@ -370,7 +378,7 @@ pub struct SetReference {
 pub enum CanvasAction {
     SetArtwork(SetArtwork),
     AddLayer(AddLayer),
-    EditLayer(Box<EditLayer>),
+    EditLayer(EditLayer),
     RemoveLayer(RemoveLayer),
     Draw(Draw),
     Paint(Paint),
@@ -381,6 +389,9 @@ pub enum CanvasAction {
     RemoveMedium(RemoveMedium),
     Align(Align),
     SetReference(SetReference),
+    Select(Box<crate::selection::Select>),
+    UseSelection(crate::selection::UseSelection),
+    Combine(crate::selection::Combine),
     OpenPicture(Open),
 }
 
@@ -404,7 +415,7 @@ impl CanvasAction {
     }
 }
 
-fn refuse(message: impl Into<String>) -> ActionError {
+pub(crate) fn refuse(message: impl Into<String>) -> ActionError {
     ActionError::Refused(message.into())
 }
 
@@ -423,7 +434,12 @@ pub fn derived_id(prefix: &str, content: &impl Serialize, index: usize) -> Strin
     format!("{prefix}-{}", hex.get(..10).unwrap_or_default())
 }
 
-fn check_colour(art: &Artwork, layer: &str, colour: &str, what: &str) -> Result<(), ActionError> {
+pub(crate) fn check_colour(
+    art: &Artwork,
+    layer: &str,
+    colour: &str,
+    what: &str,
+) -> Result<(), ActionError> {
     if colour == "none"
         || tilo_wet_media::parse_paint(colour, &media::palette_for(art, layer)).is_some()
     {
@@ -546,7 +562,10 @@ fn check_transform(transform: [f64; 6]) -> Result<(), ActionError> {
 /// The marks `ids` address, as units that move, scale and rotate together:
 /// a mark id is that mark, a group id all of the group's members. A mark
 /// named twice (itself and through its group) counts once.
-fn units<'a>(art: &'a Artwork, ids: &[String]) -> Result<Vec<Vec<&'a Mark>>, ActionError> {
+pub(crate) fn units<'a>(
+    art: &'a Artwork,
+    ids: &[String],
+) -> Result<Vec<Vec<&'a Mark>>, ActionError> {
     if ids.is_empty() {
         return Err(refuse("name marks or groups in ids"));
     }
@@ -632,7 +651,7 @@ fn check_clip(
 }
 
 /// The layer an action names, or the top one.
-fn target_layer(art: &Artwork, named: Option<&str>) -> Result<String, ActionError> {
+pub(crate) fn target_layer(art: &Artwork, named: Option<&str>) -> Result<String, ActionError> {
     match named {
         Some(id) => art.layer(id).map(|layer| layer.id.clone()).ok_or_else(|| {
             refuse(format!(
@@ -641,14 +660,13 @@ fn target_layer(art: &Artwork, named: Option<&str>) -> Result<String, ActionErro
             ))
         }),
         None => art
-            .layers
-            .last()
+            .top_layer()
             .map(|layer| layer.id.clone())
             .ok_or_else(|| refuse("the artwork has no layer yet; add-layer first")),
     }
 }
 
-fn layer_list(art: &Artwork) -> String {
+pub(crate) fn layer_list(art: &Artwork) -> String {
     if art.layers.is_empty() {
         return "none".into();
     }
@@ -660,7 +678,7 @@ fn layer_list(art: &Artwork) -> String {
 }
 
 /// Fresh order keys for `count` marks on top of `layer`.
-fn on_top(art: &Artwork, layer: &str, count: usize) -> Vec<String> {
+pub(crate) fn on_top(art: &Artwork, layer: &str, count: usize) -> Vec<String> {
     let last = art.marks_of(layer).map(|mark| mark.order.clone()).max();
     order::sequence(last.as_deref(), None, count)
 }
@@ -687,7 +705,7 @@ fn unique_ids(art: &Artwork, ids: &[String]) -> Result<(), ActionError> {
 
 /// Write `marks` (their layer and order still to be given) on top of
 /// `layer`.
-fn add_marks(
+pub(crate) fn add_marks(
     doc: &mut Doc,
     art: &Artwork,
     layer: &str,
@@ -734,7 +752,7 @@ fn add_marks(
 }
 
 /// A mark to add, before its layer and order are known.
-fn placed(id: String, name: String, shape: Shape, style: Style) -> Mark {
+pub(crate) fn placed(id: String, name: String, shape: Shape, style: Style) -> Mark {
     Mark {
         id,
         layer: String::new(),
@@ -748,9 +766,39 @@ fn placed(id: String, name: String, shape: Shape, style: Style) -> Mark {
     }
 }
 
+/// The clip a new mark names: `selection` is a mark of the selection's
+/// shape, made on `layer` when first used.
+fn clip_named(
+    doc: &mut Doc,
+    art: &mut Artwork,
+    layer: &str,
+    clip: Option<&String>,
+) -> Result<String, ActionError> {
+    match clip.map(String::as_str) {
+        Some(SELECTION_CLIP) => {
+            let cut = crate::selection::selection_cut(doc, art, layer)?;
+            if art.mark(&cut).is_none() {
+                *art = doc::read(doc);
+            }
+            Ok(cut)
+        }
+        clip => Ok(clip.unwrap_or_default().to_owned()),
+    }
+}
+
+/// The clip that keeps a new mark inside the selection.
+pub const SELECTION_CLIP: &str = "selection";
+
 impl Draw {
     fn apply(&self, doc: &mut Doc, art: &Artwork) -> Result<(), ActionError> {
         let layer = target_layer(art, self.layer.as_deref())?;
+        let mut art = art.clone();
+        let clips = self
+            .marks
+            .iter()
+            .map(|mark| clip_named(doc, &mut art, &layer, mark.clip.as_ref()))
+            .collect::<Result<Vec<String>, ActionError>>()?;
+        let art = &art;
         let marks = self
             .marks
             .iter()
@@ -800,7 +848,7 @@ impl Draw {
                 };
                 Mark {
                     group: mark.group.clone().unwrap_or_default(),
-                    clip: mark.clip.clone().unwrap_or_default(),
+                    clip: clips.get(index).cloned().unwrap_or_default(),
                     transform: mark.transform,
                     ..placed(
                         id,
@@ -818,6 +866,13 @@ impl Draw {
 impl Paint {
     fn apply(&self, doc: &mut Doc, art: &Artwork) -> Result<(), ActionError> {
         let layer = target_layer(art, self.layer.as_deref())?;
+        let mut art = art.clone();
+        let clips = self
+            .strokes
+            .iter()
+            .map(|stroke| clip_named(doc, &mut art, &layer, stroke.clip.as_ref()))
+            .collect::<Result<Vec<String>, ActionError>>()?;
+        let art = &art;
         let marks = self
             .strokes
             .iter()
@@ -845,7 +900,7 @@ impl Paint {
                     dab_length: stroke.dab_length,
                 };
                 let mut mark = placed(id, stroke.name.clone().unwrap_or_default(), shape, style);
-                mark.clip = stroke.clip.clone().unwrap_or_default();
+                mark.clip = clips.get(index).cloned().unwrap_or_default();
                 mark
             })
             .collect();
@@ -1216,10 +1271,12 @@ impl tilo_actions::Action for CanvasAction {
                         layer_list(&art)
                     )));
                 }
-                for mark in art.marks_of(&remove.id) {
-                    doc::remove(doc, doc::MARKS, &mark.id)?;
+                // A layer's mask goes with it.
+                let mask = art.mask_of(&remove.id).map(|mask| mask.id.clone());
+                for layer in std::iter::once(remove.id.clone()).chain(mask) {
+                    crate::selection::remove_layer_marks(doc, &art, &layer)?;
+                    doc::remove(doc, doc::LAYERS, &layer)?;
                 }
-                doc::remove(doc, doc::LAYERS, &remove.id)?;
                 Ok(())
             }
             Self::Draw(draw) => draw.apply(doc, &art),
@@ -1269,6 +1326,9 @@ impl tilo_actions::Action for CanvasAction {
             Self::Align(align) => align.apply(doc, &art),
             Self::SetReference(set) => set_reference(doc, &art, set),
             Self::OpenPicture(open) => open.apply(doc, &art),
+            Self::Select(select) => select.apply(doc, &art),
+            Self::UseSelection(using) => using.apply(doc, &art),
+            Self::Combine(combine) => combine.apply(doc, &art),
         }
     }
 
@@ -1504,7 +1564,7 @@ fn add_layer(doc: &mut Doc, art: &Artwork, add: &AddLayer) -> Result<(), ActionE
             visible: true,
             texture: add.texture.unwrap_or(0.0),
             locked: false,
-            adjust: None,
+            ..Layer::default()
         },
     )?;
     Ok(())
@@ -1523,7 +1583,35 @@ fn edit_layer(doc: &mut Doc, art: &Artwork, edit: &EditLayer) -> Result<(), Acti
     }
     if let Some(medium) = &edit.medium {
         check_medium(art, medium)?;
+        if layer.is_mask() && !medium.is_empty() {
+            return Err(refuse("a mask is drawn in greys, not painted in a medium"));
+        }
         layer.medium.clone_from(medium);
+    }
+    if let Some(clip) = edit.clip {
+        if layer.is_mask() {
+            return Err(refuse("a mask cannot be clipped; clip the layer it masks"));
+        }
+        layer.clip = clip;
+    }
+    if let Some(invert) = edit.invert {
+        // A layer's mask is inverted by naming the layer or the mask.
+        match art.mask_of(&layer.id) {
+            Some(mask) if !layer.is_mask() => doc::write_layer(
+                doc,
+                &Layer {
+                    invert,
+                    ..mask.clone()
+                },
+            )?,
+            _ if layer.is_mask() => layer.invert = invert,
+            _ => {
+                return Err(refuse(format!(
+                    "{:?} has no mask to invert; give it one with mask",
+                    layer.id
+                )));
+            }
+        }
     }
     check_unit(edit.opacity, "opacity")?;
     if let Some(opacity) = edit.opacity {
@@ -1557,6 +1645,9 @@ fn edit_layer(doc: &mut Doc, art: &Artwork, edit: &EditLayer) -> Result<(), Acti
         }
     }
     doc::write_layer(doc, &layer)?;
+    if let Some(mask) = &edit.mask {
+        crate::selection::edit_mask(doc, &doc::read(doc), &layer.id, mask)?;
+    }
     Ok(())
 }
 

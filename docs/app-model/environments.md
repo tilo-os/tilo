@@ -66,17 +66,27 @@ relay:
 ```rust
 pub struct Environment {
     pub name: String,
-    pub runtime: PackageId,          // an env-runtime image
-    pub tools: Vec<ToolRef>,         // tool images built for `runtime`
+    pub runtime: RuntimeRef,         // an env-runtime release
+    pub tools: Vec<ToolRef>,         // tools built for that release
     pub grants: Vec<CapOverride>,    // FsPath / NetHost grants, Subject::App("so.tilo.ush")
     pub home: HomePolicy,            // Persistent (default) | Ephemeral
 }
 
+pub struct RuntimeRef {
+    pub release: String,                     // e.g. "2026.10"; names the same userland on every architecture
+    pub images: BTreeMap<Arch, PackageId>,   // the env-runtime image per architecture
+}
+
 pub struct ToolRef {
-    pub id: PackageId,               // the tool image
-    pub packages: Vec<String>,       // what the user asked for, e.g. ["pandoc"]
+    pub packages: Vec<String>,               // what the user asked for, e.g. ["pandoc"]
+    pub images: BTreeMap<Arch, PackageId>,   // the tool image per architecture, for `runtime`
 }
 ```
+
+The record is architecture-neutral: an environment created on an x86_64 laptop
+opens on an aarch64 relay. A node uses the images for its own architecture; when
+a tool has no image for it yet, the node builds it (same packages, same runtime
+release) and records the id, so the next session there is a cache hit.
 
 Actions on it (`#[action]`): `add-tool`, `remove-tool`, `grant-dir`,
 `revoke-grant`, `set-runtime`, `rename`. History and undo come from the record

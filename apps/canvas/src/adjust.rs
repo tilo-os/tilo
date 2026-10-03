@@ -3,7 +3,7 @@
 //! a picture's pixels and a shape's colours with the same arithmetic.
 //!
 //! The per-pixel steps are prepared once into a [`Grade`]: a tone table per
-//! channel (white balance, exposure, levels, contrast, curve), the tone
+//! channel (white balance, exposure, contrast, curve), the tone
 //! shift of highlights and shadows, one colour matrix (hue, saturation,
 //! grayscale), vibrance and inversion, run over a picture's pixels in bands
 //! on the toolkit's compute threads. Blur and sharpen work on pixels
@@ -46,12 +46,6 @@ impl Adjust {
             hue: zero(self.hue),
             temperature: zero(self.temperature),
             tint: zero(self.tint),
-            levels: self.levels.filter(|levels| {
-                levels
-                    .iter()
-                    .zip([0.0, 1.0, 1.0])
-                    .any(|(have, none)| (have - none).abs() > 1e-9)
-            }),
             curve: self.curve.filter(|curve| {
                 !curve
                     .iter()
@@ -62,20 +56,18 @@ impl Adjust {
             blur: zero(self.blur),
             sharpen: zero(self.sharpen),
             vignette: zero(self.vignette),
-            reset: None,
         };
         (adjust != Self::default()).then_some(adjust)
     }
 
     /// `edit` over these adjustments: each step it names replaces the one
-    /// here; with `reset` it starts from none.
+    /// here; an edit naming none (`{}`) clears them all.
     #[must_use]
     pub fn merged(&self, edit: &Self) -> Option<Self> {
-        let base = if edit.reset == Some(true) {
-            Self::default()
-        } else {
-            self.clone()
-        };
+        if *edit == Self::default() {
+            return None;
+        }
+        let base = self.clone();
         let pick = |new: Option<f64>, old: Option<f64>| new.or(old);
         Self {
             exposure: pick(edit.exposure, base.exposure),
@@ -87,14 +79,12 @@ impl Adjust {
             hue: pick(edit.hue, base.hue),
             temperature: pick(edit.temperature, base.temperature),
             tint: pick(edit.tint, base.tint),
-            levels: edit.levels.or(base.levels),
             curve: edit.curve.clone().or(base.curve),
             grayscale: edit.grayscale.or(base.grayscale),
             invert: edit.invert.or(base.invert),
             blur: pick(edit.blur, base.blur),
             sharpen: pick(edit.sharpen, base.sharpen),
             vignette: pick(edit.vignette, base.vignette),
-            reset: None,
         }
         .normalized()
     }
@@ -121,18 +111,6 @@ impl Adjust {
             {
                 return Some(format!("{name} is {low} to {high}, got {value}"));
             }
-        }
-        if let Some([black, white, gamma]) = self.levels
-            && !(black.is_finite()
-                && white.is_finite()
-                && (0.0..1.0).contains(&black)
-                && white > black
-                && white <= 1.0
-                && (0.1..=10.0).contains(&gamma))
-        {
-            return Some(
-                "levels is [black, white, gamma]: 0 <= black < white <= 1, gamma 0.1 to 10".into(),
-            );
         }
         if let Some(curve) = &self.curve
             && (curve.len() > 16
@@ -170,7 +148,6 @@ impl Grade {
         let toned = adjust.exposure.is_some()
             || adjust.temperature.is_some()
             || adjust.tint.is_some()
-            || adjust.levels.is_some()
             || adjust.contrast.is_some()
             || adjust.curve.as_ref().is_some_and(|curve| !curve.is_empty());
         let tone = toned.then(|| {
@@ -190,12 +167,6 @@ impl Grade {
                     .map(|index| {
                         let input = index as f32 / (TONE_SAMPLES - 1) as f32;
                         let mut value = to_srgb(to_linear(input) * gain * exposure);
-                        if let Some([black, white, gamma]) = adjust.levels {
-                            let (black, white) = (black as f32, white as f32);
-                            value = ((value - black) / (white - black).max(1e-4))
-                                .clamp(0.0, 1.0)
-                                .powf(1.0 / gamma as f32);
-                        }
                         value = contrast(value, narrow(adjust.contrast));
                         if let Some(curve) = &curve {
                             value = curve.at(value);
@@ -734,7 +705,7 @@ mod tests {
         let merged = base.merged(&adjust(|a| a.contrast = Some(0.0))).unwrap();
         assert_eq!(merged.exposure, Some(0.5));
         assert_eq!(merged.contrast, None);
-        assert!(base.merged(&adjust(|a| a.reset = Some(true))).is_none());
+        assert!(base.merged(&Adjust::default()).is_none());
     }
 
     #[test]
@@ -742,7 +713,7 @@ mod tests {
         let problem = adjust(|a| a.exposure = Some(9.0)).problem().unwrap();
         assert!(problem.contains("exposure"));
         assert!(
-            adjust(|a| a.levels = Some([0.5, 0.2, 1.0]))
+            adjust(|a| a.curve = Some(vec![[0.5, 2.0]]))
                 .problem()
                 .is_some()
         );

@@ -199,11 +199,8 @@ fn adjustments_grade_the_picture_merge_and_reset() {
     assert_eq!(adjust.exposure, Some(1.0), "an edit keeps the other steps");
     let grey = colour_at(&app, [140.0, 140.0, 20.0, 20.0]);
     assert!(grey[0].abs_diff(grey[2]) <= 3, "{grey:?}");
-    app.call(
-        "edit-marks",
-        json!({"ids": ["photo"], "adjust": {"reset": true}}),
-    )
-    .unwrap();
+    app.call("edit-marks", json!({"ids": ["photo"], "adjust": {}}))
+        .unwrap();
     assert!(app.state().mark("photo").unwrap().style.adjust.is_none());
     assert!(near(colour_at(&app, [140.0, 140.0, 20.0, 20.0]), before, 2));
     let refused = app

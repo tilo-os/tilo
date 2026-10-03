@@ -226,7 +226,10 @@
                     "save-medium",
                     "remove-medium",
                     "align",
-                    "set-reference"
+                    "set-reference",
+                    "select",
+                    "use-selection",
+                    "combine"
                   ]
                 }
               },
@@ -300,6 +303,41 @@
         "ty": "text",
         "required": true,
         "description": "The name",
+        "nullable": false
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "combine",
+    "resource_kind": "canvas.artwork",
+    "label": "Combine shapes",
+    "description": "Combine shapes into one path mark, in the bottom one's place and style.",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "ids",
+        "ty": "array",
+        "required": true,
+        "description": "Marks or groups.",
+        "schema": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Marks or groups."
+        },
+        "nullable": false
+      },
+      {
+        "name": "op",
+        "ty": "text",
+        "required": true,
+        "description": "`union`, `subtract` (from the bottom one), `intersect` or `exclude`.",
+        "schema": {
+          "type": "string",
+          "description": "`union`, `subtract` (from the bottom one), `intersect` or `exclude`."
+        },
         "nullable": false
       }
     ]
@@ -757,7 +795,7 @@
                     "properties": {
                       "src": {
                         "type": "string",
-                        "description": "An absolute file path, a content address or a `data:` URI; kept by its content."
+                        "description": "File path, content address or `data:` URI."
                       },
                       "x": {
                         "type": "number"
@@ -767,7 +805,7 @@
                       },
                       "width": {
                         "type": "number",
-                        "description": "Units; when absent a unit per pixel, or the aspect kept when the other side is given."
+                        "description": "Units; absent: a unit per pixel, or the other side's aspect."
                       },
                       "height": {
                         "type": "number"
@@ -782,14 +820,14 @@
                         },
                         "minItems": 4,
                         "maxItems": 4,
-                        "description": "`[x, y, w, h]` as fractions (0-1) of the picture: the part the frame shows. The whole picture when absent."
+                        "description": "Fractions `[x, y, w, h]` of the picture shown."
                       },
                       "straighten": {
                         "type": [
                           "number",
                           "null"
                         ],
-                        "description": "Degrees the picture turns inside its frame, enlarged just enough that no corner shows: level a horizon."
+                        "description": "Degrees turned inside the frame."
                       },
                       "kind": {
                         "type": "string",
@@ -797,7 +835,7 @@
                       }
                     },
                     "additionalProperties": false,
-                    "description": "A picture (PNG, JPEG or WebP) shown in the frame `x, y, width, height`."
+                    "description": "A PNG, JPEG or WebP in the frame `x, y, width, height`."
                   }
                 ],
                 "description": "The geometry: `{\"kind\": \"rect\", \"x\": 0, \"y\": 0, \"width\": 10, \"height\": 10}`, `ellipse` (cx, cy, rx, ry), `polygon`/`line` (points), `path` (d: SVG path data), `text` (x, y, text, size) or `stroke` (points, size)."
@@ -1030,7 +1068,7 @@
                   "string",
                   "null"
                 ],
-                "description": "Cut to this mark's or group's shape (opacity 0 hides it)."
+                "description": "Cut to this mark's or group's shape (opacity 0 hides it), or `selection`."
               },
               "transform": {
                 "type": [
@@ -1170,7 +1208,7 @@
         "name": "adjust",
         "ty": "object",
         "required": false,
-        "description": "Colour and tone of everything on it; given steps replace.",
+        "description": "Colour and tone of all on it; given steps replace, `{}` clears.",
         "schema": {
           "type": [
             "object",
@@ -1236,18 +1274,6 @@
               ],
               "description": "Magenta +."
             },
-            "levels": {
-              "type": [
-                "array",
-                "null"
-              ],
-              "items": {
-                "type": "number"
-              },
-              "minItems": 3,
-              "maxItems": 3,
-              "description": "`[black, white, gamma]`: input points 0-1, gamma 0.1-10."
-            },
             "curve": {
               "type": [
                 "array",
@@ -1261,7 +1287,7 @@
                 "minItems": 2,
                 "maxItems": 2
               },
-              "description": "Tone curve `[[in, out], …]`, 0-1."
+              "description": "Tone curve `[[in, out], …]`, 0-1; `[[0.05, 0], [0.95, 1]]` sets black and white points."
             },
             "grayscale": {
               "type": [
@@ -1295,17 +1321,52 @@
                 "null"
               ],
               "description": "Edges darker +, lighter -."
-            },
-            "reset": {
-              "type": [
-                "boolean",
-                "null"
-              ],
-              "description": "Clear the others first."
             }
           },
           "additionalProperties": false,
-          "description": "Colour and tone of everything on it; given steps replace."
+          "description": "Colour and tone of all on it; given steps replace, `{}` clears."
+        },
+        "nullable": true
+      },
+      {
+        "name": "mask",
+        "ty": "text",
+        "required": false,
+        "description": "`reveal`, `hide` or `remove`: a mask layer `<id>-mask` to paint greys on, white shows, black hides.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`reveal`, `hide` or `remove`: a mask layer `<id>-mask` to paint greys on, white shows, black hides."
+        },
+        "nullable": true
+      },
+      {
+        "name": "invert",
+        "ty": "boolean",
+        "required": false,
+        "description": "Invert the mask.",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Invert the mask."
+        },
+        "nullable": true
+      },
+      {
+        "name": "clip",
+        "ty": "boolean",
+        "required": false,
+        "description": "Clip to the layer below.",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Clip to the layer below."
         },
         "nullable": true
       }
@@ -1653,7 +1714,7 @@
                   "properties": {
                     "src": {
                       "type": "string",
-                      "description": "An absolute file path, a content address or a `data:` URI; kept by its content."
+                      "description": "File path, content address or `data:` URI."
                     },
                     "x": {
                       "type": "number"
@@ -1663,7 +1724,7 @@
                     },
                     "width": {
                       "type": "number",
-                      "description": "Units; when absent a unit per pixel, or the aspect kept when the other side is given."
+                      "description": "Units; absent: a unit per pixel, or the other side's aspect."
                     },
                     "height": {
                       "type": "number"
@@ -1678,14 +1739,14 @@
                       },
                       "minItems": 4,
                       "maxItems": 4,
-                      "description": "`[x, y, w, h]` as fractions (0-1) of the picture: the part the frame shows. The whole picture when absent."
+                      "description": "Fractions `[x, y, w, h]` of the picture shown."
                     },
                     "straighten": {
                       "type": [
                         "number",
                         "null"
                       ],
-                      "description": "Degrees the picture turns inside its frame, enlarged just enough that no corner shows: level a horizon."
+                      "description": "Degrees turned inside the frame."
                     },
                     "kind": {
                       "type": "string",
@@ -1693,7 +1754,7 @@
                     }
                   },
                   "additionalProperties": false,
-                  "description": "A picture (PNG, JPEG or WebP) shown in the frame `x, y, width, height`."
+                  "description": "A PNG, JPEG or WebP in the frame `x, y, width, height`."
                 }
               ]
             }
@@ -2154,7 +2215,7 @@
         "name": "crop",
         "ty": "array",
         "required": false,
-        "description": "Images: `[x, y, w, h]` fractions of the picture to show; the picture stays put, its frame follows. `[]` shows it whole.",
+        "description": "Images: fractions `[x, y, w, h]` of the picture to show (it stays put); `[]` all of it.",
         "schema": {
           "type": [
             "array",
@@ -2163,7 +2224,7 @@
           "items": {
             "type": "number"
           },
-          "description": "Images: `[x, y, w, h]` fractions of the picture to show; the picture stays put, its frame follows. `[]` shows it whole."
+          "description": "Images: fractions `[x, y, w, h]` of the picture to show (it stays put); `[]` all of it."
         },
         "nullable": true
       },
@@ -2171,13 +2232,13 @@
         "name": "straighten",
         "ty": "number",
         "required": false,
-        "description": "Images: degrees to turn the picture in its frame (-45 to 45).",
+        "description": "Images: degrees, -45 to 45, to level it.",
         "schema": {
           "type": [
             "number",
             "null"
           ],
-          "description": "Images: degrees to turn the picture in its frame (-45 to 45)."
+          "description": "Images: degrees, -45 to 45, to level it."
         },
         "nullable": true
       },
@@ -2185,7 +2246,7 @@
         "name": "adjust",
         "ty": "object",
         "required": false,
-        "description": "Colour and tone; given steps replace.",
+        "description": "Colour and tone; given steps replace, `{}` clears.",
         "schema": {
           "type": [
             "object",
@@ -2251,18 +2312,6 @@
               ],
               "description": "Magenta +."
             },
-            "levels": {
-              "type": [
-                "array",
-                "null"
-              ],
-              "items": {
-                "type": "number"
-              },
-              "minItems": 3,
-              "maxItems": 3,
-              "description": "`[black, white, gamma]`: input points 0-1, gamma 0.1-10."
-            },
             "curve": {
               "type": [
                 "array",
@@ -2276,7 +2325,7 @@
                 "minItems": 2,
                 "maxItems": 2
               },
-              "description": "Tone curve `[[in, out], …]`, 0-1."
+              "description": "Tone curve `[[in, out], …]`, 0-1; `[[0.05, 0], [0.95, 1]]` sets black and white points."
             },
             "grayscale": {
               "type": [
@@ -2310,17 +2359,10 @@
                 "null"
               ],
               "description": "Edges darker +, lighter -."
-            },
-            "reset": {
-              "type": [
-                "boolean",
-                "null"
-              ],
-              "description": "Clear the others first."
             }
           },
           "additionalProperties": false,
-          "description": "Colour and tone; given steps replace."
+          "description": "Colour and tone; given steps replace, `{}` clears."
         },
         "nullable": true
       }
@@ -2461,7 +2503,10 @@
                       "align",
                       "set-reference",
                       "import-svg",
-                      "open"
+                      "open",
+                      "select",
+                      "use-selection",
+                      "combine"
                     ]
                   },
                   "args": {
@@ -2546,7 +2591,10 @@
                                   "save-medium",
                                   "remove-medium",
                                   "align",
-                                  "set-reference"
+                                  "set-reference",
+                                  "select",
+                                  "use-selection",
+                                  "combine"
                                 ]
                               }
                             }
@@ -3041,7 +3089,7 @@
                   "string",
                   "null"
                 ],
-                "description": "Keep the paint inside this mark's shape, as a painter cuts in against an edge: texture a rock or a crown within its silhouette."
+                "description": "Keep the paint inside this mark's shape, as a painter cuts in against an edge: texture a rock or a crown within its silhouette. Or `selection`."
               }
             },
             "additionalProperties": false,
@@ -3286,6 +3334,209 @@
   },
   {
     "resource": "canvas.artwork",
+    "action": "select",
+    "resource_kind": "canvas.artwork",
+    "label": "Select area",
+    "description": "Select an area: shapes, marks, magic wand (at) or colour; add, subtract, intersect, grow, feather, invert. Then use-selection, or clip: \"selection\" in paint or draw. Bucket fill: select at, use-selection fill. look outlines it",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "rect",
+        "ty": "array",
+        "required": false,
+        "description": "`[x, y, w, h]`.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number"
+          },
+          "minItems": 4,
+          "maxItems": 4,
+          "description": "`[x, y, w, h]`."
+        },
+        "nullable": true
+      },
+      {
+        "name": "ellipse",
+        "ty": "array",
+        "required": false,
+        "description": "In `[x, y, w, h]`.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number"
+          },
+          "minItems": 4,
+          "maxItems": 4,
+          "description": "In `[x, y, w, h]`."
+        },
+        "nullable": true
+      },
+      {
+        "name": "points",
+        "ty": "array",
+        "required": false,
+        "description": "Lasso `[[x, y], …]`.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "description": "Lasso `[[x, y], …]`."
+        },
+        "nullable": true
+      },
+      {
+        "name": "d",
+        "ty": "text",
+        "required": false,
+        "description": "SVG path data.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "SVG path data."
+        },
+        "nullable": true
+      },
+      {
+        "name": "marks",
+        "ty": "array",
+        "required": false,
+        "description": "Marks or groups.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Marks or groups."
+        },
+        "nullable": true
+      },
+      {
+        "name": "at",
+        "ty": "array",
+        "required": false,
+        "description": "Magic wand `[x, y]`: like colour touching it.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "Magic wand `[x, y]`: like colour touching it."
+        },
+        "nullable": true
+      },
+      {
+        "name": "colour",
+        "ty": "text",
+        "required": false,
+        "description": "`#rrggbb`, everywhere.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`#rrggbb`, everywhere."
+        },
+        "nullable": true
+      },
+      {
+        "name": "tolerance",
+        "ty": "number",
+        "required": false,
+        "description": "0..1, default 0.15.",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "0..1, default 0.15."
+        },
+        "nullable": true
+      },
+      {
+        "name": "mode",
+        "ty": "text",
+        "required": false,
+        "description": "`replace`, `add`, `subtract`, `intersect` or `none`.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`replace`, `add`, `subtract`, `intersect` or `none`."
+        },
+        "nullable": true
+      },
+      {
+        "name": "feather",
+        "ty": "number",
+        "required": false,
+        "description": "Units.",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Units."
+        },
+        "nullable": true
+      },
+      {
+        "name": "grow",
+        "ty": "number",
+        "required": false,
+        "description": "Units; negative shrinks.",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Units; negative shrinks."
+        },
+        "nullable": true
+      },
+      {
+        "name": "invert",
+        "ty": "boolean",
+        "required": false,
+        "description": "invert",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
     "action": "set-artwork",
     "resource_kind": "canvas.artwork",
     "label": "Set artwork",
@@ -3365,7 +3616,7 @@
         "name": "crop",
         "ty": "array",
         "required": false,
-        "description": "Crop to `[x, y, width, height]`: that corner becomes 0, 0 and every mark moves with it.",
+        "description": "Crop to `[x, y, width, height]`; marks move with it.",
         "schema": {
           "type": [
             "array",
@@ -3376,7 +3627,7 @@
           },
           "minItems": 4,
           "maxItems": 4,
-          "description": "Crop to `[x, y, width, height]`: that corner becomes 0, 0 and every mark moves with it."
+          "description": "Crop to `[x, y, width, height]`; marks move with it."
         },
         "nullable": true
       },
@@ -3384,13 +3635,13 @@
         "name": "fit",
         "ty": "text",
         "required": false,
-        "description": "Crop to what this mark or group shows (a photo after its crop).",
+        "description": "Crop to what this mark or group shows.",
         "schema": {
           "type": [
             "string",
             "null"
           ],
-          "description": "Crop to what this mark or group shows (a photo after its crop)."
+          "description": "Crop to what this mark or group shows."
         },
         "nullable": true
       }
@@ -3500,6 +3751,81 @@
         "ty": "text",
         "required": false,
         "description": "An agent run id from history",
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
+    "action": "use-selection",
+    "resource_kind": "canvas.artwork",
+    "label": "Use selection",
+    "description": "Fill or stroke the selection as a mark on a layer, mask the layer to it, or clear it from the layer (by its mask, a layer of grey marks).",
+    "operation": "Document",
+    "params": [
+      {
+        "name": "do",
+        "ty": "text",
+        "required": true,
+        "description": "`fill`, `stroke`, `mask` or `clear`.",
+        "schema": {
+          "type": "string",
+          "description": "`fill`, `stroke`, `mask` or `clear`."
+        },
+        "nullable": false
+      },
+      {
+        "name": "layer",
+        "ty": "text",
+        "required": false,
+        "description": "layer",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "colour",
+        "ty": "text",
+        "required": false,
+        "description": "colour",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
+        "name": "width",
+        "ty": "number",
+        "required": false,
+        "description": "Stroke width (2).",
+        "schema": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Stroke width (2)."
+        },
+        "nullable": true
+      },
+      {
+        "name": "id",
+        "ty": "text",
+        "required": false,
+        "description": "The new mark's.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The new mark's."
+        },
         "nullable": true
       }
     ]

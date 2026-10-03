@@ -27,13 +27,28 @@ pub enum Tool {
     Pen,
     Text,
     Eyedropper,
+    /// Selects a rectangle of the artwork.
+    Marquee,
+    /// Selects an ellipse.
+    Oval,
+    /// Selects freehand (drag) or point by point (click).
+    Lasso,
+    /// Selects like colour touching a point.
+    Wand,
+    /// Fills like colour touching a point.
+    Bucket,
 }
 
 impl Tool {
     /// The tools in the rail's order.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 13] = [
         Self::Select,
+        Self::Marquee,
+        Self::Oval,
+        Self::Lasso,
+        Self::Wand,
         Self::Brush,
+        Self::Bucket,
         Self::Rect,
         Self::Ellipse,
         Self::Line,
@@ -41,6 +56,11 @@ impl Tool {
         Self::Text,
         Self::Eyedropper,
     ];
+
+    /// Whether the tool selects an area of the artwork.
+    pub fn selects_area(self) -> bool {
+        matches!(self, Self::Marquee | Self::Oval | Self::Lasso | Self::Wand)
+    }
 
     /// The Fluent id of the tool's name.
     pub fn label(self) -> &'static str {
@@ -53,6 +73,11 @@ impl Tool {
             Self::Pen => "canvas-tool-pen",
             Self::Text => "canvas-tool-text",
             Self::Eyedropper => "canvas-tool-eyedropper",
+            Self::Marquee => "canvas-tool-marquee",
+            Self::Oval => "canvas-tool-oval",
+            Self::Lasso => "canvas-tool-lasso",
+            Self::Wand => "canvas-tool-wand",
+            Self::Bucket => "canvas-tool-bucket",
         }
     }
 
@@ -66,6 +91,11 @@ impl Tool {
             Self::Pen => Icon::PenTool,
             Self::Text => Icon::Type,
             Self::Eyedropper => Icon::Pipette,
+            Self::Marquee => Icon::SquareDashed,
+            Self::Oval => Icon::CircleDashed,
+            Self::Lasso => Icon::Lasso,
+            Self::Wand => Icon::WandSparkles,
+            Self::Bucket => Icon::PaintBucket,
         }
     }
 
@@ -80,6 +110,11 @@ impl Tool {
             Self::Pen => "p",
             Self::Text => "t",
             Self::Eyedropper => "i",
+            Self::Marquee => "m",
+            Self::Oval => "o",
+            Self::Lasso => "q",
+            Self::Wand => "w",
+            Self::Bucket => "g",
         }
     }
 
@@ -161,6 +196,36 @@ impl Live {
     pub fn moved(&self) -> Option<f64> {
         let value = self.state.with(|value| *value);
         ((value - self.committed).abs() > 1e-9).then_some(value)
+    }
+}
+
+/// The brush's paint and the chosen layer, apart from the rest of the
+/// tools.
+#[derive(Clone)]
+pub struct Loaded {
+    colour: LocalState<String>,
+    pigment: LocalState<Option<(String, String)>>,
+    layer: LocalState<String>,
+}
+
+impl Loaded {
+    /// The paint as a mark names it, as [`Tools::paint`] says.
+    pub fn paint(&self) -> String {
+        if let Some((name, _)) = self.pigment.with(Clone::clone) {
+            return format!("pigment:{name}");
+        }
+        let rgba = self
+            .colour
+            .with(|text| crate::render::colour(text.trim(), &[]))
+            .or_else(|| crate::render::colour(INK, &[]))
+            .unwrap_or(Color::TRANSPARENT)
+            .to_rgba8();
+        format!("#{:02x}{:02x}{:02x}", rgba.r, rgba.g, rgba.b)
+    }
+
+    /// The chosen layer, if one is chosen.
+    pub fn layer(&self) -> Option<String> {
+        Some(self.layer.with(Clone::clone)).filter(|layer| !layer.is_empty())
     }
 }
 
@@ -247,6 +312,16 @@ impl Tools {
                 .or_else(|| crate::render::colour(INK, &[]))
                 .unwrap_or(Color::TRANSPARENT)
         })
+    }
+
+    /// The paint and the chosen layer alone, for a control that reads them
+    /// when it is used.
+    pub fn loaded(&self) -> Loaded {
+        Loaded {
+            colour: self.colour.clone(),
+            pigment: self.pigment.clone(),
+            layer: self.layer.clone(),
+        }
     }
 
     /// What the tools put down now.
