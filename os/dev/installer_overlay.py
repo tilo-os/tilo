@@ -3,7 +3,9 @@ import hashlib,shutil
 from pathlib import Path
 OVERRIDES=('usr/libexec/tilo-install','usr/libexec/tilo-verified-boot-install-preflight',
            'usr/libexec/tilo-install-dev-ssh.py',
-           'usr/libexec/tilo-install-handoff-copy.py')
+           'usr/libexec/tilo-install-handoff-copy.py',
+           'usr/libexec/tilo-installer-offline-target.py',
+           'usr/libexec/tilo-installer-dev-target-uki.py')
 def stage(source,helpers,context):
  source=Path(source)/'os';helpers=Path(helpers)/'os';context=Path(context)
  if context.exists():raise ValueError('fresh installer context required')
