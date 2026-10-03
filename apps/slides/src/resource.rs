@@ -17,7 +17,9 @@ impl ResourceApp for SlidesShell {
     const ID: &'static str = "so.tilo.slides";
     const TITLE: &'static str = "Slides";
     const ICON: Option<&'static str> = Some("slides");
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
 
     fn view(cx: &mut ViewCx<SlidesDeck>) -> Element {
         cx.surface(SlidesApp::new())

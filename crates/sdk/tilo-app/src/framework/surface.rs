@@ -15,6 +15,7 @@ use ui_core::{PresencePayload, WakeHandle};
 use super::dispatch::Dispatcher;
 use super::effect::{EffectAnswer, EffectCx, EffectRunner, EffectStatus, Effects};
 use super::live::Live;
+use super::scenario::{Run, RunMode};
 use super::settings::{Setting, ViewStorage};
 
 /// A custom widget or renderer — a timeline, a canvas, a GPU viewport, a page
@@ -62,6 +63,12 @@ use super::settings::{Setting, ViewStorage};
 ///   [`EffectCx`] when it takes time. Every caller — a button
 ///   ([`Dispatcher::effect`]), the palette, an agent — reaches it the same
 ///   way; [`effects`](Self::effects) says which are unavailable right now.
+/// * **Run mode** — start work that reaches outside the process (a decoder
+///   service, a socket, a probe) only when [`SurfaceCx::mode`] is live. A
+///   capture reads [`SurfaceCx::fixture`] instead; a past version starts
+///   nothing. Work still in flight that the frame shows (a page render, a
+///   decode) is reported by the toolkit's `Widget::has_pending_visual_work`;
+///   a capture waits for it.
 pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
     /// The resource state to show.
     fn present(&mut self, state: &Rc<R::State>);
@@ -81,9 +88,9 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
 
     /// Stage view state for a screenshot scenario (`None` for a plain
     /// `--shots`): a selection, an open menu, a drag in flight. Called at the
-    /// start of the sync after the scenario's actions applied, so the surface
-    /// has been presented their result and its own `sync` follows with the
-    /// document. Edits it dispatches here are submitted like any other and
+    /// start of the sync after the scenario's actions applied and were laid
+    /// out, so the surface has been presented their result, knows its
+    /// geometry, and its own `sync` follows with the document. Edits it dispatches here are submitted like any other and
     /// applied before the frame is captured. Must be deterministic: the same
     /// scenario stages the same scene on every run. Never called in a live
     /// window.
@@ -122,6 +129,7 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
 pub struct SurfaceCx<R: Resource> {
     pub(crate) dispatch: Dispatcher<R>,
     pub(crate) live: Live<R>,
+    pub(crate) run: Run,
     pub(crate) storage: Rc<ViewStorage>,
     pub(crate) effects: Effects<R>,
     pub(crate) alive: Weak<()>,
@@ -151,6 +159,27 @@ impl<R: Resource> SurfaceCx<R> {
     /// Whether the participant may only view, as of now.
     pub fn read_only(&self) -> bool {
         self.dispatch.read_only()
+    }
+
+    /// What the surface is built for. Start work that reaches outside the
+    /// process (a decoder service, a socket, a hardware probe) only when it
+    /// [is live](RunMode::is_live); a capture reads its
+    /// [fixtures](Self::fixture) instead, and a past version starts nothing.
+    pub fn mode(&self) -> RunMode {
+        self.run.mode
+    }
+
+    /// The capture's stand-in for a live source of type `T`
+    /// ([`Fixture::provide`](super::Fixture::provide)); `None` outside a
+    /// capture, or when the scenario provides none.
+    pub fn fixture<T: 'static>(&self) -> Option<Rc<T>> {
+        self.run.fixture::<T>()
+    }
+
+    /// The content store the host lent the app. A capture's holds the blobs
+    /// its scenario put there.
+    pub fn content(&self) -> Option<tilo_content::ContentStore> {
+        self.run.content()
     }
 
     /// The id of the app the surface is part of, which its presence keys

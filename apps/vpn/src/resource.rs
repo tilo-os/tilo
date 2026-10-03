@@ -101,7 +101,9 @@ impl ResourceApp for VpnShell {
     const ID: &'static str = "so.tilo.vpn";
     const TITLE: &'static str = "VPN";
     const ICON: Option<&'static str> = Some("vpn");
-    const SHOT_VIEWPORT: (u32, u32) = (1100, 720);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1100, 720)
+    }
 
     fn view(cx: &mut ViewCx<Vpn>) -> Element {
         cx.surface(VpnApp::new())
