@@ -37,6 +37,8 @@ image = { workspace = true, features = ["png", "jpeg", "webp"] }
 usvg = { version = "0.47", default-features = false }
 # SVG export embeds a painted layer's picture.
 base64.workspace = true
+# A picture the chooser could not add is reported in the log.
+tracing.workspace = true
 # An SVG or reference picture named by a path is read where files have one.
 tilo-files = { path = "../../crates/platform/tilo-files" }
 

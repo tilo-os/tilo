@@ -140,7 +140,7 @@ pub struct NewMark {
     /// A group id: edits naming it change the members as one; `a/b`
     /// nests group b in a.
     pub group: Option<String>,
-    /// Cut to this mark's shape (opacity 0 hides that mark).
+    /// Cut to this mark's or group's shape (opacity 0 hides it).
     pub clip: Option<String>,
     /// An affine `[a, b, c, d, e, f]` on the geometry, as `inspect` shows.
     pub transform: Option<[f64; 6]>,
@@ -261,7 +261,7 @@ pub struct EditMarks {
     pub feather: Option<f64>,
     /// Put into this group (`a/b` nests b in a); empty takes out of any.
     pub group: Option<String>,
-    /// Cut to this mark's shape; empty uncuts.
+    /// Cut to this mark's or group's shape; empty uncuts.
     pub clip: Option<String>,
     /// A colour (replacing a gradient), or `none`.
     pub fill: Option<String>,
@@ -381,7 +381,7 @@ pub enum CanvasAction {
     RemoveMedium(RemoveMedium),
     Align(Align),
     SetReference(SetReference),
-    Open(Open),
+    OpenPicture(Open),
 }
 
 /// Start a new artwork from a picture: sized to it, the picture its first
@@ -602,14 +602,30 @@ fn check_group(art: &Artwork, group: &str, new_ids: &[String]) -> Result<(), Act
     Ok(())
 }
 
-/// A clip must name an existing (or just drawn) mark other than itself.
-fn check_clip(art: &Artwork, id: &str, clip: &str, new_ids: &[String]) -> Result<(), ActionError> {
+/// A clip must name an existing (or just drawn) mark other than itself, or
+/// a group it is not in.
+fn check_clip(
+    art: &Artwork,
+    (id, group): (&str, &str),
+    clip: &str,
+    new: &[Mark],
+) -> Result<(), ActionError> {
     if clip == id {
         return Err(refuse(format!("mark {id:?} cannot clip itself")));
     }
-    if art.mark(clip).is_none() && !new_ids.iter().any(|new| new == clip) {
+    let mark = art.mark(clip).is_some() || new.iter().any(|mark| mark.id == clip);
+    let members = art.members(clip).next().is_some()
+        || new
+            .iter()
+            .any(|mark| crate::model::in_group(&mark.group, clip));
+    if crate::model::in_group(group, clip) {
         return Err(refuse(format!(
-            "clip {clip:?} is not a mark; clip names the mark whose shape cuts this one"
+            "mark {id:?} is in group {clip:?}, so the group cannot clip it"
+        )));
+    }
+    if !mark && !members {
+        return Err(refuse(format!(
+            "clip {clip:?} is not a mark or group; clip names what cuts this one"
         )));
     }
     Ok(())
@@ -700,7 +716,7 @@ fn add_marks(
             check_group(art, &mark.group, &ids).map_err(problem)?;
         }
         if !mark.clip.is_empty() {
-            check_clip(art, &mark.id, &mark.clip, &ids).map_err(problem)?;
+            check_clip(art, (&mark.id, &mark.group), &mark.clip, &marks).map_err(problem)?;
         }
     }
     let orders = on_top(art, layer, marks.len());
@@ -929,7 +945,7 @@ impl EditMarks {
                 }
                 if let Some(clip) = &self.clip {
                     if !clip.is_empty() {
-                        check_clip(art, &mark.id, clip, &[])?;
+                        check_clip(art, (&mark.id, &mark.group), clip, &[])?;
                     }
                     mark.clip.clone_from(clip);
                 }
@@ -1252,7 +1268,7 @@ impl tilo_actions::Action for CanvasAction {
             }
             Self::Align(align) => align.apply(doc, &art),
             Self::SetReference(set) => set_reference(doc, &art, set),
-            Self::Open(open) => open.apply(doc, &art),
+            Self::OpenPicture(open) => open.apply(doc, &art),
         }
     }
 

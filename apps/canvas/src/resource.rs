@@ -358,7 +358,7 @@ pub fn keep_picture_bytes(named: &str, bytes: &[u8]) -> Result<(String, (u32, u3
 /// Returns why the bytes are not a picture or cannot be kept.
 pub fn open_picture(name: &str, bytes: &[u8]) -> Result<CanvasAction, String> {
     let (src, (width, height)) = keep_picture_bytes(name, bytes)?;
-    Ok(CanvasAction::Open(crate::actions::Open {
+    Ok(CanvasAction::OpenPicture(crate::actions::Open {
         src,
         pixels: [width, height],
         title: std::path::Path::new(name)
@@ -437,7 +437,7 @@ fn title_of(path: &str) -> String {
 /// Open a picture as a new artwork.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct OpenPicture {
+pub struct OpenPath {
     /// A PNG, JPEG or WebP: an absolute path, a content address or a data:
     /// URI.
     pub path: String,
@@ -729,10 +729,10 @@ fn picture_declarations() -> Vec<ActionDecl<ArtworkResource>> {
                 crate::svg::import(&request).map(CanvasAction::Draw)
             })
             .describe("Import an SVG (markup, file path or content address) as one draw of path and text marks in a group: fills, gradients, outlines, opacity, blends and clip paths."),
-            ActionDecl::new("open", "Open picture", params_of::<OpenPicture>(), |args, _now| {
-                let open: OpenPicture = read_args(args)?;
+            ActionDecl::new("open", "Open picture", params_of::<OpenPath>(), |args, _now| {
+                let open: OpenPath = read_args(args)?;
                 let (src, (width, height)) = keep_picture(&open.path)?;
-                Ok(CanvasAction::Open(crate::actions::Open {
+                Ok(CanvasAction::OpenPicture(crate::actions::Open {
                     src,
                     pixels: [width, height],
                     title: title_of(&open.path),

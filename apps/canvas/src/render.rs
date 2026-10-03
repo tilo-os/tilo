@@ -232,7 +232,7 @@ impl Renderer {
             let palette = media::palette_for(art, &layer.id);
             let hit = art
                 .marks_of(&layer.id)
-                .filter(|mark| mark.hit(at) && art.clip_of(mark).is_none_or(|clip| clip.hit(at)))
+                .filter(|mark| mark.hit(at) && art.clipped_in(mark, at))
                 .last();
             if let Some(mark) = hit
                 && let Some(colour) = self.picture_colour(layer, mark, at)
@@ -425,7 +425,7 @@ impl Renderer {
         let palette = preset.palette;
         let marks: Vec<Painted> = art
             .marks_of(&layer.id)
-            .flat_map(|mark| wet_marks(mark, art.clip_of(mark), &palette, scale))
+            .flat_map(|mark| wet_marks(mark, &art.clips_of(mark), &palette, scale))
             .collect();
         let mut key = blake3::Hasher::new();
         for mark in &marks {
@@ -452,39 +452,15 @@ impl Renderer {
             entry.image = Some(image(pixels, canvas.width, canvas.height));
             entry.key = key;
         }
-        let shown = if let Some(wet) = wet {
-            let now = ui::time::now();
-            let due = self.wet.as_ref().is_none_or(|preview| {
-                preview.layer != layer.id
-                    || now.duration_since(preview.at) >= (preview.cost * 2).max(WET_INTERVAL)
-            });
-            if due {
-                let strokes = wet_marks(wet, art.clip_of(wet), &palette, scale);
-                let pixels = entry.painter.preview(&marks, &strokes);
-                self.wet = Some(WetPreview {
-                    layer: layer.id.clone(),
-                    image: image(pixels, canvas.width, canvas.height),
-                    at: now,
-                    cost: ui::time::now().duration_since(now),
-                });
-            }
-            self.wet.as_ref().map(|preview| preview.image.clone())
-        } else {
-            if self
-                .wet
-                .as_ref()
-                .is_some_and(|preview| preview.layer == layer.id)
-            {
-                self.wet = None;
-            }
-            graded_painting(
-                entry,
-                layer.adjust.as_ref(),
-                canvas.width,
-                canvas.height,
-                scale,
-            )
-        };
+        let strokes = wet.map(|wet| wet_marks(wet, &art.clips_of(wet), &palette, scale));
+        let shown = shown_painting(
+            &mut self.wet,
+            entry,
+            layer,
+            (&marks, strokes),
+            (canvas.width, canvas.height),
+            scale,
+        );
         let blend = match engine.blend() {
             Blend::Normal => BlendMode::default(),
             Blend::Multiply => BlendMode::new(Mix::Multiply, Compose::SrcOver),
@@ -529,6 +505,39 @@ impl Renderer {
         }
         scene.pop_layer();
     }
+}
+
+/// What a painted layer shows: a stroke still being painted previewed over
+/// its painting (only as often as the medium keeps up), else its painting
+/// as the layer's adjustments grade it.
+fn shown_painting(
+    preview: &mut Option<WetPreview>,
+    entry: &mut PaintedLayer,
+    layer: &Layer,
+    (marks, wet): (&[Painted], Option<Vec<Painted>>),
+    (width, height): (usize, usize),
+    scale: f64,
+) -> Option<ImageData> {
+    let Some(strokes) = wet else {
+        if preview.as_ref().is_some_and(|wet| wet.layer == layer.id) {
+            *preview = None;
+        }
+        return graded_painting(entry, layer.adjust.as_ref(), width, height, scale);
+    };
+    let now = ui::time::now();
+    let due = preview.as_ref().is_none_or(|wet| {
+        wet.layer != layer.id || now.duration_since(wet.at) >= (wet.cost * 2).max(WET_INTERVAL)
+    });
+    if due {
+        let pixels = entry.painter.preview(marks, &strokes);
+        *preview = Some(WetPreview {
+            layer: layer.id.clone(),
+            image: image(pixels, width, height),
+            at: now,
+            cost: ui::time::now().duration_since(now),
+        });
+    }
+    preview.as_ref().map(|wet| wet.image.clone())
 }
 
 /// The marks of a painted layer its medium does not paint: its pictures
@@ -785,19 +794,33 @@ fn contours(path: &BezPath, to_cells: Affine) -> Vec<Vec<(f32, f32)>> {
 }
 
 /// The outline a stroke's paint is cut to, in cells: its clip's silhouette.
-fn clip_contours(clip: Option<&Mark>, scale: f64) -> Vec<Vec<(f32, f32)>> {
-    clip.map(|clip| {
-        contours(
-            &silhouette(&clip.shape),
-            Affine::scale(scale) * clip.affine(),
-        )
-    })
-    .unwrap_or_default()
+fn clip_contours(clips: &[&Mark], scale: f64) -> Vec<Vec<(f32, f32)>> {
+    clips
+        .iter()
+        .flat_map(|clip| {
+            contours(
+                &silhouette(&clip.shape),
+                Affine::scale(scale) * clip.affine(),
+            )
+        })
+        .collect()
+}
+
+/// The outline of what a mark is cut to, in artwork units: its clip's
+/// silhouette, or every member's of a clipping group.
+fn clip_path(clips: &[&Mark]) -> BezPath {
+    let mut path = BezPath::new();
+    for clip in clips {
+        let mut outline = silhouette(&clip.shape);
+        outline.apply_affine(clip.affine());
+        path.extend(outline);
+    }
+    path
 }
 
 /// What a mark is as paint: a laid-in region, a stroke, or both. A stroke
 /// stays inside `clip` when it is cut to one.
-fn wet_marks(mark: &Mark, clip: Option<&Mark>, palette: &[Pigment], scale: f64) -> Vec<Painted> {
+fn wet_marks(mark: &Mark, clip: &[&Mark], palette: &[Pigment], scale: f64) -> Vec<Painted> {
     let style = &mark.style;
     let to_cells = Affine::scale(scale) * mark.affine();
     let params = style
@@ -1115,13 +1138,14 @@ fn draw_mark(
         &graded
     };
     let mut layers = 0;
-    if let Some(clip) = art.mark(&mark.clip).filter(|_| !mark.clip.is_empty()) {
+    let clips = art.clips_of(mark);
+    if !clips.is_empty() {
         scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
             1.0,
-            transform * clip.affine(),
-            &silhouette(&clip.shape),
+            transform,
+            &clip_path(&clips),
         );
         layers += 1;
     }

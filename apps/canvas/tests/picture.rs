@@ -351,3 +351,54 @@ fn svg_export_embeds_the_picture_as_shown() {
     );
     assert!(markup.contains("data:image/jpeg;base64,"), "{markup}");
 }
+
+#[test]
+fn a_group_of_shapes_clips_a_picture() {
+    let mut app = TestApp::<App>::new().unwrap();
+    app.call("set-artwork", json!({"ground_colour": "#00ff00"}))
+        .unwrap();
+    app.call(
+        "draw",
+        json!({"marks": [
+            {"id": "pane-a", "group": "window", "shape": {"kind": "ellipse", "cx": 140, "cy": 150, "rx": 30, "ry": 30}, "opacity": 0},
+            {"id": "pane-b", "group": "window", "shape": {"kind": "rect", "x": 230, "y": 120, "width": 50, "height": 60}, "opacity": 0},
+        ]}),
+    )
+    .unwrap();
+    placed(&mut app);
+    app.call("edit-marks", json!({"ids": ["photo"], "clip": "window"}))
+        .unwrap();
+    assert!(near(colour_at(&app, [136.0, 146.0, 8.0, 8.0]), RED, 4));
+    assert!(near(colour_at(&app, [251.0, 146.0, 8.0, 8.0]), BLUE, 4));
+    let between = colour_at(&app, [196.0, 146.0, 8.0, 8.0]);
+    assert!(
+        between[1] > 200,
+        "outside both panes the ground shows: {between:?}"
+    );
+    let refused = app
+        .call("edit-marks", json!({"ids": ["pane-a"], "clip": "window"}))
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("in group"), "{refused}");
+}
+
+#[test]
+fn a_picture_file_the_desktop_hands_over_opens_as_a_new_artwork() {
+    use base64::Engine as _;
+    use ui::framework::ResourceApp as _;
+    let mut app = TestApp::<App>::new().unwrap();
+    let data = halves(64, 32);
+    let png = base64::engine::general_purpose::STANDARD
+        .decode(data.split_once(";base64,").unwrap().1)
+        .unwrap();
+    assert!(App::OPENS.contains(&"image/png"));
+    let open = App::open_file("harbour.png", &png).unwrap();
+    app.invoke(open).unwrap();
+    let art = app.state();
+    assert_eq!(
+        (art.title.as_str(), art.width, art.height),
+        ("harbour", 64.0, 32.0)
+    );
+    assert!(art.mark("picture").is_some());
+    assert!(App::open_file("notes.png", b"not a picture").is_err());
+}

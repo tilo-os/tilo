@@ -792,8 +792,9 @@ pub fn part(art: &Artwork, ids: &[String]) -> Result<Artwork, String> {
     let clips: Vec<&str> = art
         .marks
         .iter()
-        .filter(|mark| chosen.contains(mark.id.as_str()) && !mark.clip.is_empty())
-        .map(|mark| mark.clip.as_str())
+        .filter(|mark| chosen.contains(mark.id.as_str()))
+        .flat_map(|mark| art.clips_of(mark))
+        .map(|clip| clip.id.as_str())
         .collect();
     chosen.extend(clips);
     let marks: Vec<&Mark> = art

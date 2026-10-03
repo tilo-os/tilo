@@ -12,7 +12,7 @@ use ui::icons::Icon;
 use ui::vello::peniko::Color;
 
 use crate::gesture::Ink;
-use crate::model::{Artwork, Mark};
+use crate::model::Artwork;
 use crate::render::Renderer;
 
 /// What the pointer does on the canvas.
@@ -127,26 +127,34 @@ pub struct Tools {
     /// The inspector's controls being dragged, shown on the canvas before
     /// they are let go and become an edit.
     pub live: Rc<RefCell<Vec<Live>>>,
+    /// Whether the chosen layer's adjustments are shown, with nothing
+    /// selected.
+    pub layer_adjust: LocalState<bool>,
+    /// The format a person asked to export the artwork in (`png`, `jpeg`,
+    /// `webp`), until the canvas renders it; empty when none was asked.
+    pub export: LocalState<String>,
+    /// An export being saved where the person chooses, until it is.
+    pub saving: Rc<RefCell<Option<ui::portal::SaveChannel>>>,
+    /// A picture being chosen to add, until the chooser answers.
+    pub picking: Rc<RefCell<Option<ui::portal::ContentsChannel>>>,
     /// Draws the artwork and keeps painted layers' simulations, shared by
     /// the canvas and the layer thumbnails so each layer is simulated once.
     pub renderer: Rc<RefCell<Renderer>>,
 }
 
-/// A control whose value the canvas shows on marks while it is dragged.
+/// A control whose value the canvas shows while it is dragged.
 #[derive(Clone)]
 pub struct Live {
-    /// The marks it changes.
-    pub ids: Vec<String>,
     /// The control's value, as it moves.
     pub state: LocalState<f64>,
     /// Its value when it was built: what the artwork already shows.
     pub committed: f64,
-    /// The value onto a mark.
-    pub apply: OntoMark,
+    /// The value onto the artwork as shown.
+    pub apply: Onto,
 }
 
-/// How a control's value changes a mark.
-pub type OntoMark = Rc<dyn Fn(&mut Mark, f64)>;
+/// How a control's value changes the artwork as shown.
+pub type Onto = Rc<dyn Fn(&mut Artwork, f64)>;
 
 impl Live {
     /// The value while it differs from what the artwork has.
@@ -186,6 +194,10 @@ impl Default for Tools {
             stop: LocalState::new(0),
             crop: LocalState::new(false),
             live: Rc::default(),
+            picking: Rc::default(),
+            export: LocalState::new(String::new()),
+            saving: Rc::default(),
+            layer_adjust: LocalState::new(false),
             renderer: Rc::default(),
         }
     }

@@ -283,9 +283,10 @@ pub fn place(
             .as_ref()
             .and_then(|group| groups.get(group).cloned());
         mark.clip = mark.clip.as_ref().and_then(|clip| {
-            ids.get(clip)
-                .cloned()
-                .or_else(|| art.mark(clip).map(|_| clip.clone()))
+            ids.get(clip).cloned().or_else(|| {
+                (art.mark(clip).is_some() || art.members(clip).next().is_some())
+                    .then(|| clip.clone())
+            })
         });
         let to = Affine::translate(offset);
         match mark.transform {
