@@ -1245,7 +1245,7 @@ impl FileExplorerWidget {
             nav,
             toolbar,
             status_bubble: ui::StatusBubble::new(),
-            state_spinner: Spinner::with_size(28.0),
+            state_spinner: Spinner::new(),
             state_retry: Button::new("files.retry", &t("files-try-again"), None).on_effect({
                 let sink = cmds.clone();
                 move || crate::command::push(&sink, FileCommand::Refresh)
