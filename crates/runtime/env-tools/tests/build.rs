@@ -10,8 +10,10 @@ use std::sync::Mutex;
 use env_tools::{
     BuildError, Builder, CacheKey, Catalog, Entry, NoCatalog, Origin, ToolStore, rebuild_tools,
 };
+use std::collections::BTreeMap;
 use tilo_app_package::PackageId;
-use tilo_environment::{Environment, ToolBuildError, ToolBuilder};
+
+use tilo_environment::{Environment, RuntimeRef, ToolBuildError, ToolBuilder};
 
 use crate::fixture;
 
@@ -255,10 +257,10 @@ fn set_runtime_rebuilds_every_tool_or_none() {
     let builder = Builder::new(store, NoCatalog, dir.path().join("state"));
 
     // `pkg install hello` on the old runtime, through the record's seam.
-    let mut env = Environment::new("work", &old);
+    let mut env = Environment::new("work", "2026.10", "x86_64", &old);
     let mut progress = Vec::new();
     let tool = ToolBuilder::build(&builder, &old, &packages(&["hello"]), &mut progress).unwrap();
-    env.add_tool(tool.to_string(), packages(&["hello"]))
+    env.add_tool(packages(&["hello"]), "x86_64".into(), tool.to_string())
         .unwrap();
     let progress = String::from_utf8(progress).unwrap();
     assert!(progress.contains("resolving hello"), "{progress}");
@@ -267,25 +269,35 @@ fn set_runtime_rebuilds_every_tool_or_none() {
         "dnf's output reaches the shell: {progress}"
     );
 
-    let rebuilt = rebuild_tools(&builder, &new, &env.tools, &mut std::io::sink()).unwrap();
-    env.set_runtime(new.to_string(), rebuilt).unwrap();
-    assert_eq!(env.runtime_id().unwrap(), new);
+    let rebuilt =
+        rebuild_tools(&builder, "x86_64", &new, &env.tools, &mut std::io::sink()).unwrap();
+    let release = RuntimeRef {
+        release: "2026.11".into(),
+        images: BTreeMap::from([("x86_64".to_owned(), new.to_string())]),
+    };
+    env.set_runtime(release, rebuilt).unwrap();
+    assert_eq!(env.runtime_image("x86_64").unwrap(), new);
     assert_eq!(env.tools.len(), 1);
     assert_eq!(env.tools[0].packages, ["hello"]);
-    assert_ne!(
-        env.tools[0].id,
-        tool.to_string(),
-        "a tool is bound to its runtime"
-    );
+    let image = env.tools[0].images.get("x86_64").unwrap();
+    assert_ne!(*image, tool.to_string(), "a tool is bound to its runtime");
 
     let mut broken = env.clone();
     broken
         .add_tool(
-            PackageId::from_bytes([9; 32]).to_string(),
             packages(&["nosuch"]),
+            "x86_64".into(),
+            PackageId::from_bytes([9; 32]).to_string(),
         )
         .unwrap();
-    let err = rebuild_tools(&builder, &old, &broken.tools, &mut std::io::sink()).unwrap_err();
+    let err = rebuild_tools(
+        &builder,
+        "x86_64",
+        &old,
+        &broken.tools,
+        &mut std::io::sink(),
+    )
+    .unwrap_err();
     assert_eq!(err.packages, ["nosuch"]);
     assert!(matches!(err.source, ToolBuildError::UnknownPackage(ref n) if n == "nosuch"));
     env_tools::sandbox::remove_tree(dir.path()).unwrap();

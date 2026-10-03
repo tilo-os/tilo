@@ -1,6 +1,7 @@
 //! The environment record's side: [`ToolBuilder`] for [`Builder`], and
 //! moving an environment's tools to a new runtime.
 
+use std::collections::BTreeMap;
 use std::io::Write;
 
 use tilo_app_package::PackageId;
@@ -37,16 +38,20 @@ pub fn to_tool_error(error: BuildError) -> ToolBuildError {
     }
 }
 
-/// Every tool of an environment rebuilt for `runtime`, in the same order,
-/// for the record's `set-runtime` action. All or nothing: the first tool
-/// that fails fails the switch, so the record keeps its old runtime and a
-/// tool is never mounted on a runtime it was not built for.
+/// Every tool of an environment rebuilt for the new release's runtime image
+/// on this node's architecture (`arch`, image `runtime`), in the same
+/// order, for the record's `set-runtime` action. Each rebuilt tool records
+/// only its `arch` image: images for other architectures were built for the
+/// old release, and are built again on first use there. All or nothing: the
+/// first tool that fails fails the switch, so the record keeps its old
+/// runtime and a tool is never mounted on a runtime it was not built for.
 ///
 /// # Errors
 ///
 /// The failing tool's packages and why.
 pub fn rebuild_tools(
     builder: &dyn ToolBuilder,
+    arch: &str,
     runtime: &PackageId,
     tools: &[ToolRef],
     progress: &mut dyn Write,
@@ -62,8 +67,8 @@ pub fn rebuild_tools(
             builder
                 .build(runtime, &tool.packages, progress)
                 .map(|id| ToolRef {
-                    id: id.to_string(),
                     packages: tool.packages.clone(),
+                    images: BTreeMap::from([(arch.to_owned(), id.to_string())]),
                 })
                 .map_err(|source| RebuildError {
                     packages: tool.packages.clone(),
