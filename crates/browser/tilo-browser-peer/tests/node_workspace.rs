@@ -226,10 +226,10 @@ async fn a_company_node_governs_and_stewards_the_workspace_people_join() {
     let installed = root
         .call(json!({"install": {
             "origin": install_origin,
-            // As certifyDevice resolves with `encoding: 'json'`: text, whose
-            // nanosecond times a JavaScript number would round.
-            "certificate": serde_json::to_string(&node_cert).unwrap(),
-            "sessionCertificate": serde_json::to_string(&session_cert).unwrap(),
+            "certificate": certificate,
+            "sessionCertificate": hex::encode(
+                tilo_user_identity::canonical::canonical_bytes(&session_cert).unwrap()
+            ),
             "installToken": INSTALL_TOKEN,
         }}))
         .await;

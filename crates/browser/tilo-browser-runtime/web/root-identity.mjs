@@ -420,9 +420,9 @@ export async function installNodeCertificate({origin, certificate, sessionCertif
   if (!origin || !certificate || !installToken) throw new TypeError('origin, certificate and installToken are required');
   let body, json;
   if (sessionCertificate) {
-    // Spliced as text: a certificate's nanosecond times exceed what a
-    // JavaScript number holds exactly, and its signature covers them.
-    body = `{"certificate":${certificateJson(certificate)},"session_certificate":${certificateJson(sessionCertificate)}}`;
+    // Both in their canonical encoding, base64 (what certifyDevice returns).
+    if (![certificate, sessionCertificate].every(canonicalBase64)) throw new TypeError('with a session, both certificates go as certifyDevice returns them (canonical, base64)');
+    body = JSON.stringify({certificate, session_certificate: sessionCertificate});
     json = true;
   } else {
     // JSON, or the canonical encoding as base64 (what certifyDevice returns).
@@ -444,13 +444,7 @@ export async function installNodeCertificate({origin, certificate, sessionCertif
   return JSON.parse(text);
 }
 
-/** A certificate's JSON text, from that text or an object. */
-function certificateJson(certificate) {
-  if (typeof certificate !== 'string') return JSON.stringify(certificate);
-  if (!certificate.trimStart().startsWith('{')) throw new TypeError('both certificates go as JSON (certifyDevice with encoding: "json")');
-  JSON.parse(certificate);
-  return certificate.trim();
-}
+const canonicalBase64 = certificate => typeof certificate === 'string' && /^[A-Za-z0-9+/]+=*$/.test(certificate);
 
 /**
  * Ask a node waiting for its certificate at `origin`, with its install
@@ -493,7 +487,7 @@ export async function nodeInstallInfo({origin, devicePublicKey, installToken, cr
  */
 export async function installNode({origin, devicePublicKey, installToken, identity, label = 'Tilo node', runtime, fetch}) {
   const {sessionPublicKey} = await nodeInstallInfo({origin, devicePublicKey, installToken, fetch});
-  const certify = (key, role, name) => certifyDevice({devicePublicKey: key, identity, runtime, label: name, role, encoding: 'json'});
+  const certify = (key, role, name) => certifyDevice({devicePublicKey: key, identity, runtime, label: name, role});
   const certificate = await certify(devicePublicKey, 'node', label);
   const sessionCertificate = sessionPublicKey ? await certify(sessionPublicKey, 'session', `Apps on ${label}`) : undefined;
   return installNodeCertificate({origin, certificate, sessionCertificate, installToken, fetch});
