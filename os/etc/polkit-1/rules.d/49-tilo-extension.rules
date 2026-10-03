@@ -3,7 +3,7 @@
 // tilo-extension@<verb>:<id>.service with one of three verbs, only for a local,
 // active session of an administrator (wheel). The helper accepts only ids the
 // image has a catalogue entry for, verifies everything it downloads against a
-// manifest signed by the image's update key, and runs in a sandboxed unit that
+// manifest signed by Tilo's extension-manifest key, and runs in a sandboxed unit that
 // can write only its own state, cache and /var/lib/extensions. This grants no
 // general unit, package-manager or file access.
 polkit.addRule(function (action, subject) {

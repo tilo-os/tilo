@@ -26,8 +26,9 @@ fixed typed launch fields. It may not contain scripts or arbitrary command
 lines. Every accepted extension has:
 
 - a signature from a key already trusted by the installed Tilo image (Ed25519
-  release keys in `trust.d/` for BootPacks and runtimes; the OS update key
-  itself for downloaded system extensions, see below);
+  release keys in `trust.d/` for BootPacks and runtimes; the dedicated
+  extension-manifest key `keys/extensions.pub` for downloaded system
+  extensions, see below);
 - an HTTPS retrieval location, exact byte length, and SHA-256 digest;
 - an immutable model revision or OCI manifest digest—never a mutable tag;
 - explicit base-image, architecture, kernel, accelerator, memory, and storage

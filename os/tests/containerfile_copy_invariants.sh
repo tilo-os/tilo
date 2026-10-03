@@ -86,7 +86,8 @@ containerfile="$repo/os/Containerfile"
 # The extension overlay replaces the codec-specific resolver: no repository
 # definitions or upstream keys ship, only the generic helper and its units.
 # The build-only Cisco OpenH264 gate is a deliberate addition (removed after it runs).
-expected_contract=907cb38e6dbd04fd1b07d37cfc1d3c54900c3a2549d52ddbe8c1b47b7b18188a
+# The extension-manifest public key ships beside the helper.
+expected_contract=6eb69e284555227a46dcc65a3eb0c144e4303db619d3e2df99e18358d0fb7482
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
