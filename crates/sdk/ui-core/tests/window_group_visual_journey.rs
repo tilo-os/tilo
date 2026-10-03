@@ -148,7 +148,7 @@ fn render_group_themed(
 
     // The theme's own app background, so the card edge and the maximized
     // chips are judged against the ground they really sit on.
-    renderer.render(&scene, theme.bg_app)
+    renderer.render(&scene, theme.tokens.colors.surfaces.content)
 }
 
 /// Cheap 64-bit FNV-1a over the full RGBA buffer — not a golden-image

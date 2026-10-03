@@ -1110,7 +1110,8 @@ impl EmojiPicker {
             let shape =
                 RoundedRect::from_rect(rect.inset(-2.0), f64::from(theme.tokens.radii.control));
             if i == self.selected {
-                scene.fill(Fill::NonZero, transform, theme.bg_active, None, &shape);
+                let lift = colors.lift_on(ui::chrome::shell::panel_ground(theme), 1.0);
+                scene.fill(Fill::NonZero, transform, lift, None, &shape);
                 scene.stroke(
                     &vello::kurbo::Stroke::new(1.5),
                     transform,
@@ -1119,7 +1120,8 @@ impl EmojiPicker {
                     &shape,
                 );
             } else if self.hover == Some(Hit::Emoji(i)) {
-                scene.fill(Fill::NonZero, transform, theme.bg_hover, None, &shape);
+                let lift = colors.lift_on(ui::chrome::shell::panel_ground(theme), 0.5);
+                scene.fill(Fill::NonZero, transform, lift, None, &shape);
             }
             draw_emoji(scene, transform, text_renderer, theme, rect, text);
         }
@@ -1218,7 +1220,8 @@ impl EmojiPicker {
                         rect.inset(-2.0),
                         f64::from(theme.tokens.radii.control),
                     );
-                    scene.fill(Fill::NonZero, transform, theme.bg_active, None, &cell_shape);
+                    let lift = colors.lift_on(colors.surfaces.raised, 1.0);
+                    scene.fill(Fill::NonZero, transform, lift, None, &cell_shape);
                     scene.stroke(
                         &vello::kurbo::Stroke::new(1.5),
                         transform,

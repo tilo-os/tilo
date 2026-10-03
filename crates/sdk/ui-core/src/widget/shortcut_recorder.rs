@@ -212,7 +212,7 @@ impl Widget for ShortcutRecorder {
                 scene.fill(
                     Fill::NonZero,
                     transform,
-                    theme.bg_hover,
+                    theme.tokens.colors.intent.selection_hover,
                     None,
                     &RoundedRect::from_rect(reset, 6.0),
                 );

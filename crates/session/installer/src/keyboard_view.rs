@@ -77,7 +77,13 @@ impl KeyboardView {
         shift: Option<&str>,
     ) {
         let cap = RoundedRect::from_rect(key, (theme.radius_standard * 0.6).max(2.0));
-        scene.fill(Fill::NonZero, transform, theme.bg_primary, None, &cap);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &cap,
+        );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -186,10 +192,16 @@ impl Widget for KeyboardView {
             return;
         }
 
-        // Board background — surfaces.base, a shade below the card so the
-        // raised key caps pop.
+        // Board background — the window ground, a shade below the raised
+        // key caps so they pop.
         let board = RoundedRect::from_rect(self.rect, theme.radius_standard);
-        scene.fill(Fill::NonZero, transform, theme.bg_app, None, &board);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.content,
+            None,
+            &board,
+        );
         scene.stroke(
             &Stroke::new(1.0),
             transform,

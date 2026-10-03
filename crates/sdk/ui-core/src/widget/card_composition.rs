@@ -158,7 +158,7 @@ impl Widget for ContentCard {
             transform,
             self.parts.rect,
             theme.radius_standard,
-            theme.bg_primary,
+            theme.tokens.colors.surfaces.raised,
         );
         self.parts.draw(scene, transform, text, theme, presence);
     }

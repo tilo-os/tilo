@@ -650,7 +650,10 @@ mod tests {
             ..ThemeLayerStack::default()
         });
         assert_eq!(theme.name, Theme::light().name);
-        assert_eq!(theme.bg_app, Theme::light().bg_app);
+        assert_eq!(
+            theme.tokens.colors.surfaces.content,
+            Theme::light().tokens.colors.surfaces.content
+        );
 
         let user_wins = resolve_theme_layers(&ThemeLayerStack {
             distribution_defaults: Some(DistributionDefaults {
@@ -693,7 +696,10 @@ mod tests {
         });
         assert_eq!(warm.name, Theme::light().name);
         assert!((warm.tokens.colors.neutral_hue - 40.0).abs() < f32::EPSILON);
-        assert_ne!(warm.bg_app, Theme::light().bg_app);
+        assert_ne!(
+            warm.tokens.colors.surfaces.content,
+            Theme::light().tokens.colors.surfaces.content
+        );
         assert!(audit(&warm.tokens.colors).is_empty());
 
         let forced = resolve_theme_layers(&ThemeLayerStack {
@@ -705,7 +711,10 @@ mod tests {
             ..light_stack()
         });
         assert_eq!(forced.name, Theme::high_contrast().name);
-        assert_eq!(forced.bg_app, Theme::high_contrast().bg_app);
+        assert_eq!(
+            forced.tokens.colors.surfaces.content,
+            Theme::high_contrast().tokens.colors.surfaces.content
+        );
     }
 
     #[test]
@@ -832,7 +841,10 @@ mod tests {
             }),
             ..light_stack()
         });
-        assert_eq!(user_wins.bg_app, Theme::light().bg_app);
+        assert_eq!(
+            user_wins.tokens.colors.surfaces.content,
+            Theme::light().tokens.colors.surfaces.content
+        );
         assert_eq!(user_wins.tokens.motion.durations.base_ms, stock);
         assert!((user_wins.tokens.metrics.chrome_rule_px - 1.0).abs() < 0.01);
 
@@ -848,8 +860,8 @@ mod tests {
             ..light_stack()
         });
         assert_eq!(
-            pinned.bg_app,
-            Theme::light().bg_app,
+            pinned.tokens.colors.surfaces.content,
+            Theme::light().tokens.colors.surfaces.content,
             "colour stays the user's"
         );
         assert_eq!(pinned.tokens.motion.durations.base_ms, stock / 2);

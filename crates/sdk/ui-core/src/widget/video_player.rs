@@ -4222,7 +4222,8 @@ mod tests {
                 clippy::cast_sign_loss,
                 reason = "a 320x120 test surface"
             )]
-            let rgba = OffscreenRenderer::new(w as u32, h as u32).render(&scene, theme.bg_app);
+            let rgba = OffscreenRenderer::new(w as u32, h as u32)
+                .render(&scene, theme.tokens.colors.surfaces.content);
             #[allow(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
@@ -4295,7 +4296,8 @@ mod tests {
                     clippy::cast_sign_loss,
                     reason = "a 640x360 test surface"
                 )]
-                let rgba = OffscreenRenderer::new(w as u32, h as u32).render(&scene, theme.bg_app);
+                let rgba = OffscreenRenderer::new(w as u32, h as u32)
+                    .render(&scene, theme.tokens.colors.surfaces.content);
                 #[allow(
                     clippy::cast_possible_truncation,
                     clippy::cast_sign_loss,

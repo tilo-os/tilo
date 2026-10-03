@@ -48,8 +48,8 @@ pub struct Container {
     min_width: Option<f32>,
     /// Mutually independent from [`Container::fill_height`].
     fixed_height: Option<f32>,
-    /// Also implies `has_background`. `None` keeps the legacy `bg_primary`
-    /// behaviour when [`Container::with_background`] is used.
+    /// Also implies `has_background`. `None` paints `surfaces.raised` (a
+    /// well inside content) when [`Container::with_background`] is used.
     fill_color: Option<vello::peniko::Color>,
     /// Grows from a zero basis instead of claiming `percent(1.0)`. In a
     /// wrapping flex row this is the difference between filling the
@@ -214,8 +214,9 @@ impl Container {
         self
     }
 
-    /// Implies a background. Pass a theme token (`theme.bg_app` etc.) so
-    /// the surface tint stays OS-controlled.
+    /// Implies a background. Pass a surface token (`surfaces.raised` for a
+    /// well inside content) so the tint stays OS-controlled; a region's
+    /// ground is the framework's, never a container fill.
     #[must_use]
     pub fn with_fill(mut self, color: vello::peniko::Color) -> Self {
         self.fill_color = Some(color);
@@ -372,7 +373,9 @@ impl Widget for Container {
             // `border_standard` is three shades off `raised` on the dark
             // preset and vanishes. Crisp 1 px inset so the stroke sits on
             // the surface, not half on the ground beside it.
-            let fill = self.fill_color.unwrap_or(theme.bg_primary);
+            let fill = self
+                .fill_color
+                .unwrap_or(theme.tokens.colors.surfaces.raised);
             crate::surface::card(scene, transform, self.rect, theme.radius_standard, fill);
         }
 
@@ -472,7 +475,9 @@ impl Widget for Container {
             // `border_standard` is three shades off `raised` on the dark
             // preset and vanishes. Crisp 1 px inset so the stroke sits on
             // the surface, not half on the ground beside it.
-            let fill = self.fill_color.unwrap_or(theme.bg_primary);
+            let fill = self
+                .fill_color
+                .unwrap_or(theme.tokens.colors.surfaces.raised);
             crate::surface::card(scene, transform, self.rect, theme.radius_standard, fill);
         }
 

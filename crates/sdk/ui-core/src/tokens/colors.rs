@@ -80,6 +80,12 @@ pub(crate) fn composite(over: Color, ground: Color) -> Color {
 /// only has to catch a wash landing within rounding distance of its surface.
 pub const HAIRLINE_MIN_DELTA: f64 = 0.02;
 
+/// Smallest OKLCH lightness step that separates a window region (sidebar,
+/// inspector) from the content ground by tone alone. A region tier closer
+/// to content than this draws a hairline on the edge they share instead
+/// (`surface::region`).
+pub const REGION_MIN_STEP: f64 = 0.015;
+
 /// Fallback wash alpha for [`Colors::lift`] when a material has no raised
 /// tier to aim at. 15% — reads as a distinct body without blowing out
 /// contrast.
@@ -1055,6 +1061,56 @@ mod tests {
                             );
                         }
                     }
+                }
+            }
+        }
+        // phase: regions_separate_from_content_by_tone_or_by_an_edge
+        {
+            for material in MATERIALS {
+                for hue in hues() {
+                    let c = Colors::of_material(material, hue);
+                    let s = &c.surfaces;
+                    for (name, tier) in [("sidebar", s.sidebar), ("inspector", s.inspector)] {
+                        let step = f64::from(
+                            (Oklch::from_color(tier).l - Oklch::from_color(s.content).l).abs(),
+                        );
+                        if material == Material::HighContrast {
+                            assert!(
+                                crate::surface::region_needs_edge(tier, s.content),
+                                "high contrast: the {name} shares the black ground and \
+                                 separates by its edge"
+                            );
+                            let edge = crate::surface::edge_on(tier);
+                            assert!(
+                                crate::surface::edge_delta(edge, tier) >= HAIRLINE_MIN_DELTA,
+                                "high contrast: the {name} edge does not register"
+                            );
+                        } else {
+                            assert!(
+                                step >= REGION_MIN_STEP,
+                                "{material:?}@{hue}: {name} is ΔL {step:.3} from content"
+                            );
+                            assert!(!crate::surface::region_needs_edge(tier, s.content));
+                        }
+                    }
+                }
+            }
+        }
+        // phase: floating_chrome_walks_lighter_than_the_window_on_dark
+        {
+            for hue in hues() {
+                let c = Colors::of_material(Material::Dark, hue);
+                let l = |x: Color| Oklch::from_color(x).l;
+                let s = &c.surfaces;
+                for (name, under) in [
+                    ("base", s.base),
+                    ("content", s.content),
+                    ("raised", s.raised),
+                ] {
+                    assert!(
+                        l(s.overlay) > l(under),
+                        "dark@{hue}: overlay is not lighter than {name}"
+                    );
                 }
             }
         }
