@@ -986,9 +986,9 @@ Updating a shard:
   `RATCHET_SCOPE` every shard is rewritten. An update refuses to raise any
   count unless `RATCHET_ALLOW_GROWTH=1` is also set; set it only after
   reviewing why each count grew.
-- With rcargo, which neither forwards the environment nor brings a test's
-  writes back from the builder:
-  `rcargo test -p tilo-ui --test it do_not_grow --success-output immediate`.
+- With a cargo drop-in that runs tests on a remote host, which neither
+  forwards the environment nor brings a test's writes back:
+  `cargo test -p tilo-ui --test it do_not_grow --success-output immediate`.
   A ratchet with progress prints the stale entries and the full text each
   affected shard should now hold (or `delete <path>` when the unit reached
   zero). Write exactly that.

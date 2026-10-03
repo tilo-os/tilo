@@ -53,25 +53,26 @@ or the toolkit; a missing capability is reported, not forked into the app.
    label in fixture data, a protocol token), and it keeps its true count.
    Never reshape code so a pattern stops matching (HIG §9.13). Lower the
    shards as described in [Updating shards](#updating-shards).
-9. **Shots on the builder.** Render the app and look at every screen it has,
-   dark, light and narrow:
+9. **Shots.** Render the app and look at every screen it has, dark, light
+   and narrow:
 
    ```bash
-   rcargo --on-builder --fetch look/<dir> run -p <pkg> --bin <bin> -- \
+   cargo run -p <pkg> --bin <bin> -- \
      --shots target/look/<dir>/x.png --viewport 1280x800
-   TILO_SHOTS_THEME=light rcargo --on-builder --fetch look/<dir> run -p <pkg> --bin <bin> -- \
+   TILO_SHOTS_THEME=light cargo run -p <pkg> --bin <bin> -- \
      --shots target/look/<dir>/x-light.png --viewport 1280x800
-   rcargo --on-builder --fetch look/<dir> run -p <pkg> --bin <bin> -- \
+   cargo run -p <pkg> --bin <bin> -- \
      --shots target/look/<dir>/x-narrow.png --viewport 800x600
    ```
 
-   `--fetch` mirrors the directory with `--delete`, so give each app its own
-   `<dir>`. Open the PNGs and compare them with the design language: one
+   When a cargo drop-in renders on a remote host, bring `target/look/<dir>`
+   back, and give each app its own `<dir>` so fetches never overwrite each
+   other. Open the PNGs and compare them with the design language: one
    ground per region, no accent outside presence and status, sentence-case
    copy, no glyph icons, a sidebar that collapses at 800 px.
-10. **Verify once.** `rcargo clippy -p <pkg> --all-targets`,
-    `rcargo test -p <pkg>`, and
-    `rcargo test -p tilo-ui --test it do_not_grow --success-output immediate`
+10. **Verify once.** `cargo clippy -p <pkg> --all-targets`,
+    `cargo test -p <pkg>`, and
+    `cargo test -p tilo-ui --test it do_not_grow --success-output immediate`
     (every ratchet passes and prints the shard text to commit).
 
 ### Updating shards
@@ -79,9 +80,9 @@ or the toolkit; a missing capability is reported, not forked into the app.
 A shard lists `<path relative to the repository root> <key> <count>` lines for
 one unit (`apps-<name>`, `ui-core` or `shell`). A missing shard allows zero.
 
-- **rcargo** neither forwards the environment nor brings a test's writes back
-  from the builder. Run
-  `rcargo test -p tilo-ui --test it do_not_grow --success-output immediate`.
+- **A remote cargo drop-in** neither forwards the environment nor brings a
+  test's writes back. Through it run
+  `cargo test -p tilo-ui --test it do_not_grow --success-output immediate`.
   Every ratchet whose tree dropped below its shard prints a `notice:` with
   the stale entries and then either `<shard path> now reads:` followed by the
   complete new shard text, or `delete <shard path>` when the unit reached
