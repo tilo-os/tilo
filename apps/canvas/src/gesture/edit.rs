@@ -382,6 +382,7 @@ mod tests {
                 opacity: 1.0,
                 visible: true,
                 texture: 0.0,
+                locked: false,
             }],
             marks: vec![
                 mark("a", 0.0, "pair"),
