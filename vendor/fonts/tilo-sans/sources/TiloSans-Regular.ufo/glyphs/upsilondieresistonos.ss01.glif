@@ -1,8 +1,0 @@
-<?xml version='1.0' encoding='UTF-8'?>
-<glyph name="upsilondieresistonos.ss01" format="2">
-  <advance width="561"/>
-  <outline>
-    <component base="upsilon"/>
-    <component base="dieresistonos.ss01" xOffset="64"/>
-  </outline>
-</glyph>
