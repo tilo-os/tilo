@@ -325,12 +325,13 @@ impl Channels {
     }
 
     /// Whether `author`'s verified certificate lets it govern a room this
-    /// page takes part in.
+    /// page takes part in: a device of this identity that owns workspaces.
+    /// A host governs only when its root also granted it that (a node that
+    /// hosts and governs a person's workspaces); a plain host never does.
     fn may_govern(&self, author: &[u8; 32]) -> bool {
         self.certs.get(author).is_some_and(|cert| {
             cert.user_public_key == self.user
                 && cert.capabilities.can_own_workspaces
-                && !cert.capabilities.can_act_as_host
                 && !cert.capabilities.foreign
         })
     }
@@ -755,6 +756,34 @@ mod tests {
         let changes = channels.pin_governor(ROOM, device(&desktop), 0);
         assert_eq!(requests(&changes), 1);
         assert_eq!(steward_of(&channels, &note), Some(device(&desktop)));
+    }
+
+    /// A node the person's root certified to host and govern their
+    /// workspaces governs; a foreign device that owns workspaces does not.
+    #[test]
+    fn a_node_that_hosts_and_governs_names_the_governor() {
+        let user = SigningKey::from_bytes(&[1; 32]);
+        let browser = SigningKey::from_bytes(&[3; 32]);
+        let foreign = SigningKey::from_bytes(&[4; 32]);
+        let server = SigningKey::from_bytes(&[5; 32]);
+        let mut channels = Channels::new(device(&browser), device(&user), [4; 32]);
+        let note = route("note-1");
+        channels.open(&note, 0);
+        let mut foreign_capabilities = DeviceCapabilities::primary();
+        foreign_capabilities.foreign = true;
+        channels.note_cert(
+            device(&foreign),
+            cert(&user, &foreign, foreign_capabilities),
+            0,
+        );
+        channels.receive_frame(device(&foreign), ROOM, genesis(&foreign, &note), 0);
+        assert_eq!(steward_of(&channels, &note), None);
+
+        let capabilities = tilo_user_identity::cloud_enrollment::host_capabilities();
+        channels.note_cert(device(&server), cert(&user, &server, capabilities), 0);
+        let changes = channels.receive_frame(device(&server), ROOM, genesis(&server, &note), 0);
+        assert_eq!(requests(&changes), 1);
+        assert_eq!(steward_of(&channels, &note), Some(device(&server)));
     }
 
     /// A room whose governor has not shown up is not ungoverned: a genesis

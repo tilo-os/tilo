@@ -178,7 +178,7 @@ async function assertPasskey(env, wraps, rpId) {
 }
 
 /** Create a passkey and read its PRF output for `salt`. */
-async function createPasskey(env, {rpId, rpName = 'Tilo', userName, userId, displayName}, salt) {
+async function createPasskey(env, {rpId, rpName = 'Tilo', userName, userId, displayName}, salt, exclude = []) {
   if (!env.credentials?.create) throw new IdentityError('passkeys-unavailable', 'Passkeys are unavailable here');
   if (!rpId || !userName || !userId) throw new TypeError('rpId, userName and userId are required');
   const credential = await env.credentials.create({
@@ -188,6 +188,9 @@ async function createPasskey(env, {rpId, rpName = 'Tilo', userName, userId, disp
       challenge: env.random(32),
       pubKeyCredParams: [{type: 'public-key', alg: -8}, {type: 'public-key', alg: -7}, {type: 'public-key', alg: -257}],
       authenticatorSelection: {residentKey: 'required', userVerification: 'required'},
+      // An authenticator that already holds one of this identity's passkeys
+      // declines, rather than replacing it (same user handle).
+      excludeCredentials: exclude.map(id => ({type: 'public-key', id: unbase64url(id)})),
       extensions: {prf: {eval: {first: salt}}},
     },
   });
@@ -203,9 +206,9 @@ async function createPasskey(env, {rpId, rpName = 'Tilo', userName, userId, disp
   return {credentialId, output};
 }
 
-async function passkeyWrap(env, root, rootPublicKey, options) {
+async function passkeyWrap(env, root, rootPublicKey, options, exclude) {
   const salt = env.random(32);
-  const {credentialId, output} = await createPasskey(env, options, salt);
+  const {credentialId, output} = await createPasskey(env, options, salt, exclude);
   const sealed = await seal(env, root, output, salt, associatedData('passkey', rootPublicKey, credentialId));
   output.fill(0);
   return {kind: 'passkey', credential_id: base64url(credentialId), rp_id: options.rpId, prf_salt: base64url(salt), ...sealed};
@@ -232,14 +235,18 @@ async function unlocked(env, extractable, rootPublicKey) {
       live();
       return new Uint8Array(await env.subtle.sign({name: 'Ed25519'}, signer, message));
     },
-    /** `envelope` with one more passkey wrap (a new passkey is created). */
+    /** `envelope` with one more passkey wrap: a new passkey, created on an
+     * authenticator that holds none of the envelope's. */
     async addPasskey(envelope, options) {
       live();
       if (hex(rootPublicKeyOf(envelope)) !== identity.userPublicKey) {
         throw new IdentityError('wrong-identity', 'This envelope belongs to another identity');
       }
       const root = await env.subtle.unwrapKey('pkcs8', kept, session, {name: 'AES-GCM', iv: sessionNonce}, {name: 'Ed25519'}, true, ['sign']);
-      const wrap = await passkeyWrap(env, root, rootPublicKey, options);
+      const exclude = envelope.wraps
+        .filter(wrap => wrap.kind === 'passkey' && wrap.rp_id === options.rpId)
+        .map(wrap => wrap.credential_id);
+      const wrap = await passkeyWrap(env, root, rootPublicKey, options, exclude);
       return {...envelope, wraps: [...envelope.wraps, wrap]};
     },
     /** Forget the root: this object signs nothing more. */
@@ -321,4 +328,20 @@ export async function unlockIdentity(envelope, how = {passkey: true}) {
 export function addPasskey(envelope, {identity, ...options}) {
   if (!identity?.addPasskey) throw new TypeError('addPasskey needs an unlocked identity');
   return identity.addPasskey(envelope, options);
+}
+
+/**
+ * Certify another device with the unlocked root. `role` `node` (default): a
+ * native node that hosts and governs the person's workspaces (relays, pins,
+ * reads and owns them; admits no devices; one year). `browser`: a member
+ * for 30 days. `devicePublicKey` is the device's Ed25519 key (hex or
+ * bytes), delivered out of band; never the root's own. `runtime` is the wasm
+ * module. Resolves to the `DeviceCert` JSON.
+ */
+export async function certifyDevice({identity, runtime, devicePublicKey, label = 'Tilo node', role = 'node'}) {
+  if (!identity?.sign || identity.locked) throw new IdentityError('locked', 'Unlock the identity first');
+  if (!runtime?.issueDeviceCert) throw new TypeError('certifyDevice needs the wasm runtime');
+  const key = typeof devicePublicKey === 'string' ? devicePublicKey.toLowerCase() : hex(devicePublicKey ?? []);
+  if (unhex(key).length !== 32) throw new IdentityError('malformed', 'A device public key is 32 bytes');
+  return runtime.issueDeviceCert(identity, key, label, role);
 }
