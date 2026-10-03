@@ -2564,7 +2564,19 @@ impl Grid {
             }
             let label = crate::model::col_to_letters(c);
             let (lw, lh) = tr.measure_style(&label, None, &style);
-            let tx = hrect.center().x - f64::from(lw) / 2.0;
+            // A column partly scrolled under the row headers is labelled in
+            // what shows of it; when not even the label fits, it goes
+            // unlabelled rather than painted half under the corner.
+            let shown = Rect::new(
+                hrect.x0.max(self.grid_x0()),
+                hrect.y0,
+                hrect.x1.min(self.rect.x1),
+                hrect.y1,
+            );
+            if shown.width() < f64::from(lw) + 2.0 * self.metrics.s1 {
+                continue;
+            }
+            let tx = shown.center().x - f64::from(lw) / 2.0;
             let ty = hrect.y0 + (hrect.height() - f64::from(lh)) / 2.0;
             let color = if selected {
                 colors.text_primary
@@ -2620,8 +2632,14 @@ impl Grid {
             }
             let label = format!("{}", r + 1);
             let (lw, lh) = tr.measure_style(&label, None, &style);
+            // Same rule as the column labels: in what shows of the row.
+            let shown_y0 = hrect.y0.max(self.grid_y0());
+            let shown_y1 = hrect.y1.min(self.rect.y1);
+            if shown_y1 - shown_y0 < f64::from(lh) {
+                continue;
+            }
             let tx = hrect.center().x - f64::from(lw) / 2.0;
-            let ty = hy + (self.row_h(r) - f64::from(lh)) / 2.0;
+            let ty = (shown_y0 + shown_y1 - f64::from(lh)) / 2.0;
             let color = if selected {
                 colors.text_primary
             } else {

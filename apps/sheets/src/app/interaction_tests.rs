@@ -189,3 +189,119 @@ fn painted_chrome_answers_pointer_and_keyboard() {
         );
     }
 }
+
+/// Menus and popovers stand clear of the window's edges and of what opened
+/// them, and the tab editor never covers a neighbour.
+#[test]
+fn floating_surfaces_keep_clear_of_edges_and_openers() {
+    // Case `the_more_menu_keeps_off_the_window_edge`.
+    // A window too narrow for the bar moves the commands that do not fit into
+    // the More menu, which opens under its button and stays inside the window
+    // with room to spare.
+    {
+        let (mut app, mut doc, mut tr, theme) = measured_app_with_doc(520.0, 600.0, 1.0);
+        app.sync(&mut doc, &automerge::ROOT);
+        paint_frame(&mut app, &mut tr, &theme);
+        assert!(
+            app.menu_buttons
+                .iter()
+                .any(|button| button.opens == Some(OpenMenu::More)),
+            "520 px is too narrow for the whole bar"
+        );
+        app.open_command_menu(OpenMenu::More);
+        paint_frame(&mut app, &mut tr, &theme);
+        let menu = app.menu.get_rect();
+        assert!(app.menu.is_open() && !app.menu_items.is_empty());
+        assert!(
+            menu.x1 <= app.rect.x1 - app.metrics.s2 + 0.01,
+            "the menu {menu:?} touches the window's right edge"
+        );
+        let anchor = app
+            .menu_buttons
+            .iter()
+            .find(|button| button.opens == Some(OpenMenu::More))
+            .map(|button| button.rect)
+            .expect("the More button");
+        assert!(menu.y0 > anchor.y1, "the menu opens below its button");
+    }
+
+    // Case `a_phone_width_moves_several_commands_into_the_menu`.
+    // The bar fits the 800 x 600 shot size, so the overflow is reached at the
+    // framework's phone width, where several commands wait in the menu.
+    {
+        let (fits, _doc, _tr, _theme) = measured_app_with_doc(800.0, 600.0, 1.0);
+        assert!(
+            fits.menu_buttons
+                .iter()
+                .all(|button| button.opens != Some(OpenMenu::More)),
+            "the bar fits 800 px at 1x"
+        );
+        let (mut app, mut doc, mut tr, theme) = measured_app_with_doc(390.0, 844.0, 1.0);
+        app.sync(&mut doc, &automerge::ROOT);
+        paint_frame(&mut app, &mut tr, &theme);
+        app.open_command_menu(OpenMenu::More);
+        assert!(app.menu.is_open());
+        assert!(
+            app.menu_items.len() >= 2,
+            "a phone-width bar moves several commands into the menu"
+        );
+        assert!(app.menu.get_rect().x1 <= app.rect.x1 - app.metrics.s2 + 0.01);
+    }
+
+    // Case `the_tab_menu_and_colour_popover_stand_clear_of_the_tab`.
+    {
+        let (mut app, _doc, mut tr, theme) = painted();
+        app.open_tab_menu(0);
+        paint_frame(&mut app, &mut tr, &theme);
+        let tab = app.tab_rects.first().map(|(rect, _)| *rect).expect("a tab");
+        let menu = app.tab_menu.get_rect();
+        assert!(
+            tab.y0 - menu.y1 >= app.metrics.s2,
+            "the tab menu {menu:?} nearly touches the tab {tab:?}"
+        );
+        app.tab_menu.close();
+        app.tab_colour.set_open(true);
+        paint_frame(&mut app, &mut tr, &theme);
+        let panel = app.tab_colour.rect();
+        assert!(
+            tab.y0 - panel.y1 >= app.metrics.s2,
+            "the colour popover {panel:?} nearly touches the tab {tab:?}"
+        );
+    }
+
+    // Case `the_tab_editor_makes_room_instead_of_covering_neighbours`.
+    {
+        let (mut app, mut doc, mut tr, theme) = painted();
+        let before = app.tab_rects.clone();
+        app.begin_tab_rename(0);
+        for ch in [
+            "Q", "u", "a", "r", "t", "e", "r", "l", "y", " ", "p", "l", "a", "n",
+        ] {
+            feed(&mut app, &mut doc, &char_event(ch), Modifiers::default());
+        }
+        paint_frame(&mut app, &mut tr, &theme);
+        let editor = app
+            .tab_rename
+            .as_ref()
+            .map(|rename| rename.rect)
+            .expect("rename");
+        let second = app
+            .tab_rects
+            .get(1)
+            .map(|(rect, _)| *rect)
+            .expect("a second tab");
+        assert!(
+            editor.x1 <= second.x0 + 0.01,
+            "the editor {editor:?} covers the next tab {second:?}"
+        );
+        assert!(
+            editor.x1 <= app.add_tab_rect.x0 + 0.01,
+            "the editor covers the add button"
+        );
+        assert!(
+            editor.width() > before[0].0.width(),
+            "the slot grew with the name being typed"
+        );
+        assert!(second.x0 > before[1].0.x0, "the later tabs moved aside");
+    }
+}
