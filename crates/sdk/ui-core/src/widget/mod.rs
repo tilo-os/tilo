@@ -2229,10 +2229,6 @@ pub use document_viewport::{
 };
 mod floating_window;
 pub use floating_window::{FloatingWindow, MIN_HEIGHT, MIN_WIDTH, TITLE_BAR_HEIGHT};
-mod segmented;
-pub use segmented::{
-    ColorSwatchPicker, DEFAULT_PALETTE, SegmentTone, TriStateControl, packed_color,
-};
 mod text;
 pub use text::Text;
 mod spacer;
@@ -2360,8 +2356,8 @@ pub mod time_picker;
 pub use time_picker::{TimePicker, TimeValue};
 pub mod color_picker;
 pub mod color_swatch;
-pub use color_picker::{ColorPicker, ColorPickerOutcome, ColorSwatch};
-pub use color_swatch::ColorSwatchFace;
+pub use color_picker::{ColorPicker, ColorPickerOutcome};
+pub use color_swatch::{ColorSwatch, ColorSwatchFace, ColorSwatchPicker};
 pub mod popover_widget;
 pub use popover_widget::PopoverWidget;
 pub mod popover;

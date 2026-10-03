@@ -48,54 +48,22 @@ fn by_label<'a>(nodes: &'a [(AkNodeId, AkNode)], role: AkRole, label: &str) -> &
         .map_or_else(|| panic!("no {role:?} node labelled {label:?}"), |(_, n)| n)
 }
 
-// segmented::TriStateControl -> Group + RadioButton children
-
 #[test]
 fn selection_controls_expose_radio_list_tab_and_toggle_semantics() {
-    fn tri_state_control_exposes_a_radio_group() {
-        use super::segmented::TriStateControl;
-        let mut c = TriStateControl::allow_inherit_deny().with_selected(0); // "Allow"
-        let nodes = access_nodes(&mut c);
-
-        // The container is a Group announcing the active choice as its value.
-        let groups = of_role(&nodes, AkRole::Group);
-        assert_eq!(groups.len(), 1, "one group container");
-        let group = groups[0];
-        assert_eq!(
-            group.value(),
-            Some("Allow"),
-            "group value is the active label"
-        );
-        assert!(
-            !group.supports_action(AkAction::Click),
-            "the container is descriptive; each radio owns its activation"
-        );
-
-        // Three radio buttons, one per segment, in order, each positioned N of 3.
-        let radios = of_role(&nodes, AkRole::RadioButton);
-        assert_eq!(radios.len(), 3, "one RadioButton per segment");
-        let allow = by_label(&nodes, AkRole::RadioButton, "Allow");
-        let inherit = by_label(&nodes, AkRole::RadioButton, "Inherit");
-        let deny = by_label(&nodes, AkRole::RadioButton, "Deny");
-        // Selection rides on `toggled` (checked) — Allow is on, the others off.
-        assert_eq!(
-            allow.toggled(),
-            Some(Toggled::True),
-            "selected segment is checked"
-        );
-        assert_eq!(inherit.toggled(), Some(Toggled::False));
-        assert_eq!(deny.toggled(), Some(Toggled::False));
-        // Set membership so an AT can say "1 of 3".
-        assert_eq!(allow.position_in_set(), Some(1));
-        assert_eq!(allow.size_of_set(), Some(3));
-        assert_eq!(deny.position_in_set(), Some(3));
-        // Each segment is individually activatable.
-        assert!(allow.supports_action(AkAction::Click));
-    }
-
     fn color_swatch_picker_exposes_a_selectable_list() {
-        use super::segmented::{ColorSwatchPicker, DEFAULT_PALETTE};
-        let mut p = ColorSwatchPicker::new().with_selected(2);
+        use super::color_swatch::{ColorSwatch, ColorSwatchPicker};
+        use vello::peniko::Color;
+        let palette = [
+            (0xE6, 0x4A, 0x4A),
+            (0xE6, 0x8A, 0x3A),
+            (0xE6, 0xC8, 0x4A),
+            (0x6F, 0xC7, 0x4A),
+        ];
+        let mut p = ColorSwatchPicker::new(
+            palette.map(|(r, g, b)| ColorSwatch::new(Color::from_rgb8(r, g, b))),
+            4,
+        )
+        .with_selected(2);
         let nodes = access_nodes(&mut p);
 
         let lists = of_role(&nodes, AkRole::List);
@@ -109,15 +77,11 @@ fn selection_controls_expose_radio_list_tab_and_toggle_semantics() {
         );
 
         let items = of_role(&nodes, AkRole::ListItem);
-        assert_eq!(
-            items.len(),
-            DEFAULT_PALETTE.len(),
-            "one ListItem per swatch"
-        );
+        assert_eq!(items.len(), palette.len(), "one ListItem per swatch");
         // Item names are the real palette hex values (not fabricated labels).
         let first = by_label(&nodes, AkRole::ListItem, "#E64A4A");
         assert_eq!(first.position_in_set(), Some(1));
-        assert_eq!(first.size_of_set(), Some(12));
+        assert_eq!(first.size_of_set(), Some(4));
         // Selection is explicit tri-state on ListItems: the chosen one true, the
         // rest false (so an AT doesn't announce "selected" for the wrong swatch).
         let chosen = by_label(&nodes, AkRole::ListItem, "#E6C84A");
@@ -213,13 +177,12 @@ fn selection_controls_expose_radio_list_tab_and_toggle_semantics() {
         assert!(dark.supports_action(AkAction::Click));
     }
 
-    tri_state_control_exposes_a_radio_group();
     color_swatch_picker_exposes_a_selectable_list();
     tab_bar_exposes_each_tab_with_selected_state();
     toggle_group_exposes_each_segment_with_checked_state();
 }
 
-// segmented::ColorSwatchPicker -> List + ListItem children
+// color_swatch::ColorSwatchPicker -> List + ListItem children
 
 // gauge::RingGauge / gauge::BarGauge -> ProgressBar with % value
 
@@ -322,17 +285,29 @@ fn gauges_and_slash_menu_expose_meters_and_menu_visibility() {
 fn new_widgets_are_reachable_and_announced_from_the_window_root() {
     fn composed_ui_reaches_every_new_widget_through_the_window_root() {
         use super::Column;
+        use super::color_swatch::{ColorSwatch, ColorSwatchPicker};
         use super::gauge::{BarGauge, RingGauge};
-        use super::segmented::{ColorSwatchPicker, TriStateControl};
         use super::slash_menu::SlashMenu;
+        use super::toggle_group::{Segment, ToggleGroup};
 
         let mut slash = SlashMenu::new();
         slash.set_visible(true);
+        let swatches = [ColorSwatch::named(
+            vello::peniko::Color::from_rgb8(0x4A, 0x8F, 0xE6),
+            "Blue",
+        )];
         let mut col = Column::new()
+            .push(Box::new(ToggleGroup::new(
+                vec![
+                    Segment::new("Allow"),
+                    Segment::new("Inherit"),
+                    Segment::new("Deny"),
+                ],
+                2,
+            )))
             .push(Box::new(
-                TriStateControl::allow_inherit_deny().with_selected(2),
+                ColorSwatchPicker::new(swatches, 1).with_selected(0),
             ))
-            .push(Box::new(ColorSwatchPicker::new().with_selected(0)))
             .push(Box::new(RingGauge::new(0.9).with_label("90%", "GPU")))
             .push(Box::new(BarGauge::new(0.5).with_label("Battery", "50%")))
             .push(Box::new(slash));
@@ -353,7 +328,7 @@ fn new_widgets_are_reachable_and_announced_from_the_window_root() {
         assert!(of_role(&nodes, AkRole::GenericContainer).is_empty());
 
         // Each widget's top-level role is present exactly once.
-        assert_eq!(of_role(&nodes, AkRole::Group).len(), 1, "tri-state group");
+        assert_eq!(of_role(&nodes, AkRole::Group).len(), 1, "segmented group");
         assert_eq!(of_role(&nodes, AkRole::List).len(), 1, "swatch list");
         assert_eq!(
             of_role(&nodes, AkRole::ProgressIndicator).len(),
@@ -368,23 +343,30 @@ fn new_widgets_are_reachable_and_announced_from_the_window_root() {
 
     fn screen_reader_announces_focus_and_value_change_for_new_widgets() {
         use super::gauge::RingGauge;
-        use super::segmented::TriStateControl;
+        use super::toggle_group::{Segment, ToggleGroup};
         use crate::screen_reader::{ScreenReader, describe};
 
         // Focus narration composes name + role + value + state straight off the
         // widget's own accessibility() node.
-        let tri = TriStateControl::allow_inherit_deny().with_selected(0);
-        let group = Widget::accessibility(&tri).unwrap();
+        let segmented = ToggleGroup::new(
+            vec![
+                Segment::new("Allow"),
+                Segment::new("Inherit"),
+                Segment::new("Deny"),
+            ],
+            0,
+        );
+        let group = Widget::accessibility(&segmented).unwrap();
         // The group is unnamed and announces its active choice ("Allow") as value.
         assert_eq!(describe(&group), "group, Allow");
-        // Its first segment reads as a checked radio button positioned in the set.
+        // Its first segment reads as an on toggle positioned in the set.
         assert_eq!(
             describe(&group.children[0]),
-            "Allow, radio button, checked, 1 of 3"
+            "Allow, toggle button, on, 1 of 3"
         );
         assert_eq!(
             describe(&group.children[1]),
-            "Inherit, radio button, not checked, 2 of 3"
+            "Inherit, toggle button, off, 2 of 3"
         );
 
         let gauge = RingGauge::new(0.42).with_label("42%", "CPU");

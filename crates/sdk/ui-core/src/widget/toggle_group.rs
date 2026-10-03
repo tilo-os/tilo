@@ -1,10 +1,13 @@
-//! `ToggleGroup` — segmented control. A horizontal strip of equal-width
-//! buttons where exactly one segment is selected. Clicking a segment
-//! activates it and fires the `on_change` callback with the new index.
+//! `ToggleGroup` — the segmented control. A strip of equal-width segments
+//! of which exactly one is chosen. Clicking a segment chooses it and fires
+//! the `on_change` callback with the new index.
 //!
 //! State lives entirely on the widget (no CRDT round-trip) because the
 //! segmented control's selection is ephemeral UI sugar — callers persist
 //! the choice via the `on_change` callback into their own CRDT slot.
+//!
+//! The chosen segment is a *lift* (HIG §9.3): a thumb one surface step off
+//! the track, set concentrically inside it, with primary ink and no hue.
 use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use std::cell::Cell;
@@ -16,11 +19,11 @@ use vello::peniko::Color;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::text_render::TextRenderer;
+use crate::chrome::{SelectionState, selection_tier_on};
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
-use crate::tokens::TextRole;
 use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
-use crate::widget::{ActionEmitter, ControlBindingMetadata, TaffyTreeExt, Widget};
+use crate::widget::{ActionEmitter, ControlBindingMetadata, ControlSize, TaffyTreeExt, Widget};
 
 /// Lossless `usize -> f64` widening for segment-strip geometry. Segment
 /// counts are bounded far below `u32::MAX`, so routing through `u32` (which
@@ -29,28 +32,35 @@ fn usize_to_f64(n: usize) -> f64 {
     f64::from(u32::try_from(n).unwrap_or(u32::MAX))
 }
 
-/// Lossless `usize -> f32` widening for the same reason, via `u16` (`f32`
-/// represents integers up to `2^24` exactly, and no toggle group ever has
-/// anywhere near `u16::MAX` segments).
-fn usize_to_f32(n: usize) -> f32 {
-    f32::from(u16::try_from(n).unwrap_or(u16::MAX))
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "logical pixel counts far below f32 precision"
+)]
+fn px_f32(value: f64) -> f32 {
+    value as f32
 }
 
-/// Intrinsic strip geometry: 120 px per segment so a two-word label fits
-/// without truncation. Its height comes from the theme's HIG panel-row metric,
-/// which keeps every segment a full touch target and follows UI density scaling.
-/// `apply_layout` re-partitions whatever width the host actually assigns.
-const SEGMENT_WIDTH: f32 = 120.0;
-
+/// One choice of a [`ToggleGroup`].
 pub struct Segment {
     pub label: String,
+    /// What the segment shows when its full label does not fit its share
+    /// of the strip ("Mon" for "Monday").
+    pub short: Option<String>,
 }
 
 impl Segment {
     pub fn new(label: impl Into<String>) -> Self {
         Self {
             label: label.into(),
+            short: None,
         }
+    }
+
+    /// The label shown when the full one does not fit.
+    #[must_use]
+    pub fn short(mut self, label: impl Into<String>) -> Self {
+        self.short = Some(label.into());
+        self
     }
 }
 
@@ -72,23 +82,33 @@ pub struct ToggleGroup {
     /// Captured on `CursorMoved` so the subsequent `MouseInput` (which
     /// carries no position of its own) can hit-test against `segment_rects`.
     last_cursor: Cell<Point>,
+    /// The segment under the pointer, for its hover lift.
+    hovered: Option<usize>,
     cached: Scene,
     cache_dirty: bool,
     cache_rect: Rect,
     last_selected: usize,
-    /// Drives the focus ring drawn in place of the standard outer border.
+    /// Drives the focus ring drawn round the track.
     is_focused: bool,
     /// `is_focused` at the last cache emit, so a focus change invalidates
     /// the cached scene.
     last_focused: bool,
+    /// `hovered` at the last cache emit.
+    last_hovered: Option<usize>,
     /// The theme colours `cached` was painted in, so a theme change
     /// repaints it.
-    drawn_palette: Option<[vello::peniko::Color; 4]>,
-    /// Fill the parent's available width, allowing compact app navigation on
-    /// phone-sized windows while retaining equal hit targets.
-    flexible_width: bool,
-    /// Visual treatment shared with the immediate-mode segmented painter.
+    drawn_palette: Option<[Color; 4]>,
+    /// Stretch to the parent's width instead of fitting the labels.
+    fill: bool,
+    /// What the strip is (see [`SegmentedStyle`]).
     style: SegmentedStyle,
+    /// Height and label role.
+    control_size: ControlSize,
+    /// The geometry seen in `build_layout`, for `measure`.
+    metrics: StripMetrics,
+    /// The width `measure` settled on, pinned onto the node so a stretching
+    /// parent cannot widen a fitted strip.
+    measured_width: Option<f32>,
     /// Finger owning the current gesture. Selection commits on release, so a
     /// scroll or cancelled touch never changes tabs on initial contact.
     active_touch: Option<u64>,
@@ -111,28 +131,34 @@ impl ToggleGroup {
             segment_rects: Vec::new(),
             rect: Rect::ZERO,
             last_cursor: Cell::new(Point::ZERO),
+            hovered: None,
             cached: Scene::new(),
             cache_dirty: true,
             cache_rect: Rect::ZERO,
             last_selected: usize::MAX,
             is_focused: false,
             last_focused: false,
+            last_hovered: None,
             drawn_palette: None,
-            flexible_width: false,
-            style: SegmentedStyle::Solid,
+            fill: false,
+            style: SegmentedStyle::Segmented,
+            control_size: ControlSize::Regular,
+            metrics: StripMetrics::stock(ControlSize::Regular),
+            measured_width: None,
             active_touch: None,
         }
     }
 
-    /// Use the containing width instead of the 120px-per-segment intrinsic
-    /// width. Labels remain equal-width and elide through the normal painter.
+    /// Stretch to the parent's width, segments sharing it equally. Without
+    /// this the strip is as wide as its labels need.
     #[must_use]
-    pub fn with_flexible_width(mut self) -> Self {
-        self.flexible_width = true;
+    pub fn fill(mut self) -> Self {
+        self.fill = true;
         self
     }
 
-    /// Use the same themed treatment as [`SegmentedFace`].
+    /// What the strip is: a segmented control (the default), page tabs, or
+    /// a quiet refinement under a primary choice.
     #[must_use]
     pub fn with_style(mut self, style: SegmentedStyle) -> Self {
         self.style = style;
@@ -140,10 +166,11 @@ impl ToggleGroup {
         self
     }
 
-    /// A low-chrome tab treatment with a short accent indicator.
+    /// Height and label role (see [`ControlSize`]).
     #[must_use]
-    pub fn underline(mut self) -> Self {
-        self.style = SegmentedStyle::Underline;
+    pub fn control_size(mut self, size: ControlSize) -> Self {
+        self.control_size = size;
+        self.metrics = StripMetrics::stock(size);
         self.cache_dirty = true;
         self
     }
@@ -286,26 +313,7 @@ impl ToggleGroup {
     /// [`Self::apply_layout_external`] so both compute identical geometry.
     fn set_rect_and_partition(&mut self, rect: Rect) {
         self.rect = rect;
-        self.segment_rects.clear();
-        let n = self.segments.len();
-        if n == 0 {
-            return;
-        }
-        let total_w = self.rect.width();
-        let seg_w = total_w / usize_to_f64(n);
-        let last = n.saturating_sub(1);
-        for i in 0..n {
-            let sx0 = self.rect.x0 + usize_to_f64(i) * seg_w;
-            let sx1 = if i == last {
-                // Anchor to `rect.x1` so accumulated rounding doesn't leave
-                // a hairline gap on the right edge.
-                self.rect.x1
-            } else {
-                self.rect.x0 + usize_to_f64(i.saturating_add(1)) * seg_w
-            };
-            self.segment_rects
-                .push(Rect::new(sx0, self.rect.y0, sx1, self.rect.y1));
-        }
+        self.segment_rects = partition(rect, self.segments.len());
         #[allow(
             clippy::float_cmp,
             reason = "exact equality is intentional: both rects come from the same taffy \
@@ -319,52 +327,127 @@ impl ToggleGroup {
         }
     }
 
-    /// Exposed so tests can assert the draw pass emits a separator-per-gap
-    /// without scraping the Vello scene for exact stroke geometry.
+    /// The number of separators the strip draws at rest: one between each
+    /// pair of neighbouring segments that are both unchosen.
     pub fn separator_count(&self) -> usize {
-        self.segments.len().saturating_sub(1)
+        separators(self.segments.len(), self.selected, self.style).count()
     }
 }
 
-/// Visual style for an immediate-mode segmented control painted via
-/// [`ToggleGroup::paint`].
+/// `rect` split into `n` equal segments, the last one anchored to the right
+/// edge so accumulated rounding leaves no hairline gap.
+fn partition(rect: Rect, n: usize) -> Vec<Rect> {
+    if n == 0 {
+        return Vec::new();
+    }
+    let seg_w = rect.width() / usize_to_f64(n);
+    let last = n.saturating_sub(1);
+    (0..n)
+        .map(|i| {
+            let x0 = rect.x0 + usize_to_f64(i) * seg_w;
+            let x1 = if i == last {
+                rect.x1
+            } else {
+                rect.x0 + usize_to_f64(i.saturating_add(1)) * seg_w
+            };
+            Rect::new(x0, rect.y0, x1, rect.y1)
+        })
+        .collect()
+}
+
+/// The indices `i` whose right edge carries a separator: between two
+/// unchosen neighbours on a segmented track, nowhere else.
+fn separators(n: usize, selected: usize, style: SegmentedStyle) -> impl Iterator<Item = usize> {
+    (0..n.saturating_sub(1)).filter(move |i| {
+        style == SegmentedStyle::Segmented && *i != selected && i.saturating_add(1) != selected
+    })
+}
+
+/// What a segmented strip is. The style never chooses a colour: the chosen
+/// segment is always a lift with primary ink.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum SegmentedStyle {
-    /// Unified strip: every segment filled, interior separators, one outer
-    /// border. Rects must be contiguous.
+    /// A segmented control: a raised track with an edge, the chosen
+    /// segment a thumb lifted off it, concentric inside it.
     #[default]
-    Solid,
-    /// Discrete pills: only the selected or hovered pill is filled, no
-    /// outer border or separators.
-    Pill,
-    /// No fill; the selected tab carries a short accent underline bar and a
-    /// lifted label colour.
-    Underline,
+    Segmented,
+    /// Page tabs: no track; the chosen tab is primary ink over a 2 px
+    /// primary-ink underline.
+    Tabs,
+    /// A quiet refinement under a primary choice (a sort order under a
+    /// view switcher): no track; the chosen segment is a lift of the ground
+    /// it stands on.
+    Quiet,
 }
 
-/// The accent is a themeable token, so the colour that reads on it is not a
-/// constant: white is right on a dark accent but falls below contrast on a
-/// bright one. Both the retained draw and [`segment_colors`] resolve
-/// through here so the strip and its immediate-mode face cannot disagree.
-pub fn selected_segment_ink(theme: &Theme) -> Color {
-    theme.tokens.colors.text_primary
+/// The geometry of a strip of one [`ControlSize`] in one theme.
+#[derive(Clone, Debug, PartialEq)]
+struct StripMetrics {
+    height: f64,
+    /// Inset of the thumb inside the track.
+    inset: f64,
+    /// Label inset inside each segment.
+    pad_x: f64,
+    track_radius: f64,
+    thumb_radius: f64,
+    label: TextStyle,
 }
 
-/// Resolved across both the resting ground and the hover lift at once, so
-/// a tab does not change colour under the pointer.
-pub fn unselected_segment_ink(theme: &Theme) -> Color {
-    theme.tokens.colors.ink_on_any(
-        &[
-            theme.tokens.colors.surfaces.content,
-            theme.tokens.colors.intent.selection_hover,
-        ],
-        theme.tokens.colors.text_dim,
-        ON_FILL_MIN_CONTRAST,
-    )
+impl StripMetrics {
+    fn of(size: ControlSize, theme: &Theme) -> Self {
+        // The thumb is concentric with the track: its inset is the step
+        // between the control and item radii.
+        let radii = &theme.tokens.radii;
+        let inset = (radii.control - radii.item).max(0.0);
+        Self {
+            height: size.height(theme),
+            inset: f64::from(inset),
+            pad_x: f64::from(theme.tokens.spacing.s3),
+            track_radius: f64::from(radii.control),
+            thumb_radius: f64::from(radii.concentric(radii.control, inset)),
+            label: size.label_style(theme),
+        }
+    }
+
+    fn stock(size: ControlSize) -> Self {
+        static STOCK: std::sync::LazyLock<[StripMetrics; 3]> = std::sync::LazyLock::new(|| {
+            let theme = Theme::dark();
+            [
+                StripMetrics::of(ControlSize::Small, &theme),
+                StripMetrics::of(ControlSize::Regular, &theme),
+                StripMetrics::of(ControlSize::Large, &theme),
+            ]
+        });
+        let index = match size {
+            ControlSize::Small => 0,
+            ControlSize::Regular => 1,
+            ControlSize::Large => 2,
+        };
+        STOCK
+            .get(index)
+            .cloned()
+            .unwrap_or_else(|| Self::of(size, &Theme::dark()))
+    }
+
+    /// The narrowest strip that shows every full label: equal segments as
+    /// wide as the widest label plus its padding.
+    fn intrinsic_width(&self, labels: &[&str], text: &mut TextRenderer) -> f64 {
+        let widest = labels
+            .iter()
+            .map(|label| {
+                f64::from(
+                    text.measure_style(label, None, &self.label.clone().strong())
+                        .0,
+                )
+            })
+            .fold(0.0, f64::max);
+        let segment = (widest + 2.0 * self.pad_x).max(self.height);
+        (segment * usize_to_f64(labels.len()) + 2.0 * self.inset).ceil()
+    }
 }
 
-/// `(fill, label)` colours for one segment; `fill == None` means
-/// transparent.
+/// `(fill, label)` of one segment; `fill == None` means nothing is painted
+/// under it. On a [`SegmentedStyle::Segmented`] track the fill is the thumb.
 pub fn segment_colors(
     theme: &Theme,
     style: SegmentedStyle,
@@ -372,66 +455,51 @@ pub fn segment_colors(
     hovered: bool,
 ) -> (Option<Color>, Color) {
     let colors = &theme.tokens.colors;
+    let ground = match style {
+        SegmentedStyle::Segmented => colors.surfaces.raised,
+        SegmentedStyle::Tabs | SegmentedStyle::Quiet => colors.surfaces.content,
+    };
+    let tier = selection_tier_on(theme, SelectionState::new(selected, hovered, false), ground);
+    let chosen = selection_tier_on(theme, SelectionState::active(true), ground).fill;
+    let hover = selection_tier_on(theme, SelectionState::new(false, true, false), ground).fill;
+    // Resolved over the ground and its hover lift at once, so an idle label
+    // does not change colour under the pointer.
+    let quiet_ink = colors.ink_on_any(&[ground, hover], colors.text_dim, ON_FILL_MIN_CONTRAST);
     match style {
-        SegmentedStyle::Solid => {
-            if selected {
-                (
-                    Some(
-                        theme
-                            .tokens
-                            .colors
-                            .lift_on(theme.tokens.colors.surfaces.raised, 1.0),
-                    ),
-                    selected_segment_ink(theme),
-                )
+        SegmentedStyle::Segmented | SegmentedStyle::Quiet => {
+            let fill = (selected || hovered).then_some(tier.fill);
+            let ink = if selected {
+                colors.ink_on_any(&[chosen], colors.text_primary, ON_FILL_MIN_CONTRAST)
             } else {
-                (Some(colors.surfaces.raised), colors.text_primary)
-            }
-        }
-        SegmentedStyle::Pill => {
-            if selected {
-                (
-                    Some(
-                        theme
-                            .tokens
-                            .colors
-                            .lift_on(theme.tokens.colors.surfaces.raised, 1.0),
-                    ),
-                    selected_segment_ink(theme),
-                )
-            } else if hovered {
-                (
-                    Some(colors.intent.selection_hover),
-                    unselected_segment_ink(theme),
-                )
-            } else {
-                (None, unselected_segment_ink(theme))
-            }
-        }
-        SegmentedStyle::Underline => {
-            // No fill; the selected tab's label lifts to the primary colour,
-            // the accent underline (drawn in `paint`) carries the selection.
-            let fg = if selected || hovered {
-                colors.text_primary
-            } else {
-                unselected_segment_ink(theme)
+                quiet_ink
             };
-            (None, fg)
+            (fill, ink)
+        }
+        SegmentedStyle::Tabs => {
+            // An inactive tab's label holds its colour under the pointer;
+            // the underline alone marks the chosen one.
+            let ink = if selected {
+                colors.ink_on_any(&[ground], colors.text_primary, ON_FILL_MIN_CONTRAST)
+            } else {
+                quiet_ink
+            };
+            (None, ink)
         }
     }
 }
 
-/// Configuration for [`ToggleGroup::paint`]. The caller owns the per-segment
-/// rects and hit-test; this paints the themed look over them.
+/// An immediate-mode segmented strip over caller-owned segment rects (the
+/// rects must be contiguous). The caller owns the hit-test; this paints the
+/// themed look over them. Size the strip with [`SegmentedFace::height`] and
+/// [`SegmentedFace::intrinsic_width`].
 pub struct SegmentedFace<'a> {
     segments: &'a [Rect],
     labels: &'a [&'a str],
     selected: usize,
     hovered: Option<usize>,
+    focused: bool,
     style: SegmentedStyle,
-    radius: f64,
-    /// `Some(pad)` left-aligns labels instead of centring.
-    label_pad_left: Option<f64>,
+    control_size: ControlSize,
 }
 
 impl<'a> SegmentedFace<'a> {
@@ -441,9 +509,9 @@ impl<'a> SegmentedFace<'a> {
             labels,
             selected,
             hovered: None,
-            style: SegmentedStyle::Solid,
-            radius: 8.0,
-            label_pad_left: None,
+            focused: false,
+            style: SegmentedStyle::Segmented,
+            control_size: ControlSize::Regular,
         }
     }
     #[must_use]
@@ -452,76 +520,81 @@ impl<'a> SegmentedFace<'a> {
         self
     }
     #[must_use]
-    pub fn pill(mut self) -> Self {
-        self.style = SegmentedStyle::Pill;
-        self
-    }
-    #[must_use]
     pub fn hovered(mut self, idx: Option<usize>) -> Self {
         self.hovered = idx;
         self
     }
+    /// Draw the focus ring, in your colour, round the strip.
     #[must_use]
-    pub fn radius(mut self, r: f64) -> Self {
-        self.radius = r;
+    pub fn focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
         self
     }
+    /// Label role; the host sizes the rects with [`Self::height`].
     #[must_use]
-    pub fn left_labels(mut self, pad: f64) -> Self {
-        self.label_pad_left = Some(pad);
+    pub fn control_size(mut self, size: ControlSize) -> Self {
+        self.control_size = size;
         self
+    }
+    /// The height of a strip of `size` in `theme`.
+    pub fn height(size: ControlSize, theme: &Theme) -> f64 {
+        StripMetrics::of(size, theme).height
+    }
+    /// The narrowest strip that shows every full label in `theme`.
+    pub fn intrinsic_width(
+        labels: &[&str],
+        size: ControlSize,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) -> f64 {
+        StripMetrics::of(size, theme).intrinsic_width(labels, text)
     }
 }
 
 impl ToggleGroup {
-    /// Paint the background/border layer for [`Self::paint`]: the filled
-    /// segments plus whatever chrome the style calls for (outer border and
-    /// separators for `Solid`, nothing extra for `Pill`, an underline bar
-    /// for `Underline`). Split out of `paint` to keep it under the
-    /// line-count lint; `segs` is guaranteed non-empty by the caller.
-    fn paint_style_layer(
+    /// The track (and its separators) under a [`SegmentedStyle::Segmented`]
+    /// strip, or the underline of [`SegmentedStyle::Tabs`].
+    fn paint_ground(
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
         face: &SegmentedFace<'_>,
-        segs: &[Rect],
+        metrics: &StripMetrics,
+        outer: Rect,
     ) {
         let colors = &theme.tokens.colors;
         match face.style {
-            SegmentedStyle::Solid => {
-                let (Some(first), Some(last)) = (segs.first(), segs.last()) else {
-                    return;
-                };
-                let outer = Rect::new(first.x0, first.y0, last.x1, first.y1);
-                let outer_shape = RoundedRect::from_rect(outer, face.radius);
-                // Clip per-segment fills to the rounded outer so the end
-                // segments inherit the corner radius.
-                scene.push_layer(
+            SegmentedStyle::Segmented => {
+                let track = colors.surfaces.raised;
+                let edge = crate::surface::edge_on(track);
+                scene.fill(
                     vello::peniko::Fill::NonZero,
-                    vello::peniko::BlendMode::default(),
-                    1.0,
                     transform,
-                    &outer_shape,
+                    track,
+                    None,
+                    &RoundedRect::from_rect(outer, metrics.track_radius),
                 );
-                for (i, seg) in segs.iter().enumerate() {
-                    let (fill, _) = segment_colors(theme, face.style, i == face.selected, false);
-                    if let Some(fill) = fill {
-                        scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, seg);
-                    }
-                }
-                scene.pop_layer();
-                // Separators and outer edge derive from the track (HIG
-                // §9.5); separators stop `s1` short of the edge so they
-                // never run into the corner radius.
-                let track_edge = crate::surface::edge_on(colors.surfaces.raised);
-                let inset = f64::from(theme.tokens.spacing.s1);
-                let sep = Stroke::new(1.0);
-                for seg in segs.iter().take(segs.len().saturating_sub(1)) {
-                    let x = seg.x1;
+                if !face.focused {
                     scene.stroke(
-                        &sep,
+                        &Stroke::new(1.0),
                         transform,
-                        track_edge,
+                        edge,
+                        None,
+                        &crate::surface::edge_outline(outer, metrics.track_radius),
+                    );
+                }
+                // Separators stop short of the edge so they never run into
+                // the corner radius, and vanish beside the thumb.
+                let inset = f64::from(theme.tokens.spacing.s2);
+                for i in separators(face.segments.len(), face.selected, face.style) {
+                    let Some(seg) = face.segments.get(i) else {
+                        continue;
+                    };
+                    let x = seg.x1.round() - 0.5;
+                    scene.stroke(
+                        &Stroke::new(1.0),
+                        transform,
+                        edge,
                         None,
                         &Line::new(
                             Point::new(x, outer.y0 + inset),
@@ -529,50 +602,22 @@ impl ToggleGroup {
                         ),
                     );
                 }
-                scene.stroke(
-                    &Stroke::new(1.0),
-                    transform,
-                    track_edge,
-                    None,
-                    &crate::surface::edge_outline(outer, face.radius),
-                );
             }
-            SegmentedStyle::Pill => {
-                for (i, seg) in segs.iter().enumerate() {
-                    let (fill, _) = segment_colors(
-                        theme,
-                        face.style,
-                        i == face.selected,
-                        face.hovered == Some(i),
-                    );
-                    if let Some(fill) = fill {
-                        scene.fill(
-                            vello::peniko::Fill::NonZero,
-                            transform,
-                            fill,
-                            None,
-                            &RoundedRect::from_rect(*seg, face.radius),
-                        );
-                    }
-                }
-            }
-            SegmentedStyle::Underline => {
-                // Short accent underline bar inset from the tab's edges.
-                if let Some(seg) = segs.get(face.selected) {
-                    let inset = 12.0_f64.min((seg.width() / 2.0 - 2.0).max(0.0));
-                    let bar = Rect::new(seg.x0 + inset, seg.y1 - 2.0, seg.x1 - inset, seg.y1);
+            SegmentedStyle::Tabs => {
+                if let Some(seg) = face.segments.get(face.selected) {
+                    let thickness = 2.0 * f64::from(theme.ui_scale);
+                    let inset = metrics.pad_x.min((seg.width() / 2.0 - 2.0).max(0.0));
+                    let bar = Rect::new(seg.x0 + inset, seg.y1 - thickness, seg.x1 - inset, seg.y1);
                     scene.fill(
                         vello::peniko::Fill::NonZero,
                         transform,
-                        theme
-                            .tokens
-                            .colors
-                            .lift_on(theme.tokens.colors.surfaces.raised, 1.0),
+                        colors.text_primary,
                         None,
-                        &bar,
+                        &RoundedRect::from_rect(bar, thickness / 2.0),
                     );
                 }
             }
+            SegmentedStyle::Quiet => {}
         }
     }
 
@@ -586,37 +631,64 @@ impl ToggleGroup {
         face: &SegmentedFace<'_>,
     ) {
         let segs = face.segments;
-        if segs.is_empty() {
+        let (Some(first), Some(last)) = (segs.first(), segs.last()) else {
             return;
+        };
+        let metrics = StripMetrics::of(face.control_size, theme);
+        let outer = Rect::new(first.x0, first.y0, last.x1, first.y1);
+        Self::paint_ground(scene, transform, theme, face, &metrics, outer);
+
+        // The thumb (and the hover lift) of every style but tabs: a lift set
+        // concentrically inside the segment.
+        if face.style != SegmentedStyle::Tabs {
+            for (i, seg) in segs.iter().enumerate() {
+                let selected = i == face.selected;
+                let hovered = face.hovered == Some(i) && !selected;
+                let (Some(fill), _) = segment_colors(theme, face.style, selected, hovered) else {
+                    continue;
+                };
+                let thumb = seg.inset(-metrics.inset);
+                let shape = RoundedRect::from_rect(thumb, metrics.thumb_radius);
+                scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
+                let ground = if face.style == SegmentedStyle::Segmented {
+                    theme.tokens.colors.surfaces.raised
+                } else {
+                    theme.tokens.colors.surfaces.content
+                };
+                let tier =
+                    selection_tier_on(theme, SelectionState::new(selected, hovered, false), ground);
+                if let Some(border) = tier.border {
+                    scene.stroke(
+                        &Stroke::new(1.0),
+                        transform,
+                        border,
+                        None,
+                        &crate::surface::edge_outline(thumb, metrics.thumb_radius),
+                    );
+                }
+            }
         }
 
-        Self::paint_style_layer(scene, transform, theme, face, segs);
-
-        // Segment labels are `Label`s; the selected one is set `.strong()` so
-        // the active choice reads first.
-        let label_style = theme.text(TextRole::Label);
-        let selected_style = label_style.clone().strong();
+        // Segment labels are `Label`s; the chosen one is set `.strong()` so
+        // it reads first. A label that does not fit falls back to its short
+        // form, then elides.
+        let selected_style = metrics.label.clone().strong();
         for (i, seg) in segs.iter().enumerate() {
             let label = face.labels.get(i).copied().unwrap_or("");
             if label.is_empty() {
                 continue;
             }
-            let (_, fg) = segment_colors(
-                theme,
-                face.style,
-                i == face.selected,
-                face.hovered == Some(i),
-            );
-            let style = if i == face.selected {
+            let selected = i == face.selected;
+            let (_, ink) = segment_colors(theme, face.style, selected, face.hovered == Some(i));
+            let style = if selected {
                 &selected_style
             } else {
-                &label_style
+                &metrics.label
             };
-            let (tw, th) = text_renderer.measure_style(label, None, style);
-            let text_x = match face.label_pad_left {
-                Some(pad) => seg.x0 + pad,
-                None => seg.center().x - f64::from(tw) / 2.0,
-            };
+            let room = (seg.width() - 2.0 * metrics.pad_x.min(seg.width() / 4.0)).max(1.0);
+            let shown = text_renderer.elide_to_width_style(label, px_f32(room), style);
+            let (tw, th) = text_renderer.measure_style(&shown, None, style);
+            let text_x = seg.center().x - f64::from(tw) / 2.0;
             let text_y = seg.y0 + (seg.height() - f64::from(th)) / 2.0;
             #[allow(
                 clippy::arithmetic_side_effects,
@@ -624,8 +696,41 @@ impl ToggleGroup {
                           overflow or panic"
             )]
             let label_transform = transform * Affine::translate((text_x, text_y));
-            text_renderer.draw_style(scene, label, fg, label_transform, None, style);
+            text_renderer.draw_style(scene, &shown, ink, label_transform, None, style);
         }
+
+        // Keyboard focus is your colour round the whole strip.
+        if face.focused {
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                theme.tokens.colors.intent.you,
+                None,
+                &crate::surface::edge_outline(outer, metrics.track_radius),
+            );
+        }
+    }
+
+    /// The labels this strip shows in `rect`: each full label where it fits
+    /// its share, otherwise its short form when it has one.
+    fn shown_labels(&self, text: &mut TextRenderer, theme: &Theme) -> Vec<String> {
+        let metrics = StripMetrics::of(self.control_size, theme);
+        let style = metrics.label.clone().strong();
+        self.segments
+            .iter()
+            .zip(&self.segment_rects)
+            .map(|(segment, rect)| {
+                let room = rect.width() - 2.0 * metrics.pad_x;
+                match &segment.short {
+                    Some(short)
+                        if f64::from(text.measure_style(&segment.label, None, &style).0) > room =>
+                    {
+                        short.clone()
+                    }
+                    _ => segment.label.clone(),
+                }
+            })
+            .collect()
     }
 
     fn handle_key_event(&mut self, key: &KeyEvent, handled: &mut bool) {
@@ -774,34 +879,83 @@ impl Widget for ToggleGroup {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // Segments always share the available width equally in `apply_layout`.
-        let width = usize_to_f32(self.segments.len().max(1)) * SEGMENT_WIDTH;
+        let metrics = StripMetrics::of(self.control_size, theme);
+        if metrics != self.metrics {
+            self.metrics = metrics;
+            self.cache_dirty = true;
+        }
+        self.measured_width = None;
         let node = taffy.leaf_node(Style {
             size: Size {
-                width: if self.flexible_width {
+                // Fit the labels (measured in `measure`) unless asked to fill.
+                width: if self.fill {
                     Dimension::percent(1.0)
                 } else {
-                    Dimension::length(width)
+                    Dimension::auto()
                 },
-                height: Dimension::length(
-                    theme
-                        .tokens
-                        .metrics
-                        .panel_row_height
-                        .max(theme.tokens.metrics.min_pointer_target),
-                ),
+                height: Dimension::length(px_f32(self.metrics.height)),
             },
-            // A segmented strip has an intrinsic label-bearing width. In a
-            // horizontal `Scrollable`, shrinking it to the viewport defeats
-            // scrolling and makes labels collide. Non-scrollable parents can
-            // clip it, which prevents overlapping controls.
-            // Width is already resolved as a percentage in flexible mode;
-            // never let a tall sibling squash the 44px touch target.
+            max_size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::auto(),
+            },
+            // A segmented strip has an intrinsic label-bearing width; a
+            // parent without room caps it (`max_size`) and the labels fall
+            // back to their short forms, then elide.
             flex_shrink: 0.0,
             ..Default::default()
         });
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
+    }
+
+    fn measure(
+        &mut self,
+        known: Size<Option<f32>>,
+        _available: Size<taffy::AvailableSpace>,
+        text: &mut TextRenderer,
+    ) -> Size<f32> {
+        let labels: Vec<&str> = self.segments.iter().map(|s| s.label.as_str()).collect();
+        let intrinsic = px_f32(self.metrics.intrinsic_width(&labels, text));
+        if !self.fill {
+            self.measured_width = Some(intrinsic);
+        }
+        Size {
+            width: known.width.unwrap_or(intrinsic),
+            height: known.height.unwrap_or(px_f32(self.metrics.height)),
+        }
+    }
+
+    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+        let Some(width) = self.measured_width.filter(|_| !self.fill) else {
+            return false;
+        };
+        let Ok(style) = taffy.style(node) else {
+            return false;
+        };
+        let width = Dimension::length(width);
+        if style.size.width == width {
+            return false;
+        }
+        let mut style = style.clone();
+        style.size.width = width;
+        taffy.set_style(node, style).is_ok()
+    }
+
+    fn adjust_layout_with_measure(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        text: &mut TextRenderer,
+    ) -> bool {
+        if self.fill {
+            return false;
+        }
+        if self.measured_width.is_none() {
+            let labels: Vec<&str> = self.segments.iter().map(|s| s.label.as_str()).collect();
+            self.measured_width = Some(px_f32(self.metrics.intrinsic_width(&labels, text)));
+        }
+        self.adjust_layout_style(taffy, node)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -833,14 +987,16 @@ impl Widget for ToggleGroup {
             self.cache_dirty = true;
             self.last_focused = self.is_focused;
         }
+        if self.hovered != self.last_hovered {
+            self.cache_dirty = true;
+            self.last_hovered = self.hovered;
+        }
+        let colors = &theme.tokens.colors;
         let palette = [
-            theme
-                .tokens
-                .colors
-                .lift_on(theme.tokens.colors.surfaces.raised, 1.0),
-            theme.tokens.colors.intent.selection_hover,
-            theme.tokens.colors.text_primary,
-            theme.tokens.colors.surfaces.content,
+            colors.surfaces.raised,
+            colors.surfaces.content,
+            colors.text_primary,
+            colors.intent.you,
         ];
         if self.drawn_palette != Some(palette) {
             self.drawn_palette = Some(palette);
@@ -859,29 +1015,21 @@ impl Widget for ToggleGroup {
             out_scene.append(&self.cached, Some(cached_transform));
             return;
         }
+        let shown = self.shown_labels(text_renderer, theme);
+        let labels: Vec<&str> = shown.iter().map(String::as_str).collect();
         self.cached.reset();
-        let scene = &mut self.cached;
-        let transform = Affine::IDENTITY;
-
-        let radius = f64::from(theme.tokens.radii.control);
-        let outer_shape = RoundedRect::from_rect(self.rect, radius);
-        let labels: Vec<&str> = self.segments.iter().map(|s| s.label.as_str()).collect();
         let face = SegmentedFace::new(&self.segment_rects, &labels, self.selected)
             .style(self.style)
-            .radius(radius);
-        Self::paint(scene, transform, text_renderer, theme, &face);
-
-        // Keyboard focus must remain unmistakable on every style. For Solid,
-        // this focus stroke intentionally covers the resting standard border.
-        if self.is_focused {
-            scene.stroke(
-                &Stroke::new(2.0),
-                transform,
-                theme.tokens.colors.border_focus,
-                None,
-                &outer_shape,
-            );
-        }
+            .control_size(self.control_size)
+            .hovered(self.hovered)
+            .focused(self.is_focused);
+        Self::paint(
+            &mut self.cached,
+            Affine::IDENTITY,
+            text_renderer,
+            theme,
+            &face,
+        );
         self.cache_rect = self.rect;
         out_scene.append(&self.cached, Some(out_transform));
     }
@@ -890,6 +1038,7 @@ impl Widget for ToggleGroup {
         self.cache_dirty
             || self.selected != self.last_selected
             || self.is_focused != self.last_focused
+            || self.hovered != self.last_hovered
     }
 
     fn mark_drawn(&mut self) {
@@ -909,7 +1058,12 @@ impl Widget for ToggleGroup {
                 let logical_pos =
                     Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor.set(logical_pos);
+                self.hovered = self
+                    .segment_rects
+                    .iter()
+                    .position(|segment| segment.contains(logical_pos));
             }
+            WindowEvent::CursorLeft { .. } => self.hovered = None,
             WindowEvent::MouseInput {
                 state: element_state,
                 button: MouseButton::Left,
@@ -1093,6 +1247,7 @@ impl crate::widget::controls::ActionControls for ToggleGroup {
 mod tests {
     use super::*;
     use crate::presence::PresenceCtx;
+    use crate::tokens::TextRole;
     use crate::widget::Widget;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -1225,16 +1380,55 @@ mod tests {
             }
         }
 
-        // Case `retained_group_has_touch_sized_intrinsic_height`.
+        // Case `retained_group_fits_its_labels_at_its_control_height`.
         {
-            let mut group =
-                ToggleGroup::new(vec![Segment::new("World"), Segment::new("Timers")], 0);
-            let mut tree = TaffyTree::new();
-            let mut map = HashMap::new();
-            let node = group.build_layout(&mut tree, &Theme::dark(), &mut map);
-            tree.compute_layout(node, taffy::Size::MAX_CONTENT).unwrap();
-            group.apply_layout(&tree, node, Point::ZERO);
-            assert!(group.get_rect().height() >= 44.0);
+            let harness = crate::headless::FrameHarness::new(
+                crate::State::new(),
+                Box::new(
+                    crate::widget::Column::new()
+                        .with_no_padding()
+                        .push(Box::new(ToggleGroup::new(
+                            vec![Segment::new("World"), Segment::new("Timers")],
+                            0,
+                        ))),
+                ),
+                (600, 200),
+            );
+            let rect = harness.inspection().root.children[0].rect;
+            assert_eq!(rect[3], ControlSize::Regular.height(&Theme::dark()));
+            assert!(
+                rect[2] < 300.0,
+                "a fitted strip does not stretch to its parent: {rect:?}"
+            );
+            let mut text = TextRenderer::new();
+            let widest = text
+                .measure_style(
+                    "Timers",
+                    None,
+                    &Theme::dark().text(TextRole::Label).strong(),
+                )
+                .0;
+            assert!(
+                rect[2] / 2.0
+                    >= f64::from(widest) + 2.0 * f64::from(Theme::dark().tokens.spacing.s3),
+                "each segment holds the widest label: {rect:?}"
+            );
+            let harness = crate::headless::FrameHarness::new(
+                crate::State::new(),
+                Box::new(
+                    crate::widget::Column::new()
+                        .with_no_padding()
+                        .push(Box::new(
+                            ToggleGroup::new(
+                                vec![Segment::new("World"), Segment::new("Timers")],
+                                0,
+                            )
+                            .fill(),
+                        )),
+                ),
+                (600, 200),
+            );
+            assert_eq!(harness.inspection().root.children[0].rect[2], 600.0);
         }
 
         // Case `toggle_group_paints_separator_lines_between_segments`.
@@ -1255,8 +1449,8 @@ mod tests {
 
             assert_eq!(
                 g.separator_count(),
-                2,
-                "3-segment group must report 2 separators"
+                1,
+                "a separator stands only between two unchosen neighbours"
             );
 
             // `>=` since fills/border/text also contribute `DrawTag::COLOR`
@@ -1291,9 +1485,9 @@ mod tests {
             ];
             let labels = ["A", "B", "C"];
             for style in [
-                SegmentedStyle::Solid,
-                SegmentedStyle::Pill,
-                SegmentedStyle::Underline,
+                SegmentedStyle::Segmented,
+                SegmentedStyle::Tabs,
+                SegmentedStyle::Quiet,
             ] {
                 let mut scene = Scene::new();
                 ToggleGroup::paint(
@@ -1311,20 +1505,23 @@ mod tests {
                     .count();
                 assert!(colour_tags > 0, "{style:?} paint must emit draw commands");
             }
-            let mut scene = Scene::new();
-            ToggleGroup::paint(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &SegmentedFace::new(&segs, &labels, 0)
-                    .pill()
-                    .left_labels(14.0),
+        }
+
+        // Case `a_label_that_does_not_fit_falls_back_to_its_short_form`.
+        {
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let mut group = group_at(
+                vec![
+                    Segment::new("Monday").short("Mon"),
+                    Segment::new("Tuesday").short("Tue"),
+                ],
+                0,
+                Rect::new(0.0, 0.0, 90.0, 32.0),
             );
-            assert!(
-                scene.encoding().draw_tags.contains(&DrawTag::COLOR),
-                "left-labelled pill paint must emit draw commands",
-            );
+            assert_eq!(group.shown_labels(&mut text, &theme), ["Mon", "Tue"]);
+            group.set_rect_and_partition(Rect::new(0.0, 0.0, 400.0, 32.0));
+            assert_eq!(group.shown_labels(&mut text, &theme), ["Monday", "Tuesday"]);
         }
     }
 
@@ -1496,69 +1693,46 @@ mod tests {
             );
         }
 
-        // Case `segment_colors_solid_selected_is_accent_and_readable`.
+        // Case `the_chosen_segment_is_a_colourless_lift_with_readable_ink`.
         {
             use crate::a11y::contrast_ratio;
-            let theme = Theme::dark();
-            let (fill, fg) = segment_colors(&theme, SegmentedStyle::Solid, true, false);
-            assert_eq!(
-                fill,
-                Some(
-                    theme
-                        .tokens
-                        .colors
-                        .lift_on(theme.tokens.colors.surfaces.raised, 1.0)
-                )
-            );
-            let r = contrast_ratio(fg, fill.unwrap());
-            assert!(
-                r >= ON_FILL_MIN_CONTRAST,
-                "selected segment label is {r:.2}:1 on the accent"
-            );
-            let (ufill, ufg) = segment_colors(&theme, SegmentedStyle::Solid, false, false);
-            assert_eq!(
-                ufill,
-                Some(theme.tokens.colors.surfaces.raised),
-                "unselected solid is a raised fill"
-            );
-            assert_eq!(ufg, theme.tokens.colors.text_primary);
-        }
-
-        // Case `segment_colors_pill_unselected_is_transparent`.
-        {
-            use crate::a11y::contrast_ratio;
-            let theme = Theme::dark();
-            let (fill, fg) = segment_colors(&theme, SegmentedStyle::Pill, false, false);
-            assert_eq!(fill, None, "an idle unselected pill paints no background");
-            let ground = theme.tokens.colors.surfaces.content;
-            let hover = theme.tokens.colors.intent.selection_hover;
-            assert!(
-                contrast_ratio(fg, ground)
-                    < contrast_ratio(theme.tokens.colors.text_primary, ground),
-                "inactive tab label must stay quieter than the selected tier",
-            );
-            assert!(contrast_ratio(fg, hover) >= ON_FILL_MIN_CONTRAST);
-            // Hover must not repaint the label — a colour change under the
-            // pointer reads as a bug.
-            let (hfill, hfg) = segment_colors(&theme, SegmentedStyle::Pill, false, true);
-            assert_eq!(hfill, Some(hover));
-            assert_eq!(hfg, fg, "the inactive label holds its colour on hover");
-            let (sfill, sfg) = segment_colors(&theme, SegmentedStyle::Pill, true, false);
-            assert_eq!(
-                sfill,
-                Some(
-                    theme
-                        .tokens
-                        .colors
-                        .lift_on(theme.tokens.colors.surfaces.raised, 1.0)
-                )
-            );
-            assert_eq!(
-                sfg,
-                segment_colors(&theme, SegmentedStyle::Solid, true, false).1,
-                "pill and solid resolve the selected label the same way",
-            );
-            assert!(contrast_ratio(sfg, sfill.unwrap()) >= ON_FILL_MIN_CONTRAST);
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                let colors = &theme.tokens.colors;
+                for (style, ground) in [
+                    (SegmentedStyle::Segmented, colors.surfaces.raised),
+                    (SegmentedStyle::Quiet, colors.surfaces.content),
+                ] {
+                    let (fill, ink) = segment_colors(&theme, style, true, false);
+                    let fill = fill.expect("the chosen segment is lifted");
+                    assert_eq!(
+                        fill,
+                        selection_tier_on(&theme, SelectionState::active(true), ground).fill,
+                        "{} {style:?}: the thumb is the selection tier of its ground",
+                        theme.name
+                    );
+                    let chroma = crate::color::Oklch::from_color(fill).c;
+                    assert!(
+                        chroma <= 0.02,
+                        "{} {style:?}: the chosen segment carries no hue ({chroma})",
+                        theme.name
+                    );
+                    assert!(contrast_ratio(ink, fill) >= ON_FILL_MIN_CONTRAST);
+                    let (idle, idle_ink) = segment_colors(&theme, style, false, false);
+                    assert_eq!(idle, None, "{}: an idle segment paints nothing", theme.name);
+                    assert!(
+                        contrast_ratio(idle_ink, ground)
+                            < contrast_ratio(colors.text_primary, ground),
+                        "{} {style:?}: an idle label is quieter than the chosen one",
+                        theme.name
+                    );
+                    let (hover, hover_ink) = segment_colors(&theme, style, false, true);
+                    assert!(hover.is_some(), "a hovered segment lifts halfway");
+                    assert_eq!(hover_ink, idle_ink, "the label holds its colour on hover");
+                }
+                let (fill, ink) = segment_colors(&theme, SegmentedStyle::Tabs, true, false);
+                assert_eq!(fill, None, "a tab is marked by its underline");
+                assert!(contrast_ratio(ink, colors.surfaces.content) >= ON_FILL_MIN_CONTRAST);
+            }
         }
     }
 
