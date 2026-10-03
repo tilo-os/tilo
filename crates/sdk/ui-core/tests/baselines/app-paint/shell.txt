@@ -44,7 +44,7 @@ crates/session/shell/src/shell/overlay_host/mod.rs glyph_icon 2
 crates/session/shell/src/shell/overlay_host/mod.rs literal_alpha 7
 crates/session/shell/src/shell/overlay_host/mod.rs literal_radius 10
 crates/session/shell/src/shell/overlay_host/mod.rs ramp_slot 5
-crates/session/shell/src/shell/overlay_host/mod.rs raw_paint 39
+crates/session/shell/src/shell/overlay_host/mod.rs raw_paint 38
 crates/session/shell/src/shell/pad_map.rs raw_paint 2
 crates/session/shell/src/shell/peer_sync_overlay.rs ramp_slot 4
 crates/session/shell/src/shell/peer_sync_overlay.rs raw_paint 9
@@ -52,7 +52,7 @@ crates/session/shell/src/shell/peer_view.rs raw_paint 1
 crates/session/shell/src/shell/power_menu.rs raw_paint 4
 crates/session/shell/src/shell/projection_overlay.rs literal_alpha 4
 crates/session/shell/src/shell/projection_overlay.rs literal_radius 4
-crates/session/shell/src/shell/projection_overlay.rs raw_paint 13
+crates/session/shell/src/shell/projection_overlay.rs raw_paint 12
 crates/session/shell/src/shell/quick_settings/bluetooth.rs ramp_slot 1
 crates/session/shell/src/shell/quick_settings/bluetooth.rs raw_paint 1
 crates/session/shell/src/shell/quick_settings/now_playing.rs raw_paint 1

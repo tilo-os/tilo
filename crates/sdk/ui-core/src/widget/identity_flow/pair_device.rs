@@ -662,12 +662,7 @@ impl PairDeviceScreen {
         for (cell, rect) in self.cells.iter_mut().zip(resolved.plan.boxes.iter()) {
             place_code_cell(cell, *rect, text_renderer, theme);
         }
-        place_field(
-            &mut self.payload,
-            resolved.plan.payload,
-            text_renderer,
-            theme,
-        );
+        place_field(&mut self.payload, resolved.plan.payload);
         for (slot, rect) in self
             .code_box_rects
             .iter_mut()

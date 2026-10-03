@@ -1,9 +1,10 @@
 use crate::presence::PresenceCtx;
 use crate::record::{RecordCheckout, RecordId, RecordStore};
-use crate::text_metrics::{centered_text_top, renderer_type_size};
+use crate::text_metrics::centered_text_top;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::{Duration, Instant};
+use crate::tokens::TextRole;
 use crate::widget::Spinner;
 use crate::widget::TaffyTreeExt;
 use crate::widget::app_widget::AppWidget;
@@ -2725,26 +2726,23 @@ fn draw_opening_card(
     // the *dark* end of a dark theme's ramp, and on that theme's own dark
     // card the name would land at ~1.05:1 contrast — invisible on screen.
     let on_card = theme.on_content().ink;
-    // The offset stays in theme space (it is geometry that follows the text
-    // scale); only the size handed to the renderer is divided back out.
-    let resolved = theme.tokens.typography.scale.xl;
-    let size = renderer_type_size(tr, resolved);
+    let style = theme.text(TextRole::Title);
     let cx = rect.center().x;
     // Above centre, so name + indicator reads as one centred pair rather
     // than the name alone with the indicator hanging below.
-    let y = rect.center().y - f64::from(resolved);
+    let y = rect.center().y - f64::from(style.size);
     if !name.is_empty() {
-        let (tw, _) = tr.measure(name, size, None);
-        tr.draw_text(
+        let (tw, _) = tr.measure_style(name, None, &style);
+        tr.draw_style(
             scene,
             name,
-            size,
             on_card,
             translated(transform, cx - f64::from(tw) / 2.0, y),
             None,
+            &style,
         );
     }
-    let top = y + f64::from(size) + OPENING_SPINNER_GAP;
+    let top = y + f64::from(style.size) + OPENING_SPINNER_GAP;
     spinner.set_rect(Rect::new(
         cx - OPENING_SPINNER_PX / 2.0,
         top,
@@ -2776,31 +2774,31 @@ fn draw_card_text(
     let on_card_dim = theme
         .on_surface_at(card, crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST)
         .ink_dim;
-    let text_size = renderer_type_size(tr, theme.tokens.typography.scale.xl);
-    let (tw, th) = tr.measure(title, text_size, None);
+    let text_style = theme.text(TextRole::Title);
+    let (tw, th) = tr.measure_style(title, None, &text_style);
     let x = rect.center().x - f64::from(tw) / 2.0;
     let y = centered_text_top(rect.y0, rect.height(), f64::from(th));
-    tr.draw_text(
+    tr.draw_style(
         scene,
         title,
-        text_size,
         on_card,
         translated(transform, x, y),
         None,
+        &text_style,
     );
     if detail.is_empty() {
         return;
     }
-    let sm = renderer_type_size(tr, theme.tokens.typography.scale.sm);
-    let (sw, _) = tr.measure(detail, sm, None);
+    let sm = theme.text(TextRole::Caption);
+    let (sw, _) = tr.measure_style(detail, None, &sm);
     let sx = rect.center().x - f64::from(sw) / 2.0;
-    tr.draw_text(
+    tr.draw_style(
         scene,
         detail,
-        sm,
         on_card_dim,
         translated(transform, sx, y + f64::from(th) + 8.0),
         None,
+        &sm,
     );
 }
 

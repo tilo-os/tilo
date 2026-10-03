@@ -137,7 +137,7 @@ impl Checkbox {
             id_override: None,
             accessible_name: None,
             label: None,
-            label_style: TextStyle::new(14.0),
+            label_style: crate::tokens::typography::stock().style(crate::tokens::TextRole::Body),
             binding: Some(crate::doc_binding::bool_key(on_toggle_path)),
             on_change: None,
             action: None,
@@ -273,14 +273,6 @@ impl Checkbox {
     /// Imperatively flip the enabled state.
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
-    }
-
-    // Theme roles already include the requested type scale. Renderer APIs
-    // apply their own scale, so divide it out exactly as semantic Text does.
-    fn renderer_label_style(&self, renderer: &TextRenderer) -> TextStyle {
-        let mut style = self.label_style.clone();
-        style.size /= renderer.text_scale();
-        style
     }
 
     /// Paint a checkbox without taking ownership of its state or events.
@@ -448,11 +440,8 @@ impl Widget for Checkbox {
             taffy::AvailableSpace::MaxContent => None,
         });
         let label_limit = available_width.map(|width| (width - target - gap).max(0.0));
-        let (label_width, label_height) = text_renderer.measure_style(
-            &crate::i18n!(label),
-            label_limit,
-            &self.renderer_label_style(text_renderer),
-        );
+        let (label_width, label_height) =
+            text_renderer.measure_style(&crate::i18n!(label), label_limit, &self.label_style);
         Size {
             width: known_dimensions
                 .width
@@ -508,7 +497,7 @@ impl Widget for Checkbox {
             let gap = f64::from(LABEL_GAP);
             let x = self.rect.x0 + target + gap;
             let max_width = (self.rect.x1 - x).max(0.0);
-            let style = self.renderer_label_style(text_renderer);
+            let style = self.label_style.clone();
             let (_, label_height) =
                 text_renderer.measure_style(&label, Some(max_width as f32), &style);
             let y = self.rect.y0 + ((self.rect.height() - f64::from(label_height)) / 2.0).max(0.0);
@@ -851,8 +840,10 @@ mod tests {
                     },
                     &mut renderer,
                 );
-                let expected =
-                    (14.0_f32 * 1.4 * theme_scale).max(checkbox.interaction.minimum_target());
+                let expected = theme
+                    .text(crate::tokens::TextRole::Body)
+                    .line_height_px()
+                    .max(checkbox.interaction.minimum_target());
                 assert!(
                     (measured.height - expected).abs() < 0.1,
                     "theme{theme_scale} renderer{renderer_scale}: {measured:?}"

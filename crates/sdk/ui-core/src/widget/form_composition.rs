@@ -583,7 +583,8 @@ impl Widget for Field {
         self.pair_gap = theme.tokens.spacing.s3;
         // Single-line entry widgets intentionally return zero intrinsic width.
         // Reserve a readable entry measure at the active type size in that case.
-        self.comfortable_control = theme.tokens.font_size_base * 16.0;
+        self.comfortable_control =
+            theme.tokens.typography.size(crate::tokens::TextRole::Body) * 16.0;
         let placement = self.label_placement.map_or_else(
             || {
                 self.inherited.map_or_else(

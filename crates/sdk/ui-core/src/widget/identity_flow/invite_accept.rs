@@ -360,7 +360,7 @@ impl InviteAcceptScreen {
         // An accessibility `SetValue` lands outside the event path; the
         // layout pass that follows it is where the link gets re-read.
         self.reparse_if_edited();
-        place_field(&mut self.url, resolved.plan.url, text_renderer, theme);
+        place_field(&mut self.url, resolved.plan.url);
         self.url_rect = BodyScroll::visible(body, resolved.plan.url);
         self.decline_rect = resolved.sheet.action(ACTION_DECLINE);
         self.accept_rect = resolved.sheet.action(ACTION_ACCEPT);

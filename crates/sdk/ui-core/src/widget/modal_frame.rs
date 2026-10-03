@@ -22,9 +22,9 @@ use vello::peniko::{Color, Fill};
 
 use crate::icons::Icon;
 use crate::platform::{DialogActionOrder, PlatformConventions};
-use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::button::{Button, ButtonFace, ButtonStyle};
 
 /// Strength of the scrim painted over everything behind the modal. 0.45
@@ -404,7 +404,7 @@ impl ModalFrame {
         // `TextRenderer` applies the accessibility multiplier. Theme type
         // tokens already carry it too, so recover the design size for direct
         // renderer calls and scale the surrounding geometry exactly once.
-        let body_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
+        let body_style = tokens.typography.style(TextRole::Caption);
 
         let w = Self::card_width(viewport, spec, theme);
         let button_h = Self::action_height(theme);
@@ -478,7 +478,7 @@ impl ModalFrame {
                 let Some(a) = spec.actions.get(index) else {
                     continue;
                 };
-                let (tw, _) = text_renderer.measure(a.label, body_size, None);
+                let (tw, _) = text_renderer.measure_style(a.label, None, &body_style);
                 let bw = (f64::from(tw) + ACTION_PAD_X * scale).max(ACTION_MIN_W * scale);
                 let r = Rect::new(bx - bw, by, bx, by + button_h);
                 let Some(action_rect) = actions.get_mut(index) else {
@@ -552,7 +552,7 @@ impl ModalFrame {
         );
 
         if !spec.title.is_empty() {
-            let size = renderer_type_size(text_renderer, tokens.typography.scale.base);
+            let style = tokens.typography.style(TextRole::Body);
             // Title-band width is a bounded screen dimension; the f64->f32
             // narrowing for the text layout call cannot lose meaningful
             // precision at UI scale.
@@ -561,8 +561,8 @@ impl ModalFrame {
                 reason = "bounded screen-space width; f32 precision is sufficient for text layout"
             )]
             let title_w = layout.title.width() as f32;
-            let shown = text_renderer.elide_to_width(spec.title, size, title_w);
-            let (_, th) = text_renderer.measure(&shown, size, None);
+            let shown = text_renderer.elide_to_width_style(spec.title, title_w, &style);
+            let (_, th) = text_renderer.measure_style(&shown, None, &style);
             let ty = f64::midpoint(layout.title.y0, layout.title.y1) - f64::from(th) / 2.0;
             // Affine composition of f64 transforms via the `Mul` operator
             // overload; clippy's arithmetic_side_effects flags any operator
@@ -572,14 +572,13 @@ impl ModalFrame {
                 reason = "Affine::mul composes f64 transform matrices; cannot meaningfully overflow"
             )]
             let pos = transform * Affine::translate((layout.title.x0, ty));
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &shown,
-                size,
                 ink,
                 pos,
                 None,
-                TextWeight::Semibold,
+                &style.clone().with_weight(TextWeight::Semibold),
             );
         }
 
@@ -607,7 +606,6 @@ impl ModalFrame {
         layout: &ModalLayout,
         spec: &ModalSpec<'_>,
     ) {
-        let body_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         for (i, a) in spec.actions.iter().enumerate() {
             let Some(rect) = layout.actions.get(i).copied() else {
                 continue;
@@ -620,8 +618,6 @@ impl ModalFrame {
             let face = ButtonFace::new(rect, a.label)
                 .style(style)
                 .radius(Self::action_height(theme) / 2.0)
-                .text_size(body_size)
-                .weight(TextWeight::Medium)
                 .hovered(a.hovered && a.enabled)
                 .pressed(a.pressed && a.enabled)
                 .focused(a.focused && a.enabled)

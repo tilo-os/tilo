@@ -14,6 +14,7 @@ use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::{TaffyTreeExt, Widget};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -75,7 +76,7 @@ impl Toolbar {
             extents: Vec::new(),
             chip_extent: Size::ZERO,
             intrinsic: Size::ZERO,
-            font: TextStyle::new(14.0),
+            font: crate::tokens::typography::stock().style(TextRole::Label),
             padding: 8.0,
             // Replaced by `build_layout` from `theme.tokens.metrics`; the
             // unscaled reference keeps a renderer-less caller's estimate
@@ -149,7 +150,9 @@ impl Toolbar {
                 ToolbarItem::Button { label, .. } => {
                     let text = match self.orientation {
                         Orientation::Horizontal => count_to_f64(label.chars().count()) * 7.0,
-                        Orientation::Vertical => f64::from(theme.tokens.typography.scale.sm),
+                        Orientation::Vertical => {
+                            f64::from(theme.tokens.typography.size(TextRole::Caption))
+                        }
                     };
                     (text + 2.0 * f64::from(theme.tokens.spacing.s3))
                         .max(f64::from(theme.tokens.metrics.min_pointer_target))
@@ -181,7 +184,7 @@ impl Toolbar {
     }
 
     fn update_measurements(&mut self, text: &mut TextRenderer) -> bool {
-        let style = text.renderer_input_style(&self.font);
+        let style = self.font.clone();
         let button = |label: &str, text: &mut TextRenderer| {
             let (width, height) = text.measure_style(label, None, &style);
             Size {
@@ -577,7 +580,7 @@ impl Widget for Toolbar {
         theme: &Theme,
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.font = TextStyle::new(theme.tokens.typography.scale.sm);
+        self.font = theme.text(TextRole::Label);
         self.padding = theme.tokens.spacing.s3;
         // A hit target is a metric, not a spacing step: a custom theme's
         // dense `spacing_px` rescales `s8` but must not shrink the pointer
@@ -671,7 +674,7 @@ impl Widget for Toolbar {
             self.menu.reanchor(self.overflow_rect, viewport);
         }
         self.menu.layout_within(text, theme);
-        let style = text.renderer_input_style(&self.font);
+        let style = self.font.clone();
         // Explicit tiny allocations remain authoritative, including for glyph paint.
         scene.push_layer(
             vello::peniko::Fill::NonZero,

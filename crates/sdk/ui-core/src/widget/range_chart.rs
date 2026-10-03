@@ -18,6 +18,7 @@ use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::chart_navigation::{
     ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action, moved_index,
 };
@@ -299,14 +300,13 @@ impl Widget for RangeChart {
         _presence: &PresenceCtx,
     ) {
         if !self.title.is_empty() {
-            tr.draw_text_weighted(
+            tr.draw_style(
                 scene,
                 &self.title,
-                theme.tokens.typography.scale.lg,
                 theme.tokens.colors.text_primary,
                 transform * Affine::translate((self.rect.x0 + 10.0, self.rect.y0 + 8.0)),
                 None,
-                TextWeight::Semibold,
+                &theme.text(TextRole::Heading),
             );
         }
         let plot = self.plot();
@@ -324,23 +324,23 @@ impl Widget for RangeChart {
                     &Line::new((x, plot.y0), (x, plot.y1)),
                 );
             }
-            tr.draw_text(
+            tr.draw_style(
                 scene,
                 &self.format(fraction.mul_add(domain.1 - domain.0, domain.0)),
-                theme.tokens.typography.scale.xs,
                 theme.tokens.colors.text_dim,
                 transform * Affine::translate((x - 12.0, plot.y1 + 9.0)),
                 None,
+                &theme.text(TextRole::Caption),
             );
         }
         if !self.axis_title.is_empty() {
-            tr.draw_text(
+            tr.draw_style(
                 scene,
                 &self.axis_title,
-                theme.tokens.typography.scale.xs,
                 theme.tokens.colors.text_dim,
                 transform * Affine::translate((plot.center().x - 32.0, plot.y1 + 25.0)),
                 None,
+                &theme.text(TextRole::Caption),
             );
         }
         self.hits.clear();
@@ -361,15 +361,15 @@ impl Widget for RangeChart {
                     ),
                 );
             }
-            tr.draw_text(
+            tr.draw_style(
                 scene,
                 &bar.label,
-                theme.tokens.typography.scale.sm,
                 theme.tokens.colors.text_primary,
                 transform * Affine::translate((self.rect.x0 + 10.0, row_y + 12.0)),
                 Some(crate::num::f32_of_f64(
                     (self.style.label_width - 22.0).max(16.0),
                 )),
+                &theme.text(TextRole::Caption),
             );
             let x0 = self.x(bar.start.min(bar.end), domain);
             let x1 = self.x(bar.start.max(bar.end), domain);
@@ -443,8 +443,9 @@ impl Widget for RangeChart {
             } else {
                 format!("{interval} · {}", bar.detail)
             };
-            let (label_width, _) = tr.measure(&bar.label, theme.tokens.typography.scale.sm, None);
-            let (detail_width, _) = tr.measure(&detail, theme.tokens.typography.scale.xs, None);
+            let (label_width, _) =
+                tr.measure_style(&bar.label, None, &theme.text(TextRole::Caption));
+            let (detail_width, _) = tr.measure_style(&detail, None, &theme.text(TextRole::Caption));
             let tooltip_width = f64::from(label_width.max(detail_width)).max(150.0) + 28.0;
             let x = (self.pointer.x + 16.0)
                 .min(self.rect.x1 - tooltip_width - 8.0)
@@ -460,22 +461,23 @@ impl Widget for RangeChart {
                 None,
                 &RoundedRect::from_rect(tip, f64::from(theme.tokens.radii.control)),
             );
-            tr.draw_text_weighted(
+            tr.draw_style(
                 scene,
                 &bar.label,
-                theme.tokens.typography.scale.sm,
                 theme.tokens.colors.text_primary,
                 transform * Affine::translate((x + 14.0, y + 11.0)),
                 None,
-                TextWeight::Semibold,
+                &theme
+                    .text(TextRole::Label)
+                    .with_weight(TextWeight::Semibold),
             );
-            tr.draw_text(
+            tr.draw_style(
                 scene,
                 &detail,
-                theme.tokens.typography.scale.xs,
                 theme.tokens.colors.text_dim,
                 transform * Affine::translate((x + 14.0, y + 37.0)),
                 None,
+                &theme.text(TextRole::Caption),
             );
         }
     }

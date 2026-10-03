@@ -44,6 +44,7 @@ use std::fmt::Write as _;
 
 use automerge::AutoCommit;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use tilo_ui::TextRole;
 use tilo_ui::i18n::I18nManager;
 use tilo_ui::offscreen::{OffscreenRenderTiming, OffscreenRenderer};
 use tilo_ui::permissions::PermissionContext;
@@ -169,7 +170,7 @@ fn reject_budgets_in_diagnostic_mode(mode: &str, reject_profile_flags: bool) {
 
 /// One panel of the dashboard: header + a column of mixed widgets.
 fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
-    let mut col = Column::new().push(Box::new(Text::new(title_key).with_size(18.0)));
+    let mut col = Column::new().push(Box::new(Text::new(title_key).with_role(TextRole::Title)));
 
     // Twenty rows. To exercise the Unit 2 redraw gate, only
     // widgets whose `needs_redraw` is genuinely opt-in show up
@@ -225,7 +226,9 @@ fn build_tree(include_animated: bool) -> Box<dyn Widget> {
     // 8 columns × 20 rows × (label + control) ≈ 320 widgets.
     // Plus a header row of complex widgets.
     let mut header = Row::new()
-        .push(Box::new(Text::new("dash_title").with_size(24.0)))
+        .push(Box::new(
+            Text::new("dash_title").with_role(TextRole::LargeTitle),
+        ))
         .push(Box::new(ToggleGroup::new(
             vec![
                 Segment::new("Day"),

@@ -2164,6 +2164,8 @@ pub use layout::{
 
 mod button;
 pub use button::{Button, ButtonFace, ButtonInteract, ButtonStyle, face_colors};
+mod control_size;
+pub use control_size::ControlSize;
 mod checkbox;
 pub use checkbox::{Checkbox, CheckboxFace, CheckboxInteract};
 mod column;

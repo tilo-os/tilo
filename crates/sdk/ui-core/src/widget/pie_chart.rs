@@ -24,6 +24,7 @@ use crate::a11y::{AccessNode, AccessState, Role};
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::chart_navigation::{
     ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action, moved_index,
 };
@@ -407,11 +408,11 @@ impl PieChart {
             PieTooltipAnchor::Pointer if self.rect.contains(self.pointer) => self.pointer,
             PieTooltipAnchor::Pointer | PieTooltipAnchor::Slice => slice_anchor(),
         };
-        let title_size = theme.tokens.typography.scale.sm;
-        let body_size = theme.tokens.typography.scale.xs;
+        let title_style = theme.text(TextRole::Caption);
+        let body_style = theme.text(TextRole::Caption);
         let detail = self.tooltip_detail(slice, total);
-        let (tw, _) = tr.measure(&slice.label, title_size, None);
-        let (dw, _) = tr.measure(&detail, body_size, None);
+        let (tw, _) = tr.measure_style(&slice.label, None, &title_style);
+        let (dw, _) = tr.measure_style(&detail, None, &body_style);
         let padding = self.style.tooltip_padding.clamp(8.0, 32.0);
         let available_width =
             (self.rect.width() - self.style.tooltip_right_inset.max(0.0) - 16.0).max(80.0);
@@ -456,22 +457,21 @@ impl PieChart {
             None,
             &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control)),
         );
-        tr.draw_text_weighted(
+        tr.draw_style(
             scene,
             &slice.label,
-            title_size,
             theme.tokens.colors.text_primary,
             transform * Affine::translate((x + padding, y + padding - 2.0)),
             Some(crate::num::f32_of_f64((width - padding * 2.0).max(1.0))),
-            TextWeight::Semibold,
+            &title_style.clone().with_weight(TextWeight::Semibold),
         );
-        tr.draw_text(
+        tr.draw_style(
             scene,
             &detail,
-            body_size,
             theme.tokens.colors.text_dim,
             transform * Affine::translate((x + padding, y + padding + 24.0)),
             Some(crate::num::f32_of_f64((width - padding * 2.0).max(1.0))),
+            &body_style,
         );
     }
 
@@ -574,12 +574,15 @@ impl Widget for PieChart {
                 &Circle::new(base_center, (inner - 2.0).max(0.0)),
             );
         }
-        let title_size = theme.tokens.typography.scale.x2l;
-        let (w, h) = tr.measure_weighted(&self.center_title, title_size, None, TextWeight::Bold);
-        tr.draw_text_weighted(
+        let title_style = theme.text(TextRole::LargeTitle);
+        let (w, h) = tr.measure_style(
+            &self.center_title,
+            None,
+            &title_style.clone().with_weight(TextWeight::Bold),
+        );
+        tr.draw_style(
             scene,
             &self.center_title,
-            title_size,
             theme.tokens.colors.text_primary,
             transform
                 * Affine::translate((
@@ -587,18 +590,18 @@ impl Widget for PieChart {
                     base_center.y - f64::from(h),
                 )),
             None,
-            TextWeight::Bold,
+            &title_style.clone().with_weight(TextWeight::Bold),
         );
-        let sub_size = theme.tokens.typography.scale.sm;
-        let (sw, _) = tr.measure(&self.center_subtitle, sub_size, None);
-        tr.draw_text(
+        let sub_style = theme.text(TextRole::Caption);
+        let (sw, _) = tr.measure_style(&self.center_subtitle, None, &sub_style);
+        tr.draw_style(
             scene,
             &self.center_subtitle,
-            sub_size,
             theme.tokens.colors.text_dim,
             transform
                 * Affine::translate((base_center.x - f64::from(sw) / 2.0, base_center.y + 8.0)),
             None,
+            &sub_style,
         );
         self.draw_tooltip(scene, transform, tr, theme);
     }

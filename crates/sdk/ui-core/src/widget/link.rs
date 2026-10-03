@@ -16,8 +16,9 @@ use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
@@ -45,7 +46,9 @@ pub struct Link {
     /// Defaults to the URL; a caller can show a friendlier label via
     /// [`with_label`](Self::with_label).
     label: String,
-    font_size: f32,
+    text_role: TextRole,
+    /// The role resolved in the theme seen at `build_layout`, for `measure`.
+    style: TextStyle,
     rect: Rect,
     is_hovered: bool,
     is_pressed: bool,
@@ -63,7 +66,8 @@ impl Link {
         Self {
             url: url.to_string(),
             label: url.to_string(),
-            font_size: 14.0,
+            text_role: TextRole::Body,
+            style: crate::tokens::typography::stock().style(TextRole::Body),
             rect: Rect::ZERO,
             is_hovered: false,
             is_pressed: false,
@@ -82,9 +86,12 @@ impl Link {
         self
     }
 
+    /// Set the link in `role` (default [`TextRole::Body`]), usually the role
+    /// of the text around it.
     #[must_use]
-    pub fn with_font_size(mut self, size: f32) -> Self {
-        self.font_size = size;
+    pub fn with_text_role(mut self, role: TextRole) -> Self {
+        self.text_role = role;
+        self.style = crate::tokens::typography::stock().style(role);
         self
     }
 
@@ -136,9 +143,14 @@ impl Widget for Link {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        let style = theme.text(self.text_role);
+        if style != self.style {
+            self.style = style;
+            self.dirty = true;
+        }
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::auto(),
@@ -158,7 +170,7 @@ impl Widget for Link {
         _available: taffy::Size<taffy::AvailableSpace>,
         text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        let (w, h) = text_renderer.measure(&self.label, self.font_size, None);
+        let (w, h) = text_renderer.measure_style(&self.label, None, &self.style);
         taffy::Size {
             width: w + 0.1,
             height: h,
@@ -201,18 +213,19 @@ impl Widget for Link {
     ) {
         self.last_state = (self.is_hovered, self.is_pressed, self.is_focused);
         let color = theme.tokens.colors.text_primary;
-        let (tw, th) = text_renderer.measure(&self.label, self.font_size, None);
+        let style = theme.text(self.text_role);
+        let (tw, th) = text_renderer.measure_style(&self.label, None, &style);
         let (tw, th) = (f64::from(tw), f64::from(th));
         let x0 = self.rect.x0;
         let y0 = self.rect.y0;
 
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &self.label,
-            self.font_size,
             color,
             transform * Affine::translate((x0, y0)),
             None,
+            &style,
         );
 
         // A touch thicker on hover so the link reads as "live".

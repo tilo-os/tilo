@@ -32,6 +32,7 @@ use crate::network::protocol::{PeerId, SurfaceId};
 use crate::network::streaming::InputEvent;
 use crate::shell::color_pipeline::{OutputColorState, SurfaceColorOp, plan_surface_op};
 use crate::shell::hdr_tonemap::{HdrTonemapConfig, tonemap_p010_to_rgba8};
+use ui::TextRole;
 
 /// Ceiling on the receive-side decode queue depth; once undrawn frames
 /// exceed this, further pushes drop the oldest. Two is the minimum
@@ -579,17 +580,17 @@ impl Widget for PeerView {
             }
         } else {
             let label = crate::shell::i18n::t("peer-view-awaiting");
-            let size = tokens.typography.scale.base;
-            let (lw, lh) = text_renderer.measure(&label, size, None);
+            let style = tokens.typography.style(TextRole::Body);
+            let (lw, lh) = text_renderer.measure_style(&label, None, &style);
             let cx = rect.center().x - f64::from(lw) / 2.0;
             let cy = rect.center().y - f64::from(lh) / 2.0;
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &label,
-                size,
                 tokens.colors.text_dim,
                 transform.pre_translate((cx, cy).into()),
                 None,
+                &style,
             );
         }
     }

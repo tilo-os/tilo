@@ -13,6 +13,7 @@
 use std::time::{Duration, Instant};
 
 use crate::shell::i18n::{t, t_args};
+use ui::TextRole;
 
 /// Offscreen wgpu + vello PNG writer shared by the system-surface review
 /// fixtures (OSD, power menu, lock screen, notifications) — surfaces the
@@ -451,12 +452,8 @@ impl Osd {
         }
 
         let caption = self.caption();
-        let (_, caption_h) = text_renderer.measure_weighted(
-            &caption,
-            theme.tokens.typography.scale.sm,
-            None,
-            TextWeight::Medium,
-        );
+        let (_, caption_h) =
+            text_renderer.measure_style(&caption, None, &theme.text(TextRole::Label));
         let stack = OsdStack::layout(rect, self.has_level(), f64::from(caption_h), theme);
         draw_card(scene, transform, rect, theme);
         draw_glyph(scene, transform, stack.glyph, theme, self.kind);
@@ -653,12 +650,15 @@ fn draw_caption(
     let colors = &theme.tokens.colors;
     // Control label role (HIG §9.6); the pass has reset the renderer, so
     // the theme-resolved size is painted exactly once.
-    let size = theme.tokens.typography.scale.sm;
-    let (cw, _) = text_renderer.measure_weighted(caption, size, None, TextWeight::Medium);
-    text_renderer.draw_text_weighted(
+    let style = theme.text(TextRole::Caption);
+    let (cw, _) = text_renderer.measure_style(
+        caption,
+        None,
+        &style.clone().with_weight(TextWeight::Medium),
+    );
+    text_renderer.draw_style(
         scene,
         caption,
-        size,
         colors.text_dim,
         transform.pre_translate(
             (
@@ -668,7 +668,7 @@ fn draw_caption(
                 .into(),
         ),
         None,
-        TextWeight::Medium,
+        &style.with_weight(TextWeight::Medium),
     );
 }
 
@@ -941,18 +941,8 @@ mod tests {
             // What the pass painted with: the theme's `sm` on a 1× renderer.
             let caption = Osd::brightness(0.5).caption();
             let mut at_pass = TextRenderer::new();
-            let (_, h1) = at_pass.measure_weighted(
-                &caption,
-                base.tokens.typography.scale.sm,
-                None,
-                TextWeight::Medium,
-            );
-            let (_, h2) = at_pass.measure_weighted(
-                &caption,
-                large.tokens.typography.scale.sm,
-                None,
-                TextWeight::Medium,
-            );
+            let (_, h1) = at_pass.measure_style(&caption, None, &base.text(TextRole::Label));
+            let (_, h2) = at_pass.measure_style(&caption, None, &large.text(TextRole::Label));
             assert!(
                 (h2 - 2.0 * h1).abs() < 1.0,
                 "200 % caption line {h2} should be twice the 1× line {h1}"
