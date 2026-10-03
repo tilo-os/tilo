@@ -124,23 +124,26 @@ impl<'a> RowText<'a> {
         state: &'a MailState,
         text: &mut TextRenderer,
         theme: &Theme,
-        subject_w: f64,
+        (subject_w, hovered): (f64, bool),
     ) -> Option<Self> {
         let message = state.mailbox.get(id)?;
         let when = format_relative(
             local_minutes(message.timestamp_min),
             local_minutes(state.now_min),
         );
-        // The row narrows its text for the time (and, under the pointer, for
-        // its actions): keep the subject clear of whichever is wider.
+        // The row narrows its text for the time, or under the pointer for
+        // its actions: keep the subject on its own line beside either.
         let spacing = &theme.tokens.spacing;
         let metrics = &theme.tokens.metrics;
-        let meta_w = f64::from(
-            text.measure_style(&when, None, &theme.text(ui::TextRole::Caption).numeric())
-                .0,
-        );
-        let actions_w = 3.0 * f64::from(metrics.bar_control_height) + 2.0 * f64::from(spacing.s1);
-        let subject_w = subject_w - meta_w.max(actions_w) - f64::from(spacing.s3);
+        let trailing = if hovered {
+            3.0 * f64::from(metrics.bar_control_height) + 2.0 * f64::from(spacing.s1)
+        } else {
+            f64::from(
+                text.measure_style(&when, None, &theme.text(ui::TextRole::Caption).numeric())
+                    .0,
+            )
+        };
+        let subject_w = subject_w - trailing - f64::from(spacing.s3);
         let subject = message.thread_subject();
         let subject = if subject.trim().is_empty() {
             "No subject".to_owned()
@@ -307,16 +310,22 @@ impl MessageList {
     /// Paint one conversation's row.
     fn paint_row(&self, ctx: &mut PaintCtx<'_>, state: &MailState, slot: &Slot, row: RowState) {
         let theme = ctx.theme;
-        let Some(text) = RowText::of(slot.id, state, ctx.text, theme, row.subject_w) else {
+        let hovered = self
+            .pointer
+            .filter(|p| self.rect.contains(*p) && slot.rect.contains(*p) && !state.bulk_selecting);
+        let Some(text) = RowText::of(
+            slot.id,
+            state,
+            ctx.text,
+            theme,
+            (row.subject_w, hovered.is_some()),
+        ) else {
             return;
         };
         let actions = row_actions(slot.starred);
         let action_faces: Vec<RowAction<'_>> = actions.iter().map(|(_, action)| *action).collect();
         let image = state.images.get(&gravatar_url(text.email));
         let avatar = AvatarFace::new(&text.sender, text.email).image(image.as_ref());
-        let hovered = self
-            .pointer
-            .filter(|p| self.rect.contains(*p) && slot.rect.contains(*p) && !state.bulk_selecting);
         let mut face = ListRowFace::new(&text.sender)
             .leading(RowLeading::Avatar(avatar))
             .secondary(&text.preview)

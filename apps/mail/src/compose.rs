@@ -2122,10 +2122,11 @@ impl ComposeWindow {
             None,
             &style,
         );
-        let (popout_icon, popout_name) = match self.dock {
-            DockState::Docked => (Icon::Maximize2, "Move to the side"),
-            DockState::Detached => (Icon::Minimize2, "Move back to the middle"),
+        let popout_name = match self.dock {
+            DockState::Docked => "Move beside the mailbox",
+            DockState::Detached => "Move over the mailbox",
         };
+        let popout_icon = Icon::PanelRight;
         for (hit, icon, name) in [
             (ComposeHit::PopOut, popout_icon, popout_name),
             (ComposeHit::Close, Icon::X, "Close"),
