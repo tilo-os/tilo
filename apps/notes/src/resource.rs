@@ -95,8 +95,7 @@ impl Resource for Notebook {
 
     fn children(state: &Workspace) -> Vec<tilo_actions::Resource> {
         // Page tree with each note's rich-text body nested underneath, plus
-        // the tag catalogue. Body edits from the editor still wrap through
-        // NotesAction::EditBody until a nested dispatcher addresses the body map.
+        // the tag catalogue.
         let mut children = crate::actions::notebook_page_children(state.pages(), None);
         let ctx = crate::actions::NotesResourceCtx {
             pages: state.pages().to_vec(),
