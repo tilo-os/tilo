@@ -1,6 +1,6 @@
 //! A query or table result as the toolkit's [`DataTable`]: columns sized to
-//! their content, numbers in tabular figures, `NULL` as an absent value, and a
-//! sort that follows a header click.
+//! what they hold and together as wide as the pane, numbers in tabular
+//! figures, `NULL` as an absent value, and a sort that follows a header click.
 
 use std::cell::Cell as Flag;
 use std::cmp::Ordering;
@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use taffy::{NodeId, TaffyTree};
+use taffy::{Dimension, NodeId, TaffyTree};
 use ui::text_render::TextKind;
 use ui::theme::Theme;
 use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable, text_band};
@@ -20,6 +20,104 @@ use crate::model::{Cell, QueryResult};
 
 /// A row of the table: its index in the result it shows.
 type RowIndex = usize;
+
+/// How many rows a column's share of the width is judged from.
+const SAMPLE_ROWS: usize = 200;
+
+/// The longest text that still asks for more room: past it a column elides.
+const WIDEST_TEXT: usize = 48;
+
+/// Room a column's text needs besides its characters: the cell padding and,
+/// in a header, the sort arrow.
+const PADDING_CHARS: usize = 4;
+
+/// A column's share of the pane's width, from the text it shows: the longest
+/// of its header and the rows it was judged from, in characters. Shares
+/// divide the whole width, so the columns always fill the pane and a pane too
+/// narrow for all of them elides each in proportion.
+pub fn column_share<'a>(header: &str, cells: impl IntoIterator<Item = &'a str>) -> f32 {
+    let longest = cells
+        .into_iter()
+        .map(|cell| cell.chars().count())
+        .chain(std::iter::once(header.chars().count()))
+        .max()
+        .unwrap_or(0)
+        .min(WIDEST_TEXT);
+    let chars = u16::try_from(longest + PADDING_CHARS).unwrap_or(u16::MAX);
+    f32::from(chars)
+}
+
+/// Let the node take the height its parent has left, rather than the height
+/// of its content: the table then scrolls within what it is given.
+pub fn fill_remaining_height(taffy: &mut TaffyTree<()>, node: NodeId) {
+    if let Ok(mut style) = taffy.style(node).cloned() {
+        style.size.height = Dimension::auto();
+        style.min_size.height = Dimension::length(0.0);
+        style.flex_grow = 1.0;
+        style.flex_shrink = 1.0;
+        style.flex_basis = Dimension::length(0.0);
+        let _ = taffy.set_style(node, style);
+    }
+}
+
+/// A line of text above a table, lined up with the text in the cells below
+/// it. Under a divider it also keeps clear of it.
+pub struct CaptionLine {
+    text: ui::widget::Text,
+    under_divider: bool,
+}
+
+impl CaptionLine {
+    /// A line right above the rows.
+    pub fn new(text: ui::widget::Text) -> Self {
+        Self {
+            text,
+            under_divider: false,
+        }
+    }
+
+    /// A line right below the divider of a split.
+    pub fn under_divider(text: ui::widget::Text) -> Self {
+        Self {
+            text,
+            under_divider: true,
+        }
+    }
+}
+
+impl ui::widget::Decorator for CaptionLine {
+    type Inner = ui::widget::Text;
+
+    fn inner(&self) -> &ui::widget::Text {
+        &self.text
+    }
+
+    fn inner_mut(&mut self) -> &mut ui::widget::Text {
+        &mut self.text
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = Widget::build_layout(&mut self.text, taffy, theme, node_map);
+        if let Ok(mut style) = taffy.style(node).cloned() {
+            let spacing = &theme.tokens.spacing;
+            style.margin.left = taffy::style_helpers::length(spacing.s2);
+            if self.under_divider {
+                style.margin.top = taffy::style_helpers::length(spacing.s3);
+            }
+            let _ = taffy.set_style(node, style);
+        }
+        node
+    }
+
+    fn name(&self) -> &'static str {
+        "CaptionLine"
+    }
+}
 
 pub struct ResultsTable {
     table: DataTable<RowIndex>,
@@ -99,16 +197,27 @@ impl ResultsTable {
                     } else {
                         TextKind::Prose
                     };
-                    ColumnDef::new(format!("c{index}"), header.clone(), ColumnWidth::Auto)
-                        .sortable(true)
-                        .with_kind(kind)
-                        .with_optional_text(
-                            move |row: &RowIndex| {
-                                let cell = rows.rows.get(*row)?.get(index)?;
-                                (!cell.is_null()).then(|| cell.display())
-                            },
-                            "NULL",
-                        )
+                    let shown: Vec<String> = result
+                        .rows
+                        .iter()
+                        .take(SAMPLE_ROWS)
+                        .filter_map(|row| row.get(index).map(Cell::display))
+                        .collect();
+                    let share = column_share(header, shown.iter().map(String::as_str));
+                    ColumnDef::new(
+                        format!("c{index}"),
+                        header.clone(),
+                        ColumnWidth::Flex(share),
+                    )
+                    .sortable(true)
+                    .with_kind(kind)
+                    .with_optional_text(
+                        move |row: &RowIndex| {
+                            let cell = rows.rows.get(*row)?.get(index)?;
+                            (!cell.is_null()).then(|| cell.display())
+                        },
+                        "NULL",
+                    )
                 })
                 .collect()
         });
@@ -193,21 +302,26 @@ impl ui::widget::Decorator for ResultsTable {
             ),
             f64::from(tokens.spacing.s3),
         );
-        Widget::build_layout(&mut self.table, taffy, theme, node_map)
+        let node = Widget::build_layout(&mut self.table, taffy, theme, node_map);
+        fill_remaining_height(taffy, node);
+        node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         // The table scrolls inside the room its parent gave it, keeping the
-        // header in view: tell it how tall that room's body is.
+        // header in view, and is only as tall as its rows: the column rules
+        // and the stripes stop with the last row instead of running on over
+        // empty ground. Tell it how tall its body is.
         let height = f64::from(taffy.layout(node).map_or(0.0, |layout| layout.size.height));
-        let body = (height - self.header).max(0.0);
-        let row = self.header;
+        let room = (height - self.header).max(0.0);
+        let rows = self.result.as_ref().map_or(0, |result| result.rows.len());
+        let content = self.header * rows as f64;
         #[allow(clippy::cast_possible_truncation, reason = "a screen height")]
-        let body = body as f32;
+        let body = room.min(content) as f32;
         if body > 0.0 && (body - self.body).abs() > 0.5 {
             self.body = body;
             #[allow(clippy::cast_possible_truncation, reason = "a row height")]
-            self.table.set_viewport(body, row as f32);
+            self.table.set_viewport(body, self.header as f32);
         }
         Widget::apply_layout(&mut self.table, taffy, node, origin);
     }
@@ -296,5 +410,72 @@ mod tests {
         );
         assert_eq!(compare_cells(None, Some(&Cell::Null)), Ordering::Equal);
         assert_eq!(compare_cells(Some(&Cell::Null), Some(&two)), Ordering::Less);
+    }
+
+    /// A column asks for its longest text plus room for padding and the sort arrow, and a very long text does not starve the others.
+    #[test]
+    fn a_column_asks_for_the_width_of_its_text() {
+        let short = column_share("id", ["1", "22"]);
+        let header = column_share("release_date", ["1995"]);
+        let cells = column_share("n", ["Strings at Dusk"]);
+        assert!(header > short, "a long header asks for more");
+        assert!(cells > short, "long cells ask for more");
+        assert!(
+            header >= 12.0 + 4.0,
+            "a header always has room for its own text"
+        );
+        let essay = "x".repeat(500);
+        let widest = column_share("body", [&essay[..WIDEST_TEXT]]);
+        assert!(
+            (column_share("body", [essay.as_str()]) - widest).abs() < f32::EPSILON,
+            "a very long text asks for no more than the widest"
+        );
+    }
+
+    /// The table is as wide as its pane, only as tall as its rows, and takes the room it has left when there are more rows than room.
+    #[test]
+    fn the_table_fills_its_pane_and_stops_at_its_rows() {
+        use ui::headless::FrameHarness;
+        use ui::theme::Theme;
+        let rows = |n: usize| {
+            Arc::new(QueryResult {
+                columns: vec!["id".into(), "title".into()],
+                rows: (0..n)
+                    .map(|i| vec![Cell::Integer(i as i64), Cell::Text(format!("Row {i}"))])
+                    .collect(),
+                is_select: true,
+                ..Default::default()
+            })
+        };
+        for (count, scrolls) in [(3, false), (200, true)] {
+            let mut table = ResultsTable::new("results");
+            table.bind(Some(rows(count)));
+            let mut harness =
+                FrameHarness::for_root(ui::State::new(), table, (900, 400), Theme::dark());
+            harness.relayout();
+            harness.relayout();
+            let rect = harness.targets()["results"];
+            assert!(
+                (rect.width() - 900.0).abs() < 1.0,
+                "the table is as wide as the pane: {rect:?}"
+            );
+            let table = harness.root::<ResultsTable>();
+            let viewport = f64::from(table.body);
+            assert!(
+                viewport <= rect.height(),
+                "the body fits in the pane: {viewport} in {rect:?}"
+            );
+            assert_eq!(
+                table.table.max_scroll_y() > 0.0,
+                scrolls,
+                "{count} rows in {rect:?}"
+            );
+            if !scrolls {
+                assert!(
+                    viewport < rect.height() - 100.0,
+                    "a short result is only as tall as its rows: {viewport} in {rect:?}"
+                );
+            }
+        }
     }
 }

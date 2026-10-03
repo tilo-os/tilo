@@ -8,7 +8,9 @@ use ui::TextRole;
 use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use ui::widget::{Column, Decorator, Element, Scrollable, Section, Text, Widget};
 
-use crate::model::{RelationKind, TableInfo};
+use crate::link::Link;
+use crate::model::TableInfo;
+use crate::results::column_share;
 
 #[derive(Clone)]
 struct ColumnRow {
@@ -33,6 +35,18 @@ struct IndexRow {
     columns: String,
 }
 
+/// A column that takes the share of the width its header and cells ask for.
+fn column<Row: Clone + 'static>(
+    key: &str,
+    header: &str,
+    rows: &[Row],
+    text: impl Fn(&Row) -> String + Send + Sync + 'static,
+) -> ColumnDef<Row> {
+    let shown: Vec<String> = rows.iter().map(&text).collect();
+    let share = column_share(header, shown.iter().map(String::as_str));
+    ColumnDef::new(key, header, ColumnWidth::Flex(share)).with_text(text)
+}
+
 fn table<Row: Clone + 'static>(
     name: &str,
     columns: Vec<ColumnDef<Row>>,
@@ -46,7 +60,7 @@ fn table<Row: Clone + 'static>(
 }
 
 fn columns_table(info: &TableInfo) -> DataTable<ColumnRow> {
-    let rows = info
+    let rows: Vec<ColumnRow> = info
         .columns
         .iter()
         .map(|column| ColumnRow {
@@ -64,18 +78,20 @@ fn columns_table(info: &TableInfo) -> DataTable<ColumnRow> {
     table(
         "db.structure.columns",
         vec![
-            ColumnDef::new("name", "Name", ColumnWidth::Flex(2.0))
-                .with_text(|row: &ColumnRow| row.name.clone()),
-            ColumnDef::new("type", "Type", ColumnWidth::Flex(2.0))
-                .with_kind(ui::text_render::TextKind::Identifier)
-                .with_text(|row: &ColumnRow| row.declared.clone()),
-            ColumnDef::new("nullable", "Nullable", ColumnWidth::Flex(1.0))
-                .with_text(|row: &ColumnRow| row.nullable.to_owned()),
-            ColumnDef::new("key", "Key", ColumnWidth::Flex(1.0))
-                .with_text(|row: &ColumnRow| row.key.to_owned()),
-            ColumnDef::new("default", "Default", ColumnWidth::Flex(2.0))
-                .with_kind(ui::text_render::TextKind::Code)
-                .with_optional_text(|row: &ColumnRow| row.default.clone(), "None"),
+            column("name", "Name", &rows, |row: &ColumnRow| row.name.clone()),
+            column("type", "Type", &rows, |row: &ColumnRow| {
+                row.declared.clone()
+            })
+            .with_kind(ui::text_render::TextKind::Identifier),
+            column("nullable", "Nullable", &rows, |row: &ColumnRow| {
+                row.nullable.to_owned()
+            }),
+            column("key", "Key", &rows, |row: &ColumnRow| row.key.to_owned()),
+            column("default", "Default", &rows, |row: &ColumnRow| {
+                row.default.clone().unwrap_or_else(|| "None".to_owned())
+            })
+            .with_kind(ui::text_render::TextKind::Code)
+            .with_optional_text(|row: &ColumnRow| row.default.clone(), "None"),
         ],
         rows,
     )
@@ -100,13 +116,15 @@ fn keys_table(info: &TableInfo) -> Option<DataTable<KeyRow>> {
         table(
             "db.structure.keys",
             vec![
-                ColumnDef::new("constraint", "Constraint", ColumnWidth::Flex(2.0))
-                    .with_text(|row: &KeyRow| row.constraint.to_owned()),
-                ColumnDef::new("column", "Column", ColumnWidth::Flex(2.0))
-                    .with_text(|row: &KeyRow| row.column.clone()),
-                ColumnDef::new("references", "References", ColumnWidth::Flex(3.0))
-                    .with_kind(ui::text_render::TextKind::Identifier)
-                    .with_optional_text(|row: &KeyRow| row.references.clone(), "None"),
+                column("constraint", "Constraint", &rows, |row: &KeyRow| {
+                    row.constraint.to_owned()
+                }),
+                column("column", "Column", &rows, |row: &KeyRow| row.column.clone()),
+                column("references", "References", &rows, |row: &KeyRow| {
+                    row.references.clone().unwrap_or_else(|| "None".to_owned())
+                })
+                .with_kind(ui::text_render::TextKind::Identifier)
+                .with_optional_text(|row: &KeyRow| row.references.clone(), "None"),
             ],
             rows,
         )
@@ -127,35 +145,17 @@ fn indexes_table(info: &TableInfo) -> Option<DataTable<IndexRow>> {
         table(
             "db.structure.indexes",
             vec![
-                ColumnDef::new("name", "Index", ColumnWidth::Flex(3.0))
-                    .with_text(|row: &IndexRow| row.name.clone()),
-                ColumnDef::new("unique", "Unique", ColumnWidth::Flex(1.0))
-                    .with_text(|row: &IndexRow| row.unique.to_owned()),
-                ColumnDef::new("columns", "Columns", ColumnWidth::Flex(3.0))
-                    .with_text(|row: &IndexRow| row.columns.clone()),
+                column("name", "Index", &rows, |row: &IndexRow| row.name.clone()),
+                column("unique", "Unique", &rows, |row: &IndexRow| {
+                    row.unique.to_owned()
+                }),
+                column("columns", "Columns", &rows, |row: &IndexRow| {
+                    row.columns.clone()
+                }),
             ],
             rows,
         )
     })
-}
-
-/// "Table with 6 columns and 347 rows" / "View with 6 columns".
-fn summary(info: &TableInfo) -> String {
-    let kind = match info.kind {
-        RelationKind::Table => "Table",
-        RelationKind::View => "View",
-    };
-    let columns = info.columns.len();
-    let columns = if columns == 1 {
-        "1 column".to_owned()
-    } else {
-        format!("{columns} columns")
-    };
-    match info.row_count {
-        Some(1) => format!("{kind} with {columns} and 1 row"),
-        Some(rows) => format!("{kind} with {columns} and {rows} rows"),
-        None => format!("{kind} with {columns}"),
-    }
 }
 
 fn page(info: &TableInfo) -> Element {
@@ -166,11 +166,6 @@ fn page(info: &TableInfo) -> Element {
             Text::new(&info.name)
                 .with_role(TextRole::Title)
                 .with_kind(ui::text_render::TextKind::Identifier),
-        ))
-        .push(Box::new(
-            Text::new(&summary(info))
-                .with_role(TextRole::Caption)
-                .dimmed(),
         ))
         .push(Box::new(Section::titled(
             "Columns",
@@ -194,14 +189,16 @@ fn page(info: &TableInfo) -> Element {
 
 /// The page for the selected table. It is rebuilt when the table changes.
 pub struct StructureView {
+    link: Link,
     content: Element,
     shown: Option<Rc<TableInfo>>,
     structure_dirty: bool,
 }
 
 impl StructureView {
-    pub fn new() -> Self {
+    pub fn new(link: &Link) -> Self {
         Self {
+            link: link.clone(),
             content: Box::new(Text::new("")),
             shown: None,
             structure_dirty: false,
@@ -209,7 +206,7 @@ impl StructureView {
     }
 
     /// Show `table`, or nothing when it is `None`.
-    pub fn show(&mut self, table: Option<&Rc<TableInfo>>) {
+    fn show(&mut self, table: Option<&Rc<TableInfo>>) {
         let same = match (&self.shown, table) {
             (Some(shown), Some(next)) => Rc::ptr_eq(shown, next),
             (None, None) => true,
@@ -227,12 +224,6 @@ impl StructureView {
     }
 }
 
-impl Default for StructureView {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Decorator for StructureView {
     type Inner = dyn Widget;
 
@@ -242,6 +233,12 @@ impl Decorator for StructureView {
 
     fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
         self.content.as_mut()
+    }
+
+    fn sync(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) {
+        let table = self.link.read(|model| model.table.clone());
+        self.show(table.as_ref());
+        self.content.sync(state, path);
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -257,9 +254,9 @@ impl Decorator for StructureView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ColumnInfo, ForeignKey, IndexInfo, TypeClass};
+    use crate::model::{ColumnInfo, ForeignKey, IndexInfo, RelationKind, TypeClass};
 
-    fn info(rows: Option<i64>, kind: RelationKind) -> TableInfo {
+    fn info(rows: Option<i64>) -> TableInfo {
         let column = |name: &str, primary_key: bool| ColumnInfo {
             name: name.into(),
             decl_type: "INTEGER".into(),
@@ -270,7 +267,7 @@ mod tests {
         };
         TableInfo {
             name: "tracks".into(),
-            kind,
+            kind: RelationKind::Table,
             columns: vec![column("id", true), column("album_id", false)],
             foreign_keys: vec![ForeignKey {
                 column: "album_id".into(),
@@ -286,27 +283,10 @@ mod tests {
         }
     }
 
-    /// The summary is a sentence about the table, and a view has no row count to claim.
-    #[test]
-    fn the_summary_says_what_the_relation_is() {
-        assert_eq!(
-            summary(&info(Some(15), RelationKind::Table)),
-            "Table with 2 columns and 15 rows"
-        );
-        assert_eq!(
-            summary(&info(Some(1), RelationKind::Table)),
-            "Table with 2 columns and 1 row"
-        );
-        assert_eq!(
-            summary(&info(None, RelationKind::View)),
-            "View with 2 columns"
-        );
-    }
-
     /// A primary key is not nullable, and the keys table lists the primary key before the foreign keys.
     #[test]
     fn keys_and_nullability_follow_the_catalog() {
-        let table = info(Some(3), RelationKind::Table);
+        let table = info(Some(3));
         let keys = keys_table(&table).expect("the table has keys");
         let rows = keys.view_rows();
         assert_eq!(rows.len(), 2);
