@@ -100,6 +100,14 @@ char_key() {
   esac
 }
 
+# A qcow2 virtio disk with a serial (the guest's /dev/disk/by-id name). The
+# serial belongs to the virtio block device: QEMU rejects serial= on -drive.
+virtio_disk() {
+  local file="$1" id="$2" serial="${3:-}"
+  printf -- '-drive file=%s,format=qcow2,if=none,id=%s -device virtio-blk-pci,drive=%s%s' \
+    "$file" "$id" "$id" "${serial:+,serial=$serial}"
+}
+
 vm_running() { [ -f "$TILO_PIDFILE" ] && inenv "kill -0 \$(cat '$TILO_PIDFILE') 2>/dev/null"; }
 
 cmd_boot() {
@@ -123,12 +131,10 @@ cmd_boot() {
   [ -f "$disk" ] || die "disk not found: $disk (run os/dev/build-image.sh)"
   vm_running && die "VM already running (pid $(cat "$TILO_PIDFILE")); stop it first"
   [[ "$disk_serial" =~ ^[A-Za-z0-9._-]{0,20}$ ]] || die "boot: --serial must be up to 20 of [A-Za-z0-9._-]"
-  local serial_arg=""
-  [ -z "$disk_serial" ] || serial_arg=",serial=$disk_serial"
   local attach_arg=""
   if [ -n "$attach" ]; then
     inenv "test -f '$attach' || qemu-img create -f qcow2 '$attach' '$TILO_TARGET_SIZE'" >/dev/null
-    attach_arg="-drive file=$attach,format=qcow2,if=virtio,serial=tilo-install-target"
+    attach_arg="$(virtio_disk "$attach" tilo-install-target tilo-install-target)"
     msg "attaching $attach as /dev/vdb"
   fi
   if [ -n "$validation" ]; then
@@ -148,7 +154,7 @@ cmd_boot() {
 
   local args="$(machine_args) $(qemu_accel_args) -m $TILO_MEM -smp $TILO_SMP \
     $(pflash_args "$varstore") \
-    -drive file=$disk,format=qcow2,if=virtio$serial_arg $attach_arg \
+    $(virtio_disk "$disk" tilo-disk "$disk_serial") $attach_arg \
     $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22 $(input_qemu_args) \
     $(console_qemu_args) \
     -monitor unix:$TILO_MON,server,nowait -serial file:$TILO_SERIAL \
@@ -199,8 +205,8 @@ cmd_boot_installer() {
   # First virtio disk = installer (/dev/vda); second = blank target (/dev/vdb).
   local args="$(machine_args) $(qemu_accel_args) -m $TILO_MEM -smp $TILO_SMP \
     $(pflash_args "$varstore") \
-    -drive file=$work_disk,format=qcow2,if=virtio,serial=tilo-installer-medium \
-    -drive file=$target,format=qcow2,if=virtio,serial=tilo-install-target \
+    $(virtio_disk "$work_disk" tilo-installer-medium tilo-installer-medium) \
+    $(virtio_disk "$target" tilo-install-target tilo-install-target) \
     $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22 $(input_qemu_args) \
     $(console_qemu_args) $proof_arg \
     -monitor unix:$TILO_MON,server,nowait -serial file:$TILO_SERIAL \
@@ -234,7 +240,7 @@ cmd_boot_target() {
   fi
   local args="$(machine_args) $(qemu_accel_args) -m $TILO_MEM -smp $TILO_SMP \
     $(pflash_args "$varstore") \
-    -drive file=$disk,format=qcow2,if=virtio,serial=tilo-install-target \
+    $(virtio_disk "$disk" tilo-install-target tilo-install-target) \
     $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22 $(input_qemu_args) \
     $(console_qemu_args) \
     -monitor unix:$TILO_MON,server,nowait -serial file:$TILO_SERIAL \
