@@ -262,13 +262,16 @@ export function createLiveLayer(peer, runtime, room, {
   // with backoff until the member leaves or the session changes.
   function keepSubscribed(publisherId, key, open, attempt = 0, wanted = () => true) {
     const current = session;
+    const epoch = memberEpochs.get(publisherId);
     if (stopped || !current || subscriptions.has(key) || !members.has(publisherId) || !wanted()) return;
     const cleanup = open(current, () => {
       if (subscriptions.get(key) !== cleanup) return;
       subscriptions.delete(key);
-      if (stopped || session !== current || !members.has(publisherId)) return;
+      if (stopped || session !== current || memberEpochs.get(publisherId) !== epoch) return;
       const delay = SUBSCRIBE_RETRY_MS[Math.min(attempt, SUBSCRIBE_RETRY_MS.length - 1)];
-      setTimer(() => { if (session === current) keepSubscribed(publisherId, key, open, attempt + 1, wanted); }, delay);
+      setTimer(() => {
+        if (session === current && memberEpochs.get(publisherId) === epoch) keepSubscribed(publisherId, key, open, attempt + 1, wanted);
+      }, delay);
     });
     subscriptions.set(key, cleanup);
   }
