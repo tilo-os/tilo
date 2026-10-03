@@ -101,20 +101,46 @@ K_L = 12
 K_I = 14
 FLOOR = 40
 CARON = 45
+ABS_FLOOR = 24  # nothing closer, even where the plain letter collides: pairs.py's 16 and room between masters
 CONDENSED_BOLD_EXTRA = 10
 ROUND_SHARE_L = 1 / 3  # the tail already fills under a round: keep less of the extra white
+ROUND_SHARE_I = 1 / 3  # the serifs sit where a round curves away: the stem keeps a third of its extra white
 TOLERANCE = 2  # a member may sit this much inside a floor before it gets its own pair
+DIAGONAL = 0.9  # an approach is diagonal when the distance is shorter than this share of the level gap
 
 # Left forms (text, features) of each family; the first is the base.
 L_FORMS = ["l", "ĺ", "ļ", "ł", "fl", "ffl"]
-I_FORMS = ["I", "Í", "Ì", "Î", "Ï", "Ī", "Į", "İ", ("Ï", "ss01"), ("İ", "ss01")]
-I_RIGHT = I_FORMS + ["Ĳ"]
+I_FORMS = ["I", "Í", "Ì", "Î", "Ï", "Ī", "Į", "İ", ("Ï", "ss01"), ("İ", "ss01"),
+           "Ι", "Ϊ", ("Ϊ", "ss01"), "Ί", "І", "Ї"]  # Greek and Cyrillic: the same serif I
+I_RIGHT = [f for f in I_FORMS if f != "Ί"] + ["Ĳ"]  # Ί's left side is its tonos
+# The letter whose bars meet neighbours the way the serifs do, per script.
+ANALOGUE = {"LATIN": "Z", "GREEK": "Ζ", "CYRILLIC": "Е"}
+# Glyphs that copy another glyph's left-side pairs: Ί's tonos is Ί's.
+COPY_LEFT = {"Iotatonos.ss13": "Iotatonos"}
+BARE_I = {"I.ss13", "Iota.ss13", "I-cy.ss13"}  # the serif I without an accent, in each script
+# The tailed l's forms on the right (their left side is plain l's) and the
+# lowercase accents that reach over their ascender.
+L_RIGHT_TEXT = ["l", "ĺ", "ľ", "ļ", "ł"]
+L_RIGHT = {"l.ss13", "lacute.ss13", "lcaron.ss13", "lcommaaccent.ss13", "lcommaaccent.ss01.ss13", "lslash.ss13"}
+ACCENTS = {"igrave", "iacute", "icircumflex", "idieresis", "idieresis.ss01", "imacron", "itilde", "ibreve",
+           "icaron", "ihookabove", "tcaron", "dcaron", "rcaron"}
 # Lowercase accents and apostrophe carons that sit at the serif's height.
 FORCED = set("ìíîïīĩĭǐỉťďľř")
+# The bare vertical strokes the distinct forms must stay apart from (the
+# letters i j l I have their own rules): next to these the serif I and the
+# tailed l keep the plain letter's distance, in any direction, up to
+# CONFUSABLE_GAP (a clear pixel and a quarter at 12 px).
+CONFUSABLE = set("1|¦!¡")
+CONFUSABLE_GAP = 104
 
 # Partners by the glyph they become (kern groups decide the rest).
-ROUND_LEFT = {"O", "C", "G", "Q", "o", "c", "e", "d", "q", "g", "zero", "zero.zero", "six", "eight", "nine"}
-ROUND_RIGHT = {"O", "C", "D", "Q", "o", "b", "p", "c", "e", "zero", "zero.zero", "six", "eight", "nine"}
+ROUND_LEFT = {"O", "C", "G", "Q", "o", "c", "e", "d", "q", "g", "zero", "zero.zero", "six", "eight", "nine",
+              "Oslash", "oslash", "Omicron", "Theta", "Omega", "omicron", "sigma", "alpha", "theta", "phi",
+              "O-cy", "Es-cy", "E-cy", "Ef-cy", "o-cy", "es-cy", "e-cy", "ie-cy", "ef-cy"}
+ROUND_RIGHT = {"O", "C", "D", "Q", "o", "b", "p", "c", "e", "zero", "zero.zero", "six", "eight", "nine",
+               "Oslash", "oslash", "Omicron", "Theta", "Omega", "omicron", "rho", "phi", "theta",
+               "O-cy", "Ereversed-cy", "Ef-cy", "Yu-cy", "o-cy", "ereversed-cy", "er-cy", "ef-cy", "yu-cy",
+               "be-cy", "ie-cy"}
 MID = {"T", "V", "W", "Y", "seven", "quotedbl", "quotesingle", "quotedblleft", "quotedblright",
        "quoteleft", "quoteright", "quotedblleft.ss01", "quotedblright.ss01", "quoteleft.ss01",
        "quoteright.ss01", "hyphen", "endash", "emdash", "guillemetleft", "guillemetright",
@@ -166,6 +192,8 @@ class FlatPen(BasePen):
 
 
 YS = np.arange(-400, 1101, 2, dtype=float)
+REACH = 240  # diagonal distances are looked for this far above and below
+ITALIC_ANGLE = 13
 
 
 class Shaper:
@@ -175,6 +203,8 @@ class Shaper:
         self.font = hb.Font(self.face)
         self.font.set_variations({"wdth": wdth, "wght": wght})
         self.profiles = {}
+        self.upright = {}
+        self.skew = math.tan(math.radians(ITALIC_ANGLE)) if italic else 0.0
         self.names = {}  # production name in the binary -> UFO name
         self.path = path
 
@@ -183,7 +213,17 @@ class Shaper:
         return TTFont(self.path, lazy=True).getBestCmap()
 
     def profile(self, gid):
-        """(left, right) ink edge per scanline in YS, nan where empty."""
+        """(left, right) ink edge per scanline in YS, nan where empty. In the
+        italic, measured with the slant taken out (as Glyphs shows italic
+        sidebearings), so a slanted stem's white compares with the upright's."""
+        if gid not in self.upright:
+            left, right = self.raw(gid)
+            shift = YS * self.skew
+            self.upright[gid] = (left - shift, right - shift)
+        return self.upright[gid]
+
+    def raw(self, gid):
+        """(left, right) ink edge per scanline of the outline as drawn."""
         if gid not in self.profiles:
             pen = FlatPen()
             self.font.draw_glyph_with_pen(gid, pen)
@@ -219,12 +259,12 @@ class Shaper:
             x += pos.x_advance
         return out
 
-    def gap(self, glyphs, i=0, band_a=None, band_b=None):
+    def gap(self, glyphs, i=0, band_a=None, band_b=None, raw=False):
         """Ink gap between glyphs i and i+1; bands are (lo, hi) on each glyph."""
         _, ga, xa, _ = glyphs[i]
         _, gb, xb, _ = glyphs[i + 1]
-        ra = self.profile(ga)[1] + xa
-        lb = self.profile(gb)[0] + xb
+        ra = (self.raw if raw else self.profile)(ga)[1] + xa
+        lb = (self.raw if raw else self.profile)(gb)[0] + xb
         m = ~np.isnan(ra) & ~np.isnan(lb)
         if band_a:
             m &= (YS >= band_a[0]) & (YS <= band_a[1])
@@ -233,6 +273,61 @@ class Shaper:
         if not m.any():
             return None
         return float((lb - ra)[m].min())
+
+    def _facing(self, glyphs, i, band_a, band_b, reach):
+        """(dx, dy) between every scanline of the left glyph's right edge and
+        every scanline of the right glyph's left edge within `reach` of it."""
+        _, ga, xa, _ = glyphs[i]
+        _, gb, xb, _ = glyphs[i + 1]
+        ra = self.raw(ga)[1] + xa
+        lb = self.raw(gb)[0] + xb
+        ma = ~np.isnan(ra)
+        mb = ~np.isnan(lb)
+        if band_a:
+            ma &= (YS >= band_a[0]) & (YS <= band_a[1])
+        if band_b:
+            mb &= (YS >= band_b[0]) & (YS <= band_b[1])
+        ia = np.flatnonzero(ma)[::2]  # 4-unit scanlines: plenty against gaps of 40+
+        ib = np.flatnonzero(mb)[::2]
+        if not len(ia) or not len(ib):
+            return None
+        dy = YS[ib][None, :] - YS[ia][:, None]
+        dx = lb[ib][None, :] - ra[ia][:, None]
+        near = np.abs(dy) <= reach
+        if not near.any():
+            return None
+        return dx[near], dy[near]
+
+    def dist(self, glyphs, i=0, band_a=None, band_b=None, reach=REACH, shift=0.0):
+        """Shortest ink distance between glyphs i and i+1, in any direction
+        (with the right glyph moved `shift` units further).
+
+        Each scanline of the left glyph's right edge is compared with every
+        scanline of the right glyph's left edge up to `reach` units above or
+        below it, so a serif tip that comes near a figure's flag, a bowl or an
+        accent diagonally counts, not only one level with it. Where the two
+        edges overlap horizontally on different scanlines, the vertical
+        distance between those scanlines is the gap (an accent under a serif).
+        """
+        f = self._facing(glyphs, i, band_a, band_b, reach)
+        if f is None:
+            return None
+        dx, dy = f
+        return float(np.sqrt(np.maximum(dx + shift, 0) ** 2 + dy ** 2).min())
+
+    def need_shift(self, glyphs, need, i=0, band_a=None, band_b=None):
+        """How far the right glyph must move (negative: may move closer) for
+        dist() to be exactly `need`: solved, not stepped, so a diagonal
+        approach (where moving sideways gains less than its length) settles
+        in one pass."""
+        f = self._facing(glyphs, i, band_a, band_b, max(need, 1))
+        if f is None:
+            return None
+        dx, dy = f
+        close = np.abs(dy) < need
+        if not close.any():
+            return None
+        return float((np.sqrt(need ** 2 - dy[close] ** 2) - dx[close]).max())
 
     def kern(self, text, feats, i=0, lang=None):
         a = self.shape(text, feats, lang)
@@ -291,6 +386,22 @@ def even(v):
 # solving one master
 
 
+def script_of(c):
+    """LATIN, GREEK or CYRILLIC for a letter, None for anything else
+    (figures, punctuation: they join the run of the letter beside them)."""
+    if not c.isalpha():
+        return None
+    script = unicodedata.name(c, "?").split(" ")[0]
+    return script if script in ("GREEK", "CYRILLIC") else "LATIN"
+
+
+def same_run(a, b):
+    """HarfBuzz shapes letters of two scripts in separate runs, which are
+    never kerned: such pairs are not measured."""
+    sa, sb = script_of(a[0]), script_of(b[0])
+    return sa is None or sb is None or sa == sb
+
+
 def text_of(form):
     if isinstance(form, tuple):
         return form[0], {form[1]: True}
@@ -318,6 +429,8 @@ def solve(style, write=False):
                 if n.startswith(by_cp[u] + "."):
                     sh.names[prod + n[len(by_cp[u]):]] = n
     SS = {"ss13": True}
+    I1_SET = set(font.groups.get(I1_CLASS, []))
+    I2_SET = set(font.groups.get(I2_CLASS, []))
     cond_bold = wdth == 75 and wght == 700
 
     # partners: every Latin-ish character the font maps, plus the alternates
@@ -326,10 +439,10 @@ def solve(style, write=False):
     for u in sorted(sh.face.unicodes):
         c = chr(u)
         cat = unicodedata.category(c)
-        if cat[0] not in "LNPS" or cat in ("Sk", "So", "Lm") or u > 0x2BFF:
+        if cat[0] not in "LNPS" or cat in ("So", "Lm") or u > 0x2BFF:
             continue
-        if 0x0370 <= u <= 0x1DFF:
-            continue  # Greek, Cyrillic, ...: ufo2ft never kerns across scripts
+        if 0x0370 <= u <= 0x1DFF and script_of(c) not in ("GREEK", "CYRILLIC"):
+            continue
         chars.append(c)
     partners = []
     seen = set()
@@ -374,6 +487,36 @@ def solve(style, write=False):
         gl = sh.shape(text, feats)
         return sh.gap(gl, 0, **kw)
 
+    def d_full(text, feats, **kw):
+        gl = sh.shape(text, feats)
+        return sh.dist(gl, 0, **kw) if len(gl) == 2 else None
+
+    def nearest(*ds):
+        ds = [d for d in ds if d is not None]
+        return min(ds) if ds else None
+
+    def diagonal_need(gl, plain_d, z_d):
+        """The serif I's floor against a partner. Where its nearest approach is
+        diagonal (a serif tip towards the flag of 1, the arm of 4, the bowl
+        of ¿, an accent), the serif keeps the distance Z's bars keep from the
+        same partner, or the plain I's where that is closer: Z is the
+        letter whose bars meet neighbours the way serifs do. Side by side,
+        FLOOR (or the plain I's distance, where closer); the stem rule spaces
+        those. Which it is gets decided with the pair set 100 units apart
+        level, so the answer does not depend on the kerning being solved."""
+        level = None if plain_d is None else min(FLOOR, plain_d)
+        full = sh.gap(gl, raw=True)
+        if full is None or sh.dist(gl, shift=100 - full) < 100 * DIAGONAL:
+            return max(level or 0, nearest(plain_d, z_d) or 0) or None
+        return level
+
+    def floor_d(k0, gl, need, **bands):
+        """The kerning at which the pair's inks are `need` apart, any direction."""
+        if need is None:
+            return -9999
+        s = sh.need_shift(gl, need, **bands)
+        return -9999 if s is None else k0 + s
+
     LZ = g_full("LZ", {}, band_a=(-400, 200))
     ZZ = g_full("ZZ", {})
     adv = {n: font[n].width for n in ("l", "l.ss13", "lcaron", "lcaron.ss13", "I", "I.ss13")}
@@ -389,7 +532,7 @@ def solve(style, write=False):
     # wants[(left glyph, right glyph)] = (value, floor, reason)
     wants = {}
 
-    def stem_rule(k0, plain, stem, extra, kind, base_k, band_gap, ref, round_share=2 / 3):
+    def stem_rule(k0, plain, stem, extra, kind, base_k, band_gap, ref, round_share=None):
         if stem is None or plain is None:
             return k0, "keep"
         if kind == "round":
@@ -439,6 +582,8 @@ def solve(style, write=False):
         is_l = form in L_FORMS
         for (c, feats, pname) in partners:
             f = {**feats, **ffeats}
+            if not same_run(ftext, c):
+                continue
             text = ftext + c
             gl = sh.shape(text, {**SS, **f})
             if len(gl) != 2 or len(sh.shape(text, f)) != 2:
@@ -453,6 +598,8 @@ def solve(style, write=False):
             plain = sh.gap(pl)
             if full is None:
                 continue
+            diag = sh.dist(gl)
+            plain_d = sh.dist(pl)
             if is_l:
                 stem = sh.gap(gl, band_a=L_STEM)
                 band = sh.gap(gl, band_a=L_TAIL)
@@ -461,12 +608,16 @@ def solve(style, write=False):
                 # tail_ref next to straights, proportionally less next to rounds
                 ref = tail_ref * min(1.0, plain / plain_ln) if plain else tail_ref
                 value, why = stem_rule(k0, plain, stem, extra_l, kind, K_L, band, ref, ROUND_SHARE_L)
-                t_gap = g_full("t" + c, f)
-                fl = floor_k(k0, full, min(x for x in (t_gap, plain) if x is not None)) if (t_gap or plain) else -9999
-                if rname.startswith("I") and ".ss13" in rname or rname == "IJ.ss13":
+                need = nearest(d_full("t" + c, f), plain_d)
+                if c in FORCED:
+                    need = max(need or 0, FLOOR)
+                if c in CONFUSABLE:
+                    need = max(need or 0, min(plain_d or 0, CONFUSABLE_GAP))
+                fl = floor_d(k0, gl, max(need or 0, ABS_FLOOR))
+                if rname in I2_SET:
                     need = max(LZ, ZZ) + (CONDENSED_BOLD_EXTRA if cond_bold else 0)
                     fl = max(fl, floor_k(k0, sh.gap(gl, band_a=(-400, 200)), need))
-                    fl = max(fl, floor_k(k0, full, FLOOR if plain is None else min(FLOOR, plain)))
+                    fl = max(fl, floor_d(k0, gl, FLOOR if plain_d is None else min(FLOOR, plain_d)))
                 if rname == "l.ss13" and cond_bold:
                     fl = max(fl, floor_k(k0, full, tail_ref + CONDENSED_BOLD_EXTRA))
                 record(lname, rname, value, fl, why)
@@ -474,14 +625,15 @@ def solve(style, write=False):
                 stem = sh.gap(gl, band_a=I_STEM)
                 band = min([x for x in (sh.gap(gl, band_a=I_SERIF_LO), sh.gap(gl, band_a=I_SERIF_HI)) if x is not None], default=None)
                 kind = kind_of(rname, "left")
-                value, why = stem_rule(k0, plain, stem, extra_i_r, kind, K_I, band, serif_ref_r)
-                accent_pair = ".ss13" in rname and rname.startswith("I")
-                if c in FORCED or accent_pair or rname == "IJ.ss13":
-                    need = FLOOR
-                else:
-                    need = FLOOR if plain is None else min(FLOOR, plain)
-                fl = floor_k(k0, full, need)
-                if rname == "I.ss13":
+                value, why = stem_rule(k0, plain, stem, extra_i_r, kind, K_I, band, serif_ref_r, ROUND_SHARE_I)
+                accent_pair = rname in I2_SET
+                need = diagonal_need(gl, plain_d, d_full(ANALOGUE[script_of(ftext) or "LATIN"] + c, f))
+                if c in FORCED or accent_pair or rname == "IJ.ss13" or need is None:
+                    need = max(need or 0, FLOOR)
+                if c in CONFUSABLE:
+                    need = max(need, min(plain_d or 0, CONFUSABLE_GAP))
+                fl = floor_d(k0, gl, max(need or 0, ABS_FLOOR))
+                if rname in BARE_I:
                     fl = max(fl, floor_k(k0, sh.gap(gl, band_a=(-400, CAP), band_b=(-400, CAP)), ZZ))
                 if base_letter(rname) in ("J", "Jcircumflex"):
                     fl = max(fl, floor_k(k0, full, LZ))
@@ -493,31 +645,40 @@ def solve(style, write=False):
         ftext, ffeats = text_of(form)
         for (c, feats, _) in left_partners:
             f = {**feats, **ffeats}
+            if not same_run(c, ftext):
+                continue
             text = c + ftext
             gl = sh.shape(text, {**SS, **f})
             if len(gl) != 2 or len(sh.shape(text, f)) != 2:
                 continue
             lname, rname = gl[0][0], gl[1][0]
-            if lname in ("I.ss13",) or (lname.startswith("I") and lname.endswith("ss13") and lname != "IJ.ss13"):
+            if lname in I1_SET:
                 continue  # serif I against serif I: done above
             k0 = sh.kern(text, {**SS, **f})
             full = sh.gap(gl)
-            plain = sh.gap(sh.shape(text, f))
+            pl = sh.shape(text, f)
+            plain = sh.gap(pl)
             if full is None:
                 continue
+            diag = sh.dist(gl)
+            plain_d = sh.dist(pl)
             stem = sh.gap(gl, band_b=I_STEM)
             band = min([x for x in (sh.gap(gl, band_b=I_SERIF_LO), sh.gap(gl, band_b=I_SERIF_HI)) if x is not None], default=None)
             kind = kind_of(lname, "right")
-            value, why = stem_rule(k0, plain, stem, extra_i_l, kind, K_I, band, serif_ref_l)
-            need = FLOOR if (c in FORCED or plain is None) else min(FLOOR, plain)
-            fl = floor_k(k0, full, need)
+            value, why = stem_rule(k0, plain, stem, extra_i_l, kind, K_I, band, serif_ref_l, ROUND_SHARE_I)
+            need = diagonal_need(gl, plain_d, d_full(c + ANALOGUE[script_of(ftext) or "LATIN"], f))
+            if c in FORCED or need is None:
+                need = max(need or 0, FLOOR)
+            if c in CONFUSABLE:
+                need = max(need, min(plain_d or 0, CONFUSABLE_GAP))
+            fl = floor_d(k0, gl, max(need or 0, ABS_FLOOR))
             if c in "tť":
                 fl = max(fl, floor_k(k0, sh.gap(gl, band_a=(-400, 200)), LZ))
             if lname in ("l.ss13", "lacute.ss13", "lcommaaccent.ss13", "lslash.ss13", "f_l.ss13", "f_f_l.ss13", "lcaron.ss13", "lcommaaccent.ss01.ss13"):
                 need = max(LZ, ZZ) + (CONDENSED_BOLD_EXTRA if cond_bold else 0)
                 fl = max(fl, floor_k(k0, sh.gap(gl, band_a=(-400, 200)), need))
             if c in "ďřťľ":
-                fl = max(fl, floor_k(k0, full, CARON))
+                fl = max(fl, floor_d(k0, gl, CARON))
             record(lname, rname, value, fl, why)
 
     # --- Catalan middle dot ------------------------------------------------
@@ -596,6 +757,61 @@ def solve(style, write=False):
             continue
         new[(LC_CLASS, b)] = max(kl.get("l.ss13", rep) + d_body, kl.get("lcaron", rep) + d_caron)
 
+    # ...and its caron keeps FLOOR from anything, in any direction (plain ľ's
+    # own clearance is negative against T Y 7 and the i accents)
+    lc_need = {}
+    for (c, feats, _) in partners:
+        gl = sh.shape("ľ" + c, {**SS, **feats})
+        if len(gl) != 2 or gl[0][0] != "lcaron.ss13" or gl[1][0] in I2_MEMBERS:
+            continue
+        dc = sh.dist(gl, band_a=(CAP - 200, 2000))
+        if dc is None:
+            continue
+        k0 = sh.kern("ľ" + c, {**SS, **feats})
+        rg = gl[1][0]
+        cur = new.get((LC_CLASS, rg), new.get((LC_CLASS, K.key2(rg)), 0))
+        need = floor_d(k0, gl, FLOOR, band_a=(CAP - 200, 2000))
+        if need > cur + TOLERANCE:
+            lc_need[rg] = even_up(need)
+    lc_groups = defaultdict(list)
+    for rg in lc_need:
+        lc_groups[K.key2(rg)].append(rg)
+    for b, members in lc_groups.items():
+        listed = [p[2] for p in partners if K.key2(p[2]) == b and p[2] not in I2_MEMBERS]
+        group = b != members[0] and set(members) >= set(listed) and len(listed) > 1
+        if group:
+            new[(LC_CLASS, b)] = max(lc_need[m] for m in members)
+        for m in members:
+            # a member's own pair (from the derivation above) overrides the
+            # group's: raise it too
+            if not group or (LC_CLASS, m) in new:
+                new[(LC_CLASS, m)] = max(new.get((LC_CLASS, m), -9999), lc_need[m])
+
+    # the left side of the tailed l is plain l's, but its pairs with the i
+    # accents are owned here: an accent keeps FLOOR from the ascender
+    kl = Kerning(font)
+    kl.pairs = {k: v for k, v in kl.pairs.items() if not owned(k, font)}
+    for c in sorted(FORCED - {"ľ"}):
+        for feats in ({}, {"ss01": True}):
+            for form in L_RIGHT_TEXT:
+                text = c + form
+                gl = sh.shape(text, {**SS, **feats})
+                if len(gl) != 2 or gl[1][0] not in L_RIGHT or gl[0][0] not in ACCENTS:
+                    continue
+                diag = sh.dist(gl)
+                if diag is None:
+                    continue
+                need = floor_d(sh.kern(text, {**SS, **feats}), gl, FLOOR)
+                lg, rg = gl[0][0], gl[1][0]
+                if need > kl.get(lg, rg) + TOLERANCE:
+                    new[(lg, rg)] = even_up(need)
+
+    # Ί's left side is plain Ί's tonos: its pairs are copied
+    for (a, b), v in kl.pairs.items():
+        for dst, src in COPY_LEFT.items():
+            if b == src and dst in font:
+                new[(a, dst)] = v
+
     # drop zeros that override nothing
     cleaned = {}
     for (a, b), v in new.items():
@@ -646,7 +862,8 @@ def owned(key, font):
     a, b = key
     fam_l = set(font.groups.get(L_CLASS, [])) | set(font.groups.get(I1_CLASS, [])) | {"lcaron.ss13"}
     fam_r = set(font.groups.get(I2_CLASS, []))
-    return a in (L_CLASS, LC_CLASS, I1_CLASS) or a in fam_l or b == I2_CLASS or b in fam_r
+    return (a in (L_CLASS, LC_CLASS, I1_CLASS) or a in fam_l or b == I2_CLASS or b in fam_r
+            or (a in ACCENTS and b in L_RIGHT) or b in COPY_LEFT)
 
 
 def stale():

@@ -226,6 +226,8 @@
     <string>I_.glif</string>
     <key>I-cy</key>
     <string>I_-cy.glif</string>
+    <key>I-cy.ss13</key>
+    <string>I_-cy.ss13.glif</string>
     <key>I.ss13</key>
     <string>I_.ss13.glif</string>
     <key>IJ</key>
@@ -294,12 +296,20 @@
     <string>I_ogonek.ss13.glif</string>
     <key>Iota</key>
     <string>I_ota.glif</string>
+    <key>Iota.ss13</key>
+    <string>I_ota.ss13.glif</string>
     <key>Iotadieresis</key>
     <string>I_otadieresis.glif</string>
     <key>Iotadieresis.ss01</key>
     <string>I_otadieresis.ss01.glif</string>
+    <key>Iotadieresis.ss01.ss13</key>
+    <string>I_otadieresis.ss01.ss13.glif</string>
+    <key>Iotadieresis.ss13</key>
+    <string>I_otadieresis.ss13.glif</string>
     <key>Iotatonos</key>
     <string>I_otatonos.glif</string>
+    <key>Iotatonos.ss13</key>
+    <string>I_otatonos.ss13.glif</string>
     <key>Itilde</key>
     <string>I_tilde.glif</string>
     <key>Itilde.ss13</key>
@@ -616,6 +626,8 @@
     <string>Y_hookabove.glif</string>
     <key>Yi-cy</key>
     <string>Y_i-cy.glif</string>
+    <key>Yi-cy.ss13</key>
+    <string>Y_i-cy.ss13.glif</string>
     <key>Ytilde</key>
     <string>Y_tilde.glif</string>
     <key>Yu-cy</key>
