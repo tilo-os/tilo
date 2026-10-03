@@ -668,9 +668,9 @@ fn draw_picture(
     let at = transform * mark.affine();
     let frame = placement.frame;
     let Some(size) = pictures.size(src) else {
-        // The picture's bytes are not here (yet): its frame stays visible
-        // as a neutral placeholder.
-        scene.fill(Fill::NonZero, at, MISSING_PICTURE, None, &frame);
+        // The picture's bytes are not here (yet): its frame stays visible,
+        // shaded as a shadow is.
+        scene.fill(Fill::NonZero, at, SHADOW_INK, None, &frame);
         return;
     };
     let per_unit = placement.pixels_per_unit(size);
@@ -702,9 +702,6 @@ fn draw_picture(
     }
 }
 
-/// A picture's frame while its bytes are missing.
-const MISSING_PICTURE: Color = Color::from_rgba8(128, 128, 128, 96); // document colour
-
 /// A vignette over what is already drawn in the current layer within
 /// `area`: black (or, below zero, white) growing toward its edges, only
 /// where something is drawn.
@@ -712,10 +709,12 @@ fn vignette(scene: &mut Scene, transform: Affine, area: Rect, amount: f64) {
     if amount == 0.0 || area.width() <= 0.0 || area.height() <= 0.0 {
         return;
     }
+    // The artwork's own inks, whatever the theme: its shadows' black
+    // darkens, its blank ground's white lightens.
     let ink = if amount > 0.0 {
-        Color::BLACK
+        SHADOW_INK.with_alpha(1.0)
     } else {
-        Color::WHITE
+        BLANK_GROUND
     };
     let reach = crate::adjust::VIGNETTE_REACH;
     let stops: Vec<ColorStop> = (0..=12)
