@@ -1259,6 +1259,9 @@ def activate(layout: Layout) -> int:
         except PackError as error:
             print(f"tilo-extension: {error}", file=sys.stderr)
     ours = {name for c in catalogues for name in c.parts}
+    if not any(layout.desired(c.id).exists() for c in catalogues) \
+            and not any((layout.extensions / name).exists() for name in ours):
+        return 0
     try:
         base = probe_base(layout)
     except (PackError, OSError, ValueError):
