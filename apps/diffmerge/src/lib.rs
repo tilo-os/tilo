@@ -49,6 +49,7 @@ pub mod model;
 mod pane;
 pub mod resource;
 pub mod samples;
+mod scroll;
 mod web_file;
 
 pub use actions::{DIFFMERGE_ACTION_TYPE, DiffmergeAction, HunkChoice};

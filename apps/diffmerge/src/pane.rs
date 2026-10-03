@@ -13,6 +13,11 @@ use crate::highlight;
 /// How strongly a change colours the row it sits on.
 pub const WASH: f32 = 0.16;
 
+/// How strongly the change under review is washed: the same hue as the
+/// others, in a stronger measure, so the active change reads as chosen
+/// without a grey lift muddying its colour.
+pub const ACTIVE_WASH: f32 = 0.30;
+
 /// The style line numbers and counters are set in: `Caption`, with tabular
 /// figures so columns of digits line up.
 pub fn number_style(theme: &Theme) -> TextStyle {
@@ -56,17 +61,18 @@ impl CodeMetrics {
         }
     }
 
-    /// An estimate before the first frame, from the role sizes alone; the
-    /// first draw replaces it with the measured values.
-    pub fn estimate(theme: &Theme) -> Self {
-        let typography = &theme.tokens.typography;
+    /// What is known before the first frame: line heights come from the
+    /// theme's roles, the glyph width only from a renderer, so it is zero
+    /// until the first draw measures it. Nothing paints before then.
+    pub fn unmeasured(theme: &Theme) -> Self {
         let sp = &theme.tokens.spacing;
-        let row_h = (f64::from(typography.size(TextRole::Code)) * 1.5).ceil();
-        let label_h = f64::from(typography.size(TextRole::Label)) * 1.3;
+        let line = |role| f64::from(theme.text(role).line_height_px());
+        let row_h = line(TextRole::Code).ceil();
+        let label_h = line(TextRole::Label);
         Self {
             row_h,
             text_dy: 0.0,
-            cell_w: f64::from(typography.size(TextRole::Code)) * 0.6,
+            cell_w: 0.0,
             header_h: (label_h + 2.0 * f64::from(sp.s2)).ceil(),
             pad: f64::from(sp.s3),
             gap: f64::from(sp.s2),
@@ -139,9 +145,10 @@ pub fn paint_header(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str, rule: Optio
     }
 }
 
-/// The opaque colour `tone` leaves washed over `ground`.
-pub fn washed(ground: Color, tone: Color) -> Color {
-    over(ground, tone, WASH)
+/// The opaque colour `tone` leaves washed over `ground`; the change under
+/// review (`active`) takes the stronger wash.
+pub fn washed(ground: Color, tone: Color, active: bool) -> Color {
+    over(ground, tone, if active { ACTIVE_WASH } else { WASH })
 }
 
 /// A line's top-left, centred in a row of `m` that starts at `y`.

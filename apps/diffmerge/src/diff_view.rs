@@ -11,10 +11,10 @@ use std::collections::HashMap;
 
 use taffy::prelude::*;
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::keyboard::{Key, NamedKey};
+use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
@@ -23,13 +23,15 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::code_editor::Span;
+use ui::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
 use ui::widget::toggle_group::SegmentedStyle;
 use ui::widget::{ControlSize, EmptyState, EmptyStateContent, SegmentedFace, ToggleGroup, Widget};
 
 use crate::highlight;
 use crate::i18n::t;
-use crate::model::{DiffModel, RowKind};
+use crate::model::{AlignedRow, DiffModel, RowKind};
 use crate::pane::{self, CodeMetrics};
+use crate::scroll::{HScroll, wheel_pixels};
 
 /// Row metrics measured from the renderer the panel paints with. Refreshed at
 /// the top of every draw and read by scrolling, block rects (accessibility
@@ -40,10 +42,11 @@ struct Metrics {
     code: CodeMetrics,
     /// Line-number gutter width.
     gutter_w: f64,
-    /// The change-marker slot between the gutter and the code.
+    /// The change-marker slot between the gutter and the code: the marker's
+    /// glyph with a gap on each side.
     marker_w: f64,
-    /// Width of the minimap strip.
-    minimap_w: f64,
+    /// Width of the overview strip, the width of a scroll bar's gutter.
+    strip_w: f64,
     /// Below this width two code columns cease to be readable and the pane
     /// shows one source at a time.
     breakpoint: f64,
@@ -54,19 +57,24 @@ impl Metrics {
         let code = CodeMetrics::measure(tr, theme);
         Self {
             gutter_w: code.gutter_w(tr, theme, 4),
-            marker_w: code.cell_w + code.gap,
-            minimap_w: f64::from(theme.tokens.spacing.s3),
-            breakpoint: f64::from(theme.tokens.metrics.compact_breakpoint),
-            code,
+            ..Self::with_code(code, theme)
         }
     }
 
-    fn estimate(theme: &Theme) -> Self {
-        let code = CodeMetrics::estimate(theme);
+    /// What is known before the first frame measures anything.
+    fn unmeasured(theme: &Theme) -> Self {
+        let code = CodeMetrics::unmeasured(theme);
         Self {
-            gutter_w: code.cell_w * 4.0 + 2.0 * code.pad,
-            marker_w: code.cell_w + code.gap,
-            minimap_w: f64::from(theme.tokens.spacing.s3),
+            gutter_w: 2.0 * code.pad,
+            ..Self::with_code(code, theme)
+        }
+    }
+
+    fn with_code(code: CodeMetrics, theme: &Theme) -> Self {
+        Self {
+            gutter_w: 0.0,
+            marker_w: code.cell_w + 2.0 * code.gap,
+            strip_w: f64::from(theme.tokens.metrics.scrollbar_gutter),
             breakpoint: f64::from(theme.tokens.metrics.compact_breakpoint),
             code,
         }
@@ -75,6 +83,36 @@ impl Metrics {
     /// Where code starts in a column that begins at `x0`.
     fn code_x(&self, x0: f64) -> f64 {
         x0 + self.gutter_w + self.marker_w
+    }
+
+    /// Where a change marker starts in a column that begins at `x0`.
+    fn marker_x(&self, x0: f64) -> f64 {
+        x0 + self.gutter_w + self.code.gap
+    }
+}
+
+/// One of the two sides of a comparison.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Side {
+    Left,
+    Right,
+}
+
+impl Side {
+    /// The line this side holds on `row`, if it holds one.
+    fn text(self, row: &AlignedRow) -> Option<&str> {
+        match self {
+            Self::Left => row.left.as_deref(),
+            Self::Right => row.right.as_deref(),
+        }
+    }
+
+    /// Its 1-based line number on `row`.
+    fn number(self, row: &AlignedRow) -> Option<usize> {
+        match self {
+            Self::Left => row.left_no,
+            Self::Right => row.right_no,
+        }
     }
 }
 
@@ -102,10 +140,18 @@ pub struct DiffView {
     /// Index into `model.blocks` of the most recently navigated-to change.
     active_block: Option<usize>,
     dirty: bool,
-    hovered_minimap: bool,
     compact_show_right: bool,
     compact_source_hits: [Rect; 2],
     cursor: Point,
+    modifiers: ModifiersState,
+    /// The overview strip's scroll bar: the thumb is the visible window.
+    strip_bar: Scrollbar,
+    /// Where the strip's track was drawn last.
+    strip_track: Rect,
+    /// Horizontal scroll shared by the code columns.
+    across: HScroll,
+    /// The widest source line in characters, which sets how far code scrolls.
+    widest: usize,
     /// Last measured row metrics (see [`Metrics`]); an estimate until the
     /// first draw.
     metrics: Metrics,
@@ -129,11 +175,15 @@ impl DiffView {
             scroll_y: 0.0,
             active_block: None,
             dirty: true,
-            hovered_minimap: false,
             compact_show_right: false,
             compact_source_hits: [Rect::ZERO; 2],
             cursor: Point::ZERO,
-            metrics: Metrics::estimate(&Theme::dark()),
+            modifiers: ModifiersState::empty(),
+            strip_bar: Scrollbar::vertical(),
+            strip_track: Rect::ZERO,
+            across: HScroll::default(),
+            widest: 0,
+            metrics: Metrics::unmeasured(&Theme::dark()),
         }
     }
 
@@ -165,7 +215,14 @@ impl DiffView {
             highlight::document(&highlight::grammar_for_label(left_label), left.lines());
         self.right_spans =
             highlight::document(&highlight::grammar_for_label(right_label), right.lines());
+        self.widest = left
+            .lines()
+            .chain(right.lines())
+            .map(|line| line.chars().count())
+            .max()
+            .unwrap_or(0);
         self.scroll_y = 0.0;
+        self.across.reset();
         self.active_block = self.model.blocks.first().map(|_| 0);
         self.dirty = true;
     }
@@ -273,45 +330,39 @@ impl DiffView {
         self.rect.width() < self.metrics.breakpoint
     }
 
-    /// Ground a row is washed over: the content ground, lifted for the active
-    /// change so the one being reviewed reads as selected.
-    fn row_ground(active: bool, theme: &Theme) -> Color {
-        let colors = &theme.tokens.colors;
-        if active {
-            colors.intent.selection
-        } else {
-            colors.surfaces.content
-        }
-    }
-
     /// The fill of a row on one side, `None` for an unchanged row. `present`
     /// says the side holds a line; an absent one is the filler that keeps the
-    /// columns aligned.
+    /// columns aligned. The change under review (`active`) takes a stronger
+    /// wash of its own hue; where it has no hue it takes the selection lift.
     fn row_fill(
         kind: RowKind,
         present: bool,
-        is_left: bool,
+        side: Side,
         active: bool,
         theme: &Theme,
     ) -> Option<Color> {
         let c = &theme.tokens.colors;
-        let ground = Self::row_ground(active, theme);
+        let ground = if active {
+            c.intent.selection
+        } else {
+            c.surfaces.content
+        };
         let filler = c.lift_on(ground, 0.5);
-        match kind {
-            RowKind::Equal => active.then_some(ground),
-            RowKind::Insert if is_left => Some(filler),
-            RowKind::Insert => Some(if present {
-                pane::washed(ground, c.semantic.success)
+        let washed = |tone| pane::washed(c.surfaces.content, tone, active);
+        match (kind, side) {
+            (RowKind::Equal, _) => active.then_some(ground),
+            (RowKind::Insert, Side::Left) | (RowKind::Delete, Side::Right) => Some(filler),
+            (RowKind::Insert, Side::Right) => Some(if present {
+                washed(c.semantic.success)
             } else {
                 filler
             }),
-            RowKind::Delete if is_left => Some(if present {
-                pane::washed(ground, c.semantic.danger)
+            (RowKind::Delete, Side::Left) => Some(if present {
+                washed(c.semantic.danger)
             } else {
                 filler
             }),
-            RowKind::Delete => Some(filler),
-            RowKind::Modify => Some(pane::washed(ground, c.semantic.warning)),
+            (RowKind::Modify, _) => Some(washed(c.semantic.warning)),
         }
     }
 
@@ -319,13 +370,13 @@ impl DiffView {
     fn row_marker(
         kind: RowKind,
         present: bool,
-        is_left: bool,
+        side: Side,
         theme: &Theme,
     ) -> Option<(&'static str, Color)> {
         let s = &theme.tokens.colors.semantic;
-        match (kind, is_left, present) {
-            (RowKind::Insert, false, true) => Some(("+", s.success)),
-            (RowKind::Delete, true, true) => Some(("-", s.danger)),
+        match (kind, side, present) {
+            (RowKind::Insert, Side::Right, true) => Some(("+", s.success)),
+            (RowKind::Delete, Side::Left, true) => Some(("-", s.danger)),
             (RowKind::Modify, _, true) => Some(("~", s.warning)),
             _ => None,
         }
@@ -381,6 +432,7 @@ impl Widget for DiffView {
             self.metrics = measured;
             self.scroll_y = self.scroll_y.min(self.max_scroll());
         }
+        self.fit_across();
         let r = self.rect;
         let mut ctx = PaintCtx::new(scene, transform, tr, theme);
         if self.model.rows.is_empty() {
@@ -416,25 +468,21 @@ impl Widget for DiffView {
         );
 
         // --- Body (clipped + scrolled) ---
-        let body_top = r.y0 + m.code.header_h;
-        let body_clip = Rect::new(r.x0, body_top, r.x1 - m.minimap_w, r.y1);
-        ctx.scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            transform,
-            &body_clip,
-        );
-        self.draw_visible_rows(&mut ctx);
-        ctx.scene.pop_layer();
+        self.draw_column(&mut ctx, left_col, Side::Left);
+        self.draw_column(&mut ctx, right_col, Side::Right);
+        let tracks = [left_col, right_col].map(|col| HScroll::track_in(self.code_view(col), theme));
+        self.across.draw(&mut ctx, &tracks);
 
-        // --- Minimap on the right edge ---
-        self.draw_minimap(&mut ctx);
+        // --- Overview strip on the right edge ---
+        self.draw_strip(&mut ctx);
         self.dirty = false;
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.modifiers = modifiers.state();
+            }
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed && self.is_compact() =>
             {
@@ -446,34 +494,77 @@ impl Widget for DiffView {
                 *ctx.handled = true;
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => f64::from(-*y) * 60.0,
-                    MouseScrollDelta::PixelDelta(pp) => -pp.y,
-                };
-                // Only consume when the pointer is plausibly over us — but the
-                // host routes wheel to the focused subtree, so just scroll.
+                let (dx, dy) =
+                    wheel_pixels(*delta, self.metrics.code.row_h, self.modifiers.shift_key());
+                // The host routes the wheel to the focused subtree, so the
+                // pane scrolls whenever it sees one.
                 self.scroll_by(dy);
+                if self.across.scroll_by(dx) {
+                    self.dirty = true;
+                }
                 *ctx.handled = true;
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                let mut moved = false;
+                if self.across.pointer(event, self.cursor, &mut moved) {
+                    self.dirty |= moved;
+                    *ctx.handled = true;
+                } else if let Some(offset) =
+                    self.strip_bar
+                        .drag_to(self.strip_track, self.strip_metrics(), self.cursor)
+                {
+                    self.scroll_to(offset);
+                    *ctx.handled = true;
+                }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } if self.is_compact() => {
-                if let Some(index) = self
-                    .compact_source_hits
-                    .iter()
-                    .position(|rect| rect.contains(self.cursor))
+            } => {
+                let mut moved = false;
+                if self.across.pointer(event, self.cursor, &mut moved) {
+                    self.dirty |= moved;
+                    *ctx.handled = true;
+                    return;
+                }
+                match self
+                    .strip_bar
+                    .press(self.strip_track, self.strip_metrics(), self.cursor)
+                {
+                    PressOutcome::Miss => {}
+                    PressOutcome::Thumb => {
+                        self.dirty = true;
+                        *ctx.handled = true;
+                        return;
+                    }
+                    PressOutcome::Page(offset) => {
+                        self.scroll_to(offset);
+                        *ctx.handled = true;
+                        return;
+                    }
+                }
+                if self.is_compact()
+                    && let Some(index) = self
+                        .compact_source_hits
+                        .iter()
+                        .position(|rect| rect.contains(self.cursor))
                 {
                     self.select_compact_side(index == 1);
                     *ctx.handled = true;
                 }
             }
-            WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                self.cursor = p;
-                let minimap_x0 = self.rect.x1 - self.metrics.minimap_w;
-                self.hovered_minimap = p.x >= minimap_x0 && p.x <= self.rect.x1;
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let mut moved = false;
+                if self.across.pointer(event, self.cursor, &mut moved) | self.strip_bar.release() {
+                    self.dirty = true;
+                }
             }
             _ => {}
         }
@@ -495,9 +586,40 @@ impl Widget for DiffView {
         use ui::a11y::{AccessNode, AccessState, Role};
 
         let changes = self.model.blocks.len();
-        let mut children = Vec::new();
+        Some(
+            AccessNode::new(Role::Canvas)
+                .with_name(format!(
+                    "Diff between {} and {}",
+                    self.left_label, self.right_label
+                ))
+                .with_description(format!(
+                    "{changes} change{}. Scroll to review the aligned source lines.",
+                    if changes == 1 { "" } else { "s" }
+                ))
+                .with_state(AccessState::new().focusable(true))
+                .with_bounds(self.rect),
+        )
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.dirty
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+    }
+}
+
+impl DiffView {
+    /// The controls of the last draw as accessibility nodes: the source switch
+    /// of the narrow layout and every change block. The root publishes them,
+    /// so they are exposed once.
+    pub(crate) fn access_controls(&self) -> Vec<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+
+        let mut controls = Vec::new();
         if self.is_compact() {
-            children.extend(
+            controls.extend(
                 [(false, t("source-left")), (true, t("source-right"))]
                     .into_iter()
                     .map(|(show_right, label)| {
@@ -522,7 +644,7 @@ impl Widget for DiffView {
                     }),
             );
         }
-        children.extend(self.model.blocks.iter().enumerate().map(|(index, block)| {
+        controls.extend(self.model.blocks.iter().enumerate().map(|(index, block)| {
             AccessNode::new(Role::Button)
                 .with_name(format!(
                     "Change {}: lines {} through {}",
@@ -542,41 +664,43 @@ impl Widget for DiffView {
                         .selected(self.active_block == Some(index)),
                 )
         }));
-        Some(
-            AccessNode::new(Role::Canvas)
-                .with_name(format!(
-                    "Diff between {} and {}",
-                    self.left_label, self.right_label
-                ))
-                .with_description(format!(
-                    "{changes} change{}. Scroll to review the aligned source lines.",
-                    if changes == 1 { "" } else { "s" }
-                ))
-                .with_state(AccessState::new().focusable(true))
-                .with_bounds(self.rect)
-                .with_children(children),
-        )
+        controls
     }
 
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-    }
-}
-
-impl DiffView {
-    /// Column rects for the two source panes, excluding the minimap strip.
+    /// Column rects for the two source panes, excluding the overview strip.
     fn column_rects(&self) -> (Rect, Rect) {
         let r = self.rect;
-        let content_right = r.x1 - self.metrics.minimap_w;
+        let content_right = r.x1 - self.metrics.strip_w;
         let mid_x = r.x0.midpoint(content_right);
         (
             Rect::new(r.x0, r.y0, mid_x, r.y1),
             Rect::new(mid_x, r.y0, content_right, r.y1),
         )
+    }
+
+    /// Where the code of the column `col` shows: right of its gutter and
+    /// markers, below its header.
+    fn code_view(&self, col: Rect) -> Rect {
+        Rect::new(
+            self.metrics.code_x(col.x0),
+            self.rect.y0 + self.metrics.code.header_h,
+            col.x1,
+            self.rect.y1,
+        )
+    }
+
+    /// Tell the horizontal scroll how wide the code is and how much of it
+    /// shows.
+    fn fit_across(&mut self) {
+        let m = self.metrics;
+        let col_w = if self.is_compact() {
+            self.rect.width() - m.strip_w
+        } else {
+            (self.rect.width() - m.strip_w) / 2.0
+        };
+        let viewport = (col_w - m.gutter_w - m.marker_w).max(0.0);
+        let content = self.widest as f64 * m.code.cell_w + m.code.pad;
+        self.across.set_extent(content, viewport);
     }
 
     fn block_rect(&self, block: &crate::model::ChangeBlock) -> Rect {
@@ -598,7 +722,7 @@ impl DiffView {
         let theme = ctx.theme;
         let r = self.rect;
         let m = self.metrics;
-        let content_right = r.x1 - m.minimap_w;
+        let content_right = r.x1 - m.strip_w;
         let inset = f64::from(theme.tokens.spacing.s3);
         let strip_h = SegmentedFace::height(ControlSize::Small, theme);
         let strip_y = r.y0 + (m.code.header_h - strip_h) / 2.0;
@@ -638,119 +762,101 @@ impl DiffView {
             0.0,
             theme.tokens.colors.surfaces.content,
         );
-        let clip = Rect::new(r.x0, body_top, content_right, r.y1);
+        let col = Rect::new(r.x0, r.y0, content_right, r.y1);
+        let side = if self.compact_show_right {
+            Side::Right
+        } else {
+            Side::Left
+        };
+        self.draw_column(ctx, col, side);
+        let track = HScroll::track_in(self.code_view(col), theme);
+        self.across.draw(ctx, &[track]);
+        self.draw_strip(ctx);
+    }
+
+    /// One side of every visible row in the column `col`: the wash, the line
+    /// number and change marker, then the code, scrolled across.
+    ///
+    /// `ri` is bounds-checked via `get` rather than indexed directly: the last
+    /// row is derived from `self.model.rows.len()` so it is always in range
+    /// today, but a future change to that arithmetic must degrade (skip the
+    /// row) rather than panic on a third-party diff's row count.
+    fn draw_column(&self, ctx: &mut PaintCtx<'_>, col: Rect, side: Side) {
+        let theme = ctx.theme;
+        let m = self.metrics;
+        let body_top = self.rect.y0 + m.code.header_h;
+        let first_row = (self.scroll_y / m.code.row_h).floor() as usize;
+        let visible_rows = (self.body_height() / m.code.row_h).ceil() as usize + 2;
+        let last_row = (first_row + visible_rows).min(self.model.rows.len());
+        let spans = match side {
+            Side::Left => &self.left_spans,
+            Side::Right => &self.right_spans,
+        };
+        let body = Rect::new(col.x0, body_top, col.x1, self.rect.y1);
         ctx.scene.push_layer(
             Fill::NonZero,
             vello::peniko::BlendMode::default(),
             1.0,
             ctx.transform,
-            &clip,
+            &body,
         );
-        let first = (self.scroll_y / m.code.row_h).floor() as usize;
-        let last = (first + (self.body_height() / m.code.row_h).ceil() as usize + 2)
-            .min(self.model.rows.len());
-        for index in first..last {
-            let Some(row) = self.model.rows.get(index) else {
-                continue;
-            };
-            let y = body_top + index as f64 * m.code.row_h - self.scroll_y;
-            let (present, number, text, is_left, spans) = if self.compact_show_right {
-                (
-                    row.right.is_some(),
-                    row.right_no,
-                    row.right.as_ref(),
-                    false,
-                    &self.right_spans,
-                )
-            } else {
-                (
-                    row.left.is_some(),
-                    row.left_no,
-                    row.left.as_ref(),
-                    true,
-                    &self.left_spans,
-                )
-            };
-            let rect = Rect::new(r.x0, y, content_right, y + m.code.row_h);
-            let active = row.block.is_some() && row.block == self.active_block;
-            if let Some(fill) = Self::row_fill(row.kind, present, is_left, active, theme) {
-                ctx.fill_rect(rect, fill);
-            }
-            Self::draw_side(
-                ctx,
-                &m,
-                r.x0,
-                y,
-                (number, text.map(String::as_str)),
-                Self::row_marker(row.kind, present, is_left, theme),
-                line_spans(spans, number),
-            );
-        }
-        ctx.scene.pop_layer();
-        self.draw_minimap(ctx);
-    }
-
-    /// Draw the scrolled window of visible rows into the already-clipped body
-    /// layer. `ri` is bounds-checked via `get` rather than indexed directly:
-    /// `last_row` is derived from `self.model.rows.len()` so it is always in
-    /// range today, but a future change to that arithmetic must degrade
-    /// (skip the row) rather than panic on a third-party diff's row count.
-    fn draw_visible_rows(&self, ctx: &mut PaintCtx<'_>) {
-        let theme = ctx.theme;
-        let r = self.rect;
-        let m = self.metrics;
-        let (left_col, right_col) = self.column_rects();
-        let body_top = r.y0 + m.code.header_h;
-
-        let first_row = (self.scroll_y / m.code.row_h).floor() as usize;
-        let visible_rows = (self.body_height() / m.code.row_h).ceil() as usize + 2;
-        let last_row = (first_row + visible_rows).min(self.model.rows.len());
-
+        let row_y = |ri: usize| body_top + ri as f64 * m.code.row_h - self.scroll_y;
         for ri in first_row..last_row {
             let Some(row) = self.model.rows.get(ri) else {
                 continue;
             };
-            let y = body_top + ri as f64 * m.code.row_h - self.scroll_y;
+            let y = row_y(ri);
+            let present = side.text(row).is_some();
             let active = row.block.is_some() && row.block == self.active_block;
-
-            for (col, is_left, text, number, spans) in [
-                (left_col, true, &row.left, row.left_no, &self.left_spans),
-                (
-                    right_col,
-                    false,
-                    &row.right,
-                    row.right_no,
-                    &self.right_spans,
-                ),
-            ] {
-                let present = text.is_some();
-                let rect = Rect::new(col.x0, y, col.x1, y + m.code.row_h);
-                if let Some(fill) = Self::row_fill(row.kind, present, is_left, active, theme) {
-                    ctx.fill_rect(rect, fill);
-                }
-                Self::draw_side(
-                    ctx,
-                    &m,
-                    col.x0,
-                    y,
-                    (number, text.as_deref()),
-                    Self::row_marker(row.kind, present, is_left, theme),
-                    line_spans(spans, number),
-                );
+            if let Some(fill) = Self::row_fill(row.kind, present, side, active, theme) {
+                ctx.fill_rect(Rect::new(col.x0, y, col.x1, y + m.code.row_h), fill);
             }
+            Self::draw_gutter(
+                ctx,
+                &m,
+                col.x0,
+                y,
+                side.number(row),
+                Self::row_marker(row.kind, present, side, theme),
+            );
         }
+        // Code scrolls across under the gutter's edge, so it clips to its own
+        // view.
+        let view = self.code_view(col);
+        ctx.scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            ctx.transform,
+            &view,
+        );
+        for ri in first_row..last_row {
+            let Some(row) = self.model.rows.get(ri) else {
+                continue;
+            };
+            let Some(text) = side.text(row) else {
+                continue;
+            };
+            highlight::draw_line(
+                ctx,
+                pane::line_origin(view.x0 - self.across.offset(), row_y(ri), &m.code),
+                text,
+                line_spans(spans, side.number(row)),
+            );
+        }
+        ctx.scene.pop_layer();
+        ctx.scene.pop_layer();
     }
 
-    /// One side of one row: its line number, change marker and highlighted
-    /// code, in the column that starts at `x0`.
-    fn draw_side(
+    /// A row's line number and change marker, in the column that starts at
+    /// `x0`.
+    fn draw_gutter(
         ctx: &mut PaintCtx<'_>,
         m: &Metrics,
         x0: f64,
         y: f64,
-        (number, text): (Option<usize>, Option<&str>),
+        number: Option<usize>,
         marker: Option<(&'static str, Color)>,
-        spans: &[Span],
     ) {
         let colors = &ctx.theme.tokens.colors;
         if let Some(n) = number {
@@ -774,16 +880,8 @@ impl DiffView {
                 glyph,
                 &style,
                 tone,
-                pane::line_origin(x0 + m.gutter_w + m.code.gap / 2.0, y, &m.code),
+                pane::line_origin(m.marker_x(x0), y, &m.code),
                 None,
-            );
-        }
-        if let Some(text) = text {
-            highlight::draw_line(
-                ctx,
-                pane::line_origin(m.code_x(x0), y, &m.code),
-                text,
-                spans,
             );
         }
     }
@@ -799,46 +897,55 @@ impl DiffView {
         EmptyState::paint(ctx, rect, &content, Point::new(-1.0, -1.0));
     }
 
-    fn draw_minimap(&self, ctx: &mut PaintCtx<'_>) {
+    fn strip_metrics(&self) -> ScrollMetrics {
+        ScrollMetrics::new(self.content_height(), self.body_height(), self.scroll_y)
+    }
+
+    fn scroll_to(&mut self, offset: f64) {
+        self.scroll_by(offset - self.scroll_y);
+    }
+
+    /// The strip along the trailing edge: the scroll bar of the rows, over a
+    /// map of where the changes are. The thumb is the window the columns show.
+    fn draw_strip(&mut self, ctx: &mut PaintCtx<'_>) {
         let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let m = self.metrics;
         let r = self.rect;
-        let map_x0 = r.x1 - m.minimap_w;
+        let margin = f64::from(theme.tokens.spacing.s1) / 2.0;
         let map_top = r.y0 + m.code.header_h;
-        let map_h = (r.y1 - map_top).max(1.0);
-        let track = Rect::new(map_x0, map_top, r.x1, r.y1);
-        ctx.fill_rect(track, c.surfaces.raised);
+        let track = Rect::new(
+            r.x1 - m.strip_w + margin,
+            map_top,
+            r.x1 - margin,
+            r.y1 - margin,
+        );
+        self.strip_track = track;
+        if self.content_height() > self.body_height() {
+            self.strip_bar.draw(
+                ctx.scene,
+                ctx.transform,
+                track,
+                self.strip_metrics(),
+                theme,
+                false,
+            );
+        }
 
+        // Where each change block sits in the whole comparison.
         let total = self.model.rows.len().max(1) as f64;
-        let inset = f64::from(theme.tokens.spacing.s1) / 2.0;
-        // Markers for each change block.
+        let tick = f64::from(theme.tokens.spacing.s1) / 2.0;
         for b in &self.model.blocks {
-            let y0 = map_top + (b.first_row as f64 / total) * map_h;
-            let y1 = map_top + ((b.last_row + 1) as f64 / total) * map_h;
+            let y0 = track.y0 + (b.first_row as f64 / total) * track.height();
+            let y1 = track.y0 + ((b.last_row + 1) as f64 / total) * track.height();
             let color = match b.kind {
                 crate::model::BlockKind::Added => c.semantic.success,
                 crate::model::BlockKind::Removed => c.semantic.danger,
                 crate::model::BlockKind::Modified => c.semantic.warning,
             };
-            let marker = Rect::new(map_x0 + inset, y0, r.x1 - inset, y1.max(y0 + 2.0 * inset));
+            let x = track.center().x;
+            let marker = Rect::new(x - tick, y0, x + tick, y1.max(y0 + 2.0 * tick));
             ctx.fill_rect(marker, color);
-        }
-
-        // Viewport indicator.
-        if self.content_height() > self.body_height() {
-            let vt = map_top + (self.scroll_y / self.content_height()) * map_h;
-            let vb =
-                map_top + ((self.scroll_y + self.body_height()) / self.content_height()) * map_h;
-            let vp = RoundedRect::new(
-                map_x0,
-                vt,
-                r.x1,
-                vb.max(vt + 4.0 * inset),
-                f64::from(theme.tokens.radii.detail),
-            );
-            ctx.scene
-                .stroke(&Stroke::new(1.5), ctx.transform, c.text_primary, None, &vp);
         }
     }
 }
