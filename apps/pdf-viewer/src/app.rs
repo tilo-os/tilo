@@ -181,8 +181,6 @@ const SNAP_NEAR: f64 = 18.0;
 /// runtime read the real system clock via [`today_ymd`] instead.
 const SEED_DATE: &str = "2026-06-30";
 
-/// The current UTC date as `YYYY-MM-DD`, read from the system clock. This is
-/// the real signing date stamped on a signature the user places at runtime.
 /// The reader's app id, the scope its permissions are decided in.
 const APP_ID: &str = "so.tilo.pdf-viewer";
 
@@ -195,19 +193,10 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// Today's local date as `YYYY-MM-DD`, through the toolkit clock: the
+/// signing date stamped on a signature placed now (pinned in captures).
 fn today_ymd() -> String {
-    use ui::time::UNIX_EPOCH;
-    let secs = ui::time::wall()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64);
-    ymd_from_unix_secs(secs)
-}
-
-/// Convert a Unix timestamp (seconds) into a UTC `YYYY-MM-DD` string. Pure,
-/// so the date logic is unit-testable without a clock.
-fn ymd_from_unix_secs(secs: i64) -> String {
-    let (year, m, d) = ui::date::civil_from_days(secs.div_euclid(86_400));
-    format!("{year:04}-{m:02}-{d:02}")
+    ui::clock::today().format("%Y-%m-%d").to_string()
 }
 
 /// A plausible hand-drawn signature as normalised `[0,1]²` strokes, used to seed
@@ -1860,7 +1849,9 @@ impl PdfApp {
         let overlay = self.rect.width() < docked;
         self.overlay_mode = overlay;
         if self.prev_overlay != Some(overlay) {
-            self.show_sidebar = !overlay;
+            // A screenshot that stages the review panel keeps it on screen,
+            // floating over a narrow window.
+            self.show_sidebar = !overlay || self.shots_sign;
             self.show_rail = !overlay;
             self.prev_overlay = Some(overlay);
         }
@@ -3454,7 +3445,8 @@ impl PdfApp {
             .with_editor(
                 ui::widget::BlockEditor::new()
                     .with_wrap_lines(true)
-                    .with_compact_paragraph_spacing(true),
+                    .with_compact_paragraph_spacing(true)
+                    .with_block_handles(false),
             )
             .with_placeholder(hint)
             .with_submit(SubmitKey::Enter);
@@ -8748,14 +8740,8 @@ mod tests {
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn signatures_stamp_real_dates_and_store_typed_drawn_and_edited_signers() {
-        eprintln!("phase ymd_from_unix_secs_matches_known_dates");
+        eprintln!("phase today_is_the_local_date");
         {
-            // Fixed reference points keep the pure date conversion independent of
-            // the wall clock.
-            assert_eq!(ymd_from_unix_secs(0), "1970-01-01"); // Unix epoch
-            assert_eq!(ymd_from_unix_secs(946_684_800), "2000-01-01");
-            assert_eq!(ymd_from_unix_secs(1_582_977_600), "2020-02-29"); // a leap day
-            assert_eq!(ymd_from_unix_secs(1_798_761_599), "2026-12-31"); // year boundary
             // `today_ymd` is well-formed `YYYY-MM-DD`.
             let t = today_ymd();
             assert_eq!(t.len(), 10, "today is YYYY-MM-DD: {t}");
