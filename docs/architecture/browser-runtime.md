@@ -88,7 +88,10 @@ Reshape to fit `main`:
   idempotent invocation ids). The broker catalogue is the remote action
   directory; the ticket model maps to invocation ids.
 - **Content keys.** Encrypted channels use `channel-crypto` (OpenMLS) exactly
-  as native peers do; the browser is a member device.
+  as native peers do; the browser is a member device. Its member state lives
+  in the profile's durable store, sealed under a vault key that is itself
+  sealed under a non-extractable AES-GCM key in IndexedDB
+  (`channel-vault.mjs`) and unsealed into wasm memory only.
 - **Transport.** `tilo-relay` over iroh (below), replacing HTTPS delivery.
 
 Drop: `retryPendingRecovery`/`pendingComponentCloseCount` diagnostics that
