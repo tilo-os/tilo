@@ -179,7 +179,7 @@ pub enum NetCmd {
     RoomAdmin {
         relay: EndpointAddr,
         certificate: DeviceCert,
-        command: tilo_relay::rooms::RoomCommand,
+        command: Box<tilo_relay::rooms::RoomCommand>,
         reply: std::sync::mpsc::SyncSender<Result<tilo_relay::rooms::RoomReply, String>>,
     },
     JoinWorkspace {
@@ -967,7 +967,7 @@ impl ActorState {
                 let client =
                     tilo_relay::rooms::RoomAdminClient::new(self.endpoint.clone(), certificate);
                 tokio::spawn(async move {
-                    let answer = client.send(relay, command).await;
+                    let answer = client.send(relay, *command).await;
                     let _ = reply.send(answer.map_err(|error| error.to_string()));
                 });
             }

@@ -22,7 +22,7 @@
 import {createActions} from './actions.mjs';
 import {createAgents} from './agents.mjs';
 import {openChannelVault} from './channel-vault.mjs';
-import {createMembership} from './membership.mjs';
+import {createMembership, createWorkspaces} from './membership.mjs';
 import {createPresencePublisher, createRemotePresence} from './live-presence.mjs';
 import {createFallbackTransport, createLiveCarriers} from './live-fallback.mjs';
 import {createSpeakers} from './live-speakers.mjs';
@@ -835,6 +835,9 @@ export async function connectPeer({
      * (`membership.mjs`): `list()`, `admit`, `decline`, `setRole`,
      * `remove`, `cancelInvitation`. */
     get membership() { return membership; },
+    /** The workspaces the host governs (`membership.mjs`): `list()`,
+     * `create(name)`, `enter(room)`; needs no room. */
+    workspaces: createWorkspaces({rooms: request => peer.rooms(request)}),
     getSnapshot: () => snapshot,
     /** Diagnostic text of the page's channel membership (not a contract). */
     channelDiagnostics: () => peer?.channelDiagnostics?.() ?? '',
