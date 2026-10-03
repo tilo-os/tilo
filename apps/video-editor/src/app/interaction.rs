@@ -445,7 +445,6 @@ impl VideoEditorApp {
             // out is the Cancel it shows.
             let hit = self
                 .with_dialog_layout(super::VideoEditorApp::discard_layout)
-                .flatten()
                 .and_then(|l| l.modal.hit(p));
             let choice = match hit {
                 Some(ModalHit::Action(0)) => DiscardChoice::Cancel,
@@ -469,19 +468,16 @@ impl VideoEditorApp {
         // itself keeps the click, as every modal card in the fleet does.
         if self.navigation.help_open {
             let dismisses = self
-                .with_dialog_layout(|app, tr, theme| app.help_layout(tr, theme).modal.dismisses(p))
-                .unwrap_or(false);
+                .with_dialog_layout(|app, tr, theme| app.help_layout(tr, theme).modal.dismisses(p));
             if dismisses {
                 self.navigation.help_open = false;
             }
             return;
         }
         if self.goto_entry.is_some() {
-            let outside = self
-                .with_dialog_layout(|app, tr, theme| {
-                    !app.goto_layout(r, tr, theme).card.contains(p)
-                })
-                .unwrap_or(false);
+            let outside = self.with_dialog_layout(|app, tr, theme| {
+                !app.goto_layout(r, tr, theme).card.contains(p)
+            });
             if outside {
                 self.goto_entry = None;
             }
@@ -1254,9 +1250,7 @@ impl VideoEditorApp {
     pub(super) fn press_export(&mut self, state: &AutoCommit, p: Point) {
         // Laid out from the current state, as the next frame will paint it —
         // see `chrome_theme`.
-        let Some(l) = self.with_dialog_layout(super::VideoEditorApp::export_layout) else {
-            return;
-        };
+        let l = self.with_dialog_layout(super::VideoEditorApp::export_layout);
         match l.modal.hit(p) {
             // The close control, or a click outside the card, dismisses. A
             // render in flight is not abandoned by that: it keeps reporting
