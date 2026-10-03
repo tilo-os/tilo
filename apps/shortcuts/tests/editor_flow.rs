@@ -77,6 +77,8 @@ fn row(
 /// every invocation and answers each at once.
 struct FakeHost {
     rows: Vec<CatalogueRow>,
+    /// What `shortcuts#list` answers: the saved shortcuts.
+    saved: Vec<Value>,
     invoked: Mutex<Vec<InvokeRequest>>,
     callers: Mutex<Vec<Caller>>,
 }
@@ -141,6 +143,7 @@ impl FakeHost {
                     vec![ActionParam::required("id", ParamType::Text, "Id")],
                 ),
             ],
+            saved: Vec::new(),
             invoked: Mutex::new(Vec::new()),
             callers: Mutex::new(Vec::new()),
         }
@@ -185,6 +188,9 @@ impl ActionHost for FakeHost {
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         self.callers.lock().unwrap().push(caller.clone());
         let value = match request.target.address.action.as_str() {
+            "list" if request.target.address.resource == "shortcuts" => {
+                Some(Value::Array(self.saved.clone()))
+            }
             "list" => Some(json!([])),
             "freeform" => Some(json!({
                 "name": "Note the inbox",
@@ -512,4 +518,80 @@ fn a_described_shortcut_is_drafted_checked_and_opened_but_never_saved() {
         host.library_calls("create").is_empty() && host.library_calls("update").is_empty(),
         "nothing is saved without the grant review"
     );
+}
+
+/// The workspace holds one saved shortcut that asks for a title.
+fn with_saved_note() -> FakeHost {
+    let mut host = FakeHost::new();
+    host.rows.push(row(
+        "workspace:room",
+        APP_ID,
+        &tilo_automation::shortcut_resource_id("quick-note"),
+        "shortcuts.shortcut",
+        tilo_automation::SHORTCUT_RUN_ACTION,
+        Vec::new(),
+        PermissionRequirement::Write,
+        ResultSpec::None,
+    ));
+    host.saved.push(json!({
+        "id": "quick-note",
+        "name": "Quick note",
+        "inputs": [{
+            "name": "title", "ty": "text", "required": true,
+            "description": "Note title", "nullable": false
+        }],
+        "steps": [
+            {"id": "create", "step": "invoke", "app_id": NOTES,
+             "resource": {"fixed": INBOX}, "action": "create",
+             "args": {"title": {"input": "title"}, "pinned": {"literal": false}}}
+        ]
+    }));
+    host
+}
+
+#[test]
+fn a_saved_shortcut_opens_its_page_runs_with_its_inputs_and_a_run_leads_back() {
+    let (host, _guard, mut app) = open_with(with_saved_note());
+    // The library lists the saved shortcut under the overview: one step
+    // down the list opens its page.
+    app.harness()
+        .wait_for_named("shortcuts-library", tilo_test_env::hang_bound())
+        .expect("the library shows");
+    let list = app.harness().targets()["shortcuts-library"];
+    // A click in the first row (the overview) puts focus in the list.
+    app.harness().click_at(list.x0 + 40.0, list.y0 + 16.0);
+    // The section header is a stop of its own; the next one is the shortcut.
+    app.harness().key("Down");
+    app.harness().key("Down");
+    act(
+        &mut app,
+        "run-quick-note-input-title",
+        &Action::SetValue("Call Sam".into()),
+    );
+    act(&mut app, "run-quick-note", &Action::Activate);
+
+    let _ = app
+        .harness()
+        .wait_until(Duration::from_millis(300), |_| false);
+    let runs: Vec<_> = host
+        .invoked
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|request| request.target.address.action == "run")
+        .cloned()
+        .collect();
+    assert_eq!(runs.len(), 1, "run once");
+    let InvokeArgument::Json(inputs) = &runs[0].argument else {
+        panic!("typed inputs")
+    };
+    assert_eq!(inputs["title"], "Call Sam");
+
+    // Back on the overview, the run is listed and leads to the shortcut.
+    app.harness().key("Up");
+    app.harness().key("Up");
+    act(&mut app, "run-record-1", &Action::Activate);
+    app.harness()
+        .wait_for_named("run-quick-note", tilo_test_env::hang_bound())
+        .expect("the run opens the shortcut it started");
 }
