@@ -100,11 +100,15 @@
     )
 )]
 
+// The derives name this crate by its path, here as in an app.
+extern crate self as tilo_resource;
+
 pub mod action;
 pub mod batch;
 pub mod collection;
 pub mod delta;
 pub mod diff;
+pub mod effect;
 pub mod group;
 pub mod history;
 pub mod items;
@@ -121,6 +125,7 @@ pub use action::{
 };
 pub use collection::{Collection, Id};
 pub use delta::{Delta, Path, Touch, Touched, Tracker};
+pub use effect::{Effect, EffectDecl, NoEffect};
 pub use group::{ActionGroup, GROUP, GROUP_PARAM};
 pub use model::{
     Atom, Doc, Fields, Json, Model, ModelError, Slot, read_key, refresh_key, write_key,
@@ -133,7 +138,7 @@ pub use resource::{
 };
 pub use schema::JsonSchema;
 pub use shape::{FieldShape, Shape};
-pub use tilo_resource_macros::{JsonSchema, Model, resource};
+pub use tilo_resource_macros::{Effect, JsonSchema, Model, resource};
 
 /// Items the generated code refers to. Not part of the public API.
 #[doc(hidden)]
