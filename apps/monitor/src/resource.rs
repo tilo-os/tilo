@@ -314,13 +314,10 @@ mod tests {
     use crate::prefs::MonitorPreferences;
     use ui::widget::Widget;
 
-    /// The value of the node named `name`, depth first.
-    fn announced(node: &serde_json::Value, name: &str) -> Option<String> {
+    /// The accessibility node named `name`, depth first.
+    fn announced(node: &serde_json::Value, name: &str) -> Option<serde_json::Value> {
         if node.get("name").and_then(serde_json::Value::as_str) == Some(name) {
-            return node
-                .get("value")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned);
+            return Some(node.clone());
         }
         match node {
             serde_json::Value::Object(fields) => {
@@ -333,11 +330,28 @@ mod tests {
         }
     }
 
-    /// The interval the window shows, as a screen reader hears it.
-    fn shown_interval(app: &mut ui::framework::testing::TestApp<MonitorShell>) -> String {
+    fn interval_node(app: &mut ui::framework::testing::TestApp<MonitorShell>) -> serde_json::Value {
         let inspection: serde_json::Value =
             serde_json::from_str(&app.harness().inspection_json().unwrap()).unwrap();
         announced(&inspection, "Refresh interval").expect("the refresh interval is announced")
+    }
+
+    /// The interval the window shows, as a screen reader hears it.
+    fn shown_interval(app: &mut ui::framework::testing::TestApp<MonitorShell>) -> String {
+        interval_node(app)["value"].as_str().unwrap().to_owned()
+    }
+
+    /// Click the interval control where a person sees it.
+    fn click_interval(app: &mut ui::framework::testing::TestApp<MonitorShell>) {
+        let bounds = &interval_node(app)["bounds"];
+        let coordinate = |low: &str, high: &str| {
+            f64::midpoint(
+                bounds[low].as_f64().unwrap(),
+                bounds[high].as_f64().unwrap(),
+            )
+        };
+        let (x, y) = (coordinate("x0", "x1"), coordinate("y0", "y1"));
+        app.harness().click_at(x, y);
     }
 
     #[test]
@@ -358,7 +372,7 @@ mod tests {
 
         // A click here cycles the cadence and stores it for every device.
         let versions = app.versions().len();
-        app.harness().click_named("Refresh interval").unwrap();
+        click_interval(&mut app);
         app.harness().relayout();
         assert_eq!(shown_interval(&mut app), "5s");
         assert_eq!(
