@@ -1696,3 +1696,217 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
         "the trigger keeps its place in the row"
     );
 }
+
+/// One offscreen frame of `app` over the window ground: sync, layout, the main
+/// pass and the top layer, as the live host runs them.
+fn render(app: &mut CodeApp, viewport: (u32, u32)) -> ui::launch::ShotFrame {
+    let mut frame = ui::launch::ShotFrame::new(viewport, Theme::dark());
+    frame.sync(app);
+    frame.layout(app).expect("the editor lays out");
+    let mut scene = frame.draw(app);
+    frame.draw_overlay(app, &mut scene);
+    frame
+}
+
+#[test]
+fn the_status_bar_reserves_its_own_band_under_everything() {
+    let mut app = CodeApp::with_sample();
+    app.shots_open_terminal();
+    let _frame = render(&mut app, (1280, 800));
+    let status = app.status_rect;
+    let bar = ui::chrome::status_bar::height(&Theme::dark());
+    assert!(
+        (status.height() - bar).abs() < 0.01,
+        "the band is the bar's height"
+    );
+    assert!(
+        (status.y1 - 800.0).abs() < 0.01,
+        "it sits on the window's bottom edge"
+    );
+    assert!(
+        app.editor.get_rect().y1 <= app.panel.get_rect().y0 + 0.01
+            && app.panel.get_rect().y1 <= status.y0 + 0.01,
+        "the editor and the dock end where the bar begins; nothing is laid out under it"
+    );
+}
+
+#[test]
+fn the_sidebar_toggle_leads_the_sidebar_when_docked_and_the_tab_strip_otherwise() {
+    // Docked and open: the toggle is in the sidebar's header, and the tab
+    // strip starts at the editor column.
+    let mut app = CodeApp::with_sample();
+    let _frame = render(&mut app, (1280, 800));
+    let sidebar = app.drawer.sidebar_rect();
+    assert!(sidebar.width() > 0.0);
+    assert!(sidebar.contains(app.toggle_rect.center()));
+    assert!(app.tabs.get_rect().x0 >= sidebar.x1);
+
+    // Hidden: the toggle moves to the leading edge of the tab strip, and the
+    // first tab starts after it with a gap.
+    app.toggle_sidebar();
+    app.drawer.snap(false);
+    let _frame = render(&mut app, (1280, 800));
+    assert!(app.toggle_in_tab_strip());
+    assert!(app.toggle_rect.width() > 0.0);
+    assert!(
+        app.tabs
+            .tab_rects()
+            .first()
+            .is_some_and(|tab| tab.x0 > app.toggle_rect.x1),
+        "the first tab clears the toggle: {:?} vs {:?}",
+        app.tabs.tab_rects().first(),
+        app.toggle_rect
+    );
+
+    // A narrow window starts with the sidebar as a closed drawer.
+    let mut narrow = CodeApp::with_sample();
+    narrow.set_width_hint(600.0);
+    let _frame = render(&mut narrow, (600, 800));
+    assert_eq!(narrow.sidebar_layout(), SplitLayout::Overlay);
+    assert!(narrow.toggle_in_tab_strip());
+    assert!(
+        narrow.editor.get_rect().x0.abs() < 0.01,
+        "the editor spans the window"
+    );
+}
+
+#[test]
+fn the_sidebar_toggle_is_published_to_assistive_technology() {
+    let mut app = CodeApp::with_sample();
+    let _frame = render(&mut app, (1280, 800));
+    let root = Widget::accessibility(&app).expect("a semantic root");
+    let toggle = root
+        .children
+        .iter()
+        .find(|child| child.name.as_deref() == Some("Hide sidebar"))
+        .expect("the toggle is a named button");
+    assert_eq!(toggle.action_target.as_deref(), Some("sidebar-toggle"));
+    let mut doc = AutoCommit::new();
+    assert!(Widget::perform_semantic_action(
+        &mut app,
+        "sidebar-toggle",
+        &ui::a11y::Action::Activate,
+        &mut doc,
+        &automerge::ROOT,
+    ));
+    assert!(!app.sidebar_open());
+}
+
+#[test]
+fn searching_the_project_and_the_palette_shortcuts_open_the_platform_search() {
+    let mut app = CodeApp::with_sample();
+    let mut doc = AutoCommit::new();
+    // Searching the project and going to a line both go to the platform.
+    for (command, query) in [
+        (Command::SearchProject, None),
+        (Command::GoToLine, Some("Go to line")),
+    ] {
+        app.apply_command(command, &mut doc);
+        let invocation = ui::widget::controls::ActionControls::take_control_invocation(&mut app)
+            .expect("the command asks the platform to open search");
+        let mut request = ui::search::SearchRequest::this_app();
+        if let Some(query) = query {
+            request = request.with_query(query);
+        }
+        assert_eq!(invocation, ui::search::open_search_invocation(&request));
+        assert!(
+            ui::widget::controls::ActionControls::take_control_invocation(&mut app).is_none(),
+            "the request is taken once"
+        );
+    }
+    // There is no in-app search panel left to open.
+    app.apply_command(Command::SearchProject, &mut doc);
+    assert!(!app.panel_visible);
+}
+
+fn three_action_sheet(app: &mut CodeApp) -> Vec<vello::kurbo::Rect> {
+    let _frame = render(app, (1280, 800));
+    let actions = app.dialog_actions.clone();
+    assert_eq!(actions.len(), 3, "a question has three answers");
+    for (i, a) in actions.iter().enumerate() {
+        assert!(a.area() > 0.0, "action {i} is laid out");
+        for b in actions.iter().skip(i + 1) {
+            assert!(a.intersect(*b).area() <= 0.0, "actions do not overlap");
+        }
+    }
+    actions
+}
+
+#[test]
+fn the_unsaved_close_question_is_a_three_action_sheet_over_the_window() {
+    let (mut app, mut doc) = synced_sample();
+    app.editor.insert_for_test(&mut doc, "X");
+    app.dispatch_editor_text_edits(&mut doc);
+    app.ensure_buffers(&mut doc);
+    app.reconcile_tabs();
+    let before = app.session.open.len();
+    app.request_close_tab(0);
+    assert_eq!(app.question(), Some(dialogs::Question::ClosePrompt));
+    three_action_sheet(&mut app);
+
+    // Cancel (the last action) keeps the tab and answers the question.
+    app.answer(dialogs::Question::ClosePrompt, 2, &mut doc);
+    assert_eq!(app.question(), None);
+    assert_eq!(app.session.open.len(), before);
+
+    // Don't save (the middle one) discards the edits and closes it.
+    app.request_close_tab(0);
+    app.answer(dialogs::Question::ClosePrompt, 1, &mut doc);
+    assert_eq!(app.question(), None);
+    assert_eq!(app.session.open.len(), before - 1);
+}
+
+#[test]
+fn a_save_conflict_outranks_the_close_question() {
+    let mut app = CodeApp::with_sample();
+    app.shots_close_prompt();
+    app.shots_conflict();
+    assert_eq!(app.question(), Some(dialogs::Question::Conflict));
+    three_action_sheet(&mut app);
+    assert!(app.dialog_hover.is_none());
+}
+
+#[test]
+fn find_and_replace_go_through_the_bar_and_the_edit_action() {
+    use ui::widget::Findable;
+    let (mut app, mut doc) = synced_sample();
+    app.open_find();
+    app.find.set_query("primes");
+    app.drive_find(&mut doc);
+    let matches = app.find_matches.len();
+    assert!(matches >= 2);
+    assert_eq!(
+        app.find_current,
+        Some(0),
+        "the bar lands on the first match"
+    );
+
+    let replaced = find_workflow::FindTarget {
+        app: &mut app,
+        doc: &mut doc,
+    }
+    .replace_all("odds");
+    assert_eq!(replaced, matches);
+    let node = app.active_file_node().unwrap();
+    let text = EditorDoc::read_buffer_key(&doc, &app.buffer_key(node)).unwrap();
+    assert_eq!(text.matches("odds").count(), matches);
+    assert!(!text.contains("primes"));
+    assert!(
+        app.notice().is_some_and(|n| n.text.starts_with("Replaced")),
+        "the replacement says how much it changed"
+    );
+}
+
+#[test]
+fn closing_the_find_bar_stops_painting_matches() {
+    let (mut app, mut doc) = synced_sample();
+    app.open_find();
+    app.find.set_query("primes");
+    app.drive_find(&mut doc);
+    assert!(app.editor.find_match_count_for_test() > 0);
+    app.close_find();
+    assert!(!app.find_open);
+    assert_eq!(app.editor.find_match_count_for_test(), 0);
+    let _frame = render(&mut app, (1280, 800));
+    assert!(app.find_node.is_none(), "a closed bar takes no row");
+}

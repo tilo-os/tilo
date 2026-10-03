@@ -26,7 +26,7 @@
 //! Document-mutating → an action: creating, renaming, moving, retagging, and
 //! tombstoning durable files/folders (and creating a file's text body). Presentation →
 //! never an action: which file is open, the tab order, the caret / selection /
-//! scroll, the sidebar flap, the active theme, the bottom-panel tab. Those local
+//! scroll, the sidebar, the bottom-panel tab. Those local
 //! operations are still exported on file resources: opening a file is a view
 //! operation and saving its collaborative buffer to disk is an effect. The
 //! language server, linter, and embedded terminal remain app-owned services.
