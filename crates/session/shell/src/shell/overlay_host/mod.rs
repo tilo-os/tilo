@@ -848,6 +848,49 @@ pub struct ShellSceneSections {
     pub quick_settings_bounds: Option<Rect>,
 }
 
+/// Backdrop layers ([`ui::backdrop::layer_scene`]) of the sections
+/// [`ShellOverlayHost::draw_scene_sections`] draws, one per section. The
+/// sections are composed in this order, so a floating surface's layer names
+/// which of them lie below it.
+mod backdrop_layer {
+    pub const BACKDROP: u32 = 0;
+    pub const WORKSPACE: u32 = 1;
+    pub const TOPBAR: u32 = 2;
+    pub const QUICK_SETTINGS: u32 = 3;
+    pub const ABOVE_QUICK_SETTINGS: u32 = 4;
+}
+
+impl ShellSceneSections {
+    /// Name each section's backdrop layer for the active recording. The
+    /// sections must stay where they are while floating surfaces are drawn
+    /// into them.
+    pub fn register_backdrop_layers(&self) {
+        ui::backdrop::layer_scene(&self.backdrop, backdrop_layer::BACKDROP);
+        ui::backdrop::layer_scene(&self.workspace, backdrop_layer::WORKSPACE);
+        ui::backdrop::layer_scene(&self.topbar, backdrop_layer::TOPBAR);
+        ui::backdrop::layer_scene(&self.quick_settings, backdrop_layer::QUICK_SETTINGS);
+        ui::backdrop::layer_scene(
+            &self.above_quick_settings,
+            backdrop_layer::ABOVE_QUICK_SETTINGS,
+        );
+    }
+
+    /// The sections composed below a floating surface drawn into backdrop
+    /// `layer`'s section, bottom to top.
+    pub fn below_layer(&self, layer: u32) -> Option<Vec<&Scene>> {
+        let order = [
+            &self.backdrop,
+            &self.workspace,
+            &self.topbar,
+            &self.quick_settings,
+            &self.above_quick_settings,
+        ];
+        order
+            .get(..usize::try_from(layer).ok()?)
+            .map(<[&Scene]>::to_vec)
+    }
+}
+
 /// Action emitted by a search-provider callback into `ChromeState` when the
 /// user picks a peer-sync command. The overlay host drains that typed queue
 /// into its `ShellNetwork` bridge so Iroh side-effects stay on the runtime
@@ -1398,21 +1441,9 @@ fn prepare_status_evidence(
     (fallback, newest_first)
 }
 
-// Surface and scrim alphas. The pinned Vello has no backdrop filter, so
-// chrome surfaces are opaque and scrims carry the depth instead.
-// Centralised so `shell_chrome_test` can pin the numeric values.
-
-/// Alpha of the collaborator and `QuickSettings` popover surfaces.
-/// Opaque, deferring to the toolkit's chrome constant so a popover can't
-/// drift from the bar it hangs off — the pinned Vello has no backdrop
-/// filter, so a translucent tint here would just lose contrast.
-pub const POPOVER_SURFACE_ALPHA: f32 = ui::chrome::shell::CHROME_SURFACE_ALPHA;
-
-/// Alpha of the search palette and Workspace-Settings modal
-/// surfaces. Paints solid rather than the design's translucent tint,
-/// since translucency drops legibility of long rows; the scrim beneath
-/// sells the depth instead.
-pub const MODAL_SURFACE_ALPHA: f32 = 1.0;
+// Scrim alphas, centralised so `shell_chrome_test` can pin the numeric
+// values. Floating chrome itself is the blurred material
+// (`ui::floating_surface::Material::Floating`).
 
 /// Alpha of the scrim beneath the `WorkspaceSettings` modal. The design
 /// calls for a blurred `0.30`; the pinned Vello has no blur layer, so
@@ -1515,47 +1546,55 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         presence: &PresenceCtx,
-    ) -> ShellSceneSections {
-        let mut backdrop = Scene::new();
-        let mut topbar = Scene::new();
-        let mut workspace = Scene::new();
-        let mut quick_settings = Scene::new();
-        let mut above_quick_settings = Scene::new();
+    ) -> Box<ShellSceneSections> {
+        // Boxed so each section keeps its address while the caller draws
+        // into it too: a floating surface's backdrop layer is found by the
+        // scene it is drawn into.
+        let mut sections = Box::new(ShellSceneSections {
+            backdrop: Scene::new(),
+            topbar: Scene::new(),
+            workspace: Scene::new(),
+            topbar_bounds: None,
+            quick_settings: Scene::new(),
+            above_quick_settings: Scene::new(),
+            quick_settings_bounds: None,
+        });
+        sections.register_backdrop_layers();
+        let ShellSceneSections {
+            backdrop,
+            topbar,
+            workspace,
+            quick_settings,
+            above_quick_settings,
+            ..
+        } = &mut *sections;
         let contextual_tour = self
             .onboarding
             .as_ref()
             .is_some_and(crate::onboarding_view::OnboardingView::presents_desktop_context);
         if !contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
-            onboarding.draw(&mut backdrop, transform, text_renderer, theme, presence);
-            return ShellSceneSections {
-                backdrop,
-                topbar,
-                workspace,
-                topbar_bounds: None,
-                quick_settings,
-                above_quick_settings,
-                quick_settings_bounds: None,
-            };
+            onboarding.draw(backdrop, transform, text_renderer, theme, presence);
+            return sections;
         }
 
         let flags = self.overlay_flags();
         let topbar_bounds = self.draw_workspace_sections(
-            &mut backdrop,
-            &mut topbar,
-            &mut workspace,
+            backdrop,
+            topbar,
+            workspace,
             transform,
             text_renderer,
             theme,
             presence,
         );
-        self.draw_desktop_extras(&mut workspace, transform, text_renderer, theme, presence);
+        self.draw_desktop_extras(workspace, transform, text_renderer, theme, presence);
         let rows: Vec<_> = self.group_row_ptrs.values().copied().collect();
         for row in rows {
             // SAFETY: identical sequential traversal to `Widget::draw` above.
             unsafe {
                 ui::widget::FloatingSurfaceWidgetExt::draw_floating_surfaces(
                     &mut *row,
-                    &mut workspace,
+                    workspace,
                     transform,
                     text_renderer,
                     theme,
@@ -1564,7 +1603,7 @@ impl ShellOverlayHost {
             }
         }
         self.draw_overview_and_ws_settings_overlays(
-            &mut workspace,
+            workspace,
             transform,
             text_renderer,
             theme,
@@ -1573,13 +1612,13 @@ impl ShellOverlayHost {
         self.prepare_quick_settings_transition(theme, flags);
         let quick_settings_transition_visible = self.qs_transition.is_visible(Instant::now());
         let quick_settings_bounds =
-            self.draw_quick_settings_dropdown(&mut quick_settings, transform, text_renderer, theme);
+            self.draw_quick_settings_dropdown(quick_settings, transform, text_renderer, theme);
         // Keep the strip in the retained QS section even while the dropdown
         // is closed. Opening QS then changes one bounded section rather than
         // removing chrome from the opaque workspace section, which preserves
         // sparse damage eligibility without changing the final scene order.
         self.draw_strip_chrome(
-            &mut quick_settings,
+            quick_settings,
             transform,
             theme,
             flags,
@@ -1593,7 +1632,7 @@ impl ShellOverlayHost {
         self.layers.draw(
             LayerId::PowerMenu,
             &mut LayerPaint {
-                scene: &mut above_quick_settings,
+                scene: above_quick_settings,
                 transform,
                 text_renderer,
                 theme,
@@ -1603,7 +1642,7 @@ impl ShellOverlayHost {
             },
         );
         self.draw_collaborators_dropdown(
-            &mut above_quick_settings,
+            above_quick_settings,
             transform,
             text_renderer,
             theme,
@@ -1611,7 +1650,7 @@ impl ShellOverlayHost {
             flags,
         );
         self.draw_room_activity_sheet(
-            &mut above_quick_settings,
+            above_quick_settings,
             transform,
             text_renderer,
             theme,
@@ -1619,7 +1658,7 @@ impl ShellOverlayHost {
             flags,
         );
         self.draw_projection_sheet(
-            &mut above_quick_settings,
+            above_quick_settings,
             transform,
             text_renderer,
             theme,
@@ -1627,7 +1666,7 @@ impl ShellOverlayHost {
             flags,
         );
         self.draw_top_overlays(
-            &mut above_quick_settings,
+            above_quick_settings,
             transform,
             text_renderer,
             theme,
@@ -1635,7 +1674,7 @@ impl ShellOverlayHost {
         );
         if contextual_tour && let Some(onboarding) = self.onboarding.as_mut() {
             onboarding.draw(
-                &mut above_quick_settings,
+                above_quick_settings,
                 transform,
                 text_renderer,
                 theme,
@@ -1643,28 +1682,22 @@ impl ShellOverlayHost {
             );
         }
         self.pairing.draw(
-            &mut above_quick_settings,
+            above_quick_settings,
             transform,
             text_renderer,
             theme,
             presence,
         );
         self.capture_studio.draw(
-            &mut above_quick_settings,
+            above_quick_settings,
             transform,
             text_renderer,
             theme,
             presence,
         );
-        ShellSceneSections {
-            backdrop,
-            topbar,
-            workspace,
-            topbar_bounds,
-            quick_settings,
-            above_quick_settings,
-            quick_settings_bounds,
-        }
+        sections.topbar_bounds = topbar_bounds;
+        sections.quick_settings_bounds = quick_settings_bounds;
+        sections
     }
 
     /// The open overlays, topmost first — the order the synthetic
@@ -18929,14 +18962,6 @@ fn mix_toward(a: Color, b: Color, t: f32) -> Color {
     Color::from_rgb8(m(a.r, b.r), m(a.g, b.g), m(a.b, b.b))
 }
 
-/// The surface every floating chrome panel is painted on — quick
-/// settings, the collaborators popover, workspace-settings, peer-sync.
-/// Uses the theme's own popover tier (not a raw colour ramp slot) so
-/// panels stay the same material as the bar they hang off (HIG §9.2).
-fn panel_surface(theme: &Theme, alpha: f32) -> Color {
-    ui::chrome::shell::panel_ground(theme).with_alpha_factor(alpha)
-}
-
 /// Pick the [`crate::shell::search::SearchProvider`] that owns the
 /// currently focused tab, if any. Seeds `active_provider_id` for
 /// [`crate::shell::search::SearchRegistry::query`] under
@@ -18954,13 +18979,13 @@ fn active_tab_provider_id(
     None
 }
 
-/// Clones `theme` with `surfaces.raised` re-tinted to a translucent glass
-/// slate-900 — how `CommandPalette` (which paints from `surfaces.raised`)
-/// gets a translucent fill without a per-draw override plumbed into a
-/// shared widget. The stroke keeps `border_standard` from the original.
-fn palette_surface_theme(theme: &Theme, alpha: f32) -> Theme {
+/// Clones `theme` with `surfaces.raised` set to the panel ground, so the
+/// fields and wells `CommandPalette` paints from `surfaces.raised` sit on
+/// its panel rather than reading as raised cards. The palette's own body is
+/// the floating material.
+fn palette_surface_theme(theme: &Theme) -> Theme {
     let mut themed = theme.clone();
-    themed.tokens.colors.surfaces.raised = panel_surface(theme, alpha);
+    themed.tokens.colors.surfaces.raised = ui::chrome::shell::panel_ground(theme);
     themed
 }
 
@@ -20931,7 +20956,7 @@ impl ShellOverlayHost {
             // A cloned theme with `surfaces.raised` pre-tinted, since
             // `CommandPalette` (in `quick-ui`) paints its own surface from
             // there and has no override plumbed in.
-            let palette_theme = palette_surface_theme(theme, MODAL_SURFACE_ALPHA);
+            let palette_theme = palette_surface_theme(theme);
             self.palette.draw(
                 scene,
                 palette_xform,
@@ -21368,7 +21393,7 @@ impl ShellOverlayHost {
             (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let ground = panel_surface(theme, MODAL_SURFACE_ALPHA);
+        let ground = ui::chrome::shell::panel_ground(theme);
         let hover = self.last_cursor.is_some_and(|c| rect.contains(c));
         let m = self.overview_metrics;
 
@@ -21536,7 +21561,7 @@ impl ShellOverlayHost {
         // Same fill/hairline/lift as the workspace-settings modal: one
         // floating-surface language across the shell's overlays.
         let panel = self.overview_panel_rect();
-        let ground = panel_surface(theme, MODAL_SURFACE_ALPHA);
+        let ground = ui::chrome::shell::panel_ground(theme);
         let m = self.overview_metrics;
         // A Panel (HIG §9.1): `radii.xl`, and a shadow that follows its own
         // rounded outline rather than a square field.
@@ -21829,7 +21854,7 @@ impl ShellOverlayHost {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let accent = colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX];
-        let ground = panel_surface(theme, MODAL_SURFACE_ALPHA);
+        let ground = ui::chrome::shell::panel_ground(theme);
         let m = self.overview_metrics;
         let s3 = f64::from(tokens.spacing.s3);
         let s4 = f64::from(tokens.spacing.s4);
@@ -22294,7 +22319,7 @@ impl ShellOverlayHost {
         if self.overview_max_scroll_y() > 0.5 {
             let fade_y1 = band.y1;
             let fade_y0 = fade_y1 - OVERVIEW_SCROLL_FADE_PX;
-            let ground = panel_surface(theme, MODAL_SURFACE_ALPHA);
+            let ground = ui::chrome::shell::panel_ground(theme);
             let grad = vello::peniko::Gradient::new_linear(
                 Point::new(band.x0, fade_y0),
                 Point::new(band.x0, fade_y1),
@@ -22874,12 +22899,12 @@ impl ShellOverlayHost {
         let radius = ui::chrome::ChromeRole::Panel.radius(theme, rect.height());
         let card = RoundedRect::from_rect(rect, radius);
         ui::chrome::shell::panel_shadow(scene, transform, rect, radius, theme, 1.0);
-        scene.fill(
-            Fill::NonZero,
+        ui::floating_surface::paint_material(
+            scene,
             transform,
-            panel_surface(theme, POPOVER_SURFACE_ALPHA),
-            None,
             &card,
+            ui::floating_surface::Material::Floating,
+            theme,
         );
         // The Panel edge is derived (HIG §9.5): `border_standard` sat three
         // shades off the ground on dark and vanished. Stroked half a pixel
