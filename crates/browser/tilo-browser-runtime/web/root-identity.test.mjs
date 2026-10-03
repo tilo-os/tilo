@@ -232,15 +232,19 @@ test('installing a node certifies it and its session and hands both over', async
   const {identity} = await createIdentity({...OPTIONS, credentials});
   const {nodeKey, session, calls, fetch} = await waitingNode();
   const issued = [];
-  // Nanosecond times past what a JavaScript number holds exactly.
-  const runtime = {issueDeviceCert: async (_, key, label, role) => { issued.push({key, label, role}); return `{"device_public_key":"${key}","role":"${role}","issued_at_ns":1759500000000000001}`; }};
+  const runtime = {
+    issueDeviceCert: async (_, key, label, role) => { issued.push({key, label, role}); return JSON.stringify({key, role}); },
+    // Stands in for the canonical encoding.
+    deviceCertCanonical: json => new TextEncoder().encode(json),
+  };
   const answer = await installNode({origin: 'https://node.example', devicePublicKey: nodeKey, installToken: 'token', identity, label: 'Acme node', runtime, fetch});
   assert.deepEqual(answer, {device_public_key: nodeKey, user_public_key: 'bb'});
   assert.deepEqual(issued, [{key: nodeKey, label: 'Acme node', role: 'node'}, {key: session, label: 'Apps on Acme node', role: 'session'}]);
   const posted = calls.at(-1);
   assert.equal(posted.init.method, 'POST');
   assert.equal(posted.init.headers['content-type'], 'application/json');
-  assert.equal(posted.init.body, `{"certificate":{"device_public_key":"${nodeKey}","role":"node","issued_at_ns":1759500000000000001},`
-    + `"session_certificate":{"device_public_key":"${session}","role":"session","issued_at_ns":1759500000000000001}}`);
+  const sent = JSON.parse(posted.init.body);
+  assert.deepEqual(JSON.parse(atob(sent.certificate)), {key: nodeKey, role: 'node'});
+  assert.deepEqual(JSON.parse(atob(sent.session_certificate)), {key: session, role: 'session'});
   await assert.rejects(installNodeCertificate({origin: 'https://node.example', certificate: '+/8B', sessionCertificate: '{}', installToken: 'token', fetch}), TypeError);
 });

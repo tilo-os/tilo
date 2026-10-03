@@ -16002,6 +16002,7 @@ name = "tilo-relay"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "blake3",
  "bounded-command",
  "bytes",

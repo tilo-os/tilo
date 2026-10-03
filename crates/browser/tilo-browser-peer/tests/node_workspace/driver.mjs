@@ -5,9 +5,8 @@
 //   {"sign": "<hex>"}                              -> {"signature": "<hex>"}
 //   {"info": {origin, devicePublicKey, installToken}}
 //                                                  -> what nodeInstallInfo resolves to
-//   {"install": {origin, certificate (canonical, hex), installToken}}
-//   {"install": {origin, certificate (JSON), sessionCertificate (JSON), installToken}}
-//                                                  -> what installNodeCertificate resolves to
+//   {"install": {origin, certificate, sessionCertificate?, installToken}}
+//     (certificates canonical, hex)                -> what installNodeCertificate resolves to
 // Any failure is answered as {"error": "..."}.
 //
 // usage: node driver.mjs
@@ -18,6 +17,7 @@ import {createInterface} from 'node:readline';
 import {launch, serve} from '../../../../../tools/web/chrome.mjs';
 
 const web = fileURLToPath(new URL('../../../tilo-browser-runtime/web/', import.meta.url));
+const base64 = hex => Buffer.from(hex, 'hex').toString('base64');
 const server = await serve(web);
 // WebAuthn takes a domain as relying party, never an IP address.
 const origin = server.url.replace('127.0.0.1', 'localhost');
@@ -55,10 +55,11 @@ try {
       ? await page(`return {signature: id.hex(await window.root.sign(id.unhex(${JSON.stringify(request.sign)})))};`)
       : request.info !== undefined
         ? await page(`return await id.nodeInstallInfo(${JSON.stringify(request.info)});`)
-        : await page(`return await id.installNodeCertificate(${JSON.stringify(request.install.sessionCertificate ? request.install : {
+        : await page(`return await id.installNodeCertificate(${JSON.stringify({
           ...request.install,
           // What certifyDevice resolves to: the canonical encoding, base64.
-          certificate: Buffer.from(request.install.certificate, 'hex').toString('base64'),
+          certificate: base64(request.install.certificate),
+          sessionCertificate: request.install.sessionCertificate && base64(request.install.sessionCertificate),
         })});`);
     process.stdout.write(`${JSON.stringify(answer)}\n`);
   }

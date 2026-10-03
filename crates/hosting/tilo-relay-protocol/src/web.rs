@@ -87,14 +87,15 @@ pub fn node_session_message(node: &[u8; 32], session: &[u8; 32]) -> Vec<u8> {
 }
 
 /// `POST /install` with the certificates of a node and of the session
-/// beside it (JSON, each certificate as a page's root issues it).
+/// beside it (JSON): each in its canonical encoding, base64, as a page's
+/// `certifyDevice` resolves.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstallCertificates {
     /// The host's certificate.
-    pub certificate: tilo_user_identity::DeviceCert,
+    pub certificate: String,
     /// The session's certificate, when the host has one beside it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_certificate: Option<tilo_user_identity::DeviceCert>,
+    pub session_certificate: Option<String>,
 }
 
 /// A waiting host's answer to an accepted `/install` (JSON).

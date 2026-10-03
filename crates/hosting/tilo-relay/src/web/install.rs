@@ -327,6 +327,31 @@ fn token_matches(token: &[u8], presented: &[u8]) -> bool {
             == 0
 }
 
+/// The host's certificate in an install body, and the session's if any.
+fn parse_certificates(bytes: &[u8]) -> Option<(DeviceCert, Option<DeviceCert>)> {
+    use base64::Engine as _;
+    if bytes.first() != Some(&b'{') {
+        return tilo_user_identity::canonical::from_canonical_bytes(bytes)
+            .ok()
+            .map(|cert| (cert, None));
+    }
+    if let Ok(cert) = serde_json::from_slice::<DeviceCert>(bytes) {
+        return Some((cert, None));
+    }
+    let both: InstallCertificates = serde_json::from_slice(bytes).ok()?;
+    let decode = |text: &str| {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(text.trim())
+            .ok()?;
+        tilo_user_identity::canonical::from_canonical_bytes::<DeviceCert>(&bytes).ok()
+    };
+    let session = match both.session_certificate.as_deref() {
+        Some(text) => Some(decode(text)?),
+        None => None,
+    };
+    Some((decode(&both.certificate)?, session))
+}
+
 fn authorized<B>(waiting: &Waiting, request: &Request<B>) -> bool {
     let presented = request
         .headers()
@@ -402,31 +427,12 @@ async fn install(
         return Err(wrong_token());
     }
     let (_, bytes) = body(request, MAX_REQUEST_BYTES).await?;
-    // JSON as a page's root issues it, both certificates of a node and its
-    // session, or the canonical encoding.
-    let certs: Option<InstallCertificates> = if bytes.first() == Some(&b'{') {
-        serde_json::from_slice::<DeviceCert>(&bytes)
-            .map(|certificate| InstallCertificates {
-                certificate,
-                session_certificate: None,
-            })
-            .or_else(|_| serde_json::from_slice(&bytes))
-            .ok()
-    } else {
-        tilo_user_identity::canonical::from_canonical_bytes(&bytes)
-            .ok()
-            .map(|certificate| InstallCertificates {
-                certificate,
-                session_certificate: None,
-            })
-    };
-    let InstallCertificates {
-        certificate: cert,
-        session_certificate: offered,
-    } = certs.ok_or_else(|| {
+    // JSON as a page's root issues it, its canonical encoding, or both
+    // certificates of a node and its session.
+    let (cert, offered) = parse_certificates(&bytes).ok_or_else(|| {
         status(
             StatusCode::BAD_REQUEST,
-            "expected a DeviceCert as JSON or canonical bytes",
+            "expected a DeviceCert as JSON or canonical bytes, or InstallCertificates",
         )
     })?;
     if !cert.capabilities.can_act_as_host {
@@ -704,10 +710,15 @@ mod tests {
         let member = |root: &SigningKey, device: [u8; 32], capabilities| {
             serde_json::from_str::<DeviceCert>(&cert(root, device, capabilities)).unwrap()
         };
-        let both = |offered| {
+        let encoded = |cert: &DeviceCert| {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD
+                .encode(tilo_user_identity::canonical::canonical_bytes(cert).unwrap())
+        };
+        let both = |offered: DeviceCert| {
             serde_json::to_string(&InstallCertificates {
-                certificate: node(&root),
-                session_certificate: Some(offered),
+                certificate: encoded(&node(&root)),
+                session_certificate: Some(encoded(&offered)),
             })
             .unwrap()
         };
