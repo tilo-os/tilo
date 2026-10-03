@@ -1997,7 +1997,7 @@ impl App {
             .actions
             .action_registry
             .decode(&encoded)
-            .map_err(|_| tilo_actions::DoorError::UnregisteredType(encoded.type_id.clone()))?;
+            .map_err(tilo_actions::DoorError::decoding)?;
         if spec.deferred_invocation_type().is_some() && action.locus() != spec.locus {
             return Err(tilo_actions::DoorError::Failed(
                 "Deferred action locus differs from its declaration".into(),

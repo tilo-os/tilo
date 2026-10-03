@@ -52,11 +52,6 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::task::LocalSet;
 
-/// Hard fail-closed timeout for an RPC request waiting to be handled on the
-/// application's owner thread.  The UI never blocks for it: the Cap'n Proto
-/// shovel awaits this reply on its own `LocalSet`.  A stopped app must look
-/// unavailable to the broker rather than leaving an RPC worker pinned.
-const ACTION_DIRECTORY_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 /// A disconnected/slow UI must apply backpressure to broker callbacks rather
 /// than allow an unbounded cross-thread queue to become a memory `DoS`.
 const ACTION_DIRECTORY_REQUEST_QUEUE: usize = 64;
@@ -4642,12 +4637,13 @@ impl runtime_collab::collab_capnp::action_directory::Server for ActionDirectoryS
             .map_err(|_| {
                 capnp::Error::failed("application action directory is busy or unavailable".into())
             })?;
-            let page = tokio::time::timeout(ACTION_DIRECTORY_REPLY_TIMEOUT, response)
-                .await
-                .map_err(|_| capnp::Error::failed("application action directory timed out".into()))?
-                .map_err(|_| {
-                    capnp::Error::failed("application action directory is unavailable".into())
-                })?;
+            // Answered on the owner's next turn, however long its current one
+            // runs (a heavy action or frame): a busy app is not a gone one. The
+            // asker owns the deadline; when it stops waiting it cancels this
+            // call, which drops this future. A stopped owner drops `reply`.
+            let page = response.await.map_err(|_| {
+                capnp::Error::failed("application action directory is unavailable".into())
+            })?;
             let mut out = results.get().init_page();
             out.set_revision(&page.revision);
             out.set_next_cursor(&page.next_cursor);
@@ -4711,11 +4707,8 @@ impl runtime_collab::collab_capnp::action_directory::Server for ActionDirectoryS
             {
                 directory_unavailable()
             } else {
-                tokio::time::timeout(ACTION_DIRECTORY_REPLY_TIMEOUT, response)
-                    .await
-                    .ok()
-                    .and_then(Result::ok)
-                    .unwrap_or_else(directory_unavailable)
+                // As for a query: the asker's deadline, not one of ours.
+                response.await.unwrap_or_else(|_| directory_unavailable())
             };
             let mut out = results.get().init_resolution();
             match reply_value {

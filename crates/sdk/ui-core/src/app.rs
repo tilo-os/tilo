@@ -2229,10 +2229,7 @@ impl App {
     /// Returns whether the running root accepted it. A root that is not the
     /// framework host leaves the current view in place.
     #[cfg(feature = "native")]
-    pub(crate) fn install_reloaded_view(
-        &mut self,
-        root: Box<dyn crate::widget::AppWidget>,
-    ) -> bool {
+    pub(crate) fn install_reloaded_view(&mut self, root: DevRoot) -> bool {
         let Some(bound) = self
             .root_widget
             .as_any_mut()
@@ -2240,7 +2237,7 @@ impl App {
         else {
             return false;
         };
-        bound.component.root = Some(root);
+        bound.component.install_reloaded(root);
         self.needs_sync = true;
         true
     }
