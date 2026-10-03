@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createLiveLayer, connectPeer, httpsPost, liveEndpoints, rendererFailureCode, statusAsset, storageFailureCode} from './peer.mjs';
+import {createLiveLayer, connectPeer, httpsPost, inspectInvitation, joinWorkspace, liveEndpoints, rendererFailureCode, statusAsset, storageFailureCode, withCustody} from './peer.mjs';
 
 const ROOM = '6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71';
 const SEALED = 0x53;
@@ -82,6 +82,19 @@ function fakeRuntime({phase = 'ready'} = {}) {
     async certifyWithRoot(post, root, custody, label) {
       calls.certify.push({post, root, custody, label});
       return JSON.stringify({cert: {device: calls.certify.length, expires_at_ns: calls.expiresAtNs ?? (Date.now() + 30 * 86_400_000) * 1e6}, hostCert: {host: true}});
+    },
+    async inspectInvitation(post, invitation) {
+      calls.inspected = [...invitation];
+      return JSON.stringify({kind: 'invitation', room: ROOM, workspaceId: '7', name: 'Acme', role: 'Editor', expiresAtNs: '9',
+        inviter: {name: 'Ada', userPublicKey: 'aa'.repeat(32)}});
+    },
+    async askToJoin(post, invitation, root, custody, requestId, name, label) {
+      calls.asked = {invitation: [...invitation], root, requestId, name, label};
+      return JSON.stringify({reply: {kind: 'waiting'}, cert: {guest: true, device_public_key: Array(32).fill(0xdd)}});
+    },
+    async joinStatus(post, requestId, device) {
+      calls.status = [...(calls.status ?? []), {requestId, device}];
+      return JSON.stringify(calls.status.length < 2 ? {kind: 'waiting'} : {kind: 'admitted', room: ROOM, workspaceId: '7', name: 'Acme', role: 'Editor'});
     },
     encodeLivePresence: json => new TextEncoder().encode(json),
     decodeLiveFrame: bytes => {
@@ -747,4 +760,54 @@ test('raw record watches bind the member namespace and stop retrying after unwat
   for (const callback of timers.splice(1)) callback(); // omit the grant-renewal timer
   assert.equal(opened, 1, 'an ended subscription has no consumers left to retry for');
   layer.stop();
+});
+
+test('joining with an invitation waits for the owner, then connects with the root-certified device', async () => {
+  const runtime = fakeRuntime();
+  const store = memoryStore();
+  const rows = new Map();
+  const storage = {getItem: key => rows.get(key) ?? null, setItem: (key, value) => rows.set(key, value)};
+  const identity = {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xee), userPublicKey: 'ee'.repeat(32), sign: async () => new Uint8Array(64)};
+  const offer = await inspectInvitation('https://host.example:8443', 'AQID', {runtime});
+  assert.deepEqual(runtime.calls.inspected, [1, 2, 3]);
+  assert.deepEqual(offer, {workspaceName: 'Acme', role: 'editor', room: ROOM, workspaceId: '7', expiresAtNs: '9',
+    inviter: {name: 'Ada', userPublicKey: 'aa'.repeat(32)}});
+
+  const progress = [];
+  const peer = await joinWorkspace({
+    origin: 'https://host.example:8443', invitation: Uint8Array.from([1, 2, 3]), identity, displayName: 'Bob',
+    runtime, custody, store, storage, pollMs: 1, onProgress: event => progress.push(event.phase),
+    liveCarriers: fakeCarriers(), fetch: async () => { throw new Error('no network in tests'); },
+  });
+  assert.deepEqual(progress, ['asking', 'waiting', 'waiting', 'admitted']);
+  assert.equal(runtime.calls.asked.root, identity);
+  assert.equal(runtime.calls.asked.name, 'Bob');
+  assert.equal(runtime.calls.status[0].device, 'dd'.repeat(32));
+  assert.equal(runtime.calls.status[0].requestId, runtime.calls.asked.requestId);
+  assert.equal(runtime.calls.certify.length, 0, 'no certification at the host');
+  assert.deepEqual(runtime.peer.config.cert, {guest: true, device_public_key: Array(32).fill(0xdd)});
+  assert.equal(runtime.peer.room, ROOM);
+  assert.equal(rows.get('tilo-join-requests'), '{}', 'the answered request is forgotten');
+  await peer.dispose();
+});
+
+test('a device key opened for a peer is let go when it is disposed, aborted or fails to connect', async () => {
+  const custody = () => ({closed: 0, close() { this.closed += 1; }});
+  const disposed = custody();
+  let inner = 0;
+  const peer = await withCustody(disposed, async () => ({dispose: async () => { inner += 1; }}));
+  assert.equal(disposed.closed, 0);
+  await peer.dispose();
+  assert.equal(inner, 1);
+  assert.equal(disposed.closed, 1);
+
+  const failed = custody();
+  await assert.rejects(withCustody(failed, async () => { throw new Error('host unreachable'); }), /host unreachable/);
+  assert.equal(failed.closed, 1);
+
+  const aborted = custody();
+  const controller = new AbortController();
+  await withCustody(aborted, async () => ({dispose: async () => {}}), controller.signal);
+  controller.abort();
+  assert.equal(aborted.closed, 1);
 });

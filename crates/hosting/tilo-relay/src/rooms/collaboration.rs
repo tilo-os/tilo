@@ -11,11 +11,12 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use tilo_delivery_protocol::workspace_join::WorkspaceJoinService;
 use tilo_peer_state::join::{
-    InviteGrant, JoinBootstrap, JoinChallenge, JoinChallengeRequest, JoinChallengeResponse,
-    JoinCompleteRequest, JoinInspection, JoinProof, JoinTransportRequest, JoinTransportResponse,
-    MemberRole, MembershipChallenge, MembershipChallengeRequest, MembershipChallengeResponse,
-    MembershipCompleteRequest, VerifiedJoin, VerifiedRedemption, decode_and_verify_invitation,
-    issue_invitation, verify_join_proof, verify_membership_proof,
+    InviteGrant, Inviter, JoinBootstrap, JoinChallenge, JoinChallengeRequest,
+    JoinChallengeResponse, JoinCompleteRequest, JoinInspection, JoinProof, JoinTransportRequest,
+    JoinTransportResponse, MemberRole, MembershipChallenge, MembershipChallengeRequest,
+    MembershipChallengeResponse, MembershipCompleteRequest, VerifiedJoin, VerifiedRedemption,
+    decode_and_verify_invitation, issue_invitation, issue_invitation_from, verify_join_proof,
+    verify_membership_proof,
 };
 use tilo_user_identity::{DeviceCert, RevocationList};
 
@@ -44,6 +45,9 @@ pub struct IssueInvitationRequest {
     pub invitee_name: Option<String>,
     /// When the invitation stops being redeemable, at most 30 days ahead.
     pub expires_at_ns: u64,
+    /// The name the inviting person gives, recorded in the invitation with
+    /// their user root.
+    pub inviter_name: Option<String>,
 }
 
 /// An issued invitation.
@@ -296,6 +300,7 @@ impl Rooms {
             &request.recipient_user_public_key,
             &request.invitee_name,
             request.expires_at_ns,
+            &request.inviter_name,
         ))?;
         let room = self.room(room).await?;
         let mut room = room.lock().await;
@@ -329,7 +334,17 @@ impl Rooms {
             expires_at_ns: request.expires_at_ns,
             transport: vec![self.transport_hint(&room)?],
         };
-        let signed_invitation = issue_invitation(grant.clone(), &self.inner.host.key)?;
+        let signed_invitation = match request.inviter_name {
+            Some(name) => issue_invitation_from(
+                grant.clone(),
+                Inviter {
+                    user_public_key: administrator.user_public_key,
+                    name,
+                },
+                &self.inner.host.key,
+            )?,
+            None => issue_invitation(grant.clone(), &self.inner.host.key)?,
+        };
         let issued = IssuedInvitation {
             invite_id: *blake3::hash(&signed_invitation).as_bytes(),
             signed_invitation,

@@ -13,8 +13,8 @@ use tilo_peer_state::join::{
     JoinChallenge, JoinChallengeRequest, JoinProof, MemberRole, VerifiedRedemption,
 };
 use tilo_relay_protocol::rooms::{
-    JoinReply, JoinRequest, JoinStep, MAX_JOIN_NAME_CHARS, MAX_JOIN_REQUESTS, PendingInvite, Room,
-    RoomMember, RoomRole, RoomsReply, RoomsRequest,
+    Inviter, JoinReply, JoinRequest, JoinStep, MAX_JOIN_NAME_CHARS, MAX_JOIN_REQUESTS,
+    PendingInvite, Room, RoomMember, RoomRole, RoomsReply, RoomsRequest,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -154,19 +154,17 @@ impl Rooms {
                 request_id,
                 role,
                 expires_at_ns,
+                inviter_name,
             } => {
-                self.page_invitation(
-                    &room,
-                    device,
-                    IssueInvitationRequest {
-                        request_id,
-                        role: member_role(role),
-                        recipient_user_public_key: None,
-                        invitee_name: None,
-                        expires_at_ns,
-                    },
-                )
-                .await?
+                let request = IssueInvitationRequest {
+                    request_id,
+                    role: member_role(role),
+                    recipient_user_public_key: None,
+                    invitee_name: None,
+                    expires_at_ns,
+                    inviter_name,
+                };
+                self.page_invitation(&room, device, request).await?
             }
             RoomsRequest::Cancel {
                 room,
@@ -422,6 +420,10 @@ impl Rooms {
                     name: room.record.name.clone(),
                     role: room_role(join.grant().role),
                     expires_at_ns: join.grant().expires_at_ns,
+                    inviter: join.inviter().map(|inviter| Inviter {
+                        user_public_key: inviter.user_public_key,
+                        name: inviter.name.clone(),
+                    }),
                 })
             }
             JoinStep::Ask {

@@ -133,6 +133,13 @@ pub struct Stroke {
     /// Per-mark parameter overrides on top of the preset.
     #[serde(default)]
     pub params: BTreeMap<String, f32>,
+    /// What the stroke grows into: twigs, or a cluster of dabs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub form: Option<crate::form::Form>,
+    /// Closed outlines the paint stays inside, as a painter cuts a stroke
+    /// in against an edge; anywhere when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clip: Vec<Vec<(f32, f32)>>,
 }
 
 /// A filled region laid in with a brush, in cell coordinates.
@@ -175,6 +182,17 @@ impl Mark {
                     .map(|point| StrokePoint::new(point.x * scale, point.y * scale, point.pressure))
                     .collect(),
                 size: stroke.size * scale,
+                form: stroke.form.map(|form| form.scaled(scale)),
+                clip: stroke
+                    .clip
+                    .iter()
+                    .map(|contour| {
+                        contour
+                            .iter()
+                            .map(|(x, y)| (x * scale, y * scale))
+                            .collect()
+                    })
+                    .collect(),
                 ..stroke.clone()
             }),
             Self::Fill(fill) => Self::Fill(Fill {

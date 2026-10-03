@@ -6110,3 +6110,16 @@ fn an_app_from_an_example_is_renamed_and_ready() {
         assert!(report.is_ready(), "{}: {}", example.name, report.summary());
     }
 }
+
+#[test]
+fn code_only_reads_past_quote_characters_and_raw_strings() {
+    let source = concat!(
+        "fn escape(t: &str) -> String { t.replace('\"', \"&quot;\").replace('\\'', \"'\") }\n",
+        "const A: &str = r#\" d=\"1\" x=\"#;\n",
+        "impl Resource for Artwork {}\n",
+    );
+    let code = rust_code_only(source);
+    assert!(code.contains("impl Resource for Artwork"), "{code}");
+    assert!(!code.contains("&quot;"), "{code}");
+    assert_eq!(code.lines().count(), source.lines().count());
+}

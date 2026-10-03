@@ -12,9 +12,9 @@ headroom = 0.01
 # (`build.sh --profile release` optimizes less and comes out about 2 MB
 # larger.)
 [bundles.desktop]
-bytes = 80543744
+bytes = 81461248
 
 [bundles.desktop.rebaseline]
-run = 57939
-measured = 79719115
-reason = "feature growth: canvas and wet-media on the shared desktop web bundle (#2166)"
+run = 58288
+measured = 80601022
+reason = "feature growth: direct manipulation on the canvas (#2193)"

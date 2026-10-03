@@ -194,6 +194,24 @@ class AdmissionTests(unittest.TestCase):
                         self.assertEqual(gate['development_admission']['board_ci'], ci)
                     self.assertEqual(live.call_count, 2)
 
+    def test_reviewed_profile_packaging_compatibility_uses_immutable_git_bytes(self):
+        generic, board = admission.PROFILE_FIX_PAIR
+        record = admission.assembly_compatibility(generic, board)
+        self.assertEqual(record['kind'], 'runtime-profile-packaging-fix')
+        self.assertEqual(record['runtime_file_sha256'], admission.PROFILE_FIX_BLOBS)
+        for revisions in ((board, generic), (generic, 'e' * 40), ('e' * 40, board)):
+            with self.subTest(revisions=revisions):
+                with self.assertRaisesRegex(ValueError, 'unreviewed assembly identities'):
+                    admission.assembly_compatibility(*revisions)
+        with patch.object(admission, 'PROFILE_FIX_BLOBS', {
+                path: {revision: '0' * 64 for revision in pins}
+                for path, pins in admission.PROFILE_FIX_BLOBS.items()}):
+            with self.assertRaisesRegex(ValueError, 'helper bytes differ'):
+                admission.assembly_compatibility(generic, board)
+        with patch.object(admission, 'PROFILE_FIX_CHANGED', {'os/Containerfile'}):
+            with self.assertRaisesRegex(ValueError, 'input closure differs'):
+                admission.assembly_compatibility(generic, board)
+
     def test_pagefile_is_only_a_shrink_gate(self):
         common = admission.module('common_gate', 'windows-direct-common.py')
         state = {'volume_status': 1, 'protection_status': 0, 'encryption_percentage': 100,

@@ -22,6 +22,7 @@
 import {createActions} from './actions.mjs';
 import {createAgents} from './agents.mjs';
 import {openChannelVault} from './channel-vault.mjs';
+import {createMembership, createWorkspaces} from './membership.mjs';
 import {createPresencePublisher, createRemotePresence} from './live-presence.mjs';
 import {createFallbackTransport, createLiveCarriers} from './live-fallback.mjs';
 import {createSpeakers} from './live-speakers.mjs';
@@ -29,6 +30,7 @@ import {createLiveTransport, LIVE_PATH, LIVE_ROOT} from './live-transport.mjs';
 import {createPeerVoice} from './voice-peer.mjs';
 import {WEBKIT_WEBGPU_REFUSAL} from './webgpu-safety.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
+import {currentIdentity, IdentityError} from './root-identity.mjs';
 
 export {
   addPasskey, certifyDevice, createIdentity, currentIdentity, IdentityError, installNodeCertificate, unlockIdentity,
@@ -63,6 +65,11 @@ export function profileStore(runtime, profile, device) {
   };
 }
 const PEER_RECORD = 'peer-record';
+/** The profile an identity keeps for one host: its device key, certificate
+ * and documents there. */
+export const identityProfile = (identity, origin) => `tilo-identity:${identity.userPublicKey}@${new URL(origin).host}`;
+/** The wasm runtime, loaded through the page host. */
+const pageRuntime = async desktop => (desktop ?? await import('./host.mjs')).loadRuntime?.();
 /** Whether a stored `{cert}` expires within a day (a page holding the root
  * then certifies itself anew). */
 function expiresWithinADay(stored) {
@@ -527,9 +534,39 @@ export function createLiveLayer(peer, runtime, room, {
  *                               `profile` to one per identity, `custody` to
  *                               that profile's device key and `runtime` to
  *                               the page host's
+ * @param options.deviceCertificate  `{cert, hostCert}` JSON this device was
+ *                               certified with elsewhere (`joinWorkspace`)
  */
-export async function connectPeer({
-  origin, userPublicKey, label = 'Browser', room, custody, store, runtime, identity,
+export async function connectPeer(options) {
+  const {identity, custody, origin, store, profile} = options;
+  if (!identity || custody) return connect(options);
+  // The device key this call opens is the peer's: it is let go when the
+  // peer is disposed or fails to connect, so the page can connect again.
+  const own = await openDeviceCustody({profile: profile ?? identityProfile(identity, origin), storage: idbStorage()});
+  return withCustody(own, () => connect({...options, custody: own, ...(store ? {} : {profile: profile ?? identityProfile(identity, origin)})}),
+    options.signal);
+}
+
+/** Runs `connecting` with the device key `custody`, closing it when the
+ * resulting peer is disposed, when `signal` aborts, or when connecting fails. */
+export async function withCustody(custody, connecting, signal) {
+  let peer;
+  try {
+    peer = await connecting();
+  } catch (error) {
+    custody.close();
+    throw error;
+  }
+  const dispose = peer.dispose;
+  peer.dispose = async () => {
+    try { await dispose(); } finally { custody.close(); }
+  };
+  signal?.addEventListener('abort', () => custody.close(), {once: true});
+  return peer;
+}
+
+async function connect({
+  origin, userPublicKey, label = 'Browser', room, custody, store, runtime, identity, deviceCertificate,
   profile, device = 'tilo-browser-device', displayName = '', vaultStorage,
   fetch: fetcher, liveCarriers, desktop, signal, onStatus, onPairingCode, live: liveEnabled = true,
   voice: voiceOptions = {},
@@ -539,9 +576,9 @@ export async function connectPeer({
     throw new TypeError('userPublicKey must be the unlocked identity\'s');
   }
   if (identity) {
-    if (!store) profile ??= `tilo-identity:${identity.userPublicKey}`;
-    custody ??= await openDeviceCustody({profile: profile ?? `tilo-identity:${identity.userPublicKey}`, storage: idbStorage()});
-    runtime ??= await (desktop ?? await import('./host.mjs')).loadRuntime?.();
+    if (!store) profile ??= identityProfile(identity, origin);
+    custody ??= await openDeviceCustody({profile: profile ?? identityProfile(identity, origin), storage: idbStorage()});
+    runtime ??= await pageRuntime(desktop);
   }
   if (!origin || !userPublicKey || !custody || !(store || profile) || !runtime) {
     throw new TypeError('origin, userPublicKey, custody, store or profile, and runtime are required');
@@ -716,6 +753,10 @@ export async function connectPeer({
   }
 
   async function certificate() {
+    if (deviceCertificate) {
+      await store.put(CERTIFICATE, deviceCertificate);
+      deviceCertificate = undefined;
+    }
     const existing = await store.get(CERTIFICATE);
     if (existing && !(identity && expiresWithinADay(existing))) return existing;
     const issued = identity
@@ -813,8 +854,18 @@ export async function connectPeer({
   }
   signal?.addEventListener('abort', dispose, {once: true});
 
+  const membership = createMembership({rooms: request => peer.rooms(request), room, displayName});
   const certifiedPeer = {
     get host() { return host; },
+    /** Issue an invitation to the room (`membership.mjs`): resolves to its text. */
+    createInvitation: options => membership.createInvitation(options),
+    /** The room's members, waiting people and invitations, for its owner
+     * (`membership.mjs`): `list()`, `admit`, `decline`, `setRole`,
+     * `remove`, `cancelInvitation`. */
+    get membership() { return membership; },
+    /** The workspaces the host governs (`membership.mjs`): `list()`,
+     * `create(name)`, `enter(room)`; needs no room. */
+    workspaces: createWorkspaces({rooms: request => peer.rooms(request)}),
     getSnapshot: () => snapshot,
     /** Diagnostic text of the page's channel membership (not a contract). */
     channelDiagnostics: () => peer?.channelDiagnostics?.() ?? '',
@@ -943,4 +994,99 @@ export async function connectPeer({
     dispose,
   };
   return certifiedPeer;
+}
+
+const invitationBytes = invitation => {
+  if (typeof invitation !== 'string') return Uint8Array.from(invitation);
+  const text = invitation.trim().replace(/-/g, '+').replace(/_/g, '/');
+  return Uint8Array.from(atob(text + '='.repeat((4 - text.length % 4) % 4)), char => char.charCodeAt(0));
+};
+
+/**
+ * What an invitation (its signed bytes, or them as base64/base64url) offers
+ * at the host `relayUrl`: `{workspaceName, role, room, workspaceId,
+ * expiresAtNs, inviter}`. `inviter` is `{name, userPublicKey}` as the host
+ * signed it into the invitation, or undefined when it names nobody.
+ */
+export async function inspectInvitation(relayUrl, invitation, {runtime, fetch: fetcher} = {}) {
+  runtime ??= await pageRuntime();
+  const reply = JSON.parse(await runtime.inspectInvitation(httpsPost(relayUrl, fetcher), invitationBytes(invitation)));
+  if (reply.kind !== 'invitation') throw new Error(reply.reason ?? 'This invitation offers nothing here');
+  return {
+    workspaceName: reply.name, role: reply.role.toLowerCase(), room: reply.room, workspaceId: reply.workspaceId,
+    expiresAtNs: reply.expiresAtNs, inviter: reply.inviter ?? undefined,
+  };
+}
+
+const JOIN_REQUESTS = 'tilo-join-requests';
+const hexOf = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+
+/**
+ * Join the workspace `invitation` (as `inspectInvitation` takes) offers at
+ * `origin`, as `identity` (default the current one): this page's device for
+ * that host is certified by the person's own root, the request waits for
+ * the room's owner (`onProgress({phase: 'waiting'})`, polled every
+ * `pollMs`), and once admitted the page connects. Resolves to the
+ * `CertifiedPeer` in the room; rejects when declined or refused. A page that
+ * reloads while waiting asks again under the same request.
+ */
+export async function joinWorkspace(options) {
+  const identity = options.identity ?? currentIdentity();
+  if (!identity || options.custody || !options.origin) return join({...options, identity});
+  // As connectPeer: the device key opened here is the peer's.
+  const profile = options.profile ?? identityProfile(identity, options.origin);
+  const own = await openDeviceCustody({profile, storage: idbStorage()});
+  return withCustody(own, () => join({...options, identity, profile, custody: own}), options.signal);
+}
+
+async function join({
+  origin, invitation, identity, displayName = '', label = 'Browser', signal, onProgress, pollMs = 2000,
+  runtime, custody, profile, storage = globalThis.localStorage, fetch: fetcher, ...connectOptions
+}) {
+  identity ??= currentIdentity();
+  if (!identity) throw new IdentityError('locked', 'Unlock the identity first');
+  if (!origin || !invitation) throw new TypeError('origin and invitation are required');
+  runtime ??= await pageRuntime(connectOptions.desktop);
+  profile ??= identityProfile(identity, origin);
+  custody ??= await openDeviceCustody({profile, storage: idbStorage()});
+  const custodyForWasm = custody.kind === 'sealed-seed' ? await custody.unseal() : custody;
+  const post = httpsPost(origin, fetcher);
+  const bytes = invitationBytes(invitation);
+  // The request id is public: it lets a reloaded page resume its request.
+  const key = `${profile}:${hexOf(bytes.slice(-32))}`;
+  const saved = JSON.parse(storage?.getItem?.(JOIN_REQUESTS) ?? '{}');
+  const requestId = saved[key] ?? hexOf(crypto.getRandomValues(new Uint8Array(32)));
+  saved[key] = requestId;
+  storage?.setItem?.(JOIN_REQUESTS, JSON.stringify(saved));
+  const forget = () => {
+    const current = JSON.parse(storage?.getItem?.(JOIN_REQUESTS) ?? '{}');
+    delete current[key];
+    storage?.setItem?.(JOIN_REQUESTS, JSON.stringify(current));
+  };
+  signal?.throwIfAborted();
+  onProgress?.({phase: 'asking'});
+  const asked = JSON.parse(await runtime.askToJoin(post, bytes, identity, custodyForWasm, requestId,
+    (displayName || label).slice(0, 64), label));
+  let reply = asked.reply;
+  const device = hexOf(asked.cert.device_public_key);
+  while (reply.kind === 'waiting') {
+    onProgress?.({phase: 'waiting'});
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(resolve, pollMs);
+      signal?.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason); }, {once: true});
+    });
+    reply = JSON.parse(await runtime.joinStatus(post, requestId, device));
+  }
+  if (reply.kind !== 'admitted') {
+    forget();
+    throw new Error(reply.kind === 'declined' ? 'The owner declined the request' : (reply.reason ?? 'The host refused the request'));
+  }
+  forget();
+  onProgress?.({phase: 'admitted', room: reply.room, workspaceName: reply.name, role: reply.role.toLowerCase()});
+  const host = JSON.parse(await runtime.hostInfo(post));
+  return connect({
+    ...connectOptions, origin, identity, room: reply.room, label, displayName, custody, runtime, signal,
+    profile: connectOptions.store ? undefined : profile,
+    fetch: fetcher, deviceCertificate: JSON.stringify({cert: asked.cert, hostCert: host.hostCert}),
+  });
 }
