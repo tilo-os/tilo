@@ -5,13 +5,16 @@
 //! ```text
 //! root
 //! ├── "editor" (Map)
-//! │   └── "sql" (Text)          # the live query buffer (native text path)
+//! │   └── "sql" (Text)          # the SQL buffer, edited a splice at a time
 //! └── "connections" (List)      # saved connection profiles (via the action model)
 //!     └── [i] (Map)             # id, name, engine, host, port, database, user, file_path
 //! ```
 //!
-//! The SQL buffer is a `Text` so edits splice in-place and a second peer
-//! editing the same query converges for free. The saved-connection list is a
+//! The SQL buffer is a `Text`, published as a plain-text child of the
+//! workspace: every keystroke is a splice applied as
+//! [`crate::actions::DbAction::EditSql`], so it is permission-checked, undone a
+//! word at a time and merges with a second peer typing in the same query. The
+//! saved-connection list is a
 //! collection of profile maps mutated only through [`crate::actions::DbAction`]
 //! (add / remove / rename), so undo and multi-peer replay come for free too.
 //! Crucially the connection **password is never written here** — it is held in
@@ -69,10 +72,10 @@ fn schema_genesis() -> &'static [u8] {
 }
 
 /// Give a fresh document the shared containers every replica writes into.
-/// Must run outside an open transaction (it applies a change); the app calls
-/// it from `sync`.
+/// Must run outside an open transaction (it applies a change); a new record
+/// gets it from [`crate::resource::DbClient`]'s `initialize`.
 ///
-/// Created on first use instead, the SQL buffer (first `sync`), the
+/// Created on first use instead, the SQL buffer (first edit), the
 /// connection list and the saved-query list (first add) are per-replica
 /// objects: two people who open the same new record, or add their first
 /// connection, before syncing each mint one, and a merge shows only one of
@@ -124,20 +127,28 @@ impl EditorDoc {
         }
     }
 
-    /// Read the current buffer contents (empty if not yet seeded).
-    pub fn read_sql(doc: &AutoCommit) -> String {
+    /// The `sql` Text object holding the query buffer, if the document has
+    /// one.
+    pub fn sql_object(doc: &AutoCommit) -> Option<ObjId> {
         let Ok(Some((Value::Object(ObjType::Map), editor))) = doc.get(&ROOT, "editor") else {
-            return String::new();
+            return None;
         };
         match doc.get(&editor, "sql") {
-            Ok(Some((Value::Object(ObjType::Text), tid))) => doc.text(&tid).unwrap_or_default(),
-            _ => String::new(),
+            Ok(Some((Value::Object(ObjType::Text), text))) => Some(text),
+            _ => None,
         }
     }
 
-    /// Replace the entire buffer with `sql`. Used when seeding the default
-    /// query or loading a snippet; splices the whole range so it remains a
-    /// single CRDT object (no `put_object` churn).
+    /// Read the current buffer contents (empty if not yet seeded).
+    pub fn read_sql(doc: &AutoCommit) -> String {
+        Self::sql_object(doc)
+            .and_then(|text| doc.text(&text).ok())
+            .unwrap_or_default()
+    }
+
+    /// Replace the entire buffer with `sql`, splicing only what differs so it
+    /// remains a single CRDT object (no `put_object` churn). Seeds the demo's
+    /// starter query; edits go through [`crate::actions::DbAction::EditSql`].
     pub fn set_sql(doc: &mut AutoCommit, sql: &str) {
         let tid = Self::sql_text(doc);
         ui::doc::splice_text_diffed(doc, &tid, sql);
