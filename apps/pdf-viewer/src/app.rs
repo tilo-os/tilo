@@ -14,7 +14,7 @@ use ui::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill, ImageData as PenikoImage};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -46,8 +46,8 @@ use ui::widget::page_sidebar::{PageSidebar, PageSidebarEvent};
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::tooltip::Tooltip;
 use ui::widget::{
-    AvatarFace, AvatarSize, Button, ButtonFace, ButtonRole, CardFace, ColorSwatchFace,
-    ContextMenu as SharedContextMenu, ControlSize, DEFAULT_PADDING,
+    AvatarFace, AvatarSize, Button, ButtonFace, ButtonRole, CardFace, ColorSwatch, ColorSwatchFace,
+    ColorSwatchPicker, ContextMenu as SharedContextMenu, ControlSize, DEFAULT_PADDING,
     DEFAULT_PAN_STEP as KEY_SCROLL_STEP, EmptyState, EmptyStateContent, ListRowFace, MenuItem,
     PAN_SLOP, RowAction, RowLeading, SegmentedFace, SegmentedStyle, SmallContentAlign, TextInput,
     ToggleGroup, ViewportState,
@@ -199,6 +199,48 @@ fn today_ymd() -> String {
     ui::clock::today().format("%Y-%m-%d").to_string()
 }
 
+/// The line bands, in page points, that cover a sentence of `page` running
+/// from `from` to the end of `to` (both written in one text block), widened to
+/// whole words the way the highlight tool snaps a drag. Empty when the page
+/// does not hold that sentence.
+fn sentence_bands(page: &model::Page, from: &str, to: &str) -> Vec<PtRect> {
+    let Some((block, text)) = page
+        .blocks
+        .iter()
+        .enumerate()
+        .find_map(|(i, b)| b.search_text().filter(|t| t.contains(from)).map(|t| (i, t)))
+    else {
+        return Vec::new();
+    };
+    let (Some(start), Some(end)) = (text.find(from), text.find(to).map(|i| i + to.len())) else {
+        return Vec::new();
+    };
+    // Word indices into the block: lines break between words, so the
+    // block's words are its lines' words in order.
+    let first = text.get(..start).unwrap_or("").split_whitespace().count();
+    let last = text.get(..end).unwrap_or("").split_whitespace().count();
+    let mut tr = TextRenderer::new();
+    let mut seen = 0;
+    let mut bands = Vec::new();
+    for line in render::collect_text_lines(&mut tr, page)
+        .into_iter()
+        .filter(|l| l.block == block)
+    {
+        let (lo, hi) = (seen, seen + line.words.len());
+        seen = hi;
+        let (a, b) = (first.max(lo), last.min(hi));
+        if a >= b {
+            continue;
+        }
+        let (Some(&(x0, _)), Some(&(_, x1))) = (line.words.get(a - lo), line.words.get(b - lo - 1))
+        else {
+            continue;
+        };
+        bands.push(PtRect::new(x0, line.y, x1 - x0, line.h));
+    }
+    bands
+}
+
 /// A plausible hand-drawn signature as normalised `[0,1]²` strokes, used to seed
 /// the demonstration document (shots/tests) so a still frame shows a *real*
 /// drawn signature rather than a canned style. Never used for a live document.
@@ -308,10 +350,12 @@ struct ContextMenu {
 }
 
 impl ContextMenu {
-    fn delete(target: DeleteTarget, at: Point, viewport: Rect) -> Self {
+    /// A delete menu for `target`, opened against `anchor` (what it acts on,
+    /// on screen) inside `viewport`.
+    fn delete(target: DeleteTarget, anchor: Rect, viewport: Rect) -> Self {
         let mut widget = SharedContextMenu::new();
         widget.push(MenuItem::destructive_selection("Delete").with_icon(ui::icons::Icon::Trash));
-        widget.open_at_clamped([at.x as f32, at.y as f32], viewport);
+        widget.open_anchored(anchor, viewport);
         Self { target, widget }
     }
 }
@@ -323,7 +367,10 @@ enum ToolbarHit {
     /// The zoom stepper's value, edited in place.
     ZoomValue,
     Tool(Tool),
+    /// Choose the marker colour (from the colour popover).
     Swatch(Swatch),
+    /// Open the marker-colour popover from its well.
+    MarkerColour,
     ZoomIn,
     ZoomOut,
     Fit,
@@ -537,9 +584,13 @@ pub struct PdfApp {
     /// Screenshot-only: defer opening the annotation menu until after the
     /// initial CRDT sync has populated its target.
     shots_context_menu: bool,
-    /// Screenshot-only: land on the Signatures panel (which the demo seed would
-    /// otherwise override to Comments) so a still frame shows the composer.
-    shots_sign: bool,
+    /// Screenshot-only: the review-panel tab a still frame shows (re-asserted
+    /// after the demo seed), kept on screen as a drawer on a narrow window.
+    shots_panel: Option<SidebarTab>,
+    /// Screenshot-only: open the marker-colour popover in the first draw.
+    shots_colours: bool,
+    /// Screenshot-only: seed the demonstration markup without its comments.
+    shots_no_comments: bool,
     /// Screenshot-only: stage a word selection on page 1 in the first draw.
     shots_selection: bool,
 
@@ -607,6 +658,8 @@ pub struct PdfApp {
     /// Comments and replies as written, one read-only view each, keyed by
     /// [`comment_view_key`]; measured and drawn by the Comments rail.
     comment_views: std::cell::RefCell<HashMap<String, RichTextView>>,
+    /// The rich-text view's line inset, measured at a text scale.
+    rich_inset: std::cell::Cell<Option<(f32, f64)>>,
     /// The signature whose sidebar row is highlighted/selected (so placing a
     /// signature lands the user on the new entry).
     selected_sig: Option<String>,
@@ -698,6 +751,10 @@ pub struct PdfApp {
     /// Some(pointer-x-at-press) while dragging the rail's resize grip.
     rail_drag: Option<f64>,
     context_menu: Option<ContextMenu>,
+    /// The marker-colour popover, while it is open over the toolbar.
+    marker_colours: Option<ui::widget::Popover<ColorSwatchPicker>>,
+    /// The toolkit dot badge the Save button carries over unsaved page edits.
+    unsaved_dot: ui::widget::Embedded<ui::widget::Badge>,
     created_counter: i64,
     commit_pending: bool,
     dirty: bool,
@@ -924,6 +981,7 @@ impl PdfApp {
     pub fn sample_editing() -> Self {
         let mut app = Self::sample();
         app.shots_edit_first_comment = true;
+        app.shots_panel = Some(SidebarTab::Comments);
         app
     }
 
@@ -979,7 +1037,7 @@ impl PdfApp {
     /// still frame shows the (non-overlapping) find bar.
     pub fn arm_shots_search(&mut self) {
         self.search_active = true;
-        self.find_bar.set_query("the");
+        self.find_bar.set_query("compositor");
         ui::widget::Widget::set_focus(&mut self.find_bar, true);
         self.drive_find_bar();
         self.find_bar.next();
@@ -992,10 +1050,38 @@ impl PdfApp {
     /// the real signature-composer workflow.
     pub fn arm_shots_sign_compose(&mut self) {
         self.show_sidebar = true;
-        self.shots_sign = true;
+        self.shots_panel = Some(SidebarTab::Signatures);
         self.tool = Tool::Sign;
         self.sig_mode = SigMode::Draw;
         self.sig_strokes = sample_drawn_signature();
+    }
+
+    /// Screenshot-only: the Signatures panel composing a typed signature.
+    pub fn arm_shots_sign_type(&mut self) {
+        self.show_sidebar = true;
+        self.shots_panel = Some(SidebarTab::Signatures);
+        self.tool = Tool::Sign;
+        self.sig_mode = SigMode::Type;
+    }
+
+    /// Screenshot-only: the review panel open on `tab`.
+    pub fn arm_shots_panel(&mut self, tab: SidebarTab) {
+        self.show_sidebar = true;
+        self.shots_panel = Some(tab);
+    }
+
+    /// Screenshot-only: the Highlight tool armed with its colour popover
+    /// open under the toolbar's colour well.
+    pub fn arm_shots_marker_colours(&mut self) {
+        self.tool = Tool::Highlight;
+        self.shots_colours = true;
+    }
+
+    /// Screenshot-only: the demonstration markup with no comments yet, so
+    /// the Comments tab shows its empty state.
+    pub fn arm_shots_no_comments(&mut self) {
+        self.shots_no_comments = true;
+        self.arm_shots_panel(SidebarTab::Comments);
     }
 
     /// Screenshot-only: stage a settled text selection over a word of page
@@ -1015,11 +1101,13 @@ impl PdfApp {
         let Some(page) = self.doc.page(1) else {
             return;
         };
-        let glyphs = render::first_body_line_glyphs(tr, page);
+        // A word of the closing quote: the selection bar floats over the
+        // paragraph above it, clear of the section heading.
+        let glyphs = render::line_glyphs(tr, page, "collaborative case");
         let text: String = glyphs.iter().map(|(c, _)| *c).collect();
         let layer = std::sync::Arc::new(PageText::from_glyphs(glyphs));
         self.raster_text.insert(1, layer.clone());
-        let Some(byte) = text.find("container") else {
+        let Some(byte) = text.find("collaborative") else {
             return;
         };
         let idx = text.get(..byte).map_or(0, |prefix| prefix.chars().count()) + 2;
@@ -1107,7 +1195,9 @@ impl PdfApp {
             shots_rail_drag: false,
             shots_page_bubble: false,
             shots_context_menu: false,
-            shots_sign: false,
+            shots_panel: None,
+            shots_colours: false,
+            shots_no_comments: false,
             shots_selection: false,
             annotations: Vec::new(),
             comments: Vec::new(),
@@ -1144,6 +1234,7 @@ impl PdfApp {
             selected_anno: None,
             editing: None,
             comment_views: std::cell::RefCell::new(HashMap::new()),
+            rich_inset: std::cell::Cell::new(None),
             selected_sig: None,
             sidebar_scroll: 0.0,
             sidebar_reveal: None,
@@ -1177,6 +1268,8 @@ impl PdfApp {
             pan: None,
             rail_drag: None,
             context_menu: None,
+            marker_colours: None,
+            unsaved_dot: ui::widget::Embedded::new(ui::widget::Badge::dot()),
             created_counter: 100,
             commit_pending: false,
             dirty: true,
@@ -1653,24 +1746,25 @@ impl PdfApp {
     fn seed(&mut self, state: &mut AutoCommit) {
         PdfDoc::set_meta(state, &self.doc.title, &self.doc.author);
 
-        // Two highlights over the abstract, a sticky note, and a placed review
-        // signature — all on page 1 so the default screenshot shows real
-        // review markup anchored to real text (no free-floating scribble over
-        // empty whitespace).
+        // A highlight over the abstract's thesis sentence, a sticky note, and
+        // a placed review signature — all on page 1 so the default screenshot
+        // shows real review markup anchored to real text (no free-floating
+        // scribble over empty whitespace). The highlight covers the sentence's
+        // whole words, as the highlight tool marks them.
+        let quads = self
+            .doc
+            .page(1)
+            .map(|page| {
+                sentence_bands(page, "This document describes", "every system application.")
+            })
+            .unwrap_or_default();
         let highlight = Annotation {
             id: Annotation::new_id(),
             page: 1,
-            kind: AnnoKind::highlight(PtRect::new(64.0, 196.0, 420.0, 14.0)),
-            color: Swatch::Yellow,
-            author: "Bob".into(),
-            chars: None,
-            created_ms: 0,
-            space: crate::model::GeomSpace::Page,
-        };
-        let highlight2 = Annotation {
-            id: Annotation::new_id(),
-            page: 1,
-            kind: AnnoKind::highlight(PtRect::new(64.0, 210.0, 300.0, 14.0)),
+            kind: AnnoKind::Markup {
+                style: crate::model::MarkupStyle::Highlight,
+                quads,
+            },
             color: Swatch::Yellow,
             author: "Bob".into(),
             chars: None,
@@ -1701,10 +1795,13 @@ impl PdfApp {
 
         let note_id = note.id.clone();
         let hl_id = highlight.id.clone();
-        for a in [&highlight, &highlight2, &note] {
-            PdfDoc::add_annotation(state, a, None);
-        }
+        PdfDoc::add_annotation(state, &highlight, None);
         PdfDoc::add_signature(state, &sig, None);
+        if self.shots_no_comments {
+            // A note always carries its comment: without comments, no note.
+            return;
+        }
+        PdfDoc::add_annotation(state, &note, None);
 
         // This comment stands in for the one the user "just placed": the
         // demo view-state below selects its note and reveals it in the rail.
@@ -1851,7 +1948,7 @@ impl PdfApp {
         if self.prev_overlay != Some(overlay) {
             // A screenshot that stages the review panel keeps it on screen,
             // floating over a narrow window.
-            self.show_sidebar = !overlay || self.shots_sign;
+            self.show_sidebar = !overlay || self.shots_panel.is_some();
             self.show_rail = !overlay;
             self.prev_overlay = Some(overlay);
         }
@@ -5173,10 +5270,10 @@ impl Widget for PdfApp {
             }
             self.shots_edit_first_comment = false;
         }
-        // Screenshot hook: land on the Signatures composer (the demo seed lands
-        // on Comments, so re-assert it after the seed).
-        if self.shots_sign {
-            self.sidebar_tab = SidebarTab::Signatures;
+        // Screenshot hook: land on the staged panel tab (the demo seed lands on
+        // Comments, so re-assert it after the seed).
+        if let Some(tab) = self.shots_panel {
+            self.sidebar_tab = tab;
         }
     }
 
@@ -5237,6 +5334,31 @@ impl Widget for PdfApp {
         if self.awaiting_markup_record {
             return;
         }
+        if let Some(popover) = self.marker_colours.as_mut() {
+            // The open colour popover owns input: a swatch chooses the
+            // marker colour, a click outside or Escape closes it.
+            popover.handle_event(event, ctx);
+            let choice = popover.content_mut().take_choice();
+            let open = popover.is_open();
+            if choice.is_some() || !open {
+                self.marker_colours = None;
+            }
+            if let Some(swatch) = choice.and_then(|i| Swatch::ALL.get(i).copied()) {
+                self.apply_toolbar(&ToolbarHit::Swatch(swatch), ctx.state);
+            }
+            self.dirty = true;
+            let owned = matches!(
+                event,
+                WindowEvent::KeyboardInput { .. }
+                    | WindowEvent::Ime(_)
+                    | WindowEvent::MouseWheel { .. }
+                    | WindowEvent::MouseInput { .. }
+            );
+            if *ctx.handled || owned {
+                *ctx.handled = true;
+                return;
+            }
+        }
         if self.context_menu.is_some() {
             let (selected_target, still_open) = {
                 match self.context_menu.as_mut() {
@@ -5286,15 +5408,39 @@ impl Widget for PdfApp {
     }
 
     fn traps_focus(&self) -> bool {
-        self.context_menu
+        self.marker_colours
             .as_ref()
-            .is_some_and(|menu| menu.widget.traps_focus())
+            .is_some_and(Widget::traps_focus)
+            || self
+                .context_menu
+                .as_ref()
+                .is_some_and(|menu| menu.widget.traps_focus())
     }
 
     fn modal_capture(&self) -> Option<Rect> {
-        self.context_menu
+        self.marker_colours
             .as_ref()
-            .and_then(|menu| menu.widget.modal_capture())
+            .and_then(Widget::modal_capture)
+            .or_else(|| {
+                self.context_menu
+                    .as_ref()
+                    .and_then(|menu| menu.widget.modal_capture())
+            })
+    }
+
+    /// The marker-colour popover floats in the top layer, above the pages
+    /// and the panels.
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if let Some(popover) = self.marker_colours.as_mut() {
+            popover.draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
     }
 
     /// The reader paints its document chrome and pages directly, so expose the
@@ -5384,13 +5530,31 @@ impl Widget for PdfApp {
                 .with_bounds(*bounds)
                 .with_state(focusable().checked(self.tool == *tool))
         }));
-        controls.extend(layout.swatches.iter().map(|(swatch, bounds)| {
-            AccessNode::new(Role::RadioButton)
-                .with_name(format!("{} annotation colour", swatch_label(*swatch)))
-                .with_action_target(format!("pdf.swatch:{}", swatch.key()))
-                .with_bounds(*bounds)
-                .with_state(focusable().checked(self.swatch == *swatch))
-        }));
+        // The marker colours are a radio group behind the well: each colour
+        // is chosen directly, whether or not the popover is showing.
+        if let Some(well) = layout.colour {
+            controls.push(
+                AccessNode::new(Role::Group)
+                    .with_name("Marker colour")
+                    .with_hashed_key("pdf.marker-colour")
+                    .with_bounds(well)
+                    .with_children(
+                        Swatch::ALL
+                            .iter()
+                            .map(|swatch| {
+                                AccessNode::new(Role::RadioButton)
+                                    .with_name(format!(
+                                        "{} annotation colour",
+                                        swatch_label(*swatch)
+                                    ))
+                                    .with_action_target(format!("pdf.swatch:{}", swatch.key()))
+                                    .with_bounds(well)
+                                    .with_state(focusable().checked(self.swatch == *swatch))
+                            })
+                            .collect(),
+                    ),
+            );
+        }
 
         let page_nodes = self
             .page_sidebar
@@ -9930,6 +10094,45 @@ mod tests {
             assert!(
                 w < img.width as usize && h < img.height as usize,
                 "the crop is a proper sub-region of the full page bitmap"
+            );
+        }
+    }
+
+    #[test]
+    fn comment_text_starts_on_the_author_name_edge_at_any_scale() {
+        // The rich text of a comment sets its first glyph where the author's
+        // name starts, at every text scale.
+        for scale in [1.0_f32, 2.0] {
+            let mut app = PdfApp::sample();
+            app.layout_theme = Theme::dark().with_text_scale(scale);
+            let theme = app.layout_theme.clone();
+            let mut tr = ui::text_render::TextRenderer::new();
+            let card_w = f64::from(theme.tokens.metrics.inspector_width)
+                - 2.0 * f64::from(theme.tokens.spacing.s3);
+            let body =
+                CardFace::new().body_rect(&mut tr, &theme, Rect::new(0.0, 0.0, card_w, 400.0));
+            let hdr = PdfApp::comment_header_layout(
+                body,
+                PdfApp::resolve_button_w(&mut tr, &theme),
+                &theme,
+            );
+            let rect = app.rich_text_rect(&mut tr, hdr.text_x, hdr.body_top, 200.0);
+            let mut view = RichTextView::new();
+            view.show(&[ui::widget::BlockContent::paragraph(
+                "a",
+                "Should we spell it out?",
+            )]);
+            view.layout(rect, &theme, &mut tr);
+            let caret = view
+                .editor_mut()
+                .blocks()
+                .first()
+                .map(|b| b.line.caret_rect(&theme, 0).x0)
+                .unwrap();
+            assert!(
+                (caret - hdr.text_x).abs() < 0.5,
+                "body text at {caret} starts on the name edge {} at {scale}×",
+                hdr.text_x
             );
         }
     }
