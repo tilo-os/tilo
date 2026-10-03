@@ -15,13 +15,9 @@ use crate::widget::{
 };
 use automerge::{AutoCommit, ObjId, ROOT};
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex, OnceLock};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Shape};
-use vello::peniko::{
-    Blob, Color, ImageAlphaType, ImageBrush, ImageData as Image, ImageFormat as Format,
-};
 use winit::event::WindowEvent;
 
 const SPAWN_FADE_MS: f32 = 180.0;
@@ -35,136 +31,6 @@ const EDGE_STROKE_WIDTH: f64 = 1.0;
 /// the focused surface reads as lit rather than fenced.
 const FOCUS_EDGE_STROKE_WIDTH: f64 = 1.6;
 
-/// Ambient shadow sits at alpha 0.25; this adds on top in the focus hue —
-/// enough to pick the window out of a strip without becoming the
-/// loudest thing on screen.
-const FOCUS_BLOOM_ALPHA: f32 = 0.30;
-
-/// 256 px keeps the one-shot RGBA8 allocation tiny (256 KiB) while
-/// staying large enough that stretching under a full-height card doesn't
-/// show sampling artefacts.
-const SHADOW_SPRITE_SIZE: u32 = 256;
-
-/// Gaussian falloff constant `k` (fraction of the sprite's half-extent):
-/// `alpha = exp(-((d - d_peak) / k)^2)`. 0.35 lands most of the shadow's
-/// energy inside ~60% of the radius — tuned by eye to match Tailwind
-/// `shadow-2xl`'s visual density.
-const SHADOW_GAUSSIAN_K: f64 = 0.35;
-
-/// Normalised radius where the Gaussian bump peaks. 0.30 keeps the
-/// centre transparent (the card paints over nothing, not a darkened
-/// underlay) and the sprite edge transparent (no hard halo when
-/// stretched).
-const SHADOW_PEAK_RADIUS: f64 = 0.30;
-
-/// Rounds a channel-times-alpha product into a colour byte. Every caller
-/// passes either `alpha_frac * 255.0` or `channel * alpha_frac` where
-/// `alpha_frac` is already clamped to `[0.0, 1.0]` and `channel` is a
-/// `u8` widened to `f64`, so `value` is always in `[0.0, 255.0]` — the
-/// lint can't see that through the clamp above, but the `.clamp` here
-/// makes the saturating float-to-int cast provably safe regardless.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "value is clamped into [0.0, 255.0] on the line above, so the \
-              cast can never truncate or flip sign"
-)]
-fn channel_byte(value: f64) -> u8 {
-    value.round().clamp(0.0, 255.0) as u8
-}
-
-fn build_shadow_sprite(red: u8, green: u8, blue: u8) -> Image {
-    let size = SHADOW_SPRITE_SIZE;
-    let size_f = f64::from(size);
-    let cx = (size_f - 1.0) * 0.5;
-    let cy = (size_f - 1.0) * 0.5;
-    let max_radius = cx.max(cy);
-    let falloff = SHADOW_GAUSSIAN_K;
-    let peak_radius = SHADOW_PEAK_RADIUS;
-    let side_len = usize::try_from(size).unwrap_or(usize::MAX);
-    let mut data = Vec::<u8>::with_capacity(side_len.saturating_mul(side_len).saturating_mul(4));
-    for py in 0..size {
-        for px in 0..size {
-            let dx = (f64::from(px) - cx) / max_radius;
-            let dy = (f64::from(py) - cy) / max_radius;
-            let dist = (dx * dx + dy * dy).sqrt();
-            let bump = (-((dist - peak_radius) / falloff).powi(2)).exp();
-            let inner = (dist / peak_radius).min(1.0);
-            let outer = (1.0 - dist).max(0.0);
-            let alpha_frac = (bump * inner * outer).clamp(0.0, 1.0);
-            data.push(channel_byte(f64::from(red) * alpha_frac));
-            data.push(channel_byte(f64::from(green) * alpha_frac));
-            data.push(channel_byte(f64::from(blue) * alpha_frac));
-            data.push(channel_byte(alpha_frac * 255.0));
-        }
-    }
-    let blob = Blob::new(Arc::new(data));
-    Image {
-        data: blob,
-        format: Format::Rgba8,
-        alpha_type: ImageAlphaType::Alpha,
-        width: size,
-        height: size,
-    }
-}
-
-fn ambient_shadow_sprite() -> &'static Image {
-    static SPRITE: OnceLock<Image> = OnceLock::new();
-    SPRITE.get_or_init(|| build_shadow_sprite(0, 0, 0))
-}
-
-/// Tinted with the theme's own focus colour (`crates/sdk/ui-core/HIG.md` §9.4) — never
-/// hard-code it, high-contrast's focus colour is nothing like a violet
-/// glow. Cached per RGB triple rather than rebuilt each frame: baking one
-/// is a 256x256 pass over 65k pixels, and a session visits few themes.
-fn focus_bloom_sprite(tint: Color) -> Image {
-    static SPRITES: OnceLock<Mutex<HashMap<[u8; 3], Image>>> = OnceLock::new();
-    let rgba = tint.to_rgba8();
-    let key = [rgba.r, rgba.g, rgba.b];
-    let cache = SPRITES.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut cache = cache
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    cache
-        .entry(key)
-        .or_insert_with(|| build_shadow_sprite(key[0], key[1], key[2]))
-        .clone()
-}
-
-/// RGB in `sprite` is already tinted; `alpha` only scales opacity.
-fn draw_shadow_sprite(
-    scene: &mut Scene,
-    transform: Affine,
-    sprite: &Image,
-    target: Rect,
-    alpha: f32,
-) {
-    let tw = target.width();
-    let th = target.height();
-    if tw <= 0.0 || th <= 0.0 || alpha <= 0.0 {
-        return;
-    }
-    let sx = tw / f64::from(sprite.width);
-    let sy = th / f64::from(sprite.height);
-    let brush_transform = translated_and_scaled(transform, target.x0, target.y0, sx, sy);
-    scene.push_layer(
-        vello::peniko::Fill::NonZero,
-        vello::peniko::BlendMode::default(),
-        alpha,
-        transform,
-        &target,
-    );
-    let sprite_brush = ImageBrush::new(sprite.clone());
-    scene.fill(
-        vello::peniko::Fill::NonZero,
-        brush_transform,
-        &sprite_brush,
-        None,
-        &Rect::new(0.0, 0.0, f64::from(sprite.width), f64::from(sprite.height)),
-    );
-    scene.pop_layer();
-}
-
 /// `kurbo::Affine` composition is plain f64 matrix math with no panic
 /// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
 #[allow(
@@ -174,16 +40,6 @@ fn draw_shadow_sprite(
 )]
 fn translated(transform: Affine, x: f64, y: f64) -> Affine {
     transform * Affine::translate((x, y))
-}
-
-/// See [`translated`]: translate-then-scale is the same plain f64 math.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "kurbo::Affine composition is f64 matrix math; it never panics \
-              or overflows, unlike integer +/-/*"
-)]
-fn translated_and_scaled(transform: Affine, x: f64, y: f64, sx: f64, sy: f64) -> Affine {
-    transform * Affine::translate((x, y)) * Affine::scale_non_uniform(sx, sy)
 }
 
 /// See [`translated`]: scaling about a pivot point is translate, scale,
@@ -1389,12 +1245,12 @@ impl TileHost {
         presence: &PresenceCtx,
     ) -> Option<Rect> {
         let rect = self.complete_content_rect()?;
-        let radius = f64::from(theme.tokens.radii.xl);
+        let radius = f64::from(theme.tokens.radii.tile);
         let shape = RoundedRect::from_rect(rect, radius);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.surfaces.window_card,
+            theme.tokens.colors.surfaces.content,
             None,
             &shape,
         );
@@ -1415,9 +1271,6 @@ impl TileHost {
         if !painted {
             return None;
         }
-        // Export crops to the app bounds, so the live drop shadow is neither
-        // visible nor useful. Omitting it also avoids stretching a
-        // window-height raster effect across a multi-page document.
         self.draw_edge_at(scene, transform, theme, radius, rect);
         Some(rect)
     }
@@ -2140,13 +1993,13 @@ impl Widget for TileHost {
             let eased = 1.0 - (1.0 - t).powi(3);
             let alpha = eased;
             let scale = SPAWN_SCALE_START + (1.0 - SPAWN_SCALE_START) * f64::from(eased);
-            // 160 px clip so the shadow sprites (ambient_pad=50,
-            // bloom_pad=120) aren't chopped mid-fade.
+            // The window edge sits just outside the card; a few pixels of
+            // clip keep it whole through the scale.
             let clip = Rect::new(
-                self.rect.x0 - 160.0,
-                self.rect.y0 - 160.0,
-                self.rect.x1 + 160.0,
-                self.rect.y1 + 160.0,
+                self.rect.x0 - 4.0,
+                self.rect.y0 - 4.0,
+                self.rect.x1 + 4.0,
+                self.rect.y1 + 4.0,
             );
             scene.push_layer(
                 vello::peniko::Fill::NonZero,
@@ -2637,56 +2490,6 @@ impl crate::collaboration::participants::CollaborationTopology for TileHost {
 }
 
 impl TileHost {
-    /// Ambient drop shadow, and — only when focused — the coloured bloom
-    /// that reads as a window being lit rather than fenced. Split out of
-    /// `draw_steady_state` to keep that function's line count sane; paint
-    /// order (ambient, then bloom, then the card on top) is unchanged.
-    ///
-    /// Deliberately a deeper shadow rather than a border: a strip of
-    /// non-overlapping windows has no z-order to read focus from, and
-    /// fencing off the content area would draw a shape belonging to
-    /// nothing else on screen. Lighting the window's own footprint keeps
-    /// the signal attached to the object it describes.
-    fn draw_shadows_at(&self, scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
-        // Ambient `shadow-2xl` (`0 25px 50px -12px rgba(0,0,0,0.25)`): 25 px
-        // downward offset, ~50 px bleed so the falloff clears the corners.
-        let ambient_pad = 50.0_f64;
-        let ambient_y = 25.0_f64;
-        let ambient_target = Rect::new(
-            rect.x0 - ambient_pad,
-            rect.y0 - ambient_pad + ambient_y,
-            rect.x1 + ambient_pad,
-            rect.y1 + ambient_pad + ambient_y,
-        );
-        draw_shadow_sprite(
-            scene,
-            transform,
-            ambient_shadow_sprite(),
-            ambient_target,
-            0.25,
-        );
-        if self.focused {
-            let bloom_pad = 120.0_f64;
-            let bloom_target = Rect::new(
-                rect.x0 - bloom_pad,
-                rect.y0 - bloom_pad,
-                rect.x1 + bloom_pad,
-                rect.y1 + bloom_pad,
-            );
-            draw_shadow_sprite(
-                scene,
-                transform,
-                &focus_bloom_sprite(theme.tokens.colors.border_focus),
-                bloom_target,
-                FOCUS_BLOOM_ALPHA,
-            );
-        }
-    }
-
-    fn draw_shadows(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        self.draw_shadows_at(scene, transform, theme, self.rect);
-    }
-
     /// The window's outline. Painted *outside* the card's silhouette, safe
     /// from app content by the clip in `draw_steady_state` rather than a
     /// paint-order race: a stroke over unknown app content can't pick one
@@ -2770,8 +2573,7 @@ impl TileHost {
         );
     }
 
-    /// Ambient shadow → focus bloom → white card + border → hosted app or
-    /// stub contents. Extracted from `draw` so the spawn-fade branch can
+    /// Content card + edge → hosted app or stub contents. Extracted from `draw` so the spawn-fade branch can
     /// wrap the same paint under one scaled layer.
     fn draw_steady_state(
         &mut self,
@@ -2781,15 +2583,14 @@ impl TileHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let radius = f64::from(theme.tokens.radii.xl);
-        if !self.flush_edges {
-            self.draw_shadows(scene, transform, theme);
-        }
+        // A tile casts no shadow: it is separated by the ground and its
+        // window edge. Only floating things cast one.
+        let radius = f64::from(theme.tokens.radii.tile);
         let shape = RoundedRect::from_rect(self.rect, radius);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.surfaces.window_card,
+            theme.tokens.colors.surfaces.content,
             None,
             &shape,
         );
@@ -2916,14 +2717,14 @@ fn draw_opening_card(
     scene.fill(
         vello::peniko::Fill::NonZero,
         transform,
-        theme.tokens.colors.surfaces.window_card,
+        theme.tokens.colors.surfaces.content,
         None,
         &rect,
     );
     // Measured against the card, not a fixed ramp slot: `neutral[1]` is
     // the *dark* end of a dark theme's ramp, and on that theme's own dark
     // card the name would land at ~1.05:1 contrast — invisible on screen.
-    let on_card = theme.on_card().ink;
+    let on_card = theme.on_content().ink;
     // The offset stays in theme space (it is geometry that follows the text
     // scale); only the size handed to the renderer is divided back out.
     let resolved = theme.tokens.typography.scale.xl;
@@ -2967,13 +2768,13 @@ fn draw_card_text(
     // Derived from the card's own luminance: it's a black surface under
     // high-contrast and white elsewhere, so a fixed ramp slot is only
     // legible on one of them.
-    let card = theme.tokens.colors.surfaces.window_card;
-    let on_card = theme.on_card().ink;
+    let card = theme.tokens.colors.surfaces.content;
+    let on_card = theme.on_content().ink;
     // The floor here is measured for an ideal glyph but an antialiased glyph
     // anti-aliases: derived at 4.5:1 it measured 3.8:1 on screen against
     // the light card, a tier under the floor it was picked to clear.
     let on_card_dim = theme
-        .on_surface_at(card, crate::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST)
+        .on_surface_at(card, crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST)
         .ink_dim;
     let text_size = renderer_type_size(tr, theme.tokens.typography.scale.xl);
     let (tw, th) = tr.measure(title, text_size, None);
@@ -3008,17 +2809,6 @@ mod tests {
     use super::*;
     use crate::time::Duration;
 
-    fn sprite_alpha_at(sprite: &Image, x: u32, y: u32) -> u8 {
-        let bytes: &[u8] = sprite.data.data();
-        let idx = y
-            .saturating_mul(sprite.width)
-            .saturating_add(x)
-            .saturating_mul(4)
-            .saturating_add(3);
-        let idx = usize::try_from(idx).unwrap_or(usize::MAX);
-        bytes.get(idx).copied().unwrap_or(0)
-    }
-
     /// Test fixtures below deal only in small, non-negative pixel
     /// coordinates (well under `u32::MAX`), so these narrowing casts
     /// can't truncate or flip sign in practice — the lint can't see that
@@ -3045,31 +2835,6 @@ mod tests {
 
     #[test]
     fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
-        // Case `shadow_sprite_peaks_in_interior_not_centre_or_edge`.
-        {
-            let sprite = ambient_shadow_sprite();
-            let size = sprite.width;
-            let cy = size / 2;
-            // Centre and outer edge are guaranteed zero by the `inner`/
-            // `outer` shoulder terms.
-            let a_centre = sprite_alpha_at(sprite, size / 2, cy);
-            let a_edge = sprite_alpha_at(sprite, size - 1, cy);
-            // 0.3 × diameter puts the sample on the Gaussian peak ring;
-            // 0.9 × diameter sits in the decayed tail.
-            let r_peak = px(f64::from(size) * 0.3);
-            let r_tail = px(f64::from(size) * 0.9);
-            let a_peak = sprite_alpha_at(sprite, r_peak, cy);
-            let a_tail = sprite_alpha_at(sprite, r_tail, cy);
-            assert!(
-                a_centre <= 2 && a_edge <= 2,
-                "centre and edge must be (near-)transparent; got centre={a_centre} edge={a_edge}",
-            );
-            assert!(
-                a_peak > a_tail,
-                "peak (0.3d={a_peak}) must exceed tail (0.9d={a_tail})",
-            );
-        }
-
         // Case `a_hosted_app_cannot_square_off_the_window_or_erase_its_border`.
         // An app that fills its whole rect (as every hosted app does, since
         // it can't know it's being framed) must not square off the window's
@@ -3100,14 +2865,14 @@ mod tests {
             // any of the three is identifiable in the failure message.
             let rgba = r.render(&scene, vello::peniko::Color::from_rgb8(0, 0, 0xFF));
 
-            let radius = f64::from(theme.tokens.radii.xl);
+            let radius = f64::from(theme.tokens.radii.tile);
             // A point inside the tile's bounding box but outside its rounded
             // silhouette: one pixel in from the box corner, well inside the
             // corner arc's cut.
             let (cx, cy) = (px(rect.x0) + 2, px(rect.y0) + 2);
             assert!(
                 radius > 8.0,
-                "test assumes a visibly rounded card; radii.xl is {radius}",
+                "test assumes a visibly rounded card; radii.tile is {radius}",
             );
             let (cr, cg, cb, _) = OffscreenRenderer::sample(&rgba, w, cx, cy);
             assert!(
@@ -5036,7 +4801,7 @@ mod tests {
                 host.rect = rect;
                 host.set_flush_edges(true);
                 host.set_focused(true);
-                let radius = f64::from(theme.tokens.radii.xl);
+                let radius = f64::from(theme.tokens.radii.tile);
                 let mut scene = Scene::new();
                 host.draw_edge(&mut scene, Affine::scale(2.0), &theme, radius);
                 let rgba = renderer.render(&scene, ground);

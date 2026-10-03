@@ -129,7 +129,7 @@ impl Badge {
             BadgeTint::Semantic(BadgeTone::Success) => theme.status_success,
             BadgeTint::Semantic(BadgeTone::Warning) => theme.tokens.colors.semantic.warning,
             BadgeTint::Semantic(BadgeTone::Neutral) => theme.text_dim,
-            BadgeTint::Semantic(BadgeTone::Accent) => theme.accent_primary,
+            BadgeTint::Semantic(BadgeTone::Accent) => theme.tokens.colors.intent.inverted,
         }
     }
 
@@ -172,7 +172,7 @@ impl Badge {
             theme.tokens.colors.ink_on_any(
                 &[tint],
                 theme.tokens.colors.text_primary,
-                crate::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST,
+                crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
             ),
             translated(
                 transform,
@@ -315,7 +315,7 @@ impl Widget for Badge {
                         theme.tokens.colors.ink_on_any(
                             &[bg],
                             theme.tokens.colors.text_primary,
-                            crate::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST,
+                            crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
                         ),
                         translated(transform, tx, ty),
                         None,
@@ -422,7 +422,7 @@ mod tests {
                 Affine::IDENTITY,
                 Rect::new(0.0, 0.0, 72.0, 20.0),
                 "Owner",
-                theme.tokens.colors.accent[5],
+                theme.tokens.colors.intent.inverted,
                 &mut tr,
                 &theme,
             );

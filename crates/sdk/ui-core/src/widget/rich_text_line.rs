@@ -671,7 +671,7 @@ impl RichTextLine {
     }
 
     fn prepare_attributes(&mut self, theme: &Theme) {
-        let color = theme.tokens.colors.accent[5];
+        let color = theme.tokens.colors.text_primary;
         self.accent_rgb = Some([color.r(), color.g(), color.b()]);
         self.syntax = Some(theme.tokens.syntax.clone());
         self.refresh_attributes();
@@ -782,7 +782,7 @@ impl RichTextLine {
                     span.background = Some([background.r(), background.g(), background.b()]);
                 }
                 if segment.code || segment.link.is_some() || segment.external_link {
-                    let color = theme.tokens.colors.accent[5];
+                    let color = theme.tokens.colors.text_primary;
                     span.color = Some([color.r(), color.g(), color.b()]);
                 }
                 Some(span)
@@ -798,7 +798,7 @@ impl RichTextLine {
         for span in &self.marks {
             let (color, strike) = match span.mark {
                 Mark::Link(_) | Mark::Transclusion(_) | Mark::ExternalLink(_) => {
-                    (theme.tokens.colors.accent[5], false)
+                    (theme.tokens.colors.text_primary, false)
                 }
                 Mark::Underline => (theme.tokens.colors.text_primary, false),
                 Mark::Strikethrough => (theme.tokens.colors.text_primary, true),
@@ -1339,11 +1339,7 @@ fn paint_mark_segment(
     }
 
     let tokens = &theme.tokens;
-    let color = if seg.link.is_some() || seg.external_link || seg.code {
-        tokens.colors.accent[5]
-    } else {
-        tokens.colors.text_primary
-    };
+    let color = tokens.colors.text_primary;
 
     let weight = if seg.bold {
         TextWeight::Bold
@@ -1415,7 +1411,7 @@ fn paint_segment_decorations(
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            tokens.colors.accent[5],
+            tokens.colors.text_primary,
             None,
             &underline,
         );

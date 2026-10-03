@@ -773,13 +773,13 @@ impl SidebarDrawer {
     ) {
         let c = &theme.tokens.colors;
         let open = self.is_open();
-        let radius = f64::from(theme.tokens.radii.md).min(rect.height() * 0.5);
+        let radius = f64::from(theme.tokens.radii.control).min(rect.height() * 0.5);
 
         // Rest face and edge follow the Neutral button (HIG §9.5): the
         // raised surface with its derived edge, `bg_hover` under the
-        // pointer. Open is the toggle's "on" state and keeps the accent.
+        // pointer. Open is the toggle's "on" state: a lift with primary ink.
         let bg = if open {
-            mix(c.surfaces.raised, c.accent[ACCENT_IDX], 0.20)
+            c.lift_on(c.surfaces.raised, 1.0)
         } else if hovered {
             theme.bg_hover
         } else {
@@ -787,22 +787,14 @@ impl SidebarDrawer {
         };
         let pill = RoundedRect::from_rect(rect, radius);
         scene.fill(Fill::NonZero, transform, bg, None, &pill);
-        let border = if open {
-            c.accent[ACCENT_IDX]
-        } else {
-            crate::surface::edge_on(bg)
-        };
+        let border = crate::surface::edge_on(bg);
         scene.stroke(&Stroke::new(1.0), transform, border, None, &pill);
 
         // Panel glyph, centred: a rounded "window" with one edge filled to show
         // which side the drawer lives on.
         let g = glyph_box(rect);
         let gr = RoundedRect::from_rect(g, 2.5);
-        let outline = if open {
-            c.accent[ACCENT_IDX]
-        } else {
-            c.text_dim
-        };
+        let outline = if open { c.text_primary } else { c.text_dim };
         scene.stroke(&Stroke::new(1.4), transform, outline, None, &gr);
         let bar_w = g.width() * 0.38;
         let bar = match self.side {
@@ -810,7 +802,7 @@ impl SidebarDrawer {
             SidebarSide::Right => Rect::new(g.x1 - bar_w, g.y0, g.x1, g.y1),
         };
         let bar_col = if open {
-            c.accent[ACCENT_IDX]
+            c.text_primary
         } else {
             // A faint, closed rail hint.
             with_alpha(c.text_dim, 90)
@@ -831,9 +823,6 @@ impl SidebarDrawer {
     }
 }
 
-/// Accent-ramp index used for active/open tinting (indigo-500).
-const ACCENT_IDX: usize = 5;
-
 /// The centred square glyph box inside a toggle pill.
 fn glyph_box(rect: Rect) -> Rect {
     let side = (rect.height().min(rect.width()) - 12.0).clamp(12.0, 18.0);
@@ -843,32 +832,6 @@ fn glyph_box(rect: Rect) -> Rect {
     let w = side * 1.15;
     let h = side * 0.82;
     Rect::new(cx - w * 0.5, cy - h * 0.5, cx + w * 0.5, cy + h * 0.5)
-}
-
-fn mix(a: Color, b: Color, t: f64) -> Color {
-    let t = t.clamp(0.0, 1.0);
-    let lerp = |x: u8, y: u8| {
-        let blended = (f64::from(x) + (f64::from(y) - f64::from(x)) * t)
-            .round()
-            .clamp(0.0, 255.0);
-        // blended is a convex combination of two u8-derived values (t
-        // clamped to [0, 1] above), then clamped again immediately above,
-        // so it can't wrap or flip sign on the way into u8.
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "blended is clamped to [0.0, 255.0] on the line above"
-        )]
-        {
-            blended as u8
-        }
-    };
-    Color::from_rgba8(
-        lerp(a.r(), b.r()),
-        lerp(a.g(), b.g()),
-        lerp(a.b(), b.b()),
-        255,
-    )
 }
 
 #[cfg(test)]

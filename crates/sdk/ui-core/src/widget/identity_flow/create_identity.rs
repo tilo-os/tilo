@@ -498,10 +498,10 @@ impl CreateIdentityScreen {
         }
     }
 
-    /// The accent-colour tiles: `radii.md` swatches, the chosen one ringed
+    /// The accent-colour tiles: `radii.control` swatches, the chosen one ringed
     /// in the card's ink a hairline outside its edge.
     fn draw_accent_tiles(&self, scene: &mut Scene, transform: Affine, theme: &Theme, plan: &Plan) {
-        let radius = f64::from(theme.tokens.radii.md);
+        let radius = f64::from(theme.tokens.radii.control);
         let ring_gap = f64::from(theme.tokens.spacing.s1) / 2.0;
         for (i, r) in plan.tiles.iter().enumerate() {
             // `tiles` is built 1:1 with `ACCENT_PALETTE`, so this is

@@ -1716,7 +1716,7 @@ fn draw_chip(
     if rect.width() <= 2.0 || rect.height() <= 2.0 {
         return;
     }
-    let radius = f64::from(theme.tokens.radii.sm);
+    let radius = f64::from(theme.tokens.radii.detail);
     let shape = RoundedRect::from_rect(rect, radius);
     let colors = &theme.tokens.colors;
     // Accent chip: the face is its own contrast step, no edge (HIG §9.5
@@ -1726,7 +1726,7 @@ fn draw_chip(
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            colors.accent[5],
+            colors.intent.inverted,
             None,
             &shape,
         );
@@ -1739,7 +1739,7 @@ fn draw_chip(
     // Ink chosen against the face it sits on: `text_primary` is near-black
     // on the light preset and vanished on its blue accent.
     let ink = if accent {
-        colors.on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
+        colors.intent.on_inverted
     } else {
         colors.text_primary
     };
@@ -2039,7 +2039,7 @@ impl ActivityTimeline {
             // pale end of the accent ramp behind primary text is unreadable.
             // The raise is the top step of the pane's own ramp under a
             // derived edge, so it reads on a light pane as well as a dark one.
-            let radius = f64::from(theme.tokens.radii.sm);
+            let radius = f64::from(theme.tokens.radii.detail);
             let lift = row.inflate(0.0, -ROW_LIFT_INSET);
             let shape = RoundedRect::from_rect(lift, radius);
             scene.fill(
@@ -2063,14 +2063,14 @@ impl ActivityTimeline {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                theme.tokens.colors.accent[4],
+                theme.tokens.colors.intent.inverted_hover,
                 None,
                 &edge,
             );
         } else if is_hovered {
             let shape = RoundedRect::from_rect(
                 row.inflate(0.0, -ROW_LIFT_INSET),
-                f64::from(theme.tokens.radii.sm),
+                f64::from(theme.tokens.radii.detail),
             );
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -2082,7 +2082,7 @@ impl ActivityTimeline {
         }
         if is_focused {
             let shape =
-                RoundedRect::from_rect(row.inset(-1.0), f64::from(theme.tokens.radii.sm) + 1.0);
+                RoundedRect::from_rect(row.inset(-1.0), f64::from(theme.tokens.radii.detail) + 1.0);
             scene.stroke(
                 &Stroke::new(2.0),
                 transform,
@@ -2399,7 +2399,7 @@ impl ActivityTimeline {
         // The band's backdrop is a step of the pane's own ramp under an edge
         // derived from the pane, so a band reads as a band on a light pane
         // too — the white veneers it replaces were one colour per theme.
-        let radius = f64::from(theme.tokens.radii.sm);
+        let radius = f64::from(theme.tokens.radii.detail);
         let shape = RoundedRect::from_rect(row, radius);
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -2428,7 +2428,10 @@ impl ActivityTimeline {
                 transform,
                 colors.border_focus,
                 None,
-                &RoundedRect::from_rect(row.inset(-1.0), f64::from(theme.tokens.radii.sm) + 1.0),
+                &RoundedRect::from_rect(
+                    row.inset(-1.0),
+                    f64::from(theme.tokens.radii.detail) + 1.0,
+                ),
             );
         }
         if rg.is_section {
@@ -2444,7 +2447,7 @@ impl ActivityTimeline {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                colors.accent[5],
+                colors.intent.inverted,
                 None,
                 &spine,
             );
@@ -2536,7 +2539,7 @@ impl ActivityTimeline {
                     scene.fill(
                         vello::peniko::Fill::NonZero,
                         transform,
-                        colors.accent[4],
+                        colors.intent.inverted_hover,
                         None,
                         &Circle::new(Point::new(dot_x, title_y + f64::from(h) / 2.0), 3.0),
                     );
@@ -2698,10 +2701,7 @@ impl ActivityTimeline {
             text_size: chip_text_size,
             active_fill: crate::surface::chip_colors(theme, true).0,
             idle_fill: crate::surface::chip_colors(theme, false).0,
-            active_text: theme
-                .tokens
-                .colors
-                .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST),
+            active_text: theme.tokens.colors.intent.on_inverted,
             idle_text: theme.tokens.colors.text_dim,
         };
 
@@ -2907,7 +2907,7 @@ impl ActivityTimeline {
             scene,
             transform,
             bar,
-            f64::from(theme.tokens.radii.sm),
+            f64::from(theme.tokens.radii.detail),
             colors.surfaces.overlay,
         );
 
@@ -3332,7 +3332,7 @@ impl ActivityTimeline {
             scene,
             transform,
             self.rect,
-            f64::from(theme.tokens.radii.md),
+            f64::from(theme.tokens.radii.control),
             theme.tokens.colors.surfaces.raised,
         );
     }

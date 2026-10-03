@@ -412,11 +412,7 @@ impl LinkPopover {
                 filter_rect.y1,
             ),
             &TextStyle::new(tokens.typography.scale.sm),
-            QueryInk::accented(
-                tokens.colors.text_primary,
-                tokens.colors.text_dim,
-                tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
-            ),
+            QueryInk::of(&tokens.colors),
         );
     }
 
@@ -461,11 +457,11 @@ impl LinkPopover {
             let row_rect = Rect::new(rect.x0 + 4.0, y0, rect.x1 - 4.0, y0 + ROW_HEIGHT);
             let armed = visible_index == self.cursor;
             if armed {
-                let hl = RoundedRect::from_rect(row_rect, f64::from(tokens.radii.sm));
+                let hl = RoundedRect::from_rect(row_rect, f64::from(tokens.radii.detail));
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
+                    tokens.colors.intent.inverted,
                     None,
                     &hl,
                 );
@@ -473,9 +469,7 @@ impl LinkPopover {
             // Ink resolved against the accent fill (as `Popover` / `Dropdown`
             // do), and centred on the measured line rather than the font size.
             let ink = if armed {
-                tokens
-                    .colors
-                    .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
+                tokens.colors.intent.on_inverted
             } else {
                 tokens.colors.text_primary
             };

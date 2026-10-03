@@ -845,7 +845,7 @@ impl WorkspaceSettings {
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.accent[5],
+            colors.intent.inverted,
             None,
             &identity_card,
         );
@@ -1062,7 +1062,7 @@ fn draw_row_card(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme
         scene,
         transform,
         rect,
-        f64::from(theme.tokens.radii.lg),
+        f64::from(theme.tokens.radii.control),
         theme.tokens.colors.surfaces.raised,
     );
 }
@@ -1091,7 +1091,7 @@ fn draw_pane_intro(
         scene,
         transform,
         rect,
-        f64::from(tokens.radii.lg),
+        f64::from(tokens.radii.control),
         colors.surfaces.raised,
     );
 
@@ -1104,16 +1104,16 @@ fn draw_pane_intro(
     scene.fill(
         Fill::NonZero,
         transform,
-        colors.accent[5].with_alpha_factor(0.16),
+        colors.text_primary.with_alpha_factor(0.16),
         None,
-        &RoundedRect::from_rect(icon_rect, f64::from(tokens.radii.md)),
+        &RoundedRect::from_rect(icon_rect, f64::from(tokens.radii.control)),
     );
     draw_icon(
         scene,
         transform,
         icon_rect.inset(-9.0),
         icon,
-        colors.accent[4],
+        colors.intent.inverted_hover,
         LUCIDE_DEFAULT_STROKE_PX,
     );
     let detail_size = tokens.typography.scale.xs;
@@ -1166,7 +1166,7 @@ fn draw_pane_intro(
         Point::new(rect.x1 - 14.0, rect.center().y),
         status,
         Tint {
-            color: colors.accent[5],
+            color: colors.intent.inverted,
             alpha: 1.0,
         },
         text_renderer,
@@ -1204,7 +1204,7 @@ fn draw_pill(
         tokens.colors.surfaces.raised,
         tint.color,
         0.20 * tint.alpha,
-        ui::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST,
+        ui::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
     );
     Badge::paint_at(
         scene,
@@ -1255,7 +1255,7 @@ fn draw_avatar(
         transform,
         tint.with_alpha_factor(0.30),
         None,
-        &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
+        &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control)),
     );
     let initial: String = label
         .chars()
@@ -1286,8 +1286,8 @@ fn subject_tint(label: &str, theme: &Theme) -> Color {
         .fold(0u32, |a, b| a.wrapping_add(u32::from(b))) as usize
         % 4;
     match bucket {
-        0 => colors.accent[5],
-        1 => colors.accent[4],
+        0 => colors.intent.inverted,
+        1 => colors.intent.inverted_hover,
         2 => colors.semantic.info,
         _ => colors.semantic.success,
     }
@@ -1307,7 +1307,7 @@ fn draw_cycler(
     let tokens = &theme.tokens;
     let colors = &tokens.colors;
     let alpha = if enabled { 1.0 } else { DISABLED_ALPHA };
-    let track = RoundedRect::from_rect(rect, f64::from(tokens.radii.md));
+    let track = RoundedRect::from_rect(rect, f64::from(tokens.radii.control));
     scene.fill(
         Fill::NonZero,
         transform,
@@ -2690,7 +2690,7 @@ fn draw_member_row(context: &mut MemberRowDrawContext<'_>, row: &MemberRow) {
             Point::new(text_limit, row.row_rect.center().y),
             &t("workspace-settings-you"),
             Tint {
-                color: colors.accent[5],
+                color: colors.intent.inverted,
                 alpha: 1.0,
             },
             text_renderer,
@@ -2792,7 +2792,7 @@ fn draw_member_role_chip(
     } else if structural_owner {
         colors.semantic.success
     } else {
-        colors.accent[5]
+        colors.intent.inverted
     };
     let chip_alpha = if role_interactive || structural_owner {
         1.0
@@ -2804,14 +2804,14 @@ fn draw_member_role_chip(
         transform,
         chip_tint.with_alpha_factor(0.20 * chip_alpha),
         None,
-        &RoundedRect::from_rect(rect, f64::from(tokens.radii.md)),
+        &RoundedRect::from_rect(rect, f64::from(tokens.radii.control)),
     );
     scene.stroke(
         &Stroke::new(1.0),
         transform,
         chip_tint.with_alpha_factor(if role_interactive { 0.60 } else { 0.35 }),
         None,
-        &RoundedRect::from_rect(rect, f64::from(tokens.radii.md)),
+        &RoundedRect::from_rect(rect, f64::from(tokens.radii.control)),
     );
     let role_text = label;
     let (rw, rh) = text_renderer.measure(role_text, detail_size, None);
@@ -3015,7 +3015,7 @@ fn draw_agent_row(
             "workspace-settings-badge-agent"
         }),
         Tint {
-            color: colors.accent[5],
+            color: colors.intent.inverted,
             alpha: 1.0,
         },
         text_renderer,
@@ -4045,7 +4045,7 @@ fn draw_permission_composer(
         scene,
         transform,
         card,
-        f64::from(tokens.radii.lg),
+        f64::from(tokens.radii.control),
         colors.surfaces.raised,
     );
 
@@ -4138,7 +4138,7 @@ fn draw_expiry_track(
         theme,
         &SegmentedFace::new(&layout.expiry_rects, &labels, selected)
             .style(SegmentedStyle::Solid)
-            .radius(f64::from(theme.tokens.radii.md))
+            .radius(f64::from(theme.tokens.radii.control))
             .text_size(theme.tokens.typography.scale.sm),
     );
     if !is_owner {
@@ -4183,7 +4183,7 @@ fn draw_permission_row(
         Point::new(row.revoke_rect.x0 - 12.0, row.row_rect.center().y),
         &row.expiry,
         Tint {
-            color: colors.accent[5],
+            color: colors.intent.inverted,
             alpha: 1.0,
         },
         text_renderer,

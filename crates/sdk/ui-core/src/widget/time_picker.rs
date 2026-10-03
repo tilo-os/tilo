@@ -513,7 +513,7 @@ impl Widget for TimePicker {
         _presence: &crate::presence::PresenceCtx,
     ) {
         let colors = &theme.tokens.colors;
-        let radius = f64::from(theme.tokens.radii.sm);
+        let radius = f64::from(theme.tokens.radii.detail);
         let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.lg);
 
         let mut cells: Vec<(Rect, u8)> = vec![

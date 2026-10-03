@@ -74,16 +74,13 @@ fn marker_pigment(c: Color) -> Color {
     Color::from_rgba8(ch(rgba.r), ch(rgba.g), ch(rgba.b), rgba.a)
 }
 
-/// Deterministic per-user colour via [`PresenceCtx::color_for`], falling
-/// back to `theme.accent_primary` only on the all-zero (hash-lands-on-black)
-/// case. Every collab affordance resolves through this so they all agree on
-/// a peer's colour.
+/// A peer's colour as this theme paints it: their identity colour
+/// ([`PresenceCtx::color_for`]) carried at the theme's presence lightness and
+/// chroma, so every participant is equally loud on every material. Every
+/// collab affordance resolves through this so they all agree on a peer's
+/// colour.
 pub(crate) fn color_for(ctx: &PresenceCtx, user: &UserId, theme: &Theme) -> Color {
-    let (r, g, b) = ctx.color_for(user);
-    if r == 0 && g == 0 && b == 0 {
-        return theme.accent_primary;
-    }
-    Color::from_rgb8(r, g, b)
+    theme.tokens.colors.presence.of_rgb(ctx.color_for(user))
 }
 
 impl PresenceCtx {
@@ -775,7 +772,7 @@ fn draw_peer_pill_kind(
     is_agent: bool,
 ) {
     let label_size = renderer_type_size(text_renderer, pill_label_size(theme));
-    let radius = f64::from(theme.tokens.radii.sm);
+    let radius = f64::from(theme.tokens.radii.detail);
     let shadow = RoundedRect::from_rect(
         rect.inflate(0.5, 0.5) + vello::kurbo::Vec2::new(0.0, 1.0),
         radius,
@@ -960,7 +957,7 @@ fn chip_fitting(
 fn draw_name_chip_in(ctx: &mut PaintCtx<'_>, color: Color, name: &str, chip_rect: Rect) {
     let theme = ctx.theme;
     // Solid fill in the peer's colour so the chip reads as "them".
-    ctx.fill_round(chip_rect, f64::from(theme.tokens.radii.sm), color);
+    ctx.fill_round(chip_rect, f64::from(theme.tokens.radii.detail), color);
     // Label ink: white or near-black for contrast against the colour; the
     // measured line box is centred in the chip.
     let label_size = renderer_type_size(ctx.text, theme.tokens.typography.scale.xs);
@@ -1107,7 +1104,7 @@ fn draw_edge_mist(
     let Some((tag_rect, label, pad)) = mist_tag(text_renderer, theme, band, mist.edge, name) else {
         return;
     };
-    let tag = RoundedRect::from_rect(tag_rect, f64::from(theme.tokens.radii.sm));
+    let tag = RoundedRect::from_rect(tag_rect, f64::from(theme.tokens.radii.detail));
     scene.fill(Fill::NonZero, Affine::IDENTITY, peer, None, &tag);
     text_renderer.draw_text(
         scene,

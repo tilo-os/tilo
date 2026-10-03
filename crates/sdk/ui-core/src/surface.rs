@@ -463,7 +463,7 @@ pub fn elevation(scene: &mut Scene, transform: Affine, rect: Rect, token: &Shado
 pub fn chip_colors(theme: &Theme, selected: bool) -> (Color, Option<Color>) {
     let c = &theme.tokens.colors;
     if selected {
-        (c.accent[5], None)
+        (c.intent.inverted, None)
     } else {
         (c.surfaces.raised, Some(edge_on(c.surfaces.raised)))
     }
@@ -693,6 +693,36 @@ pub fn panel(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, them
         None,
         &edge_outline(rect, radius),
     );
+    floating_edge(scene, transform, rect, radius, theme);
+}
+
+/// The 1 px light edge a floating surface carries just inside its outline
+/// on a dark material ([`crate::tokens::Elevation::floating_edge`]); nothing
+/// on a light one. Paint it after the surface's body and border, at the
+/// surface's own radius: the edge's radius is concentric with it.
+pub fn floating_edge(scene: &mut Scene, transform: Affine, rect: Rect, radius: f64, theme: &Theme) {
+    let edge = theme.tokens.elevation.floating_edge;
+    if edge.a() == 0 {
+        return;
+    }
+    const INSET: f64 = 1.5;
+    let inner = snap(rect).inset(-INSET);
+    if inner.width() <= 0.0 || inner.height() <= 0.0 {
+        return;
+    }
+    let radii = &theme.tokens.radii;
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a corner radius in logical pixels; f32 holds it exactly at UI scales"
+    )]
+    let inner_radius = radii.concentric(radius as f32, INSET as f32);
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        edge,
+        None,
+        &RoundedRect::from_rect(inner, f64::from(inner_radius)),
+    );
 }
 
 /// A 1 px separator between rows inside a surface: derived against
@@ -784,7 +814,7 @@ mod tests {
             // A 16 % accent wash over the light panel is still a light surface.
             for theme in [Theme::light(), Theme::dark()] {
                 let ground = theme.tokens.colors.surfaces.raised;
-                let wash = theme.accent_primary.with_alpha(0.16);
+                let wash = theme.tokens.colors.text_primary.with_alpha(0.16);
                 let seen = crate::tokens::colors::composite(wash, ground);
                 let derived = edge_on(seen);
                 assert!(
@@ -885,7 +915,7 @@ mod tests {
         {
             let theme = Theme::dark();
             let (fill, border) = chip_colors(&theme, true);
-            assert_eq!(fill, theme.tokens.colors.accent[5]);
+            assert_eq!(fill, theme.tokens.colors.intent.inverted);
             assert!(border.is_none(), "selected chip has no border");
             let (fill_idle, border_idle) = chip_colors(&theme, false);
             assert_eq!(fill_idle, theme.tokens.colors.surfaces.raised);

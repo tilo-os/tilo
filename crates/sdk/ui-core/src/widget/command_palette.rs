@@ -26,7 +26,7 @@ use crate::text_metrics::centered_text_top;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST;
+use crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use tilo_actions::{ActionAddress, ActionInput, ControlInvocation, FlatAction, PROMPTED_PARAM};
@@ -1144,9 +1144,24 @@ impl CommandPalette {
         false
     }
 
-    /// `rounded-3xl` = 24 px (Tailwind).
-    pub fn surface_radius_px(&self) -> f64 {
-        24.0
+    /// The Panel radius ([`crate::tokens::Radii::panel`]): the palette is a
+    /// floating panel.
+    pub fn surface_radius_px(theme: &Theme) -> f64 {
+        f64::from(theme.tokens.radii.panel)
+    }
+
+    /// The radius of something inset `inset` inside the palette card:
+    /// concentric with the card's corner ([`crate::tokens::Radii::concentric`]).
+    fn inner_radius(theme: &Theme, inset: f64) -> f64 {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "corner radii and insets are small logical-pixel lengths; f32 holds them exactly"
+        )]
+        let radius = theme
+            .tokens
+            .radii
+            .concentric(theme.tokens.radii.panel, inset as f32);
+        f64::from(radius)
     }
 
     pub fn compute_input_layout(&self, row: Rect) -> InputRowLayout {
@@ -1266,7 +1281,7 @@ impl CommandPalette {
                     layout.input_rect.y1,
                 ),
                 &style,
-                QueryInk::accented(colors.text_primary, colors.text_dim, colors.accent[5]),
+                QueryInk::of(colors),
             );
         } else {
             self.query_composition.draw(
@@ -1279,7 +1294,7 @@ impl CommandPalette {
                 },
                 layout.input_rect,
                 &style,
-                QueryInk::accented(colors.text_primary, colors.text_dim, colors.accent[5]),
+                QueryInk::of(colors),
             );
         }
     }
@@ -1303,7 +1318,7 @@ impl CommandPalette {
         let chip_text_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
 
         let active = FilterChipLook {
-            body: theme.tokens.colors.accent[5],
+            body: theme.tokens.colors.intent.inverted,
             edge: None,
             text: theme.tokens.colors.text_primary,
         };
@@ -1591,7 +1606,7 @@ impl CommandPalette {
     pub(crate) fn row_ground(theme: &Theme, selected: bool) -> Color {
         let ground = crate::chrome::panel_ground(theme);
         if selected {
-            crate::tokens::colors::over(ground, theme.tokens.colors.accent[5], SELECTION_WASH)
+            crate::tokens::colors::over(ground, theme.tokens.colors.intent.inverted, SELECTION_WASH)
         } else {
             ground
         }
@@ -1609,14 +1624,14 @@ impl CommandPalette {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            colors.accent[5].with_alpha_factor(SELECTION_WASH),
+            colors.text_primary.with_alpha_factor(SELECTION_WASH),
             None,
             &shape,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            colors.accent[5].with_alpha_factor(0.55),
+            colors.text_primary.with_alpha_factor(0.55),
             None,
             &shape,
         );
@@ -1627,7 +1642,7 @@ impl CommandPalette {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            colors.accent[5],
+            colors.intent.inverted,
             None,
             &bar,
         );
@@ -1709,19 +1724,21 @@ impl CommandPalette {
                 cy + pill_h / 2.0,
             );
             let shape = RoundedRect::from_rect(pill, pill_h / 2.0);
-            let fill = colors.accent[5].with_alpha_factor(if selected { 0.28 } else { 0.16 });
+            let fill = colors
+                .text_primary
+                .with_alpha_factor(if selected { 0.28 } else { 0.16 });
             scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                colors.accent[5].with_alpha_factor(0.55),
+                colors.text_primary.with_alpha_factor(0.55),
                 None,
                 &shape,
             );
             let ink = colors.ink_on(
                 Self::row_ground(theme, selected),
-                colors.accent[5],
-                ON_CARD_SMALL_TEXT_CONTRAST,
+                colors.intent.inverted,
+                SMALL_TEXT_MIN_CONTRAST,
             );
             text_renderer.draw_text(
                 scene,
@@ -1802,14 +1819,14 @@ impl CommandPalette {
         // Needs contrast against the selection wash: take the nearest
         // legible step from the theme's dim tone rather than promoting it
         // to the title's weight to survive.
-        let subtitle_ink = colors.ink_on(row_ground, colors.text_dim, ON_CARD_SMALL_TEXT_CONTRAST);
+        let subtitle_ink = colors.ink_on(row_ground, colors.text_dim, SMALL_TEXT_MIN_CONTRAST);
         if selected {
             Self::draw_selection_highlight(
                 scene,
                 transform,
                 row,
                 colors,
-                f64::from(theme.tokens.radii.md),
+                Self::inner_radius(theme, row.x0 - self.rect.x0),
             );
         }
 
@@ -2091,7 +2108,7 @@ impl Widget for CommandPalette {
         // crisp 1 px inset stroke. The declared `border_standard` sat within
         // rounding distance of `raised` on the dark preset and read as no
         // edge at all.
-        let radius = self.surface_radius_px();
+        let radius = Self::surface_radius_px(theme);
         let shape = RoundedRect::from_rect(self.rect, radius);
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -2107,12 +2124,16 @@ impl Widget for CommandPalette {
             None,
             &crate::surface::edge_outline(self.rect, radius),
         );
+        crate::surface::floating_edge(scene, transform, self.rect, radius, theme);
 
         // ONE control for the query — the magnifier lives inside its rounded
         // body rather than floating beside it.
         let row_rect = self.input_row_rect();
         let layout = self.compute_input_layout(row_rect);
-        let field_shape = RoundedRect::from_rect(row_rect, f64::from(theme.tokens.radii.lg));
+        let field_shape = RoundedRect::from_rect(
+            row_rect,
+            Self::inner_radius(theme, row_rect.x0 - self.rect.x0),
+        );
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -2124,7 +2145,7 @@ impl Widget for CommandPalette {
         // palette's only input, focused the whole time it's open — so focus
         // reads as the OS accent at low weight instead.
         let (ring, ring_w) = if self.is_focused {
-            (colors.accent[5].with_alpha_factor(0.45), 1.0)
+            (colors.text_primary.with_alpha_factor(0.45), 1.0)
         } else {
             (crate::surface::edge_on(colors.surfaces.base), 1.0)
         };
@@ -2669,12 +2690,17 @@ mod tests {
             }
         }
 
-        fn palette_card_radius_is_24_px() {
-            let palette = CommandPalette::new();
+        fn palette_card_is_a_panel_and_its_insides_are_concentric() {
+            let theme = Theme::dark();
             assert_eq!(
-                palette.surface_radius_px(),
-                24.0,
-                "concept palette uses rounded-3xl = 24 px"
+                CommandPalette::surface_radius_px(&theme),
+                f64::from(theme.tokens.radii.panel),
+                "the palette is a floating panel"
+            );
+            let inner = CommandPalette::inner_radius(&theme, PADDING);
+            assert!(
+                (inner - (f64::from(theme.tokens.radii.panel) - PADDING).max(4.0)).abs() < 1e-6,
+                "the query field nests concentrically inside the card"
             );
         }
 
@@ -2742,7 +2768,7 @@ mod tests {
         }
 
         large_text_palette_reserves_painted_rows_and_scales_fonts_once();
-        palette_card_radius_is_24_px();
+        palette_card_is_a_panel_and_its_insides_are_concentric();
         input_row_layout_gives_the_query_the_full_trailing_width();
         row_at_finds_visible_row_inside_the_post_layout_rect();
         footer_sits_below_results_at_card_bottom();

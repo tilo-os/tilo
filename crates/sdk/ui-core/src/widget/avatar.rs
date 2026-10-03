@@ -85,13 +85,17 @@ impl Avatar {
     }
 
     /// Hashes the (uppercased, truncated) initials with `DefaultHasher`
-    /// and indexes into the theme's accent ramp. `pub` so tests can call
-    /// it without rendering into a scene.
+    /// and picks that slot of the theme's presence palette: an avatar is a
+    /// person, so it wears a presence colour. `pub` so tests can call it
+    /// without rendering into a scene.
     pub fn background_color(&self, theme: &Theme) -> Color {
-        let ramp = &theme.tokens.colors.accent;
+        let presence = &theme.tokens.colors.presence;
         let mut hasher = DefaultHasher::new();
         self.initials.hash(&mut hasher);
-        ramp[ramp_index(hasher.finish(), ramp.len())]
+        presence.get(ramp_index(
+            hasher.finish(),
+            crate::tokens::colors::PRESENCE_LEN,
+        ))
     }
 
     /// Circle-clip, fill the image scaled to the avatar square (so the
@@ -284,10 +288,13 @@ impl Avatar {
             reason = "read by Hash::hash two lines down, which this lint doesn't track as a use"
         )]
         let initials: String = initials.to_uppercase().chars().take(2).collect();
-        let ramp = &theme.tokens.colors.accent;
+        let presence = &theme.tokens.colors.presence;
         let mut hasher = DefaultHasher::new();
         initials.hash(&mut hasher);
-        ramp[ramp_index(hasher.finish(), ramp.len())]
+        presence.get(ramp_index(
+            hasher.finish(),
+            crate::tokens::colors::PRESENCE_LEN,
+        ))
     }
 
     fn paint_initials(

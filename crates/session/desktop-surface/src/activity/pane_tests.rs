@@ -2491,7 +2491,7 @@ mod tests {
                 ui::chrome::selection_tier(&theme, ui::chrome::SelectionState::active(true));
             let idle = theme.tokens.colors.lift(PILL_FLOOR_LIFT_T);
             assert_ne!(
-                active.fill, theme.tokens.colors.accent[5],
+                active.fill, theme.tokens.colors.intent.inverted,
                 "{}: not an accent wash",
                 theme.name
             );

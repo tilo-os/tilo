@@ -243,7 +243,7 @@ impl ConflictBanner {
             scene,
             transform,
             rect,
-            f64::from(theme.tokens.radii.sm),
+            f64::from(theme.tokens.radii.detail),
             body,
         );
         let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
@@ -346,7 +346,7 @@ impl Widget for ConflictBanner {
         let warn = theme.tokens.colors.semantic.warning;
         let warn_rgba = warn.to_rgba8();
         let bg_color = Color::from_rgba8(warn_rgba.r, warn_rgba.g, warn_rgba.b, BANNER_BG_ALPHA);
-        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.sm));
+        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.detail));
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,

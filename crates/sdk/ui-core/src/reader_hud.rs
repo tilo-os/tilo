@@ -536,7 +536,7 @@ mod tests {
         ReaderHudStyle {
             surface: c,
             border: c,
-            elevation: crate::theme::Theme::dark().tokens.elevation.e2,
+            elevation: crate::theme::Theme::dark().tokens.elevation.floating,
             text: c,
             hover: c,
             pill: c,

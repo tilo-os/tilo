@@ -347,7 +347,7 @@ impl CandlestickChart {
             transform,
             theme.tokens.colors.surfaces.overlay,
             None,
-            &RoundedRect::from_rect(tooltip, f64::from(theme.tokens.radii.md)),
+            &RoundedRect::from_rect(tooltip, f64::from(theme.tokens.radii.control)),
         );
         tr.draw_text_weighted(
             scene,

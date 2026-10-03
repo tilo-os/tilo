@@ -583,7 +583,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         // Panel role (HIG §9.1): panel ground with the derived panel edge
         // as a crisp 1 px inset stroke, not a declared `border_standard`
         // that vanished against `raised` on the dark preset.
-        let radius = f64::from(theme.tokens.radii.md);
+        let radius = f64::from(theme.tokens.radii.control);
         let box_shape = RoundedRect::from_rect(self.rect, radius);
         scene.fill(
             Fill::NonZero,

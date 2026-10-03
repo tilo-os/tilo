@@ -405,7 +405,7 @@ impl ChannelBrowser {
         theme: &Theme,
     ) {
         let row = self.input_row_rect();
-        let radius = f64::from(theme.tokens.radii.sm);
+        let radius = f64::from(theme.tokens.radii.detail);
         let field = theme.tokens.colors.surfaces.base;
         // TextInput policy (HIG §9.5): the field fill under an edge derived
         // from it at rest; focus keeps the 2 px `border_focus` ring.
@@ -433,11 +433,7 @@ impl ChannelBrowser {
             },
             Rect::new(row.x0 + 12.0, row.y0, row.x1 - 12.0, row.y1),
             &TextStyle::new(text_size),
-            QueryInk::accented(
-                theme.tokens.colors.text_primary,
-                theme.tokens.colors.text_dim,
-                theme.tokens.colors.accent[5],
-            ),
+            QueryInk::of(&theme.tokens.colors),
         );
     }
 
@@ -457,10 +453,7 @@ impl ChannelBrowser {
         // it; selected: solid accent with ink chosen against it, no edge.
         let (active_fill, _) = crate::surface::chip_colors(theme, true);
         let (idle_fill, idle_edge) = crate::surface::chip_colors(theme, false);
-        let active_text = theme
-            .tokens
-            .colors
-            .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST);
+        let active_text = theme.tokens.colors.text_primary;
         let idle_text = theme.tokens.colors.text_dim;
 
         // "All" + every distinct space name; rects are stashed so the
@@ -539,7 +532,7 @@ impl ChannelBrowser {
             // The top step of the sheet's own ramp under an edge derived
             // from the sheet: a lift that reads on a light panel as well as
             // a dark one, where the white veneer it replaces did not.
-            let radius = f64::from(theme.tokens.radii.sm);
+            let radius = f64::from(theme.tokens.radii.detail);
             let sheet = sheet_surface(theme);
             let shape = RoundedRect::from_rect(row, radius);
             scene.fill(
@@ -560,7 +553,10 @@ impl ChannelBrowser {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                theme.tokens.colors.accent[5],
+                theme
+                    .tokens
+                    .colors
+                    .lift_on(theme.tokens.colors.surfaces.content, 1.0),
                 None,
                 &border,
             );
@@ -595,7 +591,7 @@ impl ChannelBrowser {
                 scene,
                 PIN_GLYPH,
                 text_size,
-                theme.tokens.colors.accent[5],
+                theme.tokens.colors.text_dim,
                 translated(transform, x_cursor, line_top),
                 None,
             );
@@ -714,7 +710,10 @@ impl ChannelBrowser {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                theme.tokens.colors.accent[5],
+                theme
+                    .tokens
+                    .colors
+                    .lift_on(theme.tokens.colors.surfaces.content, 1.0),
                 None,
                 &shape,
             );
@@ -835,7 +834,7 @@ impl ChannelBrowser {
                 chip_rect,
                 chip_body,
                 chip_border,
-                Some(f64::from(theme.tokens.radii.sm)),
+                Some(f64::from(theme.tokens.radii.detail)),
             );
             text_renderer.draw_text(
                 scene,
@@ -1134,7 +1133,7 @@ impl Widget for ChannelBrowser {
         // the panel ground and the panel edge — one material with the rest
         // of the chrome — rather than a raised card whose declared border
         // vanished on the dark preset.
-        let radius = f64::from(theme.tokens.radii.md);
+        let radius = f64::from(theme.tokens.radii.control);
         let shape = RoundedRect::from_rect(self.rect, radius);
         scene.fill(
             vello::peniko::Fill::NonZero,

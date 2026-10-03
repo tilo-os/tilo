@@ -20,21 +20,18 @@ fn colour_and_radius_tokens_have_their_documented_shape() {
         assert_ne!(t.colors.neutral[0], t.colors.neutral[10]);
     }
 
-    // Case `radii_scale_is_ordered_4_8_12_24_pill`.
-    // The radius steps are strictly ordered, and pinned to the exact scale
-    // (Tailwind `rounded`/`-lg`/`-xl`/`-3xl`/`-full`), so a drift in one step is
-    // a visible failure rather than a softer corner.
+    // Case `radii_are_the_shape_table_by_role`.
+    // Each role is pinned to the design language's table, so a drift in one
+    // step is a visible failure rather than a softer corner.
     {
         let r = Radii::default();
-        assert!(r.sm < r.md);
-        assert!(r.md < r.lg);
-        assert!(r.lg < r.xl);
-        assert!(r.xl < r.full);
-        assert_eq!(r.sm, 4.0);
-        assert_eq!(r.md, 8.0);
-        assert_eq!(r.lg, 12.0);
-        assert_eq!(r.xl, 24.0);
+        assert_eq!(r.detail, 4.0);
+        assert_eq!(r.item, 6.0);
+        assert_eq!(r.control, 8.0);
+        assert_eq!(r.tile, 14.0);
+        assert_eq!(r.panel, 18.0);
         assert_eq!(r.full, 9999.0);
+        assert_eq!(r.concentric(r.panel, 6.0), 12.0);
     }
 }
 
@@ -98,7 +95,7 @@ fn theme_metrics_follow_the_hig_density_table_and_scale_only_with_ui_scale() {
         assert_eq!(t.padding_standard, t.tokens.spacing.s3);
         assert_eq!(t.gap_standard, t.tokens.spacing.s3);
         // tokens are the source of truth
-        assert_eq!(f64::from(t.tokens.radii.md), t.radius_standard);
+        assert_eq!(f64::from(t.tokens.radii.control), t.radius_standard);
     }
 
     // Case `ui_scale_scales_metrics_with_spacing`.

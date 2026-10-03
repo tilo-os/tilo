@@ -2450,7 +2450,7 @@ impl FrameBuilder {
         if windows.is_empty() && prompts.is_empty() {
             return std::borrow::Cow::Borrowed(presented);
         }
-        let window_radius = f64::from(self.theme.tokens.radii.xl);
+        let window_radius = f64::from(self.theme.tokens.radii.tile);
         for rect in windows {
             // One pixel past the tile, so the client's antialiased edge is
             // covered too.

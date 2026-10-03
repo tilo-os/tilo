@@ -1102,7 +1102,7 @@ impl Widget for FilePicker {
         self.apply_layout_helper();
         self.measure_crumbs(text_renderer, theme);
         let tokens = &theme.tokens;
-        let radius = f64::from(tokens.radii.md);
+        let radius = f64::from(tokens.radii.control);
         let frame = RoundedRect::from_rect(self.rect, radius);
         // Panel role (HIG §9.1): panel ground + the derived panel edge as
         // a crisp 1 px inset stroke; the declared `border_standard` sat
@@ -1422,11 +1422,11 @@ impl FilePicker {
         if self.can_go_up() {
             let up_hovered = self.up_rect.contains(self.last_cursor);
             if up_hovered {
-                let s = RoundedRect::from_rect(self.up_rect, f64::from(tokens.radii.sm));
+                let s = RoundedRect::from_rect(self.up_rect, f64::from(tokens.radii.detail));
                 scene.fill(Fill::NonZero, transform, theme.bg_hover, None, &s);
             }
             if self.has_keyboard_focus && self.focus == Some(PickerFocus::Up) {
-                let s = RoundedRect::from_rect(self.up_rect, f64::from(tokens.radii.sm));
+                let s = RoundedRect::from_rect(self.up_rect, f64::from(tokens.radii.detail));
                 scene.stroke(
                     &Stroke::new(2.0),
                     transform,
@@ -1453,7 +1453,7 @@ impl FilePicker {
             let label = self.crumb_label_for(idx).unwrap_or_default();
             let hovered = r.contains(self.last_cursor);
             let color = if hovered {
-                theme.accent_primary
+                tokens.colors.text_primary
             } else {
                 tokens.colors.text_dim
             };
@@ -1508,7 +1508,7 @@ impl FilePicker {
             // fill was invisible on the old `raised` panel and read as a
             // stack of bands once the panel took its own ground.
             let bg = if is_selected {
-                Some(tokens.colors.accent.stops[crate::tokens::colors::ACCENT_PRIMARY_IDX])
+                Some(tokens.colors.lift_on(tokens.colors.surfaces.overlay, 1.0))
             } else if is_hover {
                 Some(crate::tokens::Colors::hairline_on(
                     crate::chrome::panel_ground(theme),
@@ -1517,7 +1517,7 @@ impl FilePicker {
             } else {
                 None
             };
-            let row_shape = RoundedRect::from_rect(*rect, f64::from(tokens.radii.sm));
+            let row_shape = RoundedRect::from_rect(*rect, f64::from(tokens.radii.detail));
             if let Some(bg) = bg {
                 scene.fill(Fill::NonZero, transform, bg, None, &row_shape);
             }
@@ -1539,13 +1539,7 @@ impl FilePicker {
             }
 
             if let Some(entry) = self.entries.get(i) {
-                let fg = if is_selected {
-                    tokens
-                        .colors
-                        .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
-                } else {
-                    tokens.colors.text_primary
-                };
+                let fg = tokens.colors.text_primary;
                 let inset_x = self.metrics.inset_x;
                 let icon_y = rect.y0 + (ROW_HEIGHT - ROW_ICON_PX) / 2.0;
                 let icon_rect = Rect::new(
@@ -1627,7 +1621,7 @@ impl FilePicker {
     ) {
         let tokens = &theme.tokens;
         let field = self.filename_rect;
-        let s = RoundedRect::from_rect(field, f64::from(tokens.radii.sm));
+        let s = RoundedRect::from_rect(field, f64::from(tokens.radii.detail));
         scene.fill(
             Fill::NonZero,
             transform,
@@ -1695,7 +1689,7 @@ impl FilePicker {
     ) {
         let tokens = &theme.tokens;
         let hovered = self.filter_rect.contains(self.last_cursor);
-        let s = RoundedRect::from_rect(self.filter_rect, f64::from(tokens.radii.sm));
+        let s = RoundedRect::from_rect(self.filter_rect, f64::from(tokens.radii.detail));
         let fill = if hovered {
             theme.bg_hover
         } else {
@@ -1972,7 +1966,7 @@ fn footer_button<'a>(
     is_primary: bool,
 ) -> crate::widget::ButtonFace<'a> {
     crate::widget::ButtonFace::new(rect, label)
-        .radius(f64::from(theme.tokens.radii.md))
+        .radius(f64::from(theme.tokens.radii.control))
         .text_size(renderer_type_size(
             text_renderer,
             theme.tokens.typography.scale.sm,

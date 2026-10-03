@@ -13,7 +13,6 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::colors::ACCENT_PRIMARY_IDX;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::text::centered_text_top;
@@ -272,7 +271,7 @@ impl Widget for Breadcrumb {
         let active_origin = self.segments.len().saturating_sub(1);
         let text_primary = theme.tokens.colors.text_primary;
         let text_dim = theme.tokens.colors.text_dim;
-        let accent = theme.tokens.colors.accent[ACCENT_PRIMARY_IDX];
+        let accent = theme.tokens.colors.intent.inverted;
 
         let labels = self.cached_visible.clone();
         let n = labels.len();

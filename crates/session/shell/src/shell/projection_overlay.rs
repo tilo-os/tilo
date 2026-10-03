@@ -1732,7 +1732,11 @@ fn draw_layout_pictogram(
     let alpha = if enabled { 1.0 } else { 0.5 };
     let lit = colors.text_primary.with_alpha_factor(alpha);
     let dark = colors.text_dim.with_alpha_factor(0.45 * alpha);
-    let content = theme.accent_primary.with_alpha_factor(0.85 * alpha);
+    let content = theme
+        .tokens
+        .colors
+        .text_primary
+        .with_alpha_factor(0.85 * alpha);
     let gap = 4.0;
     let width = (rect.width() - gap) / 2.0;
     let left = Rect::new(rect.x0, rect.y0, rect.x0 + width, rect.y1);

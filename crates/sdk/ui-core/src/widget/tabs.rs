@@ -537,7 +537,7 @@ impl TabBar {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 pill_transform,
-                theme.tokens.colors.accent[5],
+                theme.tokens.colors.intent.inverted,
                 None,
                 &keyline,
             );

@@ -859,7 +859,7 @@ impl PeerSyncOverlay {
         {
             let row = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + 42.0);
             // Control role (HIG §9.1/§9.5): a row card at the Control radius
-            // (`radii.sm` is for details inside a control) with an edge
+            // (`radii.detail` is for details inside a control) with an edge
             // derived from its lift floor, so it registers in light as well.
             ui::surface::card(
                 scene,
@@ -1103,7 +1103,7 @@ impl PeerSyncOverlay {
         ];
         for (index, line) in lines.iter().enumerate() {
             let color = if index == 4 {
-                colors.accent[5]
+                colors.intent.inverted
             } else {
                 colors.text_primary
             };
@@ -1427,12 +1427,12 @@ fn draw_naming(
     );
     y += f64::from(body) + 8.0;
     let field = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + 38.0);
-    let rr = RoundedRect::from_rect(field, f64::from(theme.tokens.radii.sm));
+    let rr = RoundedRect::from_rect(field, f64::from(theme.tokens.radii.detail));
     scene.fill(Fill::NonZero, transform, colors.lift(0.35), None, &rr);
     scene.stroke(
         &vello::kurbo::Stroke::new(1.0),
         transform,
-        colors.accent[5],
+        colors.intent.inverted,
         None,
         &rr,
     );
@@ -1475,7 +1475,7 @@ fn draw_naming(
     scene.fill(
         Fill::NonZero,
         transform,
-        colors.accent[5],
+        colors.intent.inverted,
         None,
         &Rect::new(caret_x, field.y0 + 9.0, caret_x + caret_w, field.y1 - 9.0),
     );
@@ -1635,7 +1635,7 @@ fn draw_person(ctx: &mut PaintCtx<'_>, rect: Rect, who: &str, sub: &str, named: 
                 center.y + 16.0,
             ),
             &initial,
-            colors.accent[5],
+            colors.intent.inverted,
             theme,
             text,
         );
@@ -1684,7 +1684,7 @@ fn draw_code(ctx: &mut PaintCtx<'_>, at: Point, code: &str, avail: f64) -> f64 {
         transform,
         colors.lift(0.35),
         None,
-        &RoundedRect::from_rect(field, f64::from(theme.tokens.radii.md)),
+        &RoundedRect::from_rect(field, f64::from(theme.tokens.radii.control)),
     );
     text.draw_text(
         scene,

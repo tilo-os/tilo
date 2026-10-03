@@ -59,7 +59,7 @@ pub fn configure_presentation(
 ) -> tilo_ui::application::ComponentRunnerInputs {
     inputs.theme.name = "explicit presentation".into();
     inputs.theme.tokens.font_size_base = 19.0;
-    inputs.theme.accent_primary = inputs.theme.status_success;
+    inputs.theme.tokens.colors.intent.inverted = inputs.theme.status_success;
     inputs.theme = inputs
         .theme
         .with_ui_scale(1.25)
@@ -76,7 +76,7 @@ pub fn assert_presentation(theme: &tilo_ui::Theme, scale: f32, ui_scale: f32) {
     assert_eq!(theme.ui_scale, ui_scale);
     assert_eq!(theme.name, "explicit presentation");
     assert!(theme.reduce_motion);
-    assert_eq!(theme.accent_primary, theme.status_success);
+    assert_eq!(theme.tokens.colors.intent.inverted, theme.status_success);
     assert!((theme.tokens.font_size_base - 19.0 * ui_scale * scale).abs() < 0.0001);
     let base = tilo_ui::Theme::dark();
     assert!(
@@ -90,7 +90,7 @@ pub fn assert_presentation(theme: &tilo_ui::Theme, scale: f32, ui_scale: f32) {
             < 0.0001
     );
     assert!((theme.tokens.spacing.s3 - base.tokens.spacing.s3 * ui_scale).abs() < 0.0001);
-    assert!((theme.tokens.radii.md - base.tokens.radii.md * ui_scale).abs() < 0.0001);
+    assert!((theme.tokens.radii.control - base.tokens.radii.control * ui_scale).abs() < 0.0001);
     assert!((theme.padding_standard - 17.0 * ui_scale).abs() < 0.0001);
     assert!((theme.gap_standard - 7.0 * ui_scale).abs() < 0.0001);
     assert!((theme.radius_standard - 14.0 * f64::from(ui_scale)).abs() < 0.0001);

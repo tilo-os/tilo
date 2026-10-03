@@ -264,11 +264,11 @@ fn draw_button(
     label: &str,
     state: ButtonVisualState,
 ) {
-    let radius = f64::from(theme.tokens.radii.md);
+    let radius = f64::from(theme.tokens.radii.control);
     let shape = RoundedRect::from_rect(rect, radius);
 
     let mut bg = if state.primary {
-        theme.tokens.colors.accent.stops[crate::tokens::colors::ACCENT_PRIMARY_IDX]
+        theme.tokens.colors.intent.inverted
     } else if state.hover {
         theme.bg_hover
     } else {
@@ -380,7 +380,7 @@ impl Widget for PermissionPrompt {
     ) {
         // `surfaces.overlay` is a darker tint than `raised` so the prompt
         // reads as a layer above the strip's content, not another tile.
-        let radius = f64::from(theme.tokens.radii.md);
+        let radius = f64::from(theme.tokens.radii.control);
         let shape = RoundedRect::from_rect(self.rect, radius);
         scene.fill(
             Fill::NonZero,
@@ -404,11 +404,11 @@ impl Widget for PermissionPrompt {
         let icon_x = self.rect.x0 + PADDING_X;
         let icon_y = self.rect.y0 + (PROMPT_HEIGHT - ICON_SIZE) / 2.0;
         let icon_rect = Rect::new(icon_x, icon_y, icon_x + ICON_SIZE, icon_y + ICON_SIZE);
-        let icon_shape = RoundedRect::from_rect(icon_rect, f64::from(theme.tokens.radii.sm));
+        let icon_shape = RoundedRect::from_rect(icon_rect, f64::from(theme.tokens.radii.detail));
         scene.fill(
             Fill::NonZero,
             transform,
-            theme.tokens.colors.accent.stops[crate::tokens::colors::ACCENT_PRIMARY_IDX],
+            theme.tokens.colors.intent.inverted,
             None,
             &icon_shape,
         );

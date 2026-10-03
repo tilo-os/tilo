@@ -95,11 +95,11 @@ impl<'a> ChoiceCardFace<'a> {
             .hovered(self.interact.hovered)
             .focused(self.interact.focused)
             .disabled(self.interact.disabled)
-            .radius(f64::from(theme.tokens.radii.lg))
+            .radius(f64::from(theme.tokens.radii.control))
             .paint(scene, transform, theme);
 
         let foreground = if self.emphasized {
-            theme.tokens.colors.on_accent(4.5)
+            theme.tokens.colors.intent.on_inverted
         } else {
             theme.tokens.colors.text_primary
         };
@@ -115,16 +115,16 @@ impl<'a> ChoiceCardFace<'a> {
             self.rect.center().y + 16.0,
         );
         let tile_fill = if self.emphasized {
-            crate::tokens::Colors::hairline_on(theme.accent_primary, 46)
+            crate::tokens::Colors::hairline_on(theme.tokens.colors.intent.inverted, 46)
         } else {
-            theme.accent_primary.with_alpha_factor(0.14)
+            theme.tokens.colors.text_primary.with_alpha_factor(0.14)
         };
         scene.fill(
             Fill::NonZero,
             transform,
             tile_fill,
             None,
-            &RoundedRect::from_rect(icon_tile, f64::from(theme.tokens.radii.md)),
+            &RoundedRect::from_rect(icon_tile, f64::from(theme.tokens.radii.control)),
         );
         draw_icon(
             scene,
@@ -134,7 +134,7 @@ impl<'a> ChoiceCardFace<'a> {
             if self.emphasized {
                 foreground
             } else {
-                theme.accent_primary
+                theme.tokens.colors.intent.inverted
             },
             LUCIDE_DEFAULT_STROKE_PX,
         );

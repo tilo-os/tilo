@@ -569,7 +569,11 @@ impl WorkspaceSettingsOverlay {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                theme.tokens.colors.accent[5].with_alpha_factor(pulse_alpha),
+                theme
+                    .tokens
+                    .colors
+                    .text_primary
+                    .with_alpha_factor(pulse_alpha),
                 None,
                 &RoundedRect::from_rect(
                     Rect::new(point.x - 14.0, point.y - 2.0, point.x + 14.0, point.y + 2.0),
@@ -955,7 +959,7 @@ impl WorkspaceSettingsOverlay {
                 scene,
                 &subject,
                 tokens.typography.scale.sm,
-                colors.accent[4],
+                colors.intent.inverted_hover,
                 transform.pre_translate((card.x0 + 20.0, card.y0 + 48.0).into()),
                 None,
             );
@@ -1034,9 +1038,9 @@ impl WorkspaceSettingsOverlay {
             let tint = if destructive {
                 colors.semantic.danger
             } else {
-                colors.accent[5]
+                colors.intent.inverted
             };
-            let rr = RoundedRect::from_rect(option, f64::from(tokens.radii.md));
+            let rr = RoundedRect::from_rect(option, f64::from(tokens.radii.control));
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -1121,7 +1125,7 @@ impl WorkspaceSettingsOverlay {
                 scene,
                 &caption,
                 tokens.typography.scale.xs,
-                colors.accent[4],
+                colors.intent.inverted_hover,
                 transform.pre_translate((identity.x0 + 76.0, identity.y0 + 8.0).into()),
                 None,
             );
@@ -1142,7 +1146,7 @@ impl WorkspaceSettingsOverlay {
             scene,
             &t("workspace-settings-current-workspace"),
             tokens.typography.scale.xs,
-            colors.accent[4],
+            colors.intent.inverted_hover,
             transform.pre_translate((identity.x0 + 76.0, identity.y0 + 12.0).into()),
             None,
         );
@@ -1210,7 +1214,7 @@ impl WorkspaceSettingsOverlay {
             scene,
             transform,
             identity,
-            f64::from(tokens.radii.lg),
+            f64::from(tokens.radii.control),
             colors.surfaces.raised,
         );
         let mark = Rect::new(
@@ -1222,16 +1226,16 @@ impl WorkspaceSettingsOverlay {
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.accent[5].with_alpha_factor(0.18),
+            colors.text_primary.with_alpha_factor(0.18),
             None,
-            &RoundedRect::from_rect(mark, f64::from(tokens.radii.lg)),
+            &RoundedRect::from_rect(mark, f64::from(tokens.radii.control)),
         );
         ui::icons::draw_icon(
             scene,
             transform,
             mark.inset(-14.0),
             ui::icons::Icon::LayoutGrid,
-            colors.accent[4],
+            colors.intent.inverted_hover,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         let close = self.close_rect();
@@ -1279,7 +1283,7 @@ impl WorkspaceSettingsOverlay {
         // The strip's track: a quiet lift under the Selector pills and a
         // hairline derived against the panel ground (HIG §9.2/§9.5), not a
         // ramp slot inside a faded declared border.
-        let nav_rr = RoundedRect::from_rect(nav, f64::from(tokens.radii.lg));
+        let nav_rr = RoundedRect::from_rect(nav, f64::from(tokens.radii.control));
         scene.fill(Fill::NonZero, transform, colors.lift(0.35), None, &nav_rr);
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
@@ -1396,7 +1400,11 @@ impl WorkspaceSettingsOverlay {
                         pill_rect.center().y + icon_size / 2.0,
                     ),
                     icon,
-                    if active { colors.accent[4] } else { color },
+                    if active {
+                        colors.intent.inverted_hover
+                    } else {
+                        color
+                    },
                     ui::icons::LUCIDE_DEFAULT_STROKE_PX,
                 );
             }
@@ -1716,7 +1724,7 @@ impl WorkspaceSettingsOverlay {
             scene,
             transform,
             identity_card,
-            f64::from(tokens.radii.lg),
+            f64::from(tokens.radii.control),
             colors.surfaces.raised,
         );
         text_renderer.draw_text(
@@ -1753,12 +1761,12 @@ impl WorkspaceSettingsOverlay {
             None,
         );
         let input_rect = self.name_rect();
-        let input = RoundedRect::from_rect(input_rect, f64::from(tokens.radii.sm));
+        let input = RoundedRect::from_rect(input_rect, f64::from(tokens.radii.detail));
         scene.fill(Fill::NonZero, transform, colors.surfaces.base, None, &input);
         let can_rename = model.owner_controls;
         let editing = can_rename && model.editing_name.is_some();
         let border_color = if editing {
-            colors.accent[5]
+            colors.intent.inverted
         } else {
             ui::surface::edge_on(colors.surfaces.base)
         };
@@ -1786,7 +1794,7 @@ impl WorkspaceSettingsOverlay {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                colors.accent[5].with_alpha_factor(0.35),
+                colors.text_primary.with_alpha_factor(0.35),
                 None,
                 &selected,
             );
@@ -1800,7 +1808,13 @@ impl WorkspaceSettingsOverlay {
             None,
         );
         if editing {
-            scene.fill(Fill::NonZero, transform, colors.accent[5], None, &caret);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.intent.inverted,
+                None,
+                &caret,
+            );
         } else if !can_rename {
             text_renderer.draw_text(
                 scene,
@@ -1841,7 +1855,7 @@ impl WorkspaceSettingsOverlay {
             scene,
             transform,
             url_pill,
-            f64::from(tokens.radii.sm),
+            f64::from(tokens.radii.detail),
             colors.surfaces.base,
         );
         let invite_url = t(if can_invite {
@@ -1867,7 +1881,7 @@ impl WorkspaceSettingsOverlay {
             Fill::NonZero,
             transform,
             if can_invite {
-                colors.accent[5]
+                colors.intent.inverted
             } else {
                 colors.surfaces.base
             },
@@ -1923,7 +1937,7 @@ impl WorkspaceSettingsOverlay {
             scene,
             transform,
             sharing_card,
-            f64::from(tokens.radii.lg),
+            f64::from(tokens.radii.control),
             colors.surfaces.raised,
         );
         let share_icon = Rect::new(
@@ -1935,16 +1949,16 @@ impl WorkspaceSettingsOverlay {
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.accent[5].with_alpha_factor(0.16),
+            colors.text_primary.with_alpha_factor(0.16),
             None,
-            &RoundedRect::from_rect(share_icon, f64::from(tokens.radii.md)),
+            &RoundedRect::from_rect(share_icon, f64::from(tokens.radii.control)),
         );
         ui::icons::draw_icon(
             scene,
             transform,
             share_icon.inset(-8.0),
             ui::icons::Icon::Copy,
-            colors.accent[4],
+            colors.intent.inverted_hover,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         text_renderer.draw_text(
@@ -2007,7 +2021,7 @@ impl WorkspaceSettingsOverlay {
             scene,
             transform,
             summary_card,
-            f64::from(tokens.radii.lg),
+            f64::from(tokens.radii.control),
             colors.surfaces.raised,
         );
         text_renderer.draw_text(
@@ -2070,7 +2084,7 @@ impl WorkspaceSettingsOverlay {
                 x0 + stat_w,
                 summary_card.y1 - 14.0 * f64::from(theme.text_scale),
             );
-            let stat_rr = RoundedRect::from_rect(stat, f64::from(tokens.radii.md));
+            let stat_rr = RoundedRect::from_rect(stat, f64::from(tokens.radii.control));
             let (stat_fill, stat_edge) = stat_tile_face(theme);
             scene.fill(Fill::NonZero, transform, stat_fill, None, &stat_rr);
             scene.stroke(

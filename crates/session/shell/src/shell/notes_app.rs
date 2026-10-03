@@ -342,10 +342,10 @@ impl Widget for NotesApp {
     ) {
         // Notes paints no background: its ink comes from the window card
         // the frame already draws, via `Theme::on_card`.
-        let card_theme = theme.on_window_card();
-        let text_color = theme.on_card().ink;
+        let card_theme = theme.clone();
+        let text_color = theme.on_content().ink;
         // Fill-state accent (focused-but-not-hovered), not the hover ramp slot.
-        let accent = theme.accent_primary;
+        let accent = theme.tokens.colors.intent.inverted;
         // ~30% alpha (matches `TextInput`'s 0.35 for a thinner body weight).
         let sel_color = accent.with_alpha_factor(0.30);
 

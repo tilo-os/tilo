@@ -23,7 +23,6 @@ use crate::reorder::{DropCandidate, DropPlacement, DropTarget, ReorderController
 use crate::selection::KeySelection;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::colors::ACCENT_PRIMARY_IDX;
 use crate::virtual_viewport::{
     DragScroller, ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport, WheelStep,
 };
@@ -1189,7 +1188,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             transform,
             &self.rect,
         );
-        let accent = theme.tokens.colors.accent[ACCENT_PRIMARY_IDX];
+        let accent = theme.tokens.colors.intent.inverted;
         for row in &mut self.mounted {
             let Some(top) = self.viewport.item_view_top(row.index) else {
                 continue;
