@@ -222,7 +222,7 @@ fn overlay_panels_register_their_edge_in_both_themes() {
             let mut scene = Scene::new();
             let presence = PresenceCtx::default();
             dialog.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-            let rgba = renderer.render(&scene, theme.bg_app);
+            let rgba = renderer.render(&scene, theme.tokens.colors.surfaces.content);
             dump(&format!("modal_dialog_{name}"), &rgba);
             assert_edge_registers(&rgba, panel, name, "modal-dialog");
         }
@@ -245,7 +245,7 @@ fn overlay_panels_register_their_edge_in_both_themes() {
             popover.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
             let panel = popover.get_rect();
             assert!(panel.width() > 40.0, "{name}: popover laid out ({panel:?})");
-            let rgba = renderer.render(&scene, theme.bg_app);
+            let rgba = renderer.render(&scene, theme.tokens.colors.surfaces.content);
             dump(&format!("popover_widget_{name}"), &rgba);
             assert_edge_registers(&rgba, panel, name, "popover-widget");
         }
@@ -272,7 +272,7 @@ fn overlay_panels_register_their_edge_in_both_themes() {
             let mut scene = Scene::new();
             let presence = PresenceCtx::default();
             prompt.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-            let rgba = renderer.render(&scene, theme.bg_app);
+            let rgba = renderer.render(&scene, theme.tokens.colors.surfaces.content);
             dump(&format!("permission_prompt_{name}"), &rgba);
             assert_edge_registers(&rgba, prompt.get_rect(), name, "permission-prompt");
         }

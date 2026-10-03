@@ -5373,7 +5373,8 @@ mod tests {
             theme,
             &PresenceCtx::empty(),
         );
-        crate::offscreen::OffscreenRenderer::new(w, h).render(&scene, theme.bg_app)
+        crate::offscreen::OffscreenRenderer::new(w, h)
+            .render(&scene, theme.tokens.colors.surfaces.base)
     }
 
     /// `$UX1X_F4_OUT/<theme>/<name>` when the 1× review asked for evidence.

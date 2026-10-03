@@ -821,7 +821,13 @@ impl Widget for Card {
         presence: &PresenceCtx,
     ) {
         let shape = RoundedRect::from_rect(self.rect, theme.radius_standard);
-        scene.fill(Fill::NonZero, transform, theme.bg_primary, None, &shape);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &shape,
+        );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
@@ -4057,7 +4063,13 @@ impl Widget for InstallerApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        scene.fill(Fill::NonZero, transform, theme.bg_app, None, &self.rect);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.content,
+            None,
+            &self.rect,
+        );
         if let Some(c) = &mut self.composed {
             c.draw(scene, transform, text_renderer, theme, presence);
         }

@@ -562,8 +562,8 @@ impl Widget for CollaborationLaunchpad {
         // (§9.4) — and an idle tile rests on its translucent floor with an
         // edge derived from that floor (§9.5), so the six cards read as cards
         // on the dark grid as well as the light one.
-        let floor = theme.bg_primary.with_alpha_factor(0.78);
-        let idle_edge = ui::surface::edge_on(theme.bg_primary);
+        let floor = theme.tokens.colors.surfaces.raised.with_alpha_factor(0.78);
+        let idle_edge = ui::surface::edge_on(theme.tokens.colors.surfaces.raised);
         for (index, (action, rect)) in LaunchpadAction::ALL.into_iter().zip(cards).enumerate() {
             let active = hovered == Some(index) || (self.focused && self.selected == index);
             let tier =
@@ -809,7 +809,7 @@ mod tests {
         /// 0.72 alpha was invisible on the dark grid.
         fn launchpad_cards_keep_an_edge_on_every_palette() {
             for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-                let floor = theme.bg_primary;
+                let floor = theme.tokens.colors.surfaces.raised;
                 let delta = ui::surface::edge_delta(ui::surface::edge_on(floor), floor);
                 assert!(
                     delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,

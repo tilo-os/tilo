@@ -5912,13 +5912,13 @@ mod tests {
         invoke("appearance.theme.light");
         let _ = frame.paint();
         let light = panel_ground(&frame.theme);
-        let light_bg = frame.theme.bg_app;
+        let light_bg = frame.theme.tokens.colors.surfaces.base;
         let light_y = relative_luminance(light);
 
         invoke("appearance.theme.dark");
         let _ = frame.paint();
         let dark = panel_ground(&frame.theme);
-        let dark_bg = frame.theme.bg_app;
+        let dark_bg = frame.theme.tokens.colors.surfaces.base;
         let dark_y = relative_luminance(dark);
 
         assert_ne!(
@@ -5960,14 +5960,14 @@ mod tests {
         frame.with_chrome(ChromeState::note_appearance_change);
         let _ = frame.paint();
         let light = panel_ground(&frame.theme);
-        let light_bg = frame.theme.bg_app;
+        let light_bg = frame.theme.tokens.colors.surfaces.base;
         let light_y = relative_luminance(light);
 
         write("dark");
         frame.with_chrome(ChromeState::note_appearance_change);
         let _ = frame.paint();
         let dark = panel_ground(&frame.theme);
-        let dark_bg = frame.theme.bg_app;
+        let dark_bg = frame.theme.tokens.colors.surfaces.base;
         let dark_y = relative_luminance(dark);
 
         assert_ne!(

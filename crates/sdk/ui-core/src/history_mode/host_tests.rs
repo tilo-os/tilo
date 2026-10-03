@@ -55,7 +55,7 @@ impl HistoryPreview for NotebookPreview {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.bg_primary,
+            theme.tokens.colors.surfaces.raised,
             None,
             &self.bounds,
         );
