@@ -1204,13 +1204,13 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             );
             // The same selection and focus a ListRow paints, so a list of
             // ListRows reads identically to a painted one.
-            crate::widget::list_row::paint_row_fill(
+            crate::chrome::paint_row_selection(
                 scene,
                 transform,
-                theme,
                 row_rect,
-                self.selection.is_selected(&row.key),
-                false,
+                crate::chrome::SelectionState::active(self.selection.is_selected(&row.key)),
+                theme.tokens.colors.surfaces.content,
+                theme,
             );
             if self.is_focused && self.focused_key.as_ref() == Some(&row.key) {
                 let radius = f64::from(theme.tokens.radii.item);

@@ -391,7 +391,7 @@ what the colour *did* at that line, first match wins:
 | `bg_app` as the background a frame is rendered on (`OffscreenRenderer::render(&scene, theme.bg_app)`, `render_png(&scene, theme.bg_app, out)`, `ShotFrame::with_background(theme.bg_app)`) | `theme.tokens.colors.surfaces.content` |
 | `bg_app` as "the ground this sits on" in a contrast, ink or edge measurement (`contrast_ratio(ink, theme.bg_app)`, `edge_on(theme.bg_app)`, `ink_on_any(&[theme.bg_app, ..])`) | The ground actually under it: `theme.tokens.colors.surfaces.content` on the window, `theme.region(Region::Sidebar)` / `theme.region(Region::Inspector)` in those columns. |
 | `bg_app` cut out of a shape to show the ground (a keyhole, an outline stroke around a glyph) | The ground under it, as in the row above. |
-| `bg_primary` filling a navigation column (folders, mailboxes, channels, collections, places, a library rail) | Delete the fill. With `NavShell`, pass the column to `.with_sidebar(..)`; in a painted app call `ui::surface::region(scene, transform, rect, Region::Sidebar, theme)` once for the column. |
+| `bg_primary` filling a navigation column (folders, mailboxes, channels, collections, places, a library rail) | Delete the fill. With `NavShell`, pass the column to `.sidebar(..)` ([Navigation](#navigation)); in a painted app call `ui::surface::region(scene, transform, rect, Region::Sidebar, theme)` once for the column. |
 | `bg_primary` filling a detail/inspector column (properties, metadata, an info panel beside the main view) | Delete the fill; `ui::surface::region(scene, transform, rect, Region::Inspector, theme)`. |
 | `bg_primary` filling a header, toolbar or status band | Delete the fill. The band stands on its region; draw one hairline under it with `ui::surface::separator(scene, transform, x0, x1, band.y1, 0.0, ground)` where `ground` is the region's ground. |
 | `bg_primary` as a card, field, well, key cap, chip, avatar ring or a button's rest face inside content | `theme.tokens.colors.surfaces.raised` (an avatar ring takes the ground it sits on instead). |
@@ -467,6 +467,259 @@ self.inspector.draw(scene, transform, text, &inspector_theme, presence);
 
 ## Navigation
 
+Every sidebar in Tilo looks and behaves the same because there is one of
+each: one window shell (`NavShell`), one navigation list (`NavList`), one row
+painter for painted apps (`chrome::paint_nav_row`) and one selection painter
+(`chrome::paint_row_selection`). `AppShell`, `NavSplit`, `PushNav` and
+`SidebarNav` are gone. The shell and the list are semantic: there is no
+width, breakpoint, colour, size, padding or radius to pass.
+
+### Choosing the structure
+
+Decide what each area of the window *is* (HIG §1c), then use the matching
+slots. First match wins.
+
+| The app is | Build |
+|---|---|
+| One canvas, document, map, camera or player with no navigation (HIG §1e) | No `NavShell`. Keep the view as the root. |
+| Destinations + one content area (files, settings pages, notes, music library, feeds, containers, disks, firewall, backups) | `NavShell::new().sidebar(Box::new(nav_list)).content(content)` |
+| Destinations + a list the person reads + the item (mail, calendar, contacts, logs, chat channels + messages) | `NavShell::new().sidebar(..).overview(list).content(detail)` |
+| A list the person reads + the item, no destinations (weather, monitor processes) | `NavShell::new().overview(list).content(detail)` |
+| A list of *categories* that, on a phone, should be its own first screen (Settings, Shortcuts, Themes) | add `.mode(NavMode::Push)` |
+| Workspaces / channels / sections shown as an icon rail beside content (tube, remote, chat workspaces, weather's content rail) | `.sidebar(Box::new(NavList::new(..).rail())).mode(NavMode::Docked)` |
+| Properties of the selection beside the main view (file info, layer properties, contact details beside a conversation) | add `.inspector(panel)` |
+
+The default `NavMode::Overlay` is right for every other sidebar: below the
+width where the content would be squeezed it becomes a floating drawer.
+
+### Removed APIs and their replacements
+
+`AppShell` (settings, shortcuts, themes):
+
+| Old | New |
+|---|---|
+| `AppShell::new(nav, content)` | `NavShell::new().mode(NavMode::Push).sidebar(nav).content(content)` |
+| `.with_search(field)` | Delete it. A filter of the sidebar's list goes in `.with_filter(field)` (the field is a `SearchField` in filter mode, see [Search](#search)); searching the app's content is the platform search. |
+| `.with_sidebar_width(..)`, `.with_breakpoint(..)`, `.with_width_hint(..)` | Delete. |
+| `.with_narrow_screen(NarrowScreen::List)` / `Content` | Delete; the narrow window opens on the first screen. To open elsewhere call `shell.show(NavPane::Content)`. |
+| `.with_narrow_screen_state(&LocalState<NarrowScreen>)` | `.with_pane_state(&LocalState<NavPane>)`; `NarrowScreen::List` → `NavPane::Sidebar`, `NarrowScreen::Content` → `NavPane::Content`. |
+| `.with_id(id)`, `.with_back_accessible_name(..)` | `.with_id(id)`; delete the Back name (the shell names it "Back"). |
+| `shell.notify_selection()` | Delete when the sidebar is a `NavList` (choosing a destination pushes by itself); otherwise `shell.show(NavPane::Content)`. |
+| `shell.back()` | `shell.back()` |
+| `shell.set_nav(nav)`, `shell.set_content(c)` | `shell.set_sidebar(Some(nav))`, `shell.set_content(c)` |
+| `shell.is_narrow()`, `shell.layout()`, `ShellLayout` | `!shell.geometry().stack.is_empty()`; usually delete the branch. |
+| `shell.narrow_screen()` | `shell.front_pane()` |
+| `shell.sidebar_open()` | `shell.is_sidebar_open()` |
+| `shell.back_rect()`, `sidebar_panel_rect()`, `content_area_rect()` | `shell.geometry().back`, `.sidebar_column`, `.content_column`; only tests read these. |
+| `ui::AppShell`, `ui::NarrowScreen`, `ui::ShellLayout`, `DEFAULT_SHELL_SIDEBAR_WIDTH`, `DEFAULT_SHELL_BREAKPOINT` | Delete the imports. |
+
+`NavSplit` (containers, disks, feeds, tube):
+
+| Old | New |
+|---|---|
+| `NavSplit::new(sidebar, content)` | `NavShell::new().sidebar(sidebar).content(content)` |
+| `.with_mode(SplitMode::Adaptive)` | Delete (the default). |
+| `.with_mode(SplitMode::Push)` with `show_detail()` / `show_master()` | The two children are an overview and a detail: `NavShell::new().overview(list).content(detail)`, then `shell.show(NavPane::Content)` / `shell.show(NavPane::Overview)`. A `NavList` overview pushes by itself. |
+| `.with_mode(SplitMode::AlwaysDocked)` | An icon rail: `.mode(NavMode::Docked)` with `NavList::rail()`. A text sidebar always docks only where it fits; delete the mode. |
+| `.with_breakpoint(..)`, `.with_sidebar_width(..)`, `.with_icon_sidebar_width(..)` | Delete. |
+| `.with_sidebar_closed()` | `.with_sidebar_hidden()` |
+| `toggle_sidebar()`, `open_sidebar()`, `close_sidebar()`, `is_sidebar_open()` | The same names on `NavShell`. |
+| `layout_mode()`, `SplitLayout::Docked` / `Overlay` | `shell.geometry().sidebar` (`SidebarPlacement::Docked` / `Drawer`). |
+| `push_pane()`, `PushPane::Master` / `Detail` | `shell.front_pane()`, `NavPane::Overview` / `NavPane::Content`. |
+| `snap_open(open)` | `shell.open_sidebar()` / `close_sidebar()` then `shell.snap()` (shots and tests only). |
+| `sidebar_rect()`, `content_panel_rect()`, `flap()` | `shell.geometry().sidebar_column` / `.content_column`; delete `flap()` uses. |
+| `DEFAULT_SIDEBAR_WIDTH`, `DEFAULT_BREAKPOINT`, `SplitMode` | Delete. |
+
+`PushNav` (contacts, logs, monitor):
+
+| Old | New |
+|---|---|
+| A painted app holding `PushNav` and positioning its own list and detail from `push.slide()` | Split the painted list and the painted detail into two widgets (each owns its rows, hit-testing and paint) and give them to `NavShell::new().overview(list).content(detail)`. Delete the `PushNav` field, the app's breakpoint (`PUSH_BREAKPOINT`, `layout_at`), the slide arithmetic, the Back button painter and its hit-test. |
+| `push.show_detail()` / `push.show_master()` | `shell.show(NavPane::Content)` / `shell.show(NavPane::Overview)` (or bind `.with_pane_state(&state)` and set the state). |
+| `push.pane() == PushPane::Detail` | `shell.front_pane() == NavPane::Content` |
+| `push.tick(reduce_motion)`, `push.is_animating()`, `push.snap(..)` | Delete; the shell animates (motion tokens) and snaps for shots. |
+| `PushPane` | `NavPane` |
+
+The previous `NavShell` API (file-explorer, mail, maps, weather):
+
+| Old | New |
+|---|---|
+| `NavShell::new(overview, detail)` | `NavShell::new().overview(overview).content(detail)` |
+| `NavShell::sidebar_over_content(sidebar, content)` | `NavShell::new().sidebar(sidebar).content(content)` |
+| `.with_sidebar(s)` | `.sidebar(s)` |
+| `.with_breakpoint(..)`, `.set_breakpoint(..)`, `.with_sidebar_width(..)`, `.with_icon_sidebar_width(..)`, `.with_narrow_sidebar_width(..)`, `.with_overview_width(..)`, `.with_icon_overview_width(..)` | Delete. An icon-width sidebar is a rail: `.mode(NavMode::Docked)` with `NavList::rail()`. |
+| `.hide_toggle_when_docked()` | Delete. The toggle is always there; a person hides a sidebar the same way in every app. |
+| `.with_sidebar_collapsed()` | `.with_sidebar_hidden()` |
+| `set_overview(e)`, `set_detail(e)`, `set_content(e)`, `set_sidebar(o)` | `set_overview(Some(e))`, `set_content(e)`, `set_content(e)`, `set_sidebar(o)` |
+| `show_detail()`, `show_overview()` / `show_master()`, `hint_active_pane(p)` | `show(NavPane::Content)`, `show(NavPane::Overview)`; delete `hint_active_pane` (the shell tracks the pane the person works in). |
+| `snap_sidebar(open)`, `snap_pane(p)` | `open_sidebar()`/`close_sidebar()` or `show(p)`, then `snap()`. |
+| `mode()`, `ShellMode`, `content_layout()`, `ContentLayout`, `sidebar_layout()`, `top_left_affordance()`, `Affordance` | `shell.geometry()` (`sidebar`, `side_by_side`, `stack`, `toggle`, `back`). |
+| `pane()`, `is_detail_shown()` | `front_pane()`, `front_pane() == NavPane::Content` |
+| `breakpoint()`, `sidebar_width()`, `overview_width()` | `geometry().breakpoint`, `geometry().sidebar_column.width()`, `geometry().overview_column.width()` |
+| `sidebar_rect()`, `overview_rect()`, `detail_rect()`, `scrim_rect()`, `collapse_button_rect()`, `back_button_rect()` | `geometry().sidebar_column`, `.overview_column`, `.content_column`, `.scrim`, `.toggle`, `.back` |
+| `sidebar_content_rect()`, `overview_content_rect()`, `detail_content_rect()` | Delete the reads: children are laid out under the header row already. |
+| A header band drawn at the top of a pane (title + buttons), a `CHIP_CLEARANCE` indent before the title, a title indented past the chip | `.sidebar_header(title, actions)`, `.overview_header(..)`, `.content_header(..)`, `.inspector_header(..)`; delete the band, its fill, its hairline and the indent. Change a title in place with `set_content_title` / `set_overview_title`. |
+| `DEFAULT_NAVSHELL_*` | Delete. |
+
+`SidebarNav` (passwords) and hand-painted sidebar rows:
+
+| Old | New |
+|---|---|
+| `SidebarNav::new(rect, sections).render(..)`, `.hit_test(p)`, `.accessibility(..)` | In a widget app: a `NavList` in `NavShell::sidebar`. In a painted app: `chrome::paint_nav_section` + `chrome::paint_nav_row` per row, hit-tested with `chrome::nav_row_layout` / `nav_section_layout`. |
+| `SidebarNavSection::new(label, items)` | `NavSection::new(id, label, items)` (sentence-case label), `NavSection::untitled(id, items)` for no header. |
+| `SidebarNavItem::new(id, label).badge(text).selected(b)` | `NavItem::new(id, label)` with `.count(n)` or `.live_count(n)`; selection is `NavList::selected(id)` / `bind_selection`. |
+
+`SidebarDrawer` (painted apps) keeps its API with these changes:
+
+| Old | New |
+|---|---|
+| `drawer.tick(reduce_motion)` | `drawer.tick(theme)` (takes the motion duration and reduced motion from the theme). |
+| `drawer.draw_scrim(scene, transform)` | `drawer.draw_scrim(scene, transform, theme)` (`surfaces.scrim`, no literal black, no stepped shadow bands). |
+| Filling the sidebar rect yourself (`surfaces.sidebar`, `raised`, `bg_primary`, a literal), or `surface::region(.., Region::Sidebar, ..)` under a drawer | `let sidebar_theme = drawer.paint_panel(scene, transform, theme);` and draw the drawer's contents with `sidebar_theme`. Docked it is the region tier with no radius; as an overlay it is the floating material with `radii.panel` and the floating shadow, floating `s2` inside the window. |
+| `drawer.draw_toggle(scene, transform, theme, rect, hovered)` | `drawer.draw_toggle(scene, transform, text, theme, rect, hovered)`: the same Plain `Icon::PanelLeft` button `NavShell` draws. Put it at the top-leading corner (`rect` = `min_pointer_target` square in an `s3` inset). |
+| Default docked width 320, default breakpoint 760 | 280 (`sidebar_width`) and 720 (`compact_breakpoint`); delete `.docked_width(..)` / `.breakpoint(..)` calls that restate the old defaults. |
+| A collapse that the drawer forgot after the window crossed the breakpoint | Remembered per size class now; delete app code that re-applies it. |
+| An app holding a `FlapState` for its own sidebar or side panel, with its own breakpoint, scrim and slide arithmetic | A `SidebarDrawer` (`.right()` for a trailing panel). `FlapState::tick(layout, dt)` is now `tick(layout, dt, theme.tokens.motion.durations.base())` and `slide()` is gone: `reveal()` is already eased. |
+
+`TreeView`:
+
+| Old | New |
+|---|---|
+| `.inset_rows()` | Delete; every tree insets its rows `s2`, so the depth-0 caret is never on the pane edge. |
+| `.with_trailing_edge()` | Delete; regions are told apart by tone (`NavShell`, `surface::region`). |
+| The current row's accent rail (`set_current`) | Unchanged call; the current row is now its label in the heavier weight. |
+| A tree in a sidebar listing destinations (code-editor explorer, db-client schema, notes pages) | Keep `TreeView` for real hierarchies the person edits (files, schema, pages); it is a `NavShell::sidebar` child and paints the same lift. A flat or two-level list of places is a `NavList`. |
+| `.with_ground(|t| t.tokens.colors.surfaces.sidebar)` (or another region tier) | Delete: the tree stands on the ground of the region its container hands it. Keep `with_ground` only for a tree on a raised well. |
+
+Selection forks:
+
+| Old | New |
+|---|---|
+| A private `selected_on(ground)`, `row_tier_on(ground, state)`, `selection_fill(theme, ground)`, `row_fill(..)`, `selection_fill_on_raised(theme)`, a `scene.fill` of `intent.selection` / `lift_on(..)` / `selection_tier(..).fill` under a row | `chrome::paint_row_selection(scene, transform, row.inset((-s2, -hairline)), SelectionState::new(selected, hovered, pressed), ground, theme)` where `ground` is the surface under the list (`theme.tokens.colors.surfaces.content` of the theme you draw the list with). Delete the private function. |
+| A control with its own rest face whose states are `colors.lift(floor_ramp(state))` (ebook `floor_ramp`) | `chrome::selection_floor_ramp(theme, state, ground)`; delete `floor_ramp` and its constants. |
+| An accent bar, left stripe, outline or coloured fill on the selected row | Delete it; the lift is the whole selection. |
+
+### Rows: what each part of a `NavItem` means
+
+- **Label**: sentence case, what the destination is called. It elides; it
+  never wraps. The selected row's label is set in the heavier weight.
+- **Icon**: one `ui::icons` icon per row, or none for the whole section. Use
+  the same icon family as the app's other chrome. Never an emoji or a
+  coloured dot.
+- **Count**: `.count(n)` for how many items a place holds (messages in a
+  folder, tracks in a playlist) — quiet tabular figures in tertiary ink.
+  `.live_count(n)` only for things waiting for the person (unread, mentions,
+  failed jobs): the one filled badge, in the person's own colour. Never a
+  filled badge for a plain count, never a status colour.
+- **Children**: nested places (`.children(..)`), indented one `s4` step, with
+  a trailing chevron. `.expanded()` to start open.
+- **Actions**: actions that apply to every row (rename, more) go in
+  `NavList::item_actions(..)`; they show on hover and focus at the trailing
+  edge. `.without_actions()` on rows where none apply (Inbox, Trash).
+- **Section**: `NavSection::new(id, "Sentence case title", items)`; never
+  upper case or letter-spaced. `.collapsible()` when the person may fold it,
+  `.trailing_action(NavAction::new("new", Icon::Plus, "New playlist"))` for
+  the one "new …" action of the section.
+- **Editing**: `.editable_label()` plus `NavList::on_rename`; `.drop_target()`
+  plus `NavList::on_move` for places that hold other places.
+
+### New API
+
+| API | Use |
+|---|---|
+| `NavShell::new()` with `.sidebar(e)`, `.overview(e)`, `.content(e)`, `.inspector(e)` | The window's columns. |
+| `.sidebar_header(title, actions)`, `.overview_header(..)`, `.content_header(..)`, `.inspector_header(..)` | Each column's header in the one header row: a sentence-case title and the column's actions (icon `Button`s, a `ToggleGroup`). |
+| `.with_filter(e)` | The one filter field of the window, under the sidebar's header (the overview's without a sidebar); Ctrl+F / ⌘F focuses it. |
+| `.mode(NavMode::{Overlay, Push, Docked})` | What the sidebar becomes in a narrow window. |
+| `.with_pane_state(&LocalState<NavPane>)`, `show(NavPane)`, `back()`, `front_pane()` | The front screen of a narrow window's push stack. |
+| `toggle_sidebar()`, `open_sidebar()`, `close_sidebar()`, `is_sidebar_open()`, `with_sidebar_hidden()`; the same for the inspector | Show and hide; remembered per window size class. |
+| `geometry()` (`NavGeometry`) | What the shell laid out, for tests and shots. |
+| `NavList::new(sections)` with `NavSection`, `NavItem`, `NavAction`, `NavDrop` | The one navigation list (keyboard, disclosure, semantics, rename, drag, row actions). |
+| `.selected(id)`, `.bind_selection(&LocalState<Option<String>>)`, `.on_select(..)`, `set_sections(..)`, `set_selected(..)`, `selected_id()` | Selection and updates. Choosing a destination in a narrow window closes the drawer or pushes the content by itself. |
+| `.item_actions(actions, on_action)`, `.on_section_action(..)`, `.on_rename(..)`, `.on_move(..)` | What the person can do to rows. |
+| `.rail()` | Icon over caption, for a docked rail. |
+| `chrome::paint_nav_row(scene, transform, text, theme, &NavRowFace)`, `chrome::nav_row_layout`, `nav_row_height(theme)`, `nav_rail_row_height(theme)` | One navigation row in a painted app, identical to a `NavList` row. |
+| `chrome::paint_nav_section(.., &NavSectionFace)`, `nav_section_layout`, `nav_section_height(theme, first)` | One section header in a painted app. |
+| `chrome::paint_row_selection(scene, transform, rect, state, ground, theme)` | The hover and selection lift of any list row. |
+| `chrome::selection_floor_ramp(theme, state, ground)` | States of a control with its own rest face. |
+| `chrome::selection_tier_on(theme, state, ground)` | Now one surface step of `ground` (`SELECTION_MIN_STEP`, ΔL 0.06, on every ground). |
+| `SidebarDrawer::paint_panel(scene, transform, theme) -> Theme` | A painted app's sidebar or inspector panel, docked or floating. |
+| `HostShortcut::Sidebar` | Ctrl+Shift+L / ⌘⇧L: show or hide the sidebar in every app. |
+| `Icon::PanelLeft`, `Icon::PanelRight` | The sidebar and inspector toggles. |
+| `theme.tokens.metrics.{header_height, nav_row_height, rail_width, inspector_width, sidebar_min_width, sidebar_max_width, content_min_width, detail_min_width}` | The shell metrics (HIG §9.6). |
+
+### What to delete in an app
+
+1. The sidebar's background fill, its trailing divider, and any hairline the
+   app draws between columns: the shell paints the regions and the rules.
+2. Every header band above a column: its fill, its title painter, its
+   hairline, the indent that cleared the old chip. Move the title and the
+   buttons into the column's `*_header(..)`.
+3. Collapse chips, hamburger buttons, `X` close buttons on sidebars, Back
+   buttons on narrow screens, their hit-tests and their geometry constants.
+4. Drawer scrims (`Color::from_rgba8(0, 0, 0, ..)`, stepped shadow bands),
+   drawer slide arithmetic, app-owned breakpoints (`BREAKPOINT`,
+   `NAV_BREAKPOINT`, `PUSH_BREAKPOINT`, `layout_at`), sidebar and overview
+   width constants (`SIDEBAR_W`, `SIDEBAR_WIDTH`, `OVERVIEW_W`), and the
+   `× text_scale` multiplications applied to them.
+5. App-drawn sidebar rows: row height and padding constants, icon
+   placement, selection and hover fills, accent bars, count badges, section
+   header painters (and their upper-case labels), and the row hit-testing.
+6. Private selection functions (`selected_on`, `row_tier_on`,
+   `selection_fill`, `row_fill`, `selection_fill_on_raised`, `floor_ramp`).
+7. App-owned search fields at the top of a sidebar (see
+   [Search](#search)); a filter of the list becomes `with_filter`.
+
+### Example: a mail window
+
+```rust
+use ui::icons::Icon;
+use ui::widget::{NavAction, NavItem, NavList, NavSection, NavShell};
+
+let mailboxes = NavList::new(vec![
+    NavSection::untitled("favourites", vec![
+        NavItem::new("inbox", "Inbox").icon(Icon::Inbox).live_count(unread),
+        NavItem::new("drafts", "Drafts").icon(Icon::FileText).count(drafts),
+        NavItem::new("sent", "Sent").icon(Icon::Send),
+    ]),
+    NavSection::new("folders", "Folders", folder_items)
+        .collapsible()
+        .trailing_action(NavAction::new("new-folder", Icon::Plus, "New folder")),
+])
+.bind_selection(&ui.mailbox)
+.with_accessible_name("Mailboxes");
+
+let shell = NavShell::new()
+    .sidebar(Box::new(mailboxes))
+    .overview(Box::new(message_list))
+    .content(Box::new(message_view))
+    .overview_header("Inbox", vec![compose_button])
+    .content_header(subject, vec![reply_button, delete_button]);
+```
+
+### Example: a painted app
+
+```rust
+use ui::chrome::{self, NavCount, NavRowFace, NavSectionFace, SelectionState};
+
+// In the draw path, after the content:
+self.drawer.tick(theme);
+let content = self.drawer.resolve(rect);
+self.draw_content(scene, transform, text, theme, content);
+self.drawer.draw_scrim(scene, transform, theme);
+let local = self.drawer.paint_panel(scene, transform, theme);
+let row_h = chrome::nav_row_height(&local);
+let mut y = self.drawer.sidebar_rect().y0 + f64::from(local.tokens.metrics.header_height);
+for row in &self.rows {
+    let rect = Rect::new(self.drawer.sidebar_rect().x0, y, self.drawer.sidebar_rect().x1, y + row_h);
+    chrome::paint_nav_row(scene, transform, text, &local, &NavRowFace::new(rect, &row.label)
+        .icon(row.icon)
+        .count(NavCount::Neutral(row.count))
+        .state(SelectionState::new(row.id == self.selected, Some(row.id) == self.hovered, false)));
+    y += row_h;
+}
+```
+
 ## Controls
 
 ## Content widgets
@@ -505,7 +758,7 @@ Apply the first row that matches each call.
 | `ActionRowFace::…paint_focus(..)` alone (a painted control's focus) | `ui::widget::paint_focus_ring(scene, transform, rect, radius, theme)` |
 | `ActionRowFace::accented(true)` / `.outlined(true)` | Delete: rows are not accented. The one recommended choice goes first. |
 | `ChoiceCardFace::new(rect, icon, title, description)` | `ListRowFace::new(title).leading(RowLeading::Icon(icon)).secondary(description).disclosure()` |
-| `data_table::paint_selected_row(..)` (crate-private) | `ui::widget::paint_row_fill(scene, transform, theme, rect, selected, hovered)` |
+| `data_table::paint_selected_row(..)` (crate-private) | `ui::chrome::paint_row_selection(scene, transform, rect, state, ground, theme)` ([Navigation](#navigation)) |
 | `StatTile::with_icon(icon)` | Delete. |
 | `StatTile::with_value_color(c)` | `.tone(Tone::Success / Warning / Danger / Info)` by what the colour meant; a colour that meant nothing: delete. |
 | `StatTile::with_delta(text, trend)` | `.change(text, trend)`, with text that says against what ("12% this week"). The arrow is grey; the meaning is the tile's tone. |

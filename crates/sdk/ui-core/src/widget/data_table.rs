@@ -1477,8 +1477,14 @@ impl<Row> DataTable<Row> {
             // takes precedence over the zebra stripe; the stripe is the
             // faintest derived tier on the ground, not a ramp slot.
             if selected {
-                crate::widget::list_row::paint_row_fill(
-                    scene, transform, theme, row_rect, true, false,
+                let inset = f64::from(tokens.spacing.s2);
+                crate::chrome::paint_row_selection(
+                    scene,
+                    transform,
+                    row_rect.inset((-inset, 0.0)),
+                    crate::chrome::SelectionState::active(true),
+                    tokens.colors.surfaces.content,
+                    theme,
                 );
             } else if ri % 2 == 1 {
                 scene.fill(
@@ -2623,13 +2629,6 @@ pub(crate) const NEAR_BLACK_GROUND_LUMINANCE: f64 = 0.005;
 pub(crate) const NEAR_BLACK_TIER_GAIN: u32 = 3;
 pub(crate) const NEAR_BLACK_TIER_FLOOR: u8 = 51;
 
-/// Alpha of the selected-row fill on a near-black ground: the high-contrast
-/// preset's middle re-solved tier, a 4.1:1 step off black that still carries
-/// white text at 5.1:1. On such a ground `Colors::lift(1.0)` collapses to its
-/// hairline fallback (HIG §9.3 names this weakness), so the row takes a floor
-/// of its own; idle rows stay transparent, so the state order is kept.
-pub(crate) const NEAR_BLACK_SELECTED_ALPHA: u8 = 110;
-
 /// A derived fill tier (band, stripe, track, thumb) on `surface`:
 /// [`Colors::hairline_on`] at `alpha`, with the near-black gain where the
 /// ground would otherwise swallow it. On the dark and light presets this is
@@ -2647,83 +2646,18 @@ pub(crate) fn tier_on(surface: Color, alpha: u8) -> Color {
     Colors::hairline_on(surface, alpha)
 }
 
-/// The fill of a selected row (HIG §9.3): the selection lift of the window
-/// ground, or the near-black floor where a lift does not register.
-#[must_use]
-pub(crate) fn selection_fill(theme: &Theme) -> Color {
-    use crate::a11y::relative_luminance;
-    let content = theme.tokens.colors.surfaces.content;
-    if relative_luminance(content) < NEAR_BLACK_GROUND_LUMINANCE {
-        return Colors::hairline_on(content, NEAR_BLACK_SELECTED_ALPHA);
-    }
-    theme.tokens.colors.intent.selection
-}
-
 #[cfg(test)]
 mod tier_tests {
     use super::*;
-    use crate::a11y::contrast_ratio;
     use crate::surface::edge_delta;
-    use crate::tokens::colors::{HAIRLINE_MIN_DELTA, NON_TEXT_MIN_CONTRAST, ON_FILL_MIN_CONTRAST};
+    use crate::tokens::colors::HAIRLINE_MIN_DELTA;
 
     fn presets() -> [Theme; 3] {
         [Theme::dark(), Theme::light(), Theme::high_contrast()]
     }
 
-    /// Composite `over` (with its alpha) onto an opaque `ground`.
-    fn blend(over: Color, ground: Color) -> Color {
-        let a = over.components[3];
-        let o = over.components;
-        let g = ground.components;
-        Color::new([
-            o[0] * a + g[0] * (1.0 - a),
-            o[1] * a + g[1] * (1.0 - a),
-            o[2] * a + g[2] * (1.0 - a),
-            1.0,
-        ])
-    }
-
     #[test]
     fn selected_rows_and_tier_hairlines_register_on_every_ground() {
-        fn selected_row_fill_registers_on_every_preset() {
-            for theme in presets() {
-                let base = theme.tokens.colors.surfaces.content;
-                let fill = selection_fill(&theme);
-                let moved = edge_delta(fill, base);
-                assert!(
-                    moved >= HAIRLINE_MIN_DELTA,
-                    "{}: selected row moved the ground only {moved:.4}",
-                    theme.name
-                );
-            }
-        }
-
-        /// HIG §9.3's caveat made concrete: on the pure-black high-contrast ground
-        /// the shared lift is weaker than a floor, so the row takes one that reads
-        /// as a control and still carries the theme's text.
-        fn selected_row_on_a_black_ground_reads_as_a_control_and_carries_text() {
-            let theme = Theme::high_contrast();
-            let base = theme.tokens.colors.surfaces.content;
-            let shared =
-                crate::chrome::selection_tier(&theme, crate::chrome::SelectionState::active(true))
-                    .fill;
-            assert!(
-                edge_delta(shared, base) < HAIRLINE_MIN_DELTA,
-                "fixture: the shared lift is expected to collapse on this ground"
-            );
-            let fill = blend(selection_fill(&theme), base);
-            let step = contrast_ratio(fill, base);
-            assert!(
-                step >= NON_TEXT_MIN_CONTRAST,
-                "selected row step {step:.2}:1"
-            );
-            let ink = contrast_ratio(theme.tokens.colors.text_primary, fill);
-            assert!(
-                ink >= ON_FILL_MIN_CONTRAST,
-                "text on the selected row {ink:.2}:1"
-            );
-        }
-
         /// Pins the dark and light screenshots: on the two grounds this module's
         /// callers paint tiers on, the gain never engages. (The dark preset's
         /// overlay tier is itself near black and does take it, by design.)
@@ -2759,8 +2693,6 @@ mod tier_tests {
             );
         }
 
-        selected_row_fill_registers_on_every_preset();
-        selected_row_on_a_black_ground_reads_as_a_control_and_carries_text();
         tier_on_is_plain_hairline_on_ordinary_grounds();
         tiers_keep_their_order_and_register_on_black();
     }

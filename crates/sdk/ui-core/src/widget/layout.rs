@@ -24,10 +24,10 @@ pub enum ExtentSizing {
     Icon,
 }
 
-/// A breakpoint or pane width **authored at 1×** for a responsive shell
-/// (`NavSplit`, `NavShell`, `AppShell`, `SidebarDrawer`), resolved against
-/// the theme once when the tree is built. The one place the
-/// authored-to-resolved rule lives, so the four shells cannot drift.
+/// A breakpoint or pane width **authored at 1×** for a painted app's
+/// [`crate::widget::SidebarDrawer`], resolved against the theme once when
+/// the tree is built. `NavShell` reads its widths from the metrics and
+/// applies the same rule to them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AuthoredExtent {
     px: f64,
