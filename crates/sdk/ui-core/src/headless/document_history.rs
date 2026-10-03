@@ -250,6 +250,41 @@ impl FrameHarness {
         address: &tilo_actions::ActionAddress,
         argument: Option<&str>,
     ) -> Result<(), String> {
+        self.run_local_history_action(address, argument)?;
+        self.idle_control_tick();
+        self.relayout();
+        Ok(())
+    }
+
+    /// Open History as the History shortcut does: the app's registered
+    /// History where it has one, else the document History chrome.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the app has no History to open.
+    pub fn open_history(&mut self) -> Result<(), String> {
+        if let Some(history) = &self.history {
+            if !history.request_open() {
+                return Err("History is unavailable".into());
+            }
+            self.relayout();
+            return Ok(());
+        }
+        self.invoke_local_history_action(
+            &tilo_actions::ActionAddress::new(
+                crate::standalone_history_host::HISTORY_RESOURCE,
+                "open",
+            ),
+            None,
+        )
+    }
+
+    /// Resolve and run one History door action; the next frame presents it.
+    fn run_local_history_action(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        argument: Option<&str>,
+    ) -> Result<(), String> {
         if !self.history_chrome_enabled {
             return Err("History chrome is not enabled".into());
         }
@@ -274,10 +309,41 @@ impl FrameHarness {
             None,
         )
         .map_err(|error| error.to_string())?;
-        self.execute_history_operation(&encoded)?;
-        self.idle_control_tick();
-        self.relayout();
-        Ok(())
+        self.execute_history_operation(&encoded)
+    }
+
+    /// A control in the app's tree bound to the window's History door (the
+    /// History control in the app's header row) runs there, as the History
+    /// shortcut does, never as an app action. Returns whether it was one.
+    pub(super) fn take_history_invocation(
+        &mut self,
+        intent: &tilo_actions::ControlInvocation,
+    ) -> bool {
+        if intent.address.resource != crate::standalone_history_host::HISTORY_RESOURCE {
+            return false;
+        }
+        let argument = format!(
+            "{}{}",
+            tilo_actions::ARGUMENTS_JSON_PREFIX,
+            serde_json::Value::Object(intent.arguments.clone())
+        );
+        let result = self.run_local_history_action(&intent.address, Some(&argument));
+        if let Err(error) = &result {
+            tracing::debug!(%error, "headless: History control refused");
+        }
+        let result = result
+            .map(|()| {
+                crate::widget::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                )
+            })
+            .map_err(tilo_actions::DoorError::Failed);
+        crate::widget::controls::on_control_invocation_result(
+            self.root.as_mut(),
+            &intent.address,
+            &result,
+        );
+        true
     }
 
     fn execute_history_operation(
@@ -465,9 +531,6 @@ impl FrameHarness {
             }
             return self.child_node;
         }
-        self.document_history.set_app_presents_button(
-            crate::standalone_history_host::presents_history_button(self.root.as_ref()),
-        );
         let layout = self.document_history.build_layout(
             self.child_node,
             &mut self.taffy,
@@ -884,6 +947,85 @@ mod tests {
         assert!(
             u16::from(dimmed[0]) + 20 < u16::from(plain[0]),
             "the History bar is under the scrim: {plain:?} -> {dimmed:?}"
+        );
+    }
+
+    /// Where the app draws the window's header row, History is one glyph at
+    /// its trailing edge: no bar above the app, and the glyph reads as on
+    /// while History shows and closes it again.
+    #[test]
+    fn the_history_control_stands_in_the_app_header_row() {
+        fn history_toggled(driver: &FrameHarness) -> Option<accesskit::Toggled> {
+            driver
+                .a11y_nodes()
+                .into_iter()
+                .find(|(_, node)| {
+                    node.label() == Some("History") && node.role() == accesskit::Role::Button
+                })
+                .and_then(|(_, node)| node.toggled())
+        }
+        let mut state = State::new();
+        for value in ["before", "after"] {
+            state.doc.put(ROOT, "value", value).unwrap();
+            state.doc.commit();
+        }
+        let shell = crate::widget::NavShell::new()
+            .content_header("Notes", vec![])
+            .content(Box::new(crate::widget::Text::new("Body")));
+        let mut driver = FrameHarness::new_with_controlled_inputs(
+            state,
+            Box::new(shell),
+            (1200, 700),
+            Theme::dark(),
+            crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("history-header".into()),
+        );
+        driver.enable_document_history_chrome();
+        driver.relayout();
+
+        let targets = driver.targets();
+        assert!(
+            !targets.contains_key(crate::standalone_history_host::BAR_BUTTON_ID),
+            "the window draws no History bar above a header row"
+        );
+        let control = targets["nav-shell-history"];
+        let header = f64::from(Theme::dark().tokens.metrics.header_height);
+        assert!(
+            control.x1 > 1200.0 - 24.0 && control.y1 <= header + 8.0,
+            "History stands in the window's top-trailing corner: {control:?}"
+        );
+        assert_eq!(history_toggled(&driver), Some(accesskit::Toggled::False));
+
+        driver.click_named("nav-shell-history").unwrap();
+        assert!(
+            driver.targets().contains_key("standalone-history"),
+            "the glyph opens History"
+        );
+        assert_eq!(
+            history_toggled(&driver),
+            Some(accesskit::Toggled::True),
+            "and reads as on while it shows"
+        );
+
+        driver.click_named("nav-shell-history").unwrap();
+        assert!(
+            !driver.targets().contains_key("standalone-history"),
+            "pressed again, it closes History"
+        );
+        assert_eq!(history_toggled(&driver), Some(accesskit::Toggled::False));
+    }
+
+    /// An app without a header row keeps the window's bar, with the same one
+    /// glyph at its trailing edge.
+    #[test]
+    fn an_app_without_a_header_row_gets_the_glyph_in_the_window_bar() {
+        let (mut driver, _, _) = fixture();
+        driver.relayout();
+        let control = driver.targets()[crate::standalone_history_host::BAR_BUTTON_ID];
+        assert!(control.x1 > 1200.0 - 24.0, "trailing: {control:?}");
+        assert!(
+            control.width() <= control.height() + 1.0,
+            "an icon, not a labelled button: {control:?}"
         );
     }
 
