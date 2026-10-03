@@ -1,0 +1,41 @@
+# Patches in os/kernel/patches/ that are posted upstream but not yet merged.
+# Each is carried unmodified from the list, pinned by sha256, and verified
+# against exactly one Fedora kernel. os/kernel/check-upstream-pending.py runs
+# in every kernel build (build-support.sh prepare-source) and fails it when the
+# buildroot's Fedora kernel SRPM is not `fedora_kernel`: a Fedora kernel update
+# then stops at the kernel build, loudly, until someone checks whether the
+# series has been merged (drop the patches and the entry) or still applies and
+# works (re-test, then set `fedora_kernel` to the new version).
+#
+# Only upstream-bound patches belong here; never a vendor BSP kernel's.
+
+[[series]]
+title = "media: rockchip: rkvdec: add support for the VDPU346 variant"
+# The RK3566/RK3568 video decoder (H.264 and HEVC up to 4096x2304). Its VP9
+# is not part of the series and no posting covers it yet.
+revision = "v3"
+author = "Christian Hewitt <christianshewitt@gmail.com>"
+posted = "2026-01-10"
+lists = ["linux-media", "linux-rockchip", "devicetree"]
+cover = "20260110053727.2295260-1-christianshewitt@gmail.com"
+# Posted on Linux 6.19-rc4 on top of the VDPU381/VDPU383 series
+# <20260109161538.1294449-1-detlev.casanova@collabora.com> (v8), which is in
+# mainline since v7.0. Applies to v7.2.7 without changes.
+status = "not merged: absent from mainline v7.3-rc (a74306e2e676) and linux-next next-20261002"
+drop_when = "the Fedora kernel contains the compatible \"rockchip,rk3568-vdec\" in drivers/media/platform/rockchip/rkvdec/rkvdec.c"
+fedora_kernel = "kernel-7.2.7-200.fc44"
+
+[[series.patch]]
+file = "0004-media-dt-bindings-rockchip-add-rk3568-video-decoder-bindings.patch"
+message_id = "20260110053727.2295260-2-christianshewitt@gmail.com"
+sha256 = "09f57f554f14fc783deccdfcc907a6f6677ee1189b97c87f650d66337dab7f8f"
+
+[[series.patch]]
+file = "0005-media-rkvdec-add-support-for-the-vdpu346-variant.patch"
+message_id = "20260110053727.2295260-3-christianshewitt@gmail.com"
+sha256 = "e72b174420e0aff2cd72b084a23a61c6b134b6c06fec3b62a1d6e8bea6bf072c"
+
+[[series.patch]]
+file = "0006-arm64-dts-rockchip-add-the-vdpu346-video-decoders-on-rk356x.patch"
+message_id = "20260110053727.2295260-4-christianshewitt@gmail.com"
+sha256 = "2d99a5c7b20f038df9227a6554ae84beadd4193ce09709f871369ccd07e8c16d"

@@ -50,6 +50,8 @@ run 'Dev image stays out of production' python3 tools/policy/check_dev_image_con
 run 'Image builders copy what they compile, and only that' \
   python3 tools/policy/check_image_builder_inputs.py
 run 'Dev kernel build follows the release build' python3 tools/policy/check_kernel_dev_build.py
+run 'Upstream-pending kernel patches are carried as posted' \
+  python3 os/kernel/check-upstream-pending.py os/kernel/upstream-pending.toml os/kernel/patches
 run 'Dev-override features stay out of production images' \
   python3 tools/policy/check_dev_overrides_contract.py
 run 'UI host-inputs contract' python3 tools/policy/check_ui_host_inputs_contract.py

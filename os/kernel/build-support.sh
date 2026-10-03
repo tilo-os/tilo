@@ -6,6 +6,8 @@
 #
 #   /work/kernel-config/     os/kernel/config-fragments/
 #   /work/kernel-patches/    os/kernel/patches/
+#   /work/upstream-pending.toml, /work/check-upstream-pending.py
+#                            os/kernel/upstream-pending.toml and its check
 #   /work/check-config.py    os/kernel/check-config.py
 #   /work/module-signing/    signing-key.pem, signing-cert.pem, signing-cert.der
 #   /work/rpmbuild/SOURCES/  the Fedora SRPM's sources (its per-arch .config)
@@ -141,6 +143,10 @@ case "$command" in
         # persistent dev tree moves from the old set to the new one (reverse
         # the old, apply the new) and an unchanged set touches no file.
         applied=.tilo-applied-patches
+        # Posted-but-unmerged series are carried as posted and only on the
+        # Fedora kernel they were verified on (os/kernel/upstream-pending.toml).
+        python3 /work/check-upstream-pending.py /work/upstream-pending.toml /work/kernel-patches \
+            --fedora-srpm /usr/lib/tilo/kernel-buildroot-srpm.txt
         if [ -d "$applied" ] && diff -r "$applied" /work/kernel-patches >/dev/null 2>&1; then
             echo "kernel patches unchanged since the last prepare"
         else
