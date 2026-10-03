@@ -77,10 +77,6 @@
       <string>Edotbelow</string>
       <string>Edotbelow.ss01</string>
       <string>Ecaron</string>
-      <string>Ecircumflexacute</string>
-      <string>Ecircumflexgrave</string>
-      <string>Ecircumflexhookabove</string>
-      <string>Ecircumflextilde</string>
       <string>Edieresis</string>
       <string>Edotaccent</string>
       <string>Emacron</string>
@@ -95,6 +91,13 @@
       <string>Iegrave-cy</string>
       <string>Io-cy</string>
     </array>
+    <key>public.kern1.KO_E__stack</key>
+    <array>
+      <string>Ecircumflexacute</string>
+      <string>Ecircumflexgrave</string>
+      <string>Ecircumflexhookabove</string>
+      <string>Ecircumflextilde</string>
+    </array>
     <key>public.kern1.KO_E__top</key>
     <array>
       <string>Eacute</string>
@@ -103,6 +106,7 @@
       <string>Ecircumflexdotbelow.ss01</string>
       <string>Egrave</string>
       <string>Ehookabove</string>
+      <string>Etilde</string>
     </array>
     <key>public.kern1.KO_F</key>
     <array>
@@ -145,6 +149,9 @@
       <string>Igrave.ss13</string>
       <string>Imacron.ss13</string>
       <string>Iogonek.ss13</string>
+      <string>Itilde.ss13</string>
+      <string>Ihookabove.ss13</string>
+      <string>Idotbelow.ss13</string>
     </array>
     <key>public.kern1.KO_Iacute</key>
     <array>
@@ -307,12 +314,9 @@
       <string>U</string>
       <string>Udotbelow</string>
       <string>Udotbelow.ss01</string>
-      <string>Uacute</string>
-      <string>Uhookabove</string>
       <string>Ubreve</string>
       <string>Ucircumflex</string>
       <string>Udieresis</string>
-      <string>Ugrave</string>
       <string>Uhungarumlaut</string>
       <string>Umacron</string>
       <string>Uogonek</string>
@@ -320,6 +324,13 @@
       <string>Udieresis.ss01</string>
       <string>J.ss08</string>
       <string>Psi</string>
+    </array>
+    <key>public.kern1.KO_U__top</key>
+    <array>
+      <string>Uacute</string>
+      <string>Ugrave</string>
+      <string>Uhookabove</string>
+      <string>Utilde</string>
     </array>
     <key>public.kern1.KO_Uhorn</key>
     <array>
@@ -371,6 +382,7 @@
       <string>Ushort-cy</string>
       <string>Ustraight-cy</string>
       <string>Ustraightstroke-cy</string>
+      <string>Ytilde</string>
     </array>
     <key>public.kern1.KO_Z</key>
     <array>
@@ -503,6 +515,7 @@
     <array>
       <string>eacute</string>
       <string>ehookabove</string>
+      <string>etilde</string>
     </array>
     <key>public.kern1.KO_ecaron</key>
     <array>
@@ -944,12 +957,9 @@
       <string>u</string>
       <string>udotbelow</string>
       <string>udotbelow.ss01</string>
-      <string>uacute</string>
-      <string>uhookabove</string>
       <string>ubreve</string>
       <string>ucircumflex</string>
       <string>udieresis</string>
-      <string>ugrave</string>
       <string>umacron</string>
       <string>uogonek</string>
       <string>uring</string>
@@ -960,29 +970,19 @@
       <string>a.ss02</string>
       <string>adotbelow.ss01.ss02</string>
       <string>adotbelow.ss02</string>
-      <string>aacute.ss02</string>
-      <string>ahookabove.ss02</string>
-      <string>abreve.ss02</string>
       <string>abreveacute.ss02</string>
-      <string>abrevedotbelow.ss01.ss02</string>
-      <string>abrevedotbelow.ss02</string>
       <string>abrevegrave.ss02</string>
       <string>abrevehookabove.ss02</string>
       <string>abrevetilde.ss02</string>
       <string>acaron.ss02</string>
-      <string>acircumflex.ss02</string>
       <string>acircumflexacute.ss02</string>
-      <string>acircumflexdotbelow.ss01.ss02</string>
-      <string>acircumflexdotbelow.ss02</string>
       <string>acircumflexgrave.ss02</string>
       <string>acircumflexhookabove.ss02</string>
       <string>acircumflextilde.ss02</string>
       <string>adieresis.ss02</string>
-      <string>agrave.ss02</string>
       <string>amacron.ss02</string>
       <string>aogonek.ss02</string>
       <string>aring.ss02</string>
-      <string>atilde.ss02</string>
       <string>adieresis.ss01.ss02</string>
       <string>micro</string>
       <string>alphatonos</string>
@@ -1012,6 +1012,24 @@
       <string>tse-cy.loclBGR</string>
       <string>ya-cy</string>
       <string>yeru-cy</string>
+    </array>
+    <key>public.kern1.KO_u__top</key>
+    <array>
+      <string>aacute.ss02</string>
+      <string>abreve.ss02</string>
+      <string>abrevedotbelow.ss01.ss02</string>
+      <string>abrevedotbelow.ss02</string>
+      <string>acircumflex.ss02</string>
+      <string>acircumflexdotbelow.ss01.ss02</string>
+      <string>acircumflexdotbelow.ss02</string>
+      <string>agrave.ss02</string>
+      <string>ahookabove.ss02</string>
+      <string>atilde.ss02</string>
+      <string>itilde</string>
+      <string>uacute</string>
+      <string>ugrave</string>
+      <string>uhookabove</string>
+      <string>utilde</string>
     </array>
     <key>public.kern1.KO_uhorn</key>
     <array>
@@ -1076,9 +1094,11 @@
       <string>yacute</string>
       <string>ygrave</string>
       <string>yhookabove</string>
+      <string>ytilde</string>
       <string>yacute.ss03</string>
       <string>ygrave.ss03</string>
       <string>yhookabove.ss03</string>
+      <string>ytilde.ss03</string>
     </array>
     <key>public.kern1.KO_z</key>
     <array>
@@ -1093,18 +1113,6 @@
       <string>zero</string>
       <string>nine</string>
       <string>zero.zero</string>
-    </array>
-    <key>public.kern1.VN_e__top</key>
-    <array>
-      <string>etilde</string>
-    </array>
-    <key>public.kern1.VN_idotless__top</key>
-    <array>
-      <string>itilde</string>
-    </array>
-    <key>public.kern1.VN_y__top</key>
-    <array>
-      <string>ytilde</string>
     </array>
     <key>public.kern2.KO_A</key>
     <array>
@@ -1231,6 +1239,9 @@
       <string>Imacron.ss13</string>
       <string>Iogonek.ss13</string>
       <string>IJ.ss13</string>
+      <string>Itilde.ss13</string>
+      <string>Ihookabove.ss13</string>
+      <string>Idotbelow.ss13</string>
     </array>
     <key>public.kern2.KO_J</key>
     <array>
@@ -1356,9 +1367,11 @@
       <string>Uacute</string>
       <string>Ugrave</string>
       <string>Uhookabove</string>
+      <string>Utilde</string>
       <string>Uhornacute</string>
       <string>Uhorngrave</string>
       <string>Uhornhookabove</string>
+      <string>Uhorntilde</string>
     </array>
     <key>public.kern2.KO_V</key>
     <array>
@@ -1400,6 +1413,7 @@
       <string>Yacute</string>
       <string>Ygrave</string>
       <string>Yhookabove</string>
+      <string>Ytilde</string>
     </array>
     <key>public.kern2.KO_Ya-cy</key>
     <array>
@@ -1571,6 +1585,7 @@
       <string>eacute</string>
       <string>egrave</string>
       <string>ehookabove</string>
+      <string>etilde</string>
       <string>oacute</string>
       <string>ohookabove</string>
       <string>ohornacute</string>
@@ -1698,6 +1713,10 @@
       <string>germandbls</string>
       <string>ncommaaccent.ss01</string>
       <string>rcommaaccent.ss01</string>
+    </array>
+    <key>public.kern2.KO_idotless__top</key>
+    <array>
+      <string>itilde</string>
     </array>
     <key>public.kern2.KO_j</key>
     <array>
@@ -1965,9 +1984,11 @@
       <string>uacute</string>
       <string>ugrave</string>
       <string>uhookabove</string>
+      <string>utilde</string>
       <string>uhornacute</string>
       <string>uhorngrave</string>
       <string>uhornhookabove</string>
+      <string>uhorntilde</string>
     </array>
     <key>public.kern2.KO_underscore</key>
     <array>
@@ -1994,6 +2015,7 @@
       <string>yacute</string>
       <string>ygrave</string>
       <string>yhookabove</string>
+      <string>ytilde</string>
     </array>
     <key>public.kern2.KO_w</key>
     <array>
@@ -2023,6 +2045,7 @@
       <string>ydieresis.ss03</string>
       <string>ygrave.ss03</string>
       <string>ydieresis.ss01.ss03</string>
+      <string>ytilde.ss03</string>
     </array>
     <key>public.kern2.KO_z</key>
     <array>
@@ -2037,18 +2060,6 @@
       <string>zero</string>
       <string>six</string>
       <string>zero.zero</string>
-    </array>
-    <key>public.kern2.VN_Y__top</key>
-    <array>
-      <string>Ytilde</string>
-    </array>
-    <key>public.kern2.VN_idotless__top</key>
-    <array>
-      <string>itilde</string>
-    </array>
-    <key>public.kern2.VN_y__top</key>
-    <array>
-      <string>ytilde</string>
     </array>
   </dict>
 </plist>

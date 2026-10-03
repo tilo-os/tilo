@@ -120,6 +120,10 @@ HORN = {
     "CondensedRegular": dict(reach=1.7, cut=1.0, outer=1.45, inner=0.5, reach_o=1.2, outer_o=1.5, inner_o=0.55, rise=40),
     "CondensedBold": dict(reach=1.15, cut=0.95, outer=1.2, inner=0.38, reach_o=0.9, outer_o=1.25, inner_o=0.42, rise=40),
 }
+# How far a circumflex with a tone beside it may sit left of where â ê ô
+# have it (font units).
+STACK_SHIFT = 20
+
 # Clearance between a horn and the next letter (see build_horns).
 HORN_CLEAR = 24
 
@@ -520,19 +524,21 @@ def build_marks(m: str, fonts) -> None:
         side_h = d["side"][1 if case else 0]
         # acute, grave and hook beside the circumflex, on its right: the grave
         # too, clear of the ascender of a th, kh, ph, đ or l before ầ ề ồ. The
-        # pair's anchor moves right by half the tone's overhang, so the pair
-        # sits centred over the letter.
+        # circumflex stays where â ê ô have it (the pair's anchor moves right
+        # by at most STACK_SHIFT), and the tone hangs out to the right: a pair
+        # centred over the letter pushes the circumflex out to the left, into
+        # the arm of a T or Y before it.
         for name in ("acutecomb", "gravecomb"):
             t = tone(pts_of(f[name]), side_h)
             dx, dy = beside(cpts, t)
             placed = translate(t, dx, dy)
-            shift = 0.5 * (bounds(placed)[2] - cb[2])
+            shift = min(0.5 * (bounds(placed)[2] - cb[2]), STACK_SHIFT)
             set_glyph(f, f"circumflexcomb_{name}{sfx}", [placed], components=[(f"circumflexcomb{sfx}", 0, 0)],
                       anchors=stack_anchors([cpts, placed], ct.x, shift))
         hpts = hkc if case else hk
         dx, dy = beside(cpts, hpts)
         placed = translate(hpts, dx, dy)
-        shift = 0.5 * (bounds(placed)[2] - cb[2])
+        shift = min(0.5 * (bounds(placed)[2] - cb[2]), STACK_SHIFT)
         set_glyph(f, f"circumflexcomb_hookabovecomb{sfx}",
                   components=[(f"circumflexcomb{sfx}", 0, 0), (f"hookabovecomb{sfx}", dx, dy)],
                   anchors=stack_anchors([cpts, placed], ct.x, shift))
@@ -729,12 +735,28 @@ def build_horncomb(m: str, fonts, joins) -> None:
 
 
 # ------------------------------------------------------------------ composites
+# The letters whose composites this script places: the Vietnamese alphabet
+# (other scripts and the ss13 forms place their own marks).
+VIETNAMESE = (
+    "aàáảãạăằắẳẵặâầấẩẫậbcdđeèéẻẽẹêềếểễệghiìíỉĩịklmnoòóỏõọôồốổỗộơờớởỡợpqrstuùúủũụưừứửữựvxyỳýỷỹỵ"
+)
+
+
+def vietnamese_glyph(f, name: str) -> bool:
+    """A Vietnamese letter or one of its stylistic-set forms (not ss13)."""
+    if ".ss13" in name:
+        return False
+    base = name.split(".")[0]
+    letters = {ord(c) for c in VIETNAMESE + VIETNAMESE.upper()}
+    return base in f and any(u in letters for u in f[base].unicodes)
+
+
 def place_composites(m: str, fonts) -> None:
-    """Every new composite: its marks hang on the base's anchors."""
+    """Every new Vietnamese composite: its marks hang on the base's anchors."""
     f = fonts[m]
     upstream = set(f.lib["public.glyphOrder"])
     for name in sorted(f.keys()):
-        if name in upstream:
+        if name in upstream or not vietnamese_glyph(f, name):
             continue
         g = f[name]
         if len(g.components) < 2 or g.contours or g.width == 0:

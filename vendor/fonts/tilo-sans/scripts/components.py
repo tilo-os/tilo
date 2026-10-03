@@ -21,6 +21,8 @@ Limits (font units):
   mark beside mark   >= 30   acute, grave or hook beside a circumflex
   mark above letter  >= 30
   mark below letter  >= 24   dot below
+An ogonek or cedilla joins its letter by design, so it is not held to a
+distance from the letter (only from other marks).
 They hold in every master and at the instances between them (wght
 500/550/600/650 at wdth 75 and 87.5, and 500/550/600 at wdth 100), where the
 parts are interpolated from the masters as the variable font does it.
@@ -61,6 +63,8 @@ SOURCES = ROOT / "sources"
 DESIGNSPACES = ["TiloSans.designspace", "TiloSans-Italic.designspace"]
 LIMITS = {"stacked": 30, "beside": 30, "above": 30, "below": 24}
 ANGLE_TOLERANCE = 5
+# marks drawn to join the letter they hang from
+ATTACHED = {"ogonekcomb", "cedillacomb"}
 MAX_TOP = 1030
 # glyph with a tone of its own -> the master's mark it must lean like
 TONES = {f"{base}_{tone}{case}": tone for base in ("circumflexcomb",) for tone in ("acutecomb", "gravecomb")
@@ -127,6 +131,8 @@ def measure_inks(inks):
         base_label = "+".join(b[0] for b in bases)
         base_mid = (base_ink.bounds[1] + base_ink.bounds[3]) / 2
         for label, _, m in marks:
+            if label.split(".")[0] in ATTACHED:
+                continue
             d, ov = gap(base_ink, m)
             kind = "below" if m.bounds[3] < base_mid else "above"
             results.append((kind, base_label, label, d, ov))

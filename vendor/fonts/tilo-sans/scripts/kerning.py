@@ -17,6 +17,12 @@ or to the hand-made kerning:
    KO_o is copied to KO_ohorn. Their horn is kept clear by their advance
    (scripts/vietnamese.py), so the copies need no correction for flat
    neighbours.
+   Every Vietnamese letter Tilo Sans added joins its base letter's kerning
+   group on each side where it has none (ũ joins KO_u on both sides, ữ joins
+   KO_uhorn on the right and KO_u on the left), and gets a copy of every
+   glyph-level exception of its base letter (Instrument kerns T-u and Y-u
+   as glyph pairs, so T-ư, T-ự, Y-ũ ... are copied from them). A letter
+   kerns like its base until a collision says otherwise.
 2. The fonts are built and every checked pair (scripts/pairs.py) is shaped
    at the eight masters. A pair whose inks come closer than pairs.MIN_GAP
    collides.
@@ -29,9 +35,13 @@ or to the hand-made kerning:
    gets, against the neighbour's group, the smallest kern that opens each of
    its members to pairs.MIN_GAP + pairs.FIX_MARGIN. All tone variants at that
    height therefore space alike (no ầ wider than ấ before the same letter).
-   Letters that had no group on that side get one named VN_<letter>__top.
+   Letters whose base letter has no group on that side get one named
+   VN_<letter>__top, which inherits the base letter's glyph-level pairs.
    Values below pairs.FIX_MARGIN do not occur: a kern is only written to
    open a collision.
+   A Greek or Cyrillic letter that collides with punctuation or a figure is
+   opened with a glyph pair of its own (ν + ano teleia, ( + ј): those
+   letters share Latin kerning groups, and Latin text must not move.
 4. Where a hand-made exception (glyph or glyph-group pair) governs a
    colliding pair, the exception is raised instead, and its original value
    is kept in the font's lib so --reset restores it.
@@ -60,10 +70,13 @@ UPRIGHT = ["Regular", "Bold", "CondensedRegular", "CondensedBold"]
 ITALIC = ["Italic", "BoldItalic", "CondensedItalic", "CondensedBoldItalic"]
 K1, K2 = "public.kern1.", "public.kern2."
 HORN_GROUPS = {"KO_ohorn": "KO_o", "KO_uhorn": "KO_u", "KO_Ohorn": "KO_O", "KO_Uhorn": "KO_U"}
+# a drawn horned letter kerns like its plain letter until a collision says otherwise
+PLAIN = {"ohorn": "o", "uhorn": "u", "Ohorn": "O", "Uhorn": "U"}
 # exceptions this script raised: {"a|b": [original]} ([] when there was none)
 RAISED_KEY = "so.tilo.kerning.raised"
 BUCKETS = ("__top", "__stack")
 LOG = None  # --log FILE: why each value was written
+ADDED: set[str] = set()  # the added Vietnamese letters (filled by reset)
 
 
 def load():
@@ -76,8 +89,12 @@ def generated(name: str) -> bool:
 
 def reset(fonts) -> None:
     """Remove the generated groups and pairs, restore raised exceptions, and
-    copy the horned letters' pairs from their plain letters."""
+    copy the horned letters' pairs from their plain letters. Every glyph-level
+    pair on an added Vietnamese letter is generated, so all of them go."""
+    ADDED.update(added_vietnamese(fonts["Regular"]))
     for f in fonts.values():
+        for (a, b) in [k for k in f.kerning if (k[0] in ADDED or k[1] in ADDED) and not il_owned(*k)]:
+            del f.kerning[(a, b)]
         for key, original in f.lib.pop(RAISED_KEY, {}).items():
             a, b = key.split("|")
             if not original:
@@ -98,6 +115,116 @@ def reset(fonts) -> None:
             for (a, b), v in list(f.kerning.items()):
                 if a == pg:
                     f.kerning[(hg, b)] = v
+
+
+def added_vietnamese(ref) -> list[str]:
+    """The Vietnamese letters (and their stylistic-set forms) Tilo Sans added
+    beyond Instrument Sans."""
+    upstream = set(ref.lib.get("public.glyphOrder", []))
+    by_cp = {u: g.name for g in ref for u in g.unicodes}
+    vn = {by_cp[ord(c)] for c in pairs.VIETNAMESE + pairs.VIETNAMESE.upper() if ord(c) in by_cp}
+    return sorted(g.name for g in ref if g.name.split(".")[0] in vn and g.name not in upstream)
+
+
+def base_chain(ref, name) -> list[str]:
+    """The letters a glyph is built on, nearest first: ữ -> uhorn, u."""
+    chain = []
+    g = ref[name]
+    while True:
+        if g.components and g.components[0].baseGlyph in ref:
+            nxt = g.components[0].baseGlyph
+        elif g.name.split(".")[0] in PLAIN:
+            suffix = g.name[len(g.name.split(".")[0]):]
+            nxt = PLAIN[g.name.split(".")[0]] + suffix
+            nxt = nxt if nxt in ref else PLAIN[g.name.split(".")[0]]
+        else:
+            return chain
+        if nxt in chain or nxt == name:
+            return chain
+        chain.append(nxt)
+        g = ref[nxt]
+
+
+def join_base_groups(fonts) -> int:
+    """Put every added Vietnamese letter into its base letter's kerning group
+    on each side where it has none."""
+    ref = fonts["Regular"]
+    joined = 0
+    for prefix in (K1, K2):
+        member = {g: n for n, ms in ref.groups.items() if n.startswith(prefix) for g in ms}
+        for v in added_vietnamese(ref):
+            if v in member:
+                continue
+            group = next((member[b] for b in base_chain(ref, v) if b in member), None)
+            if group is None:
+                continue
+            for f in fonts.values():
+                f.groups[group] = list(f.groups[group]) + [v]
+            member[v] = group
+            joined += 1
+    return joined
+
+
+def copy_base_exceptions(fonts) -> int:
+    """Give every added Vietnamese letter its base letter's glyph-level pairs
+    (T-u -> T-ư T-ụ T-ữ ...); the nearest base wins, and a pair the letter has
+    of its own is kept. reset() removes the copies with every other pair on
+    an added Vietnamese letter."""
+    ref = fonts["Regular"]
+    copied = 0
+    letters = {v: base_chain(ref, v) for v in added_vietnamese(ref)}
+    for f in fonts.values():
+        firsts, seconds = defaultdict(list), defaultdict(list)
+        for (a, b), value in f.kerning.items():
+            firsts[a].append((b, value))
+            seconds[b].append((a, value))
+        for v, chain in letters.items():
+            for base in chain:
+                for b, value in firsts.get(base, []):
+                    if (v, b) not in f.kerning and not il_owned(v, b):
+                        f.kerning[(v, b)] = value
+                        copied += 1
+                for a, value in seconds.get(base, []):
+                    if (a, v) not in f.kerning and not il_owned(a, v):
+                        f.kerning[(a, v)] = value
+                        copied += 1
+    return copied
+
+
+def letter_script(font, name) -> str | None:
+    """LATIN, GREEK, CYRILLIC ... for a letter glyph (alternates through
+    their base), None for anything else."""
+    g = font[name] if name in font else None
+    while g is not None and not g.unicodes:
+        base = g.name.split(".")[0]
+        if base != g.name and base in font:
+            g = font[base]
+        elif g.components and g.components[0].baseGlyph in font:
+            g = font[g.components[0].baseGlyph]
+        else:
+            return None
+    if g is None:
+        return None
+    return pairs.letter_script(chr(g.unicodes[0]))
+
+
+def foreign(font, a, b) -> bool:
+    """A pair with a Greek or Cyrillic letter: it is opened with a glyph pair."""
+    return any(letter_script(font, g) not in (None, "LATIN") for g in (a, b))
+
+
+def effective(f, k1, k2, a, b) -> int:
+    """The kerning HarfBuzz applies to a b in this master."""
+    ga, gb = k1.get(a, a), k2.get(b, b)
+    for key in ((a, b), (a, gb), (ga, b), (ga, gb)):
+        if key in f.kerning:
+            return f.kerning[key]
+    return 0
+
+
+def il_owned(a: str, b: str) -> bool:
+    """A pair scripts/il_kern.py writes (a serif I or tailed l on one side)."""
+    return ".ss13" in a or ".ss13" in b
 
 
 def save(fonts) -> None:
@@ -170,7 +297,7 @@ def apply(fonts, collisions) -> tuple[int, int]:
         for per in family.values():
             for (a, b) in per:
                 la, lb = letter_and_level(ref, a)[1], letter_and_level(ref, b)[1]
-                if la == 0 and lb == 0:
+                if (la == 0 and lb == 0) or foreign(ref, a, b):
                     moves[(a, b)] = None
                 else:
                     moves[(a, b)] = 1 if la >= lb else 2
@@ -198,9 +325,11 @@ def apply(fonts, collisions) -> tuple[int, int]:
     origin = {}
     for name, members in new_groups.items():
         base = name[: -len(next(s for s in BUCKETS if name.endswith(s)))]
-        origin[name] = base if base in ref.groups else None
+        # a VN_ group inherits its letter's glyph-level pairs
+        letter = base.split(".", 2)[-1][len("VN_"):] if base.split(".", 2)[-1].startswith("VN_") else None
+        origin[name] = base if base in ref.groups else letter
         for f in fonts.values():
-            if origin[name]:
+            if base in ref.groups:
                 f.groups[base] = [g for g in f.groups[base] if g not in members]
             f.groups[name] = sorted(members, key=lambda g: (letter_and_level(ref, g), g))
     k1 = {g: n for n, ms in ref.groups.items() if n.startswith(K1) for g in ms}
@@ -237,10 +366,14 @@ def apply(fonts, collisions) -> tuple[int, int]:
         masters = UPRIGHT if family == "upright" else ITALIC
         targets = defaultdict(dict)  # key -> master -> value
         why = defaultdict(list)
+        floor = {}  # a new glyph pair starts, in every master, from the kerning it replaces
         for master, per in per_master.items():
             f = fonts[master]
             for (a, b), (kern_now, need) in per.items():
                 key, _ = lookup(f, a, b)
+                if foreign(ref, a, b) and key != (a, b):
+                    key = (a, b)
+                    floor[key] = {m: effective(fonts[m], k1, k2, a, b) for m in masters}
                 want = kern_now + need
                 targets[key][master] = max(targets[key].get(master, -10**9), want)
                 why[key].append((master, a, b, kern_now, need))
@@ -254,6 +387,10 @@ def apply(fonts, collisions) -> tuple[int, int]:
             for m in masters:
                 f = fonts[m]
                 now = f.kerning.get(key)
+                if now is None and key in floor:
+                    now = floor[key][m]
+                    remember(f, key, None)
+                    f.kerning[key] = now
                 value = max(by_master.get(m, now if now is not None else 0), now if now is not None else -10**9)
                 if now is None or value != now:
                     raised += remember(f, key, now)
@@ -265,7 +402,7 @@ def apply(fonts, collisions) -> tuple[int, int]:
 def remember(f, key, original) -> int:
     """Note a pair this script changes that reset() would not remove (one
     without a generated group), so reset() can put it back."""
-    if generated(key[0]) or generated(key[1]):
+    if generated(key[0]) or generated(key[1]) or key[0] in ADDED or key[1] in ADDED:
         return 0
     raised = f.lib.setdefault(RAISED_KEY, {})
     if "|".join(key) in raised:
@@ -296,6 +433,8 @@ def bump(fonts) -> int:
             f = ref
             ga, gb = k1.get(a, a), k2.get(b, b)
             key = next((k for k in ((a, b), (a, gb), (ga, b), (ga, gb)) if k in f.kerning), (ga, gb))
+            if foreign(ref, a, b):
+                key = (a, b)
             for w, b_ in corners(pairs.BETWEEN[where]):
                 name = w + b_
                 if family == "italic":
@@ -308,7 +447,10 @@ def bump(fonts) -> int:
         for other in family:
             if key not in fonts[other].kerning:
                 remember(fonts[other], key, None)
-                fonts[other].kerning[key] = 0
+                o = fonts[other]
+                ok1 = {g: n for n, ms in o.groups.items() if n.startswith(K1) for g in ms}
+                ok2 = {g: n for n, ms in o.groups.items() if n.startswith(K2) for g in ms}
+                fonts[other].kerning[key] = effective(o, ok1, ok2, *key) if foreign(ref, *key) else 0
         remember(f, key, f.kerning[key])
         f.kerning[key] += units
     return len(grow)
@@ -325,9 +467,13 @@ def main() -> int:
         Path(LOG).write_text("")
     fonts = load()
     reset(fonts)
-    save(fonts)
     if args.reset:
+        save(fonts)
         return 0
+    joined = join_base_groups(fonts)
+    copied = copy_base_exceptions(fonts)
+    print(f"{joined} group membership(s) joined, {copied} glyph-level pair(s) copied from base letters")
+    save(fonts)
     build()
     collisions = measure()
     n = sum(len(p) for fam in collisions.values() for p in fam.values())

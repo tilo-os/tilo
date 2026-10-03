@@ -20,6 +20,9 @@ lookup IL_capital {
 	sub Imacron by Imacron.ss13;
 	sub Iogonek by Iogonek.ss13;
 	sub IJ by IJ.ss13;
+	sub Itilde by Itilde.ss13;
+	sub Ihookabove by Ihookabove.ss13;
+	sub Idotbelow by Idotbelow.ss13;
 	sub Idieresis.ss01 by Idieresis.ss01.ss13;
 	sub Idotaccent.ss01 by Idotaccent.ss01.ss13;
 } IL_capital;

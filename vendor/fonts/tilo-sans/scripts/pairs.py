@@ -8,12 +8,14 @@
     uv run vendor/fonts/tilo-sans/scripts/pairs.py --show 40      # also the 40 tightest pairs
     uv run vendor/fonts/tilo-sans/scripts/pairs.py --text "đĩa Tĩnh"   # check the pairs in a string
 
-Checked letters: every letter Tilo Sans added beyond Instrument Sans (and
-later its Greek and Cyrillic) plus every accented letter of the Vietnamese
+Checked letters: every letter Tilo Sans added beyond Instrument Sans (its
+Greek and Cyrillic included) plus every accented letter of the Vietnamese
 alphabet, Instrument's own included ('Tìm' matters as much as 'Tĩnh').
 Each is paired both ways with the neighbours it meets in text: printable
 ASCII but the underscore, the Vietnamese letters without a tone (a ă â b c d
-đ e ê ... ơ ư, both cases), quotes, dashes and the ellipsis. Two toned
+đ e ê ... ơ ư, both cases), quotes, dashes and the ellipsis. A Greek or
+Cyrillic letter meets only the punctuation and figures among them: letters
+of two scripts are shaped in separate runs and never kerned together. Two toned
 letters never stand side by side in Vietnamese (a syllable carries one
 tone), and a lowercase letter is not followed by a capital inside a word,
 so pairs such as 'ÍÌ' or 'íY' are not checked and get no kerning. Pairs are
@@ -228,6 +230,15 @@ def check(font_file: str, locations: dict, pairs: list[str], min_gap: float, sho
     return results
 
 
+def letter_script(ch: str) -> str | None:
+    """The script of a letter (LATIN, GREEK, CYRILLIC, ...); None for anything
+    that is not a letter. HarfBuzz shapes the scripts in separate runs, so two
+    letters of different scripts are never kerned against each other, while
+    punctuation and figures join the run of the letter beside them."""
+    script = unicodedata.name(ch, "?").split(" ")[0]
+    return script if ch.isalpha() and script in ("LATIN", "GREEK", "CYRILLIC") else None
+
+
 def kerning_pairs(text: str) -> list[str]:
     return [text[i:i + 2] for i in range(len(text) - 1) if not text[i].isspace() and not text[i + 1].isspace()]
 
@@ -253,6 +264,8 @@ def pair_set(font_file: str) -> list[str]:
     pairs = set()
     for v in checked:
         for c in ctx:
+            if letter_script(c) not in (None, letter_script(v)):
+                continue  # a Latin letter beside a Greek or Cyrillic one: separate runs, never kerned
             pairs.add(v + c)
             pairs.add(c + v)
     # a lowercase letter is not followed by a capital inside a word

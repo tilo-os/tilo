@@ -176,6 +176,11 @@ class Shaper:
         self.font.set_variations({"wdth": wdth, "wght": wght})
         self.profiles = {}
         self.names = {}  # production name in the binary -> UFO name
+        self.path = path
+
+    def face_cmap(self) -> dict[int, str]:
+        from fontTools.ttLib import TTFont
+        return TTFont(self.path, lazy=True).getBestCmap()
 
     def profile(self, gid):
         """(left, right) ink edge per scanline in YS, nan where empty."""
@@ -303,6 +308,15 @@ def solve(style, write=False):
         base, dot, suffix = n.partition(".")
         prod = ps.get(n) or (ps.get(base, base) + dot + suffix)
         sh.names[prod] = n
+    # glyphs added since the import have no stored production name (build.py
+    # derives it at compile time): read it from the binary's cmap instead
+    by_cp = {u: g.name for g in font for u in g.unicodes}
+    for u, prod in sh.face_cmap().items():
+        if u in by_cp:
+            sh.names[prod] = by_cp[u]
+            for n in font.keys():
+                if n.startswith(by_cp[u] + "."):
+                    sh.names[prod + n[len(by_cp[u]):]] = n
     SS = {"ss13": True}
     cond_bold = wdth == 75 and wght == 700
 
