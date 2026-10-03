@@ -313,20 +313,17 @@ impl VideoEditorApp {
     /// The rows the project menu offers right now.
     pub(super) fn project_menu_rows(&self) -> Vec<(ProjectMenuItem, String)> {
         let mut rows = vec![
-            (ProjectMenuItem::Open, "Open…  (Ctrl+O)".to_string()),
+            (ProjectMenuItem::Open, "Open…".to_string()),
             (
                 ProjectMenuItem::Save,
                 match &self.project_path {
-                    Some(_) => "Save  (Ctrl+S)".to_string(),
+                    Some(_) => "Save".to_string(),
                     // Naming what Save will actually do, rather than letting
                     // the user press it and be surprised by a file chooser.
-                    None => "Save…  (Ctrl+S)".to_string(),
+                    None => "Save…".to_string(),
                 },
             ),
-            (
-                ProjectMenuItem::SaveAs,
-                "Save As…  (Ctrl+Shift+S)".to_string(),
-            ),
+            (ProjectMenuItem::SaveAs, "Save as…".to_string()),
         ];
         // Recents, minus the project already open — an entry that reopens
         // what you are looking at is a row that does nothing.

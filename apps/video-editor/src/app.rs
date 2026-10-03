@@ -139,11 +139,6 @@ const HISTORY_MIN_STRIP_W: f64 = TRANSPORT_RIGHT_X + 100.0;
 const MIN_SCRUBBER_W: f64 = 90.0;
 /// Above this a longer bar buys no precision and just looks stretched.
 const MAX_SCRUBBER_W: f64 = 560.0;
-/// How dark the overlay-bin scrim gets at full reveal. The editor behind it
-/// must stay readable — the scrim says "the bin has the input now", it is not
-/// a curtain. Deliberately a number here rather than the alpha of
-/// `surfaces.scrim`: that token is opaque in every theme.
-const SCRIM_ALPHA: f64 = 0.55;
 /// What the editor says, in plain words, when a source's bytes are not on this
 /// device — the reference replicated but the content has not been hydrated
 /// from the FUSE (or the file is gone). One string so the bin row, the clip
@@ -1764,64 +1759,32 @@ impl VideoEditorApp {
         r.inspector.y0 + self.inspector_header(r).height
     }
 
-    /// The fixed header's measured extent: the clip's name and lane, and —
-    /// while the panel is tall enough to leave the controls a usable body
-    /// under it — the four facts about where the clip sits. Measured in the
-    /// roles it is drawn in, so the header and the body below it can never
-    /// overlap at any text size or window height; a panel too short for the
-    /// facts keeps the name and drops them rather than drawing over the body.
+    /// The fixed header's measured extent: the clip's name and its lane (or
+    /// that nothing is selected), measured in the roles it is drawn in, so the
+    /// header and the body below it never overlap at any text size or window
+    /// height. Everything else, the clip's facts included, scrolls.
     fn inspector_header(&self, r: &Regions) -> InspectorHeader {
         let scale = self.inspector_ui_scale();
-        let Some(clip) = self.selected().and_then(|id| self.project.clip(id)) else {
-            // Nothing selected: the header says so in the same two lines a
-            // clip's name and lane take, and the project's sections follow.
-            return self
-                .with_dialog_layout(|_, tr, theme| {
-                    let name = line_height(tr, &theme.text(TextRole::Heading));
-                    let sub = line_height(tr, &theme.text(TextRole::Caption));
-                    InspectorHeader {
-                        height: (S3 + name + S1 + sub + S3).min(r.inspector.height()),
-                        properties: false,
-                    }
-                })
-                .unwrap_or(InspectorHeader {
-                    height: 64.0 * scale,
-                    properties: false,
-                });
-        };
-        let width = r.inspector.width() - 2.0 * PAD * scale;
-        let fps = self.project.fps;
         self.with_dialog_layout(|_, tr, theme| {
             let name = line_height(tr, &theme.text(TextRole::Heading));
             let sub = line_height(tr, &theme.text(TextRole::Caption));
-            let values = [
-                timecode(clip.start, fps),
-                timecode(clip.duration(), fps),
-                timecode(clip.in_point, fps),
-                timecode(clip.out_point, fps),
-            ];
-            let rows = inspector_property_rows(&values);
-            let props = ui::widget::PropertyListFace::new(&rows).height(tr, theme, width);
-            let compact = S3 + name + S1 + sub + S3;
-            let full = compact + props + S2;
-            // The body keeps at least this much room for its controls.
-            let body_floor = (r.inspector.height() / 2.0).min(160.0 * scale);
-            if r.inspector.height() - full >= body_floor {
-                InspectorHeader {
-                    height: full,
-                    properties: true,
-                }
-            } else {
-                InspectorHeader {
-                    height: compact.min(r.inspector.height()),
-                    properties: false,
-                }
+            InspectorHeader {
+                height: (S3 + name + S1 + sub + S3).min(r.inspector.height()),
             }
         })
         .unwrap_or(InspectorHeader {
             height: 64.0 * scale,
-            properties: false,
         })
+    }
+
+    /// The selected clip's four facts as the property list draws them.
+    fn inspector_property_values(clip: &Clip, fps: f64) -> [String; 4] {
+        [
+            timecode(clip.start, fps),
+            timecode(clip.duration(), fps),
+            timecode(clip.in_point, fps),
+            timecode(clip.out_point, fps),
+        ]
     }
 
     fn inspector_viewport(&self, r: &Regions) -> Rect {
@@ -6141,11 +6104,10 @@ struct DialogType {
 pub(super) struct InspectorHeader {
     /// From the panel's top edge to where the scrolling body starts.
     pub(super) height: f64,
-    /// Whether the clip's position and source facts fit above the body.
-    pub(super) properties: bool,
 }
 
-/// The four facts the inspector's header states about the selected clip.
+/// The four facts the inspector states about the selected clip, at the top
+/// of its body.
 fn inspector_property_rows(values: &[String; 4]) -> [ui::widget::PropertyRow<'_>; 4] {
     fn row<'a>(label: &'a str, value: &'a str) -> ui::widget::PropertyRow<'a> {
         ui::widget::PropertyRow::new(label, value).with_kind(ui::TextKind::Numeric)
@@ -6655,7 +6617,7 @@ impl Widget for VideoEditorApp {
         // Editor body. When the bin is docked it draws in its column; when
         // it's an overlay flap it is drawn LAST so it floats over the body
         // behind a scrim.
-        if !r.bin_overlay {
+        if !r.bin_overlay && r.bin.width() > 1.0 {
             self.draw_bin(scene, transform, tr, theme, &r);
         }
         self.draw_preview(scene, transform, tr, theme, &r);
@@ -6663,7 +6625,7 @@ impl Widget for VideoEditorApp {
         // Docked, the inspector draws in its column. As an overlay it floats
         // over the preview it is editing — no scrim, so the picture the
         // sliders are changing stays visible while they change it.
-        if !r.inspector_overlay {
+        if !r.inspector_overlay && r.inspector.width() > 1.0 {
             self.draw_inspector(scene, transform, tr, theme, &r);
         }
         self.draw_timeline(scene, transform, tr, theme, presence, &r);
@@ -6671,17 +6633,17 @@ impl Widget for VideoEditorApp {
             self.draw_inspector(scene, transform, tr, theme, &r);
         }
         if r.bin_overlay {
-            // Dimming scrim, then the bin sliding in on top of it.
+            // The modal scrim over everything under the header row — the
+            // preview, the transport and the timeline alike — then the drawer
+            // sliding in on top of it. One scrim, from the theme.
             if r.scrim.width() > 0.0 {
-                // The themed scrim token gives the hue (raw black over a light
-                // theme reads as a hole); the *strength* is ours. The token is
-                // built with `from_rgb8`/`mix8`, so its own alpha is 1.0 in
-                // every theme — multiplying by it dimmed nothing and painted an
-                // opaque slab over the preview, transport, inspector and
-                // timeline, leaving a narrow window looking like a black void.
-                let a = self.bin_flap.reveal() * SCRIM_ALPHA;
-                let scrim = theme.tokens.colors.surfaces.scrim;
-                fill_rect(scene, transform, r.scrim, with_alpha(scrim, a));
+                ui::overlay::scrim::modal(
+                    scene,
+                    transform,
+                    r.scrim,
+                    self.bin_flap.reveal() as f32,
+                    theme,
+                );
             }
             if self.bin_flap.reveal() > 0.001 {
                 self.draw_bin(scene, transform, tr, theme, &r);
@@ -9040,9 +9002,9 @@ impl VideoEditorApp {
         scene.pop_layer();
         if let Some(hint_top) = l.footer_hint {
             let label = if self.help_scroll + 0.5 < l.max_scroll {
-                "Scroll for more shortcuts ↓"
+                "Scroll for more shortcuts"
             } else {
-                "Scroll up for earlier shortcuts ↑"
+                "Scroll up for earlier shortcuts"
             };
             text(scene, tr, tf, label, &ty.xs, dim, body.x0, hint_top);
         }

@@ -93,6 +93,9 @@ pub enum ShotScenario {
     /// The render after it failed, with the reason it gives, so the failing
     /// half of the chip can be reviewed as well as the working half.
     ExportFailed,
+    /// The export dialog open on that failure, with the reason in full: the
+    /// surface the chip leads back to.
+    ExportDialog,
     /// In and out marks on the timeline: the band across the ruler, the
     /// bracket at each mark, and the lanes outside the range greyed back — so
     /// what a render will and will not cover can be seen at a glance.
@@ -199,6 +202,7 @@ impl ShotScenario {
         "collaborators",
         "exporting",
         "exportfailed",
+        "export",
         "range",
         "format",
         "focusinspector",
@@ -239,6 +243,7 @@ impl ShotScenario {
             "collaborators" => ShotScenario::Collaborators,
             "exporting" => ShotScenario::ExportRunning,
             "exportfailed" => ShotScenario::ExportFailed,
+            "export" => ShotScenario::ExportDialog,
             "range" => ShotScenario::RenderRange,
             "format" => ShotScenario::ProjectFormat,
             "focusinspector" => ShotScenario::FocusInspector,
@@ -361,12 +366,13 @@ impl VideoEditorApp {
                 self.presentation.export_open = false;
                 self.export_status = ExportStatus::Rendering { progress: 0.62 };
             }
-            ShotScenario::ExportFailed => {
-                // The normal failure capture exercises the persistent chip;
-                // `TILO_VE_EXPORT=1` is the existing headless modal harness,
-                // and keeps this same failure visible in the full details
-                // surface for visual review.
-                let review_dialog = std::env::var_os("TILO_VE_EXPORT").is_some();
+            ShotScenario::ExportFailed | ShotScenario::ExportDialog => {
+                // The failure capture exercises the persistent chip; the
+                // dialog capture (or `TILO_VE_EXPORT=1`, the headless modal
+                // harness) keeps this same failure visible in the full
+                // details surface for visual review.
+                let review_dialog = self.shot_scenario == ShotScenario::ExportDialog
+                    || std::env::var_os("TILO_VE_EXPORT").is_some();
                 self.presentation.export_open = review_dialog;
                 self.export_status = ExportStatus::Failed {
                     reason: if review_dialog {
