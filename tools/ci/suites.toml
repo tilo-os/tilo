@@ -386,7 +386,7 @@ name = "browser-runtime-web"
 # The browser runtime's JavaScript: the web host, its loaders and bridges,
 # and the scripts that assemble the web core. app-installer reads the Rust
 # app catalogue.
-inputs = ["crates/browser/tilo-browser-runtime/"]
+inputs = ["crates/browser/tilo-browser-runtime/", "crates/collab/tilo-user-identity/tests/fixtures/root-envelope.json"]
 suites = [
   "crates/browser/tilo-browser-runtime/web/actions.test.mjs",
   "crates/browser/tilo-browser-runtime/web/agents.test.mjs",
@@ -398,6 +398,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/legacy-windows.test.mjs",
   "crates/browser/tilo-browser-runtime/web/live-cursors.test.mjs",
   "crates/browser/tilo-browser-runtime/web/peer.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/root-identity.test.mjs",
   "crates/browser/tilo-browser-runtime/web/webgpu-safety.test.mjs",
   "crates/browser/tilo-browser-runtime/scripts/web-runtime/external-workspace.test.mjs",
   "crates/browser/tilo-browser-runtime/web/asset-recovery.test.mjs",

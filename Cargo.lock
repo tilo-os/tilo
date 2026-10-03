@@ -16231,6 +16231,7 @@ dependencies = [
 name = "tilo-seal"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm 0.10.3",
  "argon2",
  "chacha20poly1305 0.11.0",
  "getrandom 0.4.3",
@@ -16521,6 +16522,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-files",
+ "tilo-seal",
  "tilo-secrets",
  "workspace-hack",
  "zeroize",
