@@ -1545,11 +1545,18 @@ floating surface's background, before its content.
 
 ### Where the blur actually renders
 
-The compositor blurs floating surfaces drawn into the shell's own scene
-(quick settings, the palette, shell menus and sheets, shell-hosted app
-surfaces). In a separate app window the same call paints the opaque panel
-ground: correct, never a hole, and it starts blurring with no code change once
-that renderer runs the pass. Do not special-case either.
+Everywhere a frame is presented: the shell's own scene (quick settings, the
+palette, shell menus and sheets), an app's own window, and every capture
+(`FrameHarness::render_png`/`render_rgba`, `ShotFrame::write_png`, so every
+`--shots`). A menu, popover, dropdown list, context menu, tooltip, sheet,
+toast or the action palette over content shows the same blur live and in a
+shot; with reduced transparency or forced colours it is the opaque panel
+ground in both. Nothing to do in an app: the call is the same. Do not
+special-case either path.
+
+A surface stays opaque only where nothing composes what is behind it: a
+scratch `Scene` a widget draws into and never appends, or a cache it appends
+without `backdrop::append_nested` (below).
 
 ### Settings app
 
@@ -1578,6 +1585,21 @@ A host that draws floating surfaces and renders the result itself:
 4. Shell: `FrameBuilder::paint_with_damage` puts it on `FramePaint::backdrop`;
    after `FrameBuilder::paint` take it with `FrameBuilder::take_backdrop()` and
    hand it on with `FramePaint::with_backdrop` or `OffscreenRenderer::set_backdrop`.
+5. A frame painted in passes (a main pass, then a top layer drawn later into
+   the same scene): finish the first recording and resume it with
+   `BackdropRecording::continuing(surfaces)` for the next pass, naming the
+   scene again, so the frame's regions keep distinct placeholders
+   (`ShotFrame::draw` then `ShotFrame::draw_overlay` do this).
+6. A widget that draws children into its own cache scene and appends it
+   later (`Column`, `Row`): `backdrop::nest_scene(&cache)` before drawing
+   into it, then `backdrop::append_nested(scene, &cache, transform)` instead
+   of `scene.append(..)`. It returns how many floating surfaces the cache
+   carried; while it carried any, redraw the cache every frame instead of
+   reusing it, or the reused surfaces show the opaque ground.
+7. App window (`ui::App`, done by the framework): `RenderRequest::Frame`
+   carries the frame's `backdrop`; the render thread prepares the blur on
+   its own renderer before rasterising and redraws in full while a backdrop
+   is present and on the frame after.
 
 ## Theming
 
