@@ -27,6 +27,8 @@ pub enum UnpackError {
     TooManyPayloadEntries { found: usize, limit: usize },
     #[error("application payload materializes to {found} bytes; limit is {limit}")]
     PayloadTooLarge { found: u64, limit: u64 },
+    #[error("image tree: {0}")]
+    BadTree(String),
 }
 
 /// Validate the filesystem work a decoded payload collection represents.
@@ -130,6 +132,22 @@ pub fn unpack(
             perm.set_mode(perm.mode() | 0o111);
             file.set_permissions(perm)?;
         }
+    }
+    if meta.manifest.package.kind.is_image() {
+        let tree = crate::image::TreeSpec::from_bytes(&std::fs::read(
+            dest_dir.join(crate::image::TREE_FILE),
+        )?)
+        .and_then(|tree| tree.check(&meta.collection).map(|()| tree))
+        .map_err(|error| UnpackError::BadTree(error.to_string()))?;
+        #[cfg(unix)]
+        for path in &tree.executable {
+            use std::os::unix::fs::PermissionsExt;
+            let path = dest_dir.join(path);
+            let mut perm = std::fs::metadata(&path)?.permissions();
+            perm.set_mode(perm.mode() | 0o111);
+            std::fs::set_permissions(&path, perm)?;
+        }
+        tree.apply(dest_dir)?;
     }
     Ok(())
 }

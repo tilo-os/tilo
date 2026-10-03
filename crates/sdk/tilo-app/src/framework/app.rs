@@ -31,6 +31,7 @@ use {
 };
 
 use super::dispatch::Dispatcher;
+use super::effect::Effects;
 use super::live::Live;
 use super::root::ResourceRoot;
 use super::stage::Stages;
@@ -235,9 +236,16 @@ pub(crate) fn build_root<A: ResourceApp>(
     let saved = ui_core::LocalState::new(ui_core::record::RecordSaveStatus::Saved);
     let stages = Stages::new();
     let storage = super::settings::ViewStorage::new(storage);
+    // Effects run in the live app only; History shows a past version.
+    let effects = permissions
+        .is_some()
+        .then(|| Effects::live(dispatch.clone(), live.clone()));
     let mut cx = ViewCx::root(
         live, updaters, &alive, dispatch, published, saved, stages, storage,
     );
+    if let Some(effects) = effects {
+        cx.effects = effects;
+    }
     let content = A::view(&mut cx);
     let live = permissions.is_some();
     let root = ResourceRoot::new(A::TITLE, icon::<A>(), label, cx, alive, content)
