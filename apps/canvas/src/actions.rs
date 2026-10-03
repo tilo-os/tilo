@@ -1075,7 +1075,9 @@ impl EditMarks {
             *size = width;
         }
         if let Some(amount) = self.smooth {
-            *points = crate::brushes::smoothed(points, amount);
+            // Laid evenly to smooth it, then as few points as keep its curve.
+            let smooth = crate::brushes::smoothed(points, amount);
+            *points = crate::brushes::simplified(&smooth, 0.1);
         }
         if let Some(tolerance) = self.simplify {
             *points = crate::brushes::simplified(points, tolerance);

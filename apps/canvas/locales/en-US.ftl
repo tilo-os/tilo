@@ -63,7 +63,6 @@ canvas-history = History
 canvas-dock-fold = Fold the layers and history away
 canvas-dock-unfold = Show the layers and history
 canvas-medium-plain = Plain
-canvas-medium-plain-ink = Plain ink
 canvas-medium-oil = Oil
 canvas-medium-watercolour = Watercolour
 canvas-layer-rename = Layer name, double-click to rename
