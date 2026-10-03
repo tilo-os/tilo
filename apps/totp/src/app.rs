@@ -50,6 +50,13 @@ use crate::model::{AccountId, Vault, demo_accounts};
 use crate::storage;
 use crate::totp;
 
+/// Seconds into a thirty-second period at which a capture shows its codes: the
+/// rings are about two thirds full.
+const CAPTURE_ELAPSED: u64 = 11;
+/// Seconds into the period at which the expiring capture shows them: the last
+/// few, when the rings turn to their warning tone.
+const CAPTURE_EXPIRING_ELAPSED: u64 = 27;
+
 /// How long a toast stays on screen.
 const TOAST_TTL: Duration = Duration::from_millis(1800);
 
@@ -146,6 +153,10 @@ pub struct AuthenticatorApp {
     /// the last one so a test can prove a button and its
     /// [`ActionSpec`](tilo_actions::ActionSpec) build the identical action.
     actions: crate::resource::ActionSink,
+    /// Whether the list has accounts, for the window's header row to follow.
+    has_accounts: Option<ui::LocalState<bool>>,
+    /// A capture's clock was moved to its scenario's step already.
+    clock_staged: bool,
 }
 
 impl Default for AuthenticatorApp {
@@ -229,7 +240,17 @@ impl AuthenticatorApp {
             vault_recovery_required: false,
             persistence_message: None,
             actions: crate::resource::ActionSink::default(),
+            has_accounts: None,
+            clock_staged: false,
         }
+    }
+
+    /// Report through `signal` whether the list has accounts, so the header
+    /// row's actions can step aside for the empty state.
+    #[must_use]
+    pub(crate) fn with_account_signal(mut self, signal: ui::LocalState<bool>) -> Self {
+        self.has_accounts = Some(signal);
+        self
     }
 
     /// Populate the initial vault. The live app loads the user's persisted
@@ -409,6 +430,9 @@ impl AuthenticatorApp {
     fn refresh_list(&mut self) {
         self.list.set_selected(self.selected);
         self.list.set_accounts(self.vault.ordered());
+        if let Some(signal) = &self.has_accounts {
+            signal.set(!self.list.is_empty());
+        }
     }
 
     fn toast(&mut self, msg: impl Into<String>, kind: ToastKind) {
@@ -837,6 +861,26 @@ impl AuthenticatorApp {
         let _ = self.open_selected_for_edit();
     }
 
+    /// Move a capture's pinned clock into the step of the codes' period the
+    /// scenario shows, so the countdown rings are part-way round (and, for
+    /// the expiring scenario, in their last seconds). The capture pins the
+    /// clock to the top of a minute, where every thirty-second period has just
+    /// begun; a live window and a test run on the real clock and are left alone.
+    fn stage_clock(&mut self, scenario: Option<&str>) {
+        if !ui::time::wall_frozen() || self.clock_staged {
+            return;
+        }
+        self.clock_staged = true;
+        let elapsed = if scenario == Some("expiring") {
+            CAPTURE_EXPIRING_ELAPSED
+        } else {
+            CAPTURE_ELAPSED
+        };
+        if let Some(at) = ui::time::wall().checked_add(Duration::from_secs(elapsed)) {
+            ui::time::freeze_wall(at);
+        }
+    }
+
     /// Stage a capture scenario: a deterministic demo vault, in the state the
     /// scenario shows. Never called in a live window.
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
@@ -851,6 +895,7 @@ impl AuthenticatorApp {
         self.persistence_pending = false;
         self.persistence_message = None;
         self.toast = None;
+        self.stage_clock(scenario);
         if matches!(scenario, Some("missing-secret" | "provision"))
             && let Some(account) = self.vault.accounts.first_mut()
         {
@@ -910,43 +955,58 @@ impl AuthenticatorApp {
         self.banner_rect = Rect::ZERO;
         self.retry_rect = Rect::ZERO;
         if self.persistence_pending {
-            let gap = f64::from(spacing.s3);
-            let retry_h = ButtonFace::height(ControlSize::Regular, theme);
-            let retry = ButtonFace::new(Rect::ZERO, RETRY_LABEL).role(ButtonRole::Primary);
-            let retry_w = retry.intrinsic_width(ctx.text, theme);
-            let banner_w = (self.column.width() - retry_w - gap).max(0.0);
-            // The banner is as tall as its two lines need at this width: the
-            // headline, then what the person can do about it.
             let metrics = &theme.tokens.metrics;
-            let text_w =
-                (banner_w - 2.0 * f64::from(spacing.s4) - f64::from(metrics.icon_md) - gap)
-                    .max(1.0);
+            let pad = f64::from(spacing.s4);
+            let gap = f64::from(spacing.s3);
+            let detail = self
+                .persistence_message
+                .as_deref()
+                .unwrap_or(UNSAVED_DETAIL);
+            let headline_style = theme.text(TextRole::Body).strong();
+            let detail_style = theme.text(TextRole::Caption);
+            let retry_h = ButtonFace::height(ControlSize::Regular, theme);
+            let retry_w = ButtonFace::new(Rect::ZERO, RETRY_LABEL)
+                .role(ButtonRole::Secondary)
+                .intrinsic_width(ctx.text, theme);
+            // The banner spans the column the rows stand in. Its text starts
+            // after the icon; Retry sits inside the box at its trailing edge
+            // when both lines fit beside it, and under the box otherwise.
+            let text_x = pad + f64::from(metrics.icon_md) + gap;
+            let (headline_w, _) = ctx.text.measure_style(UNSAVED_TITLE, None, &headline_style);
+            let (detail_w, _) = ctx.text.measure_style(detail, None, &detail_style);
+            let natural_w = f64::from(headline_w.max(detail_w));
+            let beside = text_x + natural_w + gap + retry_w + pad <= self.column.width();
+            let text_w = (self.column.width() - text_x - pad).max(1.0);
             let (_, headline_h) = ctx.text.measure_style(
                 UNSAVED_TITLE,
                 Some(ui::num::f32_of_f64(text_w)),
-                &theme.text(TextRole::Body).strong(),
+                &headline_style,
             );
-            let (_, detail_h) = ctx.text.measure_style(
-                self.persistence_message
-                    .as_deref()
-                    .unwrap_or(UNSAVED_DETAIL),
-                Some(ui::num::f32_of_f64(text_w)),
-                &theme.text(TextRole::Caption),
-            );
+            let (_, detail_h) =
+                ctx.text
+                    .measure_style(detail, Some(ui::num::f32_of_f64(text_w)), &detail_style);
             let banner_h =
                 (f64::from(headline_h) + f64::from(spacing.s1) + f64::from(detail_h) + 2.0 * gap)
-                    .max(f64::from(metrics.panel_row_height))
-                    .max(retry_h);
+                    .max(f64::from(metrics.panel_row_height));
             let y0 = top + f64::from(spacing.s2);
-            self.banner_rect =
-                Rect::new(self.column.x0, y0, self.column.x0 + banner_w, y0 + banner_h);
-            self.retry_rect = Rect::new(
-                self.column.x1 - retry_w,
-                y0 + (banner_h - retry_h) / 2.0,
-                self.column.x1,
-                y0 + f64::midpoint(banner_h, retry_h),
-            );
-            top = y0 + banner_h + f64::from(spacing.s2);
+            self.banner_rect = Rect::new(self.column.x0, y0, self.column.x1, y0 + banner_h);
+            let retry_origin = if beside {
+                Point::new(
+                    self.column.x1 - pad - retry_w,
+                    y0 + (banner_h - retry_h) / 2.0,
+                )
+            } else {
+                Point::new(
+                    self.column.x1 - retry_w,
+                    y0 + banner_h + f64::from(spacing.s2),
+                )
+            };
+            self.retry_rect = Rect::from_origin_size(retry_origin, (retry_w, retry_h));
+            top = if beside {
+                self.banner_rect.y1
+            } else {
+                self.retry_rect.y1
+            } + f64::from(spacing.s2);
         }
         let list_rect = Rect::new(self.rect.x0, top, self.rect.x1, self.rect.y1);
         self.list.set_viewport(list_rect, self.column);
@@ -960,8 +1020,8 @@ impl AuthenticatorApp {
             ctx,
             self.banner_rect,
             &BannerContent {
-                kind: BannerKind::Error,
-                icon: BannerKind::Error.default_icon(),
+                kind: BannerKind::Warning,
+                icon: BannerKind::Warning.default_icon(),
                 title: UNSAVED_TITLE,
                 message: Some(
                     self.persistence_message
@@ -978,7 +1038,7 @@ impl AuthenticatorApp {
             ctx.text,
             ctx.theme,
             &ButtonFace::new(self.retry_rect, RETRY_LABEL)
-                .role(ButtonRole::Primary)
+                .role(ButtonRole::Secondary)
                 .hovered(self.retry_rect.contains(self.last_mouse)),
         );
     }

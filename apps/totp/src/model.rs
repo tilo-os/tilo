@@ -14,7 +14,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use vello::peniko::Color;
 
+use ui::color::contrast_ratio;
 use ui::theme::Theme;
+use ui::widget::avatar::initial_ink;
 
 /// Stable identifier for one account. Backs every cross-reference and
 /// the per-account Map key in the CRDT.
@@ -321,12 +323,13 @@ pub fn parse_otpauth_uri(uri: &str, new_id: AccountId) -> Result<Account, String
     })
 }
 
-/// Normalise a base32 secret: strip whitespace + padding, upper-case.
+/// Normalise a base32 secret: strip whitespace + padding, upper-case (base32
+/// is ASCII, so anything else stays and fails to decode).
 pub fn normalise_secret(s: &str) -> String {
     s.chars()
         .filter(|c| !c.is_whitespace() && *c != '=')
         .collect::<String>()
-        .to_uppercase()
+        .to_ascii_uppercase()
 }
 
 /// Reject obvious pasted TOTP material in a display identity before it can
@@ -337,11 +340,40 @@ pub fn contains_secret_shaped_text(value: &str) -> bool {
         .any(|run| run.len() >= 16 && run.bytes().all(|b| matches!(b, b'A'..=b'Z' | b'2'..=b'7')))
 }
 
+/// The WCAG AA floor an avatar's initials must clear against its fill.
+const AVATAR_INK_CONTRAST: f64 = 4.5;
+
 /// Resolve an account's avatar colour from its `color` slot against the
-/// theme's presence palette (wrapping). Presence hues share one lightness and
-/// chroma, so no account looks more important than another.
+/// theme's presence palette. Presence hues share one lightness and chroma, but
+/// at a mid lightness some hues leave their initials under AA whichever ink
+/// is chosen, and neighbouring rows would wear different inks. The slots
+/// wrap over the hues whose initials clear AA in the one ink most of them
+/// share in this theme, so every avatar reads the same way.
 pub fn account_color(theme: &Theme, color_index: u8) -> Color {
-    theme.tokens.colors.presence.get(usize::from(color_index))
+    let palette = &theme.tokens.colors.presence;
+    let reading = |fill: Color| {
+        let ink = initial_ink(fill, theme);
+        (ink == theme.text_primary, contrast_ratio(ink, fill))
+    };
+    let legible: Vec<Color> = palette
+        .colors
+        .iter()
+        .copied()
+        .filter(|fill| reading(*fill).1 >= AVATAR_INK_CONTRAST)
+        .collect();
+    let primary_ink = legible.iter().filter(|fill| reading(**fill).0).count();
+    let primary_wins = primary_ink * 2 > legible.len();
+    let uniform: Vec<Color> = legible
+        .into_iter()
+        .filter(|fill| reading(*fill).0 == primary_wins)
+        .collect();
+    if uniform.is_empty() {
+        return palette.get(usize::from(color_index));
+    }
+    uniform
+        .get(usize::from(color_index) % uniform.len())
+        .copied()
+        .unwrap_or_else(|| palette.get(usize::from(color_index)))
 }
 
 /// Sample vault for captures and tests: a handful of recognisable services
