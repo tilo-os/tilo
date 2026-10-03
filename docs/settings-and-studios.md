@@ -71,10 +71,10 @@ Do not hide expert capability behind a global “advanced mode.” Prefer a stab
 
 ### Themes
 
-- Settings owns the active preset plus accessibility, text scale, UI scale, and reduced motion.
-- Theme Studio owns authoring, duplication, import/export, token inspection, and preview.
-- The shared `appearance` record carries Settings' canonical active state. Studio's editable artifact is nested under `appearance.studio`, while `appearance.custom_theme` contains the validated, versioned runtime schema. Both writers merge fields they do not own.
-- Built-in Studio themes resolve through the shared `ui::Theme` constructors. Custom themes materialize through `ui::CustomThemeSpec`, the same exact color, shape, spacing, and typography contract consumed by shell chrome and every app.
+- Settings owns the mode (light, dark, automatic), which preset each mode shows, density, your colour, and accessibility (high contrast, text size, UI scale, reduced motion, reduced transparency).
+- Theme Studio owns authoring, duplication, export, contrast findings and preview of theme documents.
+- The shared `appearance` record carries the canonical state (`mode`, `dark_theme`, `light_theme`, `density`, `custom_themes`); `identity.colour` carries your colour. Theme Studio writes the document of a theme it applies into `custom_themes`. Both writers merge fields they do not own.
+- Every theme — preset or custom — is a `ui::theme::ThemeDocument`, the versioned contract consumed by shell chrome and every app (`docs/architecture/theming.md`).
 
 ### People and identities
 
