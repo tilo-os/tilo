@@ -7,11 +7,13 @@ prevents wrapping, clipping, and baseline drift.
 
 The product font policy is deterministic: Instrument Sans is the UI face,
 Noto Serif is the reading serif, and Noto Sans Mono is the code face. The
-renderer pins all three generic families to those names. Noto Sans is the
-first fallback, so Greek, Cyrillic and Vietnamese text in the UI is set in
-Noto Sans; the OS image adds Noto fallbacks for symbols, emoji, CJK, Arabic,
-Hebrew, Devanagari, Bengali, and Thai. Application code names a role, never a
-family or a size.
+renderer pins all three generic families to those names; a theme can set the
+UI face to the built-in Hyperlegible face instead ([UI faces](#ui-faces)).
+Scripts the UI face lacks fall back to faces matched to it ([Script
+fallbacks](#script-fallbacks)); the catalog adds Noto for symbols, emoji, CJK,
+Arabic, Hebrew, Devanagari, Bengali, and Thai. Application code names a role
+and, where a widget cannot know it, a [text kind](#text-kinds) — never a
+family, a size or an OpenType feature.
 
 ## Roles
 
@@ -40,8 +42,9 @@ Three modifiers keep the role and change one property:
 - `.strong()` raises the weight one step (Regular/Medium to Semibold,
   Semibold to Bold) for emphasis inside a role, e.g. a selected row or an
   unread sender.
-- `.numeric()` selects tabular lining figures, for any number that changes in
-  place or lines up in a column (counters, clocks, sizes, table cells).
+- `.numeric()` says the text is [`TextKind::Numeric`](#text-kinds): tabular
+  figures, for any number that changes in place or lines up in a column
+  (counters, clocks, sizes, table cells).
 - `with_italic(true)` sets the role in the italic of its family.
 
 ## Application text
@@ -97,8 +100,106 @@ names. This keeps fallback, OpenType features, variable axes, wrapping and
 interaction geometry in the one implementation even when an application needs
 canvas-like chrome instead of a widget tree.
 
+## Text kinds
+
+Apps never set OpenType features. They say what a piece of text *is*, and the
+toolkit picks the features from that against the face the text is actually
+set in, applying only what that face has and leaving out the rest silently.
+
+| `TextKind` | Text | Features, where the face has them |
+|---|---|---|
+| `Prose` (default) | Running text; numbers in sentences stay proportional | none |
+| `Numeric` | Times, dates, durations, counts in tables and lists, prices, sizes, progress, clocks, table numeric columns, stat values, timestamps in rows | tabular lining figures (`tnum`, `lnum`) |
+| `Secret` | Verification and recovery codes, TOTP, API keys, hashes, IDs, revealed passwords, Wi-Fi and licence keys | tabular figures, slashed or dotted zero (`zero`), distinct I and l |
+| `Identifier` | Usernames, handles, email addresses, invite codes, room names shown for verification, other people's file names, URLs in permission prompts and link previews | distinct I and l |
+| `Code` | Source and terminal text | none; set in the mono face |
+
+"Distinct I and l" is whatever stylistic set or character variant of the face
+changes I or l and nothing but their look-alikes (1, |, accented I and l),
+found in the face's own `GSUB`. Nothing names a font or a feature tag, so a
+face that gains such a set (Tilo Sans) is used for it with no code change;
+Instrument Sans has none, so identifiers in the default face are unchanged
+today, while Hyperlegible's letterforms are distinct by design.
+
+Widgets whose content is inherently one kind set it themselves: `StatTile`
+values, the status-bar clock, gauge and badge counts, the pairing code in the
+identity flow (`Secret`), conflict timestamps, and a `TextInput` from its
+`TextInputKind` (`Username`, `Email`, `Url` and `Path` are `Identifier`,
+`Number` is `Numeric`, `Code` is `Code`, `Password` and `Secret` are
+`Secret`), applied while typing. Declare a kind only where a widget cannot
+know it:
+
+```rust
+use ui::TextKind;
+
+let code = Text::new("482 913").with_role(TextRole::Display).with_kind(TextKind::Secret);
+let handle = Text::new("@ilya_l1").with_kind(TextKind::Identifier);
+let size = ColumnDef::new("size", "Size", ColumnWidth::Fixed(90.0))
+    .with_text(|file: &File| file.size_label())
+    .with_kind(TextKind::Numeric);
+let key = TextInput::local().with_kind(TextInputKind::Secret);
+// Custom painting: the same style for measuring and drawing.
+let style = theme.text(TextRole::Caption).with_kind(TextKind::Numeric);
+```
+
+The kind is part of `TextStyle`, so it takes part in measurement, shaping and
+the caches exactly like size and weight. The typography audit
+(the `opentype` ratchet in `crates/sdk/ui-core/tests/typography_token_audit.rs`)
+counts raw feature settings in `apps/` and only lets the count fall.
+
+## Script fallbacks
+
+Instrument Sans covers Latin. Before shaping, every run is split into spans
+of one face: a word in a script the run's face lacks is set in a face matched
+to it for that script, and everything else stays in the run's face. The split
+is part of the one shaping path that both measurement and painting use.
+
+| Script | Face | Shapes | Weight (UI 400 / 500 / 600 / 700) |
+|---|---|---|---|
+| Cyrillic | Onest | `ss02` (closest to Instrument) | 390 / 510 / 630 / 750 |
+| Greek | Geologica | default | 215 / 348 / 481 / 614 |
+| Italic Cyrillic and Greek, Vietnamese, other Latin the face lacks | Noto Sans | default | as the UI |
+| CJK, Arabic, Hebrew, Indic, Thai, symbols, emoji | Noto, unchanged | | |
+
+- **Size.** Each fallback span is set at the size that gives it the UI
+  face's x-height (`OS/2` x-height at the fallback's weight, else the measured
+  `x`), so both sit on the same x-height at every size. Line height never
+  changes.
+- **Weight.** The fallback weight is a linear map of the UI weight, chosen so
+  the stems at the matched x-height are as heavy as the UI face's; it is
+  proportional across the whole axis and clamped to the face's range.
+- **Words, not glyphs.** A word goes to the fallback when the UI face lacks
+  any of its letters, so a Vietnamese word is never set half in one face.
+  Punctuation stays with the word it closes or opens; spaces, digits and
+  dashes between two faces are the UI face's.
+- **Italic.** Onest and Geologica have no italic, so italic Greek and
+  Cyrillic use Noto Sans Italic, x-height matched.
+- **Any UI face.** The fallbacks are matched to the run's own face, so they
+  apply to Hyperlegible (or any theme face that lacks the script) at its
+  x-height. A face that covers a script, like Tilo Sans will, keeps it.
+  Monospaced faces are never split.
+
+The fallback faces ship as subsets of their upstream releases, built by
+`tools/font-fallback-subsets.py` (see the catalog's `PROVENANCE.md`).
+
+## UI faces
+
+A theme's type role names the UI face: `Default` (Instrument Sans) or
+`Hyperlegible` (Atkinson Hyperlegible Next, upright and italic, 200–800),
+the face whose letterforms are designed to be told apart at low vision.
+`ui::UiFace` lists the built-in faces; `Typography::set_face("Hyperlegible")`
+selects one by the name a theme document stores, and `face_name()` reports
+it back. Any other value is taken as a family name. The accessibility layer's
+`hyperlegible` flag sets the Hyperlegible face over whatever the theme chose.
+Every role, and text built on the generic sans family (inputs, toolkit
+internals), follows the theme's UI face; reading and code keep their faces,
+and the legibility floors apply unchanged.
+
 ## OpenType and paragraph controls
 
+These controls are for document engines (the ebook reader, book
+composition, the specimen gallery), not for application chrome, which says
+what text is with a [text kind](#text-kinds) instead.
 `TextStyle` carries advanced typography through the same measurement, shaping,
 painting, hit-testing, and cache path as its basic metrics. Feature tags use
 four-byte [`OpenTypeTag`] values, so common controls have convenient builders

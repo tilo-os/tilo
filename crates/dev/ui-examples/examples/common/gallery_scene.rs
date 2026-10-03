@@ -643,7 +643,7 @@ fn build_empty_and_table_cards() -> (Box<dyn Widget>, Box<dyn Widget>) {
             "Hours",
             tilo_ui::widget::data_table::ColumnWidth::Flex(1.0),
         )
-        .numeric()
+        .with_kind(tilo_ui::text_render::TextKind::Numeric)
         .with_optional_text(|t: &Task| t.hours.map(|h| h.to_string()), "Not estimated"),
     ]);
     tasks.set_rows(vec![

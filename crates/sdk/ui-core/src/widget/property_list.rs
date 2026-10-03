@@ -22,7 +22,7 @@ use crate::a11y::{AccessNode, Role};
 use crate::icons::Icon;
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
-use crate::text_render::{TextRenderer, TextStyle};
+use crate::text_render::{TextKind, TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::tokens::colors::Colors;
@@ -33,8 +33,10 @@ use crate::widget::{TaffyTreeExt, Widget};
 pub struct PropertyRow<'a> {
     pub label: &'a str,
     pub value: &'a str,
-    /// Set the value in tabular figures (sizes, hashes, offsets, dates).
-    pub numeric: bool,
+    /// What the value is: [`TextKind::Numeric`] for sizes, offsets and
+    /// dates, [`TextKind::Identifier`] for addresses and handles,
+    /// [`TextKind::Secret`] for keys and hashes.
+    pub kind: TextKind,
     /// One trailing action for this value.
     pub action: Option<(Icon, &'a str)>,
 }
@@ -45,14 +47,14 @@ impl<'a> PropertyRow<'a> {
         Self {
             label,
             value,
-            numeric: false,
+            kind: TextKind::Prose,
             action: None,
         }
     }
 
     #[must_use]
-    pub fn numeric(mut self) -> Self {
-        self.numeric = true;
+    pub fn with_kind(mut self, kind: TextKind) -> Self {
+        self.kind = kind;
         self
     }
 
@@ -69,7 +71,6 @@ struct ListMetrics {
     label: TextStyle,
     stacked_label: TextStyle,
     value: TextStyle,
-    value_numeric: TextStyle,
     pad_x: f64,
     pad_y: f64,
     column_gap: f64,
@@ -89,7 +90,6 @@ impl ListMetrics {
             label: theme.text(TextRole::Body),
             stacked_label: theme.text(TextRole::Caption),
             value: theme.text(TextRole::Body),
-            value_numeric: theme.text(TextRole::Body).numeric(),
             pad_x: f64::from(spacing.s2),
             pad_y: f64::from(spacing.s1),
             column_gap: f64::from(spacing.s4),
@@ -102,12 +102,8 @@ impl ListMetrics {
         }
     }
 
-    fn value_style(&self, row: &PropertyRow<'_>) -> &TextStyle {
-        if row.numeric {
-            &self.value_numeric
-        } else {
-            &self.value
-        }
+    fn value_style(&self, row: &PropertyRow<'_>) -> TextStyle {
+        self.value.clone().with_kind(row.kind)
     }
 }
 
@@ -184,7 +180,7 @@ fn lay_out(
             )
         };
         let wrap = crate::num::f32_of_f64(value_width.max(1.0));
-        let value_h = f64::from(text.measure_style(row.value, Some(wrap), value_style).1);
+        let value_h = f64::from(text.measure_style(row.value, Some(wrap), &value_style).1);
         let label_h = f64::from(text.measure_style(row.label, None, &m.label).1);
         let content = if stacked {
             label_top_h + value_h
@@ -351,7 +347,7 @@ fn paint_layout(
         ctx.text(row.label, label_style, theme.text_dim, geo.label, None);
         ctx.text(
             row.value,
-            m.value_style(row),
+            &m.value_style(row),
             theme.text_primary,
             geo.value,
             Some(crate::num::f32_of_f64(geo.value_width.max(1.0))),
@@ -384,7 +380,7 @@ const STRIPE_ALPHA: u8 = 10;
 pub struct Property {
     label: String,
     value: String,
-    numeric: bool,
+    kind: TextKind,
     action: Option<PropertyAction>,
 }
 
@@ -402,15 +398,15 @@ impl Property {
         Self {
             label: label.into(),
             value: value.into(),
-            numeric: false,
+            kind: TextKind::Prose,
             action: None,
         }
     }
 
-    /// See [`PropertyRow::numeric`].
+    /// See [`PropertyRow::kind`].
     #[must_use]
-    pub fn numeric(mut self) -> Self {
-        self.numeric = true;
+    pub fn with_kind(mut self, kind: TextKind) -> Self {
+        self.kind = kind;
         self
     }
 
@@ -439,7 +435,7 @@ impl Property {
 
     fn row(&self) -> PropertyRow<'_> {
         let mut row = PropertyRow::new(&self.label, &self.value);
-        row.numeric = self.numeric;
+        row.kind = self.kind;
         row.action = match &self.action {
             None => None,
             Some(PropertyAction::Copy) => Some((Icon::Copy, "Copy")),
@@ -699,7 +695,7 @@ mod tests {
     fn rows() -> Vec<PropertyRow<'static>> {
         vec![
             PropertyRow::new("Email", "ada.lovelace@example.org"),
-            PropertyRow::new("Phone", "+44 20 7946 0958").numeric(),
+            PropertyRow::new("Phone", "+44 20 7946 0958").with_kind(TextKind::Numeric),
             PropertyRow::new(
                 "Address",
                 "12 St James's Square, London SW1Y 4JH, United Kingdom",

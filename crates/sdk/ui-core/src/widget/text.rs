@@ -3,8 +3,8 @@ use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::{
     FontChoice, HangingPunctuation, NumericStyle, OpenTypeTag, OpticalSizing, ParagraphAlign,
-    TextLayoutConstraints, TextLayoutEngine, TextRenderer, TextScaling, TextStyle, TextWeight,
-    TextWrapMode,
+    TextKind, TextLayoutConstraints, TextLayoutEngine, TextRenderer, TextScaling, TextStyle,
+    TextWeight, TextWrapMode,
 };
 use crate::theme::Theme;
 use crate::tokens::{TextRole, Typography};
@@ -91,7 +91,7 @@ struct TextModifiers {
     italic: Option<bool>,
     family: Option<FontChoice>,
     line_height: Option<f32>,
-    numeric: bool,
+    kind: Option<TextKind>,
     content_size: Option<f32>,
     /// Carries the OpenType features, variations, paragraph and
     /// hyphenation choices; its size, weight and family are unused.
@@ -106,7 +106,7 @@ impl Default for TextModifiers {
             italic: None,
             family: None,
             line_height: None,
-            numeric: false,
+            kind: None,
             content_size: None,
             layered: TextStyle::new(0.0),
         }
@@ -380,7 +380,15 @@ impl Text {
     /// Tabular lining figures, for numbers in a column or a changing readout.
     #[must_use]
     pub fn numeric(self) -> Self {
-        self.modify(|m| m.numeric = true)
+        self.with_kind(TextKind::Numeric)
+    }
+
+    /// Say what the text is ([`TextKind`]): the toolkit picks its OpenType
+    /// features from that against the face it is set in. `Code` also sets it
+    /// in the theme's mono face.
+    #[must_use]
+    pub fn with_kind(self, kind: TextKind) -> Self {
+        self.modify(|m| m.kind = Some(kind))
     }
 
     /// Document-space text at exactly `px` logical pixels: a zoomed canvas,
@@ -429,8 +437,11 @@ impl Text {
         style.wrap_mode = layered.wrap_mode;
         style.hanging_punctuation = layered.hanging_punctuation;
         style.fragmentation = layered.fragmentation;
-        if modifiers.numeric {
-            style = style.numeric();
+        if let Some(kind) = modifiers.kind {
+            style.kind = kind;
+            if kind == TextKind::Code && modifiers.family.is_none() {
+                style.family = FontChoice::Named(typography.mono_family.clone());
+            }
         }
         style
     }
@@ -1270,12 +1281,12 @@ mod tests {
             let strong = Text::new("Strong").with_role(TextRole::Label).strong();
             assert_eq!(strong.text_style().weight, TextWeight::Semibold);
             let numeric = Text::new("12.50").numeric();
-            assert!(
-                numeric
-                    .text_style()
-                    .font_features
-                    .iter()
-                    .any(|feature| feature.tag == OpenTypeTag::TABULAR_NUMERALS)
+            assert_eq!(numeric.text_style().kind, TextKind::Numeric);
+            assert!(numeric.text_style().font_features.is_empty());
+            let code = Text::new("a1b2").with_kind(TextKind::Code);
+            assert_eq!(
+                code.text_style().family,
+                FontChoice::Named(crate::text_render::UI_MONOSPACE_FAMILY.into())
             );
         }
 
