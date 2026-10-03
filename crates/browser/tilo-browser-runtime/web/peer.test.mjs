@@ -847,3 +847,35 @@ test('a pre-admitted person joins without waiting for the owner', async () => {
   assert.equal(runtime.peer.room, ROOM);
   await peer.dispose();
 });
+
+test('an old membership retry cannot replace a rejoined publishers presence subscription', async () => {
+  const runtime = fakeRuntime();
+  const carriers = fakeCarriers();
+  const timers = [];
+  const layer = createLiveLayer({
+    liveGrant: async () => JSON.stringify({token: '0102', room: ROOM_HEX, publisher: SELF, expiresAtNs: (Date.now() + 600000) * 1e6}),
+    sealLive: async (_room, bytes) => bytes,
+    openLive: async (_room, bytes) => bytes.slice(1),
+  }, runtime, ROOM, {
+    endpoint: 'test', carriers,
+    setTimer: callback => { timers.push(callback); return timers.length; }, clearTimer() {},
+  });
+  try {
+    await until(() => carriers.connects[0]?.memberWatcher, 'the live member watcher');
+    const session = carriers.connects[0];
+    session.memberWatcher(OTHER, true);
+    session.presenceEnds[0]();
+    const oldRetry = timers.at(-1);
+    session.memberWatcher(OTHER, false);
+    session.memberWatcher(OTHER, true);
+    session.presenceEnds[1]();
+    const currentRetry = timers.at(-1);
+    oldRetry();
+    currentRetry();
+    session.presenceSubscribers.get(OTHER)(sealedFrame({seq: 1, sentAtMs: 1, pointer: [10, 20]}), 1);
+    await settle();
+    assert.deepEqual(layer.remoteState(1).map(remote => remote.pointer), [[10, 20]], 'the current membership must retain a working subscription');
+  } finally {
+    layer.stop();
+  }
+});
