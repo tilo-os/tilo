@@ -14,7 +14,9 @@
  * - the room's calls (`peer.voice`, `voice-peer.mjs`): the session holds the
  *   participation, the page's voice carrier follows its grants.
  *
- * The page holds one device key (`device-custody.mjs`) and no user root.
+ * The page holds one device key (`device-custody.mjs`). A page that also
+ * holds the user root (`root-identity.mjs`, `options.identity`) certifies
+ * that key itself instead of waiting for an approver.
  * `getSnapshot()` returns `PeerSnapshot` with `SessionHealth` v1.
  */
 import {createActions} from './actions.mjs';
@@ -55,6 +57,12 @@ export function profileStore(runtime, profile, device) {
   };
 }
 const PEER_RECORD = 'peer-record';
+/** Whether a stored `{cert}` expires within a day (a page holding the root
+ * then certifies itself anew). */
+function expiresWithinADay(stored) {
+  const expires = JSON.parse(stored)?.cert?.expires_at_ns;
+  return typeof expires === 'number' && expires / 1e6 < Date.now() + 86_400_000;
+}
 /** Ask for a new live grant this long before the current one expires. */
 const GRANT_RENEW_MS = 60_000;
 const LIVE_RETRY_MS = [250, 1000, 3000, 10_000];
@@ -504,13 +512,20 @@ export function createLiveLayer(peer, runtime, room, {
  * @param options.desktop        `{mountDesktop(target, options)}`; defaults to `host.mjs`
  * @param options.live           `false`: join no live plane
  * @param options.onPairingCode  shown while an approver decides
+ * @param options.identity       an unlocked root (`root-identity.mjs`): the
+ *                               page certifies its own device with it, no
+ *                               approver; `userPublicKey` defaults to its key
  */
 export async function connectPeer({
-  origin, userPublicKey, label = 'Browser', room, custody, store, runtime,
+  origin, userPublicKey, label = 'Browser', room, custody, store, runtime, identity,
   profile, device = 'tilo-browser-device', displayName = '',
   fetch: fetcher, liveCarriers, desktop, signal, onStatus, onPairingCode, live: liveEnabled = true,
   voice: voiceOptions = {},
 }) {
+  userPublicKey ??= identity?.userPublicKey;
+  if (identity && userPublicKey !== identity.userPublicKey) {
+    throw new TypeError('userPublicKey must be the unlocked identity\'s');
+  }
   if (!origin || !userPublicKey || !custody || !(store || profile) || !runtime) {
     throw new TypeError('origin, userPublicKey, custody, store or profile, and runtime are required');
   }
@@ -681,9 +696,10 @@ export async function connectPeer({
 
   async function certificate() {
     const existing = await store.get(CERTIFICATE);
-    if (existing) return existing;
-    const issued = await runtime.certifyDevice(post, userPublicKey, label, custodyForWasm,
-      code => onPairingCode?.(code));
+    if (existing && !(identity && expiresWithinADay(existing))) return existing;
+    const issued = identity
+      ? await runtime.certifyWithRoot(post, identity, custodyForWasm, label)
+      : await runtime.certifyDevice(post, userPublicKey, label, custodyForWasm, code => onPairingCode?.(code));
     await store.put(CERTIFICATE, issued);
     return issued;
   }

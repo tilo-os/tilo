@@ -439,9 +439,8 @@ proof of possession) to `POST /peer/v1/certify`, then long-polls
 - The host checks the certificate against the request and the browser
   policy (no `can_admit_devices`, no `can_act_as_host`, bounded expiry, not
   revoked), then hands it to the waiting browser.
-- The host never holds the root, and the browser never generates one.
-  Revocation is enforced at request, at issuance and at every later
-  handshake.
+- The host never holds the root. Revocation is enforced at request, at
+  issuance and at every later handshake.
 
 ### A browser-held root
 
@@ -473,6 +472,24 @@ addPasskey(envelope, {identity, rpId, userName, userId}): Promise<envelope>;
 
 `createIdentity` refuses a passkey without PRF (`IdentityError` code
 `prf-unsupported`); `passkey: false` creates a recovery-key-only envelope.
+`addPasskey` excludes the envelope's existing credentials, so the new passkey
+lands on another authenticator instead of replacing one.
+
+The unlocked root certifies devices through the wasm runtime
+(`issueDeviceCert`, `certifyWithRoot`), signing with the non-extractable key:
+
+```ts
+// A native node that hosts and governs the person's workspaces: host, owns
+// and reads all workspaces, admits no devices, one year. Never the root.
+certifyDevice({identity, runtime, devicePublicKey, label?, role?: 'node' | 'browser'}): Promise<string /* DeviceCert JSON */>;
+// The page's own device: certified by the root itself against the host's
+// certificate (which must be a host of this root), no approver.
+connectPeer({origin, identity, custody, runtime, …}); // userPublicKey defaults to identity.userPublicKey
+```
+
+Browsers accept a device as a room's governor when its certificate owns
+workspaces (`can_own_workspaces`), so such a node governs and stewards the
+person's rooms; a plain host certificate never does.
 
 ### Live layer interface
 
@@ -1011,7 +1028,7 @@ browser runtime. Parts that work on `main`'s APIs were ported, renamed
 |---|---|
 | `qos-desktop`, `desktop_host.rs` (8.7k), speculation, desktop navigation/activity, committed desktop, system search | The desktop comes from `main`'s `tilo-desktop-model` and the shell's desktop through `ui::app`; a second browser-only compositor would fork the desktop |
 | `peer*.rs`, `peer_delivery*`, `peer_journal`, `admission_health`, `admitted_records`, `peer_storage_batch`, `post_ready_repair` | A parallel HTTPS delivery/journal/admission stack. The browser peer uses `tilo-relay-client` over iroh (below) |
-| Browser identity issuance, root key generation, `root_secret`/`device_secret` in IndexedDB, `cloud-identity-custody.mjs`, `identity.rs`, Cloud enrollment state machine, `peer_cloud/mesh.rs` (`ALLOWED_ACTIONS`) | Root authority and mesh policy belong on the host. The browser holds only a device key (non-extractable WebCrypto, or wrapped) certified under the user's single root and answers host challenges |
+| `root_secret`/`device_secret` in IndexedDB, `cloud-identity-custody.mjs`, `identity.rs`, Cloud enrollment state machine, `peer_cloud/mesh.rs` (`ALLOWED_ACTIONS`) | Mesh policy belongs on the host. A page holds a device key (non-extractable WebCrypto, or wrapped) certified under the user's single root; a person with only a browser also holds that root, never stored unwrapped ([A browser-held root](#a-browser-held-root)) |
 | `tilo-relay-protocol` → `qos-peer-state` dependency, `qos-agent-control-protocol` | qOS-lineage state model and agent protocol; `main` has `tilo_actions::remote` |
 | `live_view`, `peer_live`, `peer_media`, MoQ (`media-*.mjs`, `moq-carrier.mjs`) | Deferred. Reusable later: `live-overlay.mjs` presence rendering, `media-audio*.mjs` worklets, `moq-carrier.mjs` WebTransport carrier |
 | `HostImageLoader::retry`/`loaded`, `probe_pixels`, `destroy_device`, component close-recovery custody | Depend on 541-only internals or are test hooks; asset retry answers `false` for now |
