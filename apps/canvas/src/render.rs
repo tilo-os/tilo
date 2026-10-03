@@ -139,6 +139,14 @@ pub const BLANK_GROUND: Color = Color::WHITE; // document colour
 pub const SHADOW_INK: Color = Color::from_rgba8(0, 0, 0, 96); // document colour
 
 impl Renderer {
+    /// A renderer that draws a placeholder for a picture still decoding,
+    /// decoding it in the background, instead of waiting for it.
+    pub fn impatient() -> Self {
+        let mut renderer = Self::default();
+        renderer.pictures.patient = false;
+        renderer
+    }
+
     /// Draw `art` into `scene`, artwork units mapped by `transform`.
     pub fn draw(
         &mut self,

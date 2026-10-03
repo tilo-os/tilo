@@ -378,3 +378,28 @@ fn a_group_of_shapes_clips_a_picture() {
         .to_string();
     assert!(refused.contains("in group"), "{refused}");
 }
+
+#[test]
+fn the_canvas_decodes_a_picture_in_the_background_and_a_look_waits_for_it() {
+    let mut app = TestApp::<App>::new().unwrap();
+    placed(&mut app);
+    let art = app.state();
+    let Shape::Image { src, .. } = &art.mark("photo").unwrap().shape else {
+        panic!();
+    };
+    let mut canvas = Renderer::impatient();
+    assert_eq!(canvas.pictures.size(src), None, "a frame does not wait");
+    assert!(canvas.pictures.decoding());
+    let mut ready = None;
+    for _ in 0..500 {
+        ready = canvas.pictures.size(src);
+        if ready.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(ready, Some((200, 100)));
+    assert!(!canvas.pictures.decoding());
+    let mut look = Renderer::default();
+    assert_eq!(look.pictures.size(src), Some((200, 100)), "a look waits");
+}

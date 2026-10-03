@@ -263,7 +263,9 @@ impl Default for Tools {
             export: LocalState::new(String::new()),
             saving: Rc::default(),
             layer_adjust: LocalState::new(false),
-            renderer: Rc::default(),
+            // The canvas and the thumbnails never wait for a picture to
+            // decode; a look or export asks the renderer to.
+            renderer: Rc::new(RefCell::new(Renderer::impatient())),
         }
     }
 }

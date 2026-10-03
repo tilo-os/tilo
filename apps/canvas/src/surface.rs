@@ -451,13 +451,12 @@ impl CanvasSurface {
             ..crate::resource::Export::default()
         };
         let text = self.look_text.get_or_insert_with(TextRenderer::new);
-        let rendered = view_ops::export(
-            &mut self.tools.renderer.borrow_mut(),
-            text,
-            &self.art,
-            &request,
-        );
-        let picture = match rendered {
+        let mut renderer = self.tools.renderer.borrow_mut();
+        renderer.pictures.patient = true;
+        let exported = view_ops::export(&mut renderer, text, &self.art, &request);
+        renderer.pictures.patient = false;
+        drop(renderer);
+        let picture = match exported {
             Ok((picture, _)) => picture,
             Err(error) => {
                 tracing::warn!(target: "canvas", %error, "the artwork was not exported");
@@ -2731,7 +2730,11 @@ impl Widget for CanvasSurface {
         }
         let view: ViewOp = serde_json::from_slice(request.payload)
             .map_err(|error| format!("not a canvas view: {error}"))?;
-        let output = self.answer(&view, doc)?;
+        // An answer shows every picture: it waits for those still decoding.
+        self.tools.renderer.borrow_mut().pictures.patient = true;
+        let output = self.answer(&view, doc);
+        self.tools.renderer.borrow_mut().pictures.patient = false;
+        let output = output?;
         Ok(Some(ResourceOperationStart::Completed(output)))
     }
 
@@ -2791,11 +2794,12 @@ impl Widget for CanvasSurface {
 
     fn needs_animation_frame(&self) -> bool {
         // A slow medium previews the stroke behind the pointer: keep
-        // drawing until it has caught up. A picture being chosen is
-        // waited for.
+        // drawing until it has caught up. A picture being chosen, or
+        // decoded, is waited for.
         self.wet().is_some()
             || self.tools.picking.borrow().is_some()
             || self.tools.saving.borrow().is_some()
+            || self.tools.renderer.borrow().pictures.decoding()
     }
 
     fn cursor_shape(&self, point: Point) -> Option<CursorIcon> {
