@@ -194,10 +194,8 @@ impl BackupsApp {
         let search_index = crate::search_provider::BackupsSearchIndex::new(&catalog);
         let policy = RetentionPolicy::default();
         Self {
-            // History is in the header row from the first frame, so the
-            // window never adds a History bar of its own.
             shell: NavShell::new()
-                .content_header("", vec![Box::new(ui::widget::history_button())])
+                .content_header("", Vec::new())
                 .inspector_header("Snapshot", Vec::new())
                 .with_id("backups-shell"),
             intents: Intents::default(),
@@ -267,7 +265,7 @@ impl BackupsApp {
             Some("failure") => {
                 self.page = Page::Source("workspace".into());
                 self.failure = Some((
-                    "Backup paused".into(),
+                    "Offsite copy failed".into(),
                     "Backblaze B2 didn’t respond. Check the connection, then back up again.".into(),
                 ));
             }
@@ -282,6 +280,8 @@ impl BackupsApp {
             }
             Some("sources") => self.page = Page::Source("home".into()),
             Some("destinations") => self.page = Page::Destination("pool".into()),
+            Some("drive") => self.page = Page::Destination("usb".into()),
+            Some("offsite") => self.page = Page::Destination("b2".into()),
             Some("schedules") => self.page = Page::Retention,
             Some("drawer") => self.open_drawer = true,
             _ => {}
@@ -832,7 +832,7 @@ impl BackupsApp {
             };
             self.shell.set_sidebar(None);
             self.shell.set_inspector(None);
-            self.set_content_header(String::new(), vec![Box::new(ui::widget::history_button())]);
+            self.set_content_header(String::new(), Vec::new());
             self.shell.set_content(view::setup(&state, &self.intents));
             return;
         }

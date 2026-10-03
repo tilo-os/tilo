@@ -100,6 +100,8 @@ impl ResourceApp for BackupsShell {
             "restore",
             "sources",
             "destinations",
+            "drive",
+            "offsite",
             "schedules",
             "drawer",
         ]
