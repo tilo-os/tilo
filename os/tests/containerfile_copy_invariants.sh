@@ -85,7 +85,7 @@ containerfile="$repo/os/Containerfile"
 # ARM virtio software rendering adds one reviewed LLVM CPU shim payload.
 # The extension overlay replaces the codec-specific resolver: no repository
 # definitions or upstream keys ship, only the generic helper and its units.
-expected_contract=515c2931a7b2e4864cd078d60ba45cce447bd1262b9a57cc851a9bfe8f928f52
+expected_contract=59d815025b2c0dcab6845d6073e7e4f65dfcacebca68b46add8f9db7b8fd39a3
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
