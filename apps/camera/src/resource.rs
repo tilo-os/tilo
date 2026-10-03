@@ -10,7 +10,7 @@
 use std::rc::Rc;
 
 use automerge::{AutoCommit, ROOT};
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{Command, Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_actions::{ActionSpec, EncodedAction, OperationKind, Resource as PublishedResource};
 use ui::tilo_resource::{Doc, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
@@ -136,6 +136,35 @@ impl ResourceApp for CameraShell {
     fn view(cx: &mut ViewCx<Camera>) -> Element {
         cx.surface(CameraApp::disk())
     }
+
+    fn commands() -> &'static [Command] {
+        &[Command {
+            option: "--emit-photos",
+            run: emit_photos,
+        }]
+    }
+}
+
+/// `--emit-photos DIR`: write procedural photos and a lossless QR poster
+/// into `DIR`, the library a headless test drives the camera against.
+fn emit_photos(dir: &str) -> Result<(), String> {
+    use crate::model::PhotoFormat;
+    let dir = std::path::Path::new(dir);
+    for seed in 0..5u8 {
+        let frame = crate::frame::thumbnail(seed, 960, 640);
+        crate::library::write_photo(dir, &frame, PhotoFormat::Jpeg)
+            .map_err(|error| error.to_string())?;
+        let _ = ui::rt::sleep_thread(std::time::Duration::from_millis(4));
+    }
+    let (qr, _) = crate::frame::scanner_frame(
+        4,
+        900,
+        640,
+        "WIFI:T:WPA2;S:Tilo Lounge;P:welcome-aboard;H:false;;",
+    );
+    crate::library::write_photo(dir, &qr, PhotoFormat::Png).map_err(|error| error.to_string())?;
+    println!("camera: wrote sample photos to {}", dir.display());
+    Ok(())
 }
 
 impl ResourceSurface<Camera> for CameraApp {
@@ -236,8 +265,7 @@ pub fn standalone_launch() -> bool {
             | "--scan-first"
             | "--disk"
             | "--crop"
-            | "--timer-running"
-            | "--emit-photos" => return true,
+            | "--timer-running" => return true,
             "--screen" | "--mode" | "--dir" | "--scroll" | "--hover" | "--width" | "--height"
             | "--camera-state" => {
                 let _ = args.next();

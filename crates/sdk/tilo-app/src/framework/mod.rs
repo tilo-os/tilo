@@ -67,6 +67,16 @@
 //!   the wrapped widget by default.
 //! * **Local view state** is a [`LocalState`](crate::LocalState): never
 //!   persisted, never shared, never undone.
+//! * **Launching on something** — a path or URL on the command line, a file
+//!   a host hands over — asks the app which record that is
+//!   ([`ResourceApp::launch_record`]: a file's own record, one derived from
+//!   it, a minted one) and which of the resource's actions the launch takes
+//!   there ([`ResourceApp::launch`], through the same door as every
+//!   control). [`ResourceApp::OPENS`] names the media types it is handed and
+//!   [`ResourceApp::ARGUMENTS`] how many arguments it takes. A command the
+//!   binary runs instead of a window (`--emit-photos DIR`) is a
+//!   [`Command`] in [`ResourceApp::commands`], and the app's messages are
+//!   its [`ResourceApp::catalog`], loaded in every host that mounts it.
 //! * **Who is editing** is [`ViewCx::me`] / [`SurfaceCx::me`] for the reader
 //!   of a view, and [`ActionCx::author`](tilo_resource::ActionCx::author)
 //!   inside an action: the same id, pinned with the action so every replica
@@ -170,6 +180,7 @@ mod dispatch;
 mod each;
 mod effect;
 pub mod history;
+mod launch;
 mod live;
 mod preview;
 mod root;
@@ -194,6 +205,7 @@ pub use controls::{ActionControl, Actions};
 pub use dispatch::{DispatchGroup, Dispatcher, Refused};
 pub use each::Each;
 pub use effect::{EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, Progress};
+pub use launch::{Command, LaunchInput};
 pub use live::Live;
 pub use preview::PastVersion;
 pub use rows::LiveRow;

@@ -92,6 +92,7 @@ pub struct HostContext {
     open_file: Option<OpenFile>,
     capture: Option<Capture>,
     settings: crate::storage::SettingsDocument,
+    launch_arguments: Vec<String>,
 }
 
 /// What a host prepares an instance for when it renders a screenshot
@@ -286,6 +287,7 @@ impl HostContext {
             open_file: None,
             capture: None,
             settings: crate::storage::SettingsDocument::Session,
+            launch_arguments: Vec::new(),
         })
     }
     /// Commit this instance's edits to its record under an actor of its
@@ -325,6 +327,16 @@ impl HostContext {
     /// The screenshot this instance is prepared for, if it is one.
     pub fn capture(&self) -> Option<&Capture> {
         self.capture.as_ref()
+    }
+    /// Hand the component what its launch named besides a file: the
+    /// arguments of a command line or an "open with" (paths, URLs), in order.
+    /// The host has already checked how many the component accepts.
+    pub fn provide_launch_arguments(&mut self, arguments: Vec<String>) {
+        self.launch_arguments = arguments;
+    }
+    /// The launch arguments the host handed over, once.
+    pub fn take_launch_arguments(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.launch_arguments)
     }
     /// Explicit owner-bound producer capability, available before factory work.
     pub fn control_domain(&self) -> crate::ControlDomain {

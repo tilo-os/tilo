@@ -19,6 +19,8 @@ pub mod identity;
 pub mod incremental;
 #[path = "item_actions.rs"]
 pub mod item_actions;
+#[path = "launch.rs"]
+pub mod launch;
 #[path = "live_permissions.rs"]
 pub mod live_permissions;
 #[path = "live_rows.rs"]
