@@ -3,9 +3,12 @@
 //!
 //! Every page is one column. A page is a scrolling canvas holding one
 //! centred, bounded column, so every part of it (the toolbar, the sections,
-//! the cards) shares one inset and one measure and the scroll bar sits at the
-//! window edge instead of over the content. Everything is composed from
-//! `ui::widget` compositions: the theme owns every colour, size and space.
+//! the cards) shares one inset and the scroll bar sits at the window edge
+//! instead of over the content. Pages that read (details, remotes, trust)
+//! keep a narrower measure but start at the same leading edge as the
+//! catalogue, so the title and the content do not jump when a person
+//! navigates. Everything is composed from `ui::widget` compositions: the
+//! theme owns every colour, size and space.
 
 use ui::TextRole;
 use ui::icons::Icon;
@@ -13,9 +16,8 @@ use ui::text_render::TextKind;
 use ui::widget::media_card::{MediaAspect, MediaCard, MediaGrid, MediaSize, MediaSource};
 use ui::widget::{
     Actions, Badge, Banner, Button, ButtonRole, CardGrid, ChipStyle, Column, Container,
-    ControlSize, EmptyState, Field, Form, FormSection, ListRow, ProgressBar, Property,
-    PropertyList, Row, ScrollAxis, Scrollable, Section, SectionHeader, Text, TextInput, Tone,
-    Widget,
+    ControlSize, EmptyState, Field, Form, FormSection, ListRow, Property, PropertyList, Row,
+    ScrollAxis, Scrollable, Section, SectionHeader, Spinner, Text, TextInput, Tone, Widget,
 };
 
 use super::{
@@ -28,13 +30,15 @@ use super::{
 use crate::model::{StoreItem, StoreSource, StoreTrust};
 use crate::widgets::{CardAction, CardDetails, app_icon, category_label, provenance};
 
-/// How wide a page's column may grow, in lines of body text, so it widens
+/// How wide a page's content may grow, in lines of body text, so it widens
 /// with the text scale like every other text-sized measure.
 #[derive(Clone, Copy)]
 enum Measure {
     /// A grid of cards uses the canvas.
     Catalogue,
-    /// Prose, facts and forms stay at a readable measure.
+    /// Prose, facts and forms stay at a readable measure: the width a
+    /// property list is itself bounded to, so every part of the page ends at
+    /// the same trailing edge.
     Reading,
 }
 
@@ -42,7 +46,7 @@ impl Measure {
     fn width(self, theme: &Theme) -> f32 {
         let lines = match self {
             Self::Catalogue => 55.0,
-            Self::Reading => 36.0,
+            Self::Reading => 32.0,
         };
         (theme.text(TextRole::Body).line_height_px() * lines).round()
     }
@@ -84,12 +88,31 @@ impl StoreApp {
         if keeps_scroll {
             scroll = scroll.with_persisted_offset(self.scroll_offset.clone());
         }
+        // Every page sits in the catalogue's column. A reading page bounds
+        // its content inside that column from the leading edge, a spacer
+        // taking what the bound leaves, so the inset never changes.
+        let content: Element = match measure {
+            Measure::Catalogue => Box::new(column),
+            Measure::Reading => Box::new(
+                Row::new()
+                    .no_wrap()
+                    .push(Box::new(
+                        Container::new()
+                            .with_no_padding()
+                            .with_centered_max_width(measure.width(theme))
+                            .with_child(Box::new(column)),
+                    ))
+                    .push(Box::new(
+                        Container::new().with_no_padding().with_flex_grow(),
+                    )),
+            ),
+        };
         Box::new(
             scroll.with_child(Box::new(
                 Container::new()
                     .with_no_padding()
-                    .with_centered_max_width(measure.width(theme))
-                    .with_child(Box::new(column)),
+                    .with_centered_max_width(Measure::Catalogue.width(theme))
+                    .with_child(content),
             )),
         )
     }
@@ -103,8 +126,8 @@ impl StoreApp {
         )
     }
 
-    /// The top row of every page that is not the catalogue: the way back to
-    /// it on the leading edge, History on the trailing edge.
+    /// The top of every page that is not the catalogue: the way back to it.
+    /// The window's own header carries History.
     fn back_row(id: &str) -> Element {
         let mut back = Button::new(id, "Back to apps", None)
             .with_icon(Icon::ArrowLeft)
@@ -113,13 +136,7 @@ impl StoreApp {
         if let Some(binding) = navigation_binding("show-catalogue", "Back to apps", "catalogue") {
             back = back.on_action(binding);
         }
-        Box::new(
-            Row::new()
-                .no_wrap()
-                .with_justify(taffy::JustifyContent::SpaceBetween)
-                .push(Box::new(back))
-                .push(Box::new(ui::widget::history_button())),
-        )
+        Box::new(Row::new().no_wrap().push(Box::new(back)))
     }
 
     /// A quiet paragraph of prose.
@@ -142,18 +159,21 @@ impl StoreApp {
             };
             // Worker operations do not publish one trustworthy unit: a
             // launch, catalogue refresh, and Flatpak update cannot honestly
-            // share a made-up percentage. The indeterminate bar makes
-            // activity visible without pretending otherwise.
+            // share a made-up percentage. The spinner makes activity visible
+            // without pretending otherwise.
             return Some(Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .with_gap(theme.tokens.spacing.s2)
+                Row::new()
+                    .no_wrap()
+                    .with_gap(theme.tokens.spacing.s3)
+                    .with_align_items(taffy::AlignItems::Center)
+                    .push(Box::new(Spinner::new()))
                     .push(Box::new(
-                        Banner::info("Working in background").with_message(detail),
-                    ))
-                    .push(Box::new(
-                        ProgressBar::indeterminate().with_label("Operation in progress"),
+                        Container::new()
+                            .with_no_padding()
+                            .with_flex_grow()
+                            .with_child(Box::new(
+                                Banner::info("Working in background").with_message(detail),
+                            )),
                     )),
             ));
         }
@@ -250,8 +270,7 @@ impl StoreApp {
             )))
             .push(Box::new(remotes))
             .push(Box::new(trust))
-            .push(Box::new(refresh))
-            .push(Box::new(ui::widget::history_button())),
+            .push(Box::new(refresh)),
         )
     }
 
@@ -435,6 +454,22 @@ impl StoreApp {
         }
     }
 
+    /// The standing badges under the app's name. A source that vouches for
+    /// the publisher says so once here; the rest of the page does not repeat
+    /// it.
+    fn detail_badges(&self, item: &StoreItem, gap: f32) -> Element {
+        let mut row = Row::new()
+            .no_wrap()
+            .with_gap(gap)
+            .push(Box::new(self.availability_badge(item)));
+        if item.trust == StoreTrust::PublisherSigned {
+            row = row.push(Box::new(
+                Badge::text("Publisher verified").style(ChipStyle::Tinted(Tone::Success)),
+            ));
+        }
+        Box::new(row)
+    }
+
     /// The decision actions of the details page: the app's one main action,
     /// then keeping it on the device and removing it.
     fn detail_actions(&self, item: &StoreItem, theme: &Theme) -> Element {
@@ -490,17 +525,11 @@ impl StoreApp {
                     .with_heading_level(1),
             ))
             .push(Box::new(
-                Text::new(&source_line(item))
+                Text::new(&provenance(item))
                     .with_role(TextRole::Caption)
                     .dimmed(),
             ))
-            .push(Box::new(
-                Row::new()
-                    .no_wrap()
-                    .with_gap(sp.s2)
-                    .push(Box::new(self.availability_badge(item)))
-                    .push(Box::new(trust_badge(item))),
-            ));
+            .push(self.detail_badges(item, sp.s2));
         let hero = Row::new()
             .no_wrap()
             .with_gap(sp.s4)
@@ -538,37 +567,20 @@ impl StoreApp {
             children.push(notice);
         }
         children.push(self.detail_summary(item, theme));
+        // One property list for the whole page, so every value starts at the
+        // same edge: each list measures its own label column.
         children.push(Box::new(Section::titled(
-            "Package",
-            vec![Box::new(PropertyList::new(package_properties(item)))],
+            "Details",
+            vec![Box::new(PropertyList::new(detail_properties(item)))],
         )));
         let locally_retained = matches!(
             &item.source,
             StoreSource::Tilo { registry_name } if registry_name == "Installed on this device"
         );
         children.push(Box::new(Section::titled(
-            "Publisher and trust",
-            vec![
-                Box::new(PropertyList::new(publisher_properties(item))),
-                Self::prose(trust_explanation(item, locally_retained)),
-            ],
+            "Trust",
+            vec![Self::prose(trust_explanation(item, locally_retained))],
         )));
-        children.push(Box::new(Section::titled(
-            "On this device",
-            vec![Box::new(PropertyList::new(
-                device_properties(item)
-                    .into_iter()
-                    .map(|(label, value)| Property::new(label, value))
-                    .collect(),
-            ))],
-        )));
-        let links = link_properties(item);
-        if !links.is_empty() {
-            children.push(Box::new(Section::titled(
-                "Project links",
-                vec![Box::new(PropertyList::new(links))],
-            )));
-        }
         if let Some(store) = &self.images
             && !item.screenshot_urls.is_empty()
         {
@@ -591,7 +603,7 @@ impl StoreApp {
             children.push(Box::new(Section::titled(
                 "Previews",
                 vec![Box::new(
-                    MediaGrid::new(previews).with_size(MediaSize::Large),
+                    MediaGrid::new(previews).with_size(MediaSize::Regular),
                 )],
             )));
         }
@@ -658,39 +670,22 @@ impl StoreApp {
         for report in &self.reports {
             children.push(self.report_form(report, theme));
         }
-        let explainers: [(&str, &[&str]); 4] = [
+        let explainers: [(&str, &str); 3] = [
             (
-                "How reports and appeals work",
-                &[
-                    "Reports are signed by your workspace identity. Publisher replies and appeals must match the package publisher key; reviewer decisions must match the pinned registry owner.",
-                    "Drafts stay shared with your workspace. A submission receipt does not replace the last verified status: status changes appear only after the Store verifies the complete event chain against an owner-signed snapshot. Offline or refused requests remain drafts and can be retried.",
-                ],
+                "How reports work",
+                "Reports are signed with your workspace identity and stay drafts that your workspace shares until you submit them. The Store shows a new status only once it has checked it, so an offline or refused request stays a draft you can retry.",
             ),
             (
-                "Verified identity and integrity",
-                &[
-                    "Tilo packages are bound to a publisher key, app id, version, exact size and content hash. A pinned registry owner controls which publishers may list apps.",
-                ],
-            ),
-            (
-                "Review is a separate claim",
-                &[
-                    "A valid package signature does not mean an app is useful, private or honest. Moderation decisions are separately signed; the Store never invents a review badge.",
-                    "Public moderation events form a numbered signed hash chain. The Store derives case status itself, checks publisher and reviewer authorization, and requires the final head committed by the registry owner's current snapshot.",
-                ],
+                "What a signature means",
+                "A verified package comes from its publisher and has not been changed. That does not make an app useful, private or honest, and the Store never invents a review badge.",
             ),
             (
                 "Publishing guidelines",
-                &[
-                    "Listings must accurately describe behavior, identify paid or remote-service dependencies, request only necessary permissions, preserve user data during updates, provide an accessible UI, and avoid impersonation, manipulation and undisclosed tracking.",
-                ],
+                "Listings must describe what the app does, name any paid or online services it depends on, ask only for the permissions it needs, keep people's data across updates, work with assistive technology, and never impersonate others or track people without saying so.",
             ),
         ];
-        for (title, paragraphs) in explainers {
-            children.push(Box::new(Section::titled(
-                title,
-                paragraphs.iter().map(|text| Self::prose(text)).collect(),
-            )));
+        for (title, text) in explainers {
+            children.push(Box::new(Section::titled(title, vec![Self::prose(text)])));
         }
         self.page(theme, Measure::Reading, false, children)
     }
@@ -756,6 +751,7 @@ impl StoreApp {
         } else {
             "Report draft"
         };
+        let name = item.map_or(report.app_id.as_str(), |item| item.name.as_str());
         let mut actions = Row::new()
             .with_gap(theme.tokens.spacing.s2)
             .with_justify(taffy::JustifyContent::End)
@@ -773,12 +769,19 @@ impl StoreApp {
         )
         .with_help("Describe observable behavior and evidence another reviewer can verify.");
         Box::new(Section::titled(
-            &report.app_id,
+            name,
             vec![
                 Box::new(
-                    Text::new(&format!("{kind}: {}", report.status))
-                        .with_role(TextRole::Caption)
-                        .dimmed(),
+                    Row::new()
+                        .no_wrap()
+                        .with_gap(theme.tokens.spacing.s2)
+                        .with_align_items(taffy::AlignItems::Center)
+                        .push(Box::new(
+                            Text::new(kind).with_role(TextRole::Caption).dimmed(),
+                        ))
+                        .push(Box::new(
+                            Badge::text(&report.status).style(ChipStyle::Neutral),
+                        )),
                 ),
                 Box::new(field),
                 Box::new(actions),
@@ -863,24 +866,6 @@ impl StoreApp {
     }
 }
 
-/// Where the app comes from, in words.
-fn source_line(item: &StoreItem) -> String {
-    match &item.source {
-        StoreSource::Tilo { registry_name } => format!("{} from {registry_name}", provenance(item)),
-        StoreSource::Flathub => format!("{} from Flathub", provenance(item)),
-    }
-}
-
-/// Whether the source vouches for the app: a status, so it is tinted.
-fn trust_badge(item: &StoreItem) -> Badge {
-    match item.trust {
-        StoreTrust::PublisherSigned => {
-            Badge::text("Publisher verified").style(ChipStyle::Tinted(Tone::Success))
-        }
-        StoreTrust::Flathub => Badge::text("Flathub distribution").style(ChipStyle::Neutral),
-    }
-}
-
 /// What a trust claim does and does not promise.
 fn trust_explanation(item: &StoreItem, locally_retained: bool) -> &'static str {
     if locally_retained {
@@ -890,10 +875,23 @@ fn trust_explanation(item: &StoreItem, locally_retained: bool) -> &'static str {
         StoreTrust::PublisherSigned => {
             "Publisher identity and package integrity are verified. This is not an independent quality review."
         }
-        StoreTrust::Flathub => {
-            "Distributed by Flathub. Tilo has not independently reviewed this app."
-        }
+        StoreTrust::Flathub => "Tilo has not independently reviewed this app.",
     }
+}
+
+/// Every fact the details page lists, in one reading order: what the package
+/// is, where it comes from, what it is doing on this device and where the
+/// project lives.
+fn detail_properties(item: &StoreItem) -> Vec<Property> {
+    let mut rows = package_properties(item);
+    rows.extend(publisher_properties(item));
+    rows.extend(
+        device_properties(item)
+            .into_iter()
+            .map(|(label, value)| Property::new(label, value)),
+    );
+    rows.extend(link_properties(item));
+    rows
 }
 
 /// The package's facts: identity, version and what it weighs.
@@ -944,13 +942,14 @@ fn digest_summary(hash: &str) -> String {
     format!("BLAKE3 {head}…{tail}")
 }
 
-/// Who published the app and what the Store can vouch for.
+/// Which catalogue lists the app and who published it. Whether the
+/// publisher is verified is the badge's and the trust note's to say.
 fn publisher_properties(item: &StoreItem) -> Vec<Property> {
     let source = match &item.source {
         StoreSource::Tilo { registry_name } => registry_name.clone(),
         StoreSource::Flathub => "Flathub".to_string(),
     };
-    let mut rows = vec![Property::new("Source", source)];
+    let mut rows = vec![Property::new("Catalogue", source)];
     match item.publisher_pubkey_hex.as_deref() {
         Some(key) => {
             let full = format!("ed25519:{key}");
@@ -964,13 +963,6 @@ fn publisher_properties(item: &StoreItem) -> Vec<Property> {
         }
         None => rows.push(Property::new("Publisher", full_publisher(item))),
     }
-    rows.push(Property::new(
-        "Verification",
-        match item.trust {
-            StoreTrust::PublisherSigned => "Publisher signature verified",
-            StoreTrust::Flathub => "Distributed by Flathub",
-        },
-    ));
     rows
 }
 
@@ -979,7 +971,7 @@ pub(super) fn device_properties(item: &StoreItem) -> Vec<(&'static str, String)>
     use crate::model::InstalledState;
     match (&item.source, &item.installed) {
         (StoreSource::Tilo { .. }, InstalledState::Not) => vec![
-            ("Status", "Available on demand".into()),
+            ("On this device", "Available on demand".into()),
             (
                 "Storage",
                 "Fetched when opened, not kept on this device".into(),
@@ -994,8 +986,7 @@ pub(super) fn device_properties(item: &StoreItem) -> Vec<(&'static str, String)>
                 user_managed,
             },
         ) => vec![
-            ("Status", format!("Cached, version {version}")),
-            ("Latest version", available.clone()),
+            ("On this device", with_update("Cached", version, available)),
             (
                 "Storage",
                 if !*user_managed {
@@ -1008,16 +999,28 @@ pub(super) fn device_properties(item: &StoreItem) -> Vec<(&'static str, String)>
                 .into(),
             ),
         ],
-        (StoreSource::Flathub, InstalledState::Not) => vec![("Status", "Not installed".into())],
+        (StoreSource::Flathub, InstalledState::Not) => {
+            vec![("On this device", "Not installed".into())]
+        }
         (
             StoreSource::Flathub,
             InstalledState::Installed {
                 version, available, ..
             },
-        ) => vec![
-            ("Status", format!("Installed, version {version}")),
-            ("Latest version", available.clone()),
-        ],
+        ) => vec![(
+            "On this device",
+            with_update("Installed", version, available),
+        )],
+    }
+}
+
+/// The installed version, and the newer one the catalogue lists when there
+/// is one. The package's own latest version is listed once, with its facts.
+fn with_update(state: &str, version: &str, available: &str) -> String {
+    if available.is_empty() || available == version {
+        format!("{state}, version {version}")
+    } else {
+        format!("{state}, version {version}; {available} is available")
     }
 }
 
@@ -1025,7 +1028,7 @@ pub(super) fn device_properties(item: &StoreItem) -> Vec<(&'static str, String)>
 fn link_properties(item: &StoreItem) -> Vec<Property> {
     [
         ("Homepage", item.homepage_url.as_deref()),
-        ("Source", item.source_url.as_deref()),
+        ("Source code", item.source_url.as_deref()),
     ]
     .into_iter()
     .filter_map(|(label, url)| {

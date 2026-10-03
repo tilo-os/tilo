@@ -112,7 +112,6 @@ fn catalogue_toolbar_and_sections_share_one_column() {
     // toolbar's trailing action ends.
     let sections = by_widget_name(&*app, "Section");
     assert!(!sections.is_empty(), "the catalogue shows its groups");
-    let history = by_test_id(&*app, "history-button");
     for section in &sections {
         close(
             section.x0,
@@ -121,7 +120,7 @@ fn catalogue_toolbar_and_sections_share_one_column() {
         );
         close(
             section.x1,
-            history.x1,
+            refresh.x1,
             "sections end on the toolbar's trailing edge",
         );
     }
@@ -219,7 +218,7 @@ fn details_page_aligns_identity_and_facts() {
     for width in [480.0, 1200.0] {
         let app = lay_out(staged("detail"), (width, 900.0));
         let title = last_named(&*app, "Notes");
-        let source = first_named(&*app, "Tilo app, version 0.1.0 from Tilo main");
+        let source = first_named(&*app, "Tilo app, version 0.1.0");
         close(
             source.y0 - title.y1,
             tight,
@@ -236,11 +235,50 @@ fn details_page_aligns_identity_and_facts() {
             back.x0,
             "icon and back control start on the content edge",
         );
-        let package = first_named(&*app, "Package");
-        let trust = first_named(&*app, "Publisher and trust");
+        let details = first_named(&*app, "Details");
+        let trust = first_named(&*app, "Trust");
         assert!(
-            package.y1 < trust.y0,
+            details.y1 < trust.y0,
             "sections stack in reading order without overlap"
         );
+        assert_eq!(
+            by_widget_name(&*app, "PropertyList").len(),
+            1,
+            "one property list, so every value starts on one edge"
+        );
+    }
+}
+
+/// Every page starts on the catalogue's leading edge, at any width, and the
+/// sections of a reading page end on one trailing edge.
+#[test]
+fn pages_share_one_leading_edge_and_reading_pages_one_trailing_edge() {
+    for width in [800.0, 1200.0] {
+        let catalogue = lay_out(store::shots::seeded_app(), (width, 800.0));
+        let edge = first_named(&*catalogue, "6 apps from 2 sources").x0;
+        for (scenario, title, back_id) in [
+            ("detail", "Notes", "store.detail.back"),
+            ("remotes", "Flatpak remotes", "store.remotes.back"),
+            ("moderation", "Trust and moderation", "store.safety.back"),
+        ] {
+            let page = lay_out(staged(scenario), (width, 1400.0));
+            let first = if scenario == "detail" {
+                by_widget_name(&*page, "Avatar")[0]
+            } else {
+                first_named(&*page, title)
+            };
+            close(
+                first.x0,
+                edge,
+                &format!("{scenario} starts on the catalogue's edge at {width}"),
+            );
+            let back = by_test_id(&*page, back_id);
+            close(back.x0, edge, "the way back starts on the same edge");
+            let sections = by_widget_name(&*page, "Section");
+            let trailing = sections[0].x1;
+            for section in &sections {
+                close(section.x1, trailing, "sections end on one trailing edge");
+            }
+        }
     }
 }

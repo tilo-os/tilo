@@ -3,7 +3,10 @@
 //! `--shots` runs the real app through the framework launcher; a scenario is
 //! only the view state it stages (see [`stage`]). The catalogue is a
 //! hand-written fixture so a capture is hermetic and never reaches for the
-//! network.
+//! network: its icons and previews are bundled artwork served to the app's
+//! image store by a local fetcher.
+
+use std::sync::Arc;
 
 use crate::app::StoreApp;
 use crate::model::{InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust};
@@ -32,6 +35,67 @@ pub const SCENARIOS: &[&str] = &[
 /// The viewport a narrow scenario is captured at.
 pub const NARROW_VIEWPORT: (u32, u32) = (520, 820);
 
+/// How many previews each fixture app lists.
+const PREVIEWS: usize = 3;
+
+/// Where the fixture catalogue's artwork nominally lives.
+const ARTWORK_HOST: &str = "https://artwork.invalid/";
+
+macro_rules! artwork {
+    ($($file:literal),* $(,)?) => {
+        &[$(($file, include_bytes!(concat!("../fixtures/artwork/", $file)))),*]
+    };
+}
+
+/// The bundled artwork of the fixture apps: an icon and previews each.
+const ARTWORK: &[(&str, &[u8])] = artwork![
+    "Notes.png",
+    "Terminal.png",
+    "Files.png",
+    "Chess.png",
+    "Inkscape.png",
+    "VLC.png",
+    "Notes-preview-1.png",
+    "Notes-preview-2.png",
+    "Notes-preview-3.png",
+    "Terminal-preview-1.png",
+    "Terminal-preview-2.png",
+    "Terminal-preview-3.png",
+    "Files-preview-1.png",
+    "Files-preview-2.png",
+    "Files-preview-3.png",
+    "Chess-preview-1.png",
+    "Chess-preview-2.png",
+    "Chess-preview-3.png",
+    "Inkscape-preview-1.png",
+    "Inkscape-preview-2.png",
+    "Inkscape-preview-3.png",
+    "VLC-preview-1.png",
+    "VLC-preview-2.png",
+    "VLC-preview-3.png",
+];
+
+/// The image store of a capture: it serves the bundled artwork for the
+/// fixture catalogue's URLs and nothing else, so no capture touches the
+/// network.
+pub fn artwork_store() -> ui::ImageStore {
+    let fetch: ui::Fetcher = Arc::new(|url: &str| {
+        let name = url.strip_prefix(ARTWORK_HOST)?;
+        ARTWORK
+            .iter()
+            .find(|(file, _)| *file == name)
+            .map(|(_, bytes)| bytes.to_vec())
+    });
+    ui::ImageStore::with_workers(&fetch, 2)
+}
+
+/// The preview URLs the fixture lists for the app called `name`.
+fn previews(name: &str) -> Vec<String> {
+    (1..=PREVIEWS)
+        .map(|index| format!("{ARTWORK_HOST}{name}-preview-{index}.png"))
+        .collect()
+}
+
 /// The key every first-party Tilo package is signed with in the fixture.
 const TILO_PUBLISHER_KEY: &str = "3f9ac1d27b8e4455a0c6e1f2d93b7a08c4e5f61729ab3d80e7c2145f6a9d0b3e";
 
@@ -58,8 +122,8 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
         tagline: String::new(),
         supported_languages: Vec::new(),
         categories: vec![category.into()],
-        icon_url: Some(format!("https://artwork.invalid/{name}.png")),
-        screenshot_urls: vec![format!("https://artwork.invalid/{name}-preview.png")],
+        icon_url: Some(format!("{ARTWORK_HOST}{name}.png")),
+        screenshot_urls: previews(name),
         homepage_url: Some("https://tilo.so/apps".into()),
         source_url: Some(format!(
             "https://git.tilo.so/apps/{}",
@@ -92,8 +156,8 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
         tagline: String::new(),
         supported_languages: Vec::new(),
         categories: vec![category.into()],
-        icon_url: Some(format!("https://artwork.invalid/{name}.png")),
-        screenshot_urls: vec![format!("https://artwork.invalid/{name}-preview.png")],
+        icon_url: Some(format!("{ARTWORK_HOST}{name}.png")),
+        screenshot_urls: previews(name),
         homepage_url: Some(homepage.into()),
         source_url: None,
         install_ref_path: None,
@@ -191,7 +255,7 @@ pub fn seeded_app() -> StoreApp {
 /// called in a live window.
 pub fn stage(app: &mut StoreApp, scenario: Option<&str>) {
     app.set_flatpak_available(true);
-    app.set_image_store(None);
+    app.set_image_store(Some(artwork_store()));
     app.set_worker_busy(false);
     app.set_operation_error(None);
     app.set_status_line("");
@@ -223,14 +287,14 @@ pub fn stage(app: &mut StoreApp, scenario: Option<&str>) {
             app.set_status_line("Contacting the authoritative registry…");
         }
         Some("moderation-offline") => {
-            app.show_moderation_case_for_shot("Last confirmed: Open");
+            app.show_moderation_case_for_shot("Open");
             let message =
                 "The registry is offline. Your draft and the last confirmed status are unchanged.";
             app.set_status_line(message);
             app.set_operation_error(Some(message.into()));
         }
         Some("moderation-error") => {
-            app.show_moderation_case_for_shot("Last confirmed: Quarantined");
+            app.show_moderation_case_for_shot("Quarantined");
             let message =
                 "The appeal was refused: this workspace identity is not the package publisher.";
             app.set_status_line(message);
