@@ -36,6 +36,7 @@ vendor/fonts/tilo-sans/
   proof.py                 render proofs with headless Chromium -> proofs/
   scripts/measure.py       metrics, stems, overshoots, sidebearings per master
   scripts/verify_upstream.py   every upstream glyph unchanged?
+  scripts/il_kern.py       kerning of the distinct I and l (ss13), solved from the built fonts
   scripts/import_upstream.py   how sources/ was made from upstream (do not rerun)
   sources/
     TiloSans.designspace           upright: 4 masters
@@ -73,6 +74,7 @@ uv run vendor/fonts/tilo-sans/proof.py --set latin --fallback instrument        
 
 uv run vendor/fonts/tilo-sans/scripts/measure.py [--glyphs n o A-cy]
 uv run vendor/fonts/tilo-sans/scripts/verify_upstream.py
+uv run vendor/fonts/tilo-sans/scripts/il_kern.py [--check]   # after build; repeat until --check is clean
 ```
 
 `verify_upstream.py` and `proof.py --fallback instrument` need the upstream
@@ -214,30 +216,48 @@ masters are 15 (Regular) and 10 (Bold) units wider per side than first drawn so
 `II` and `AIA` keep Instrument's Z+Z / H+A rhythm. `l.ss13` keeps `l`'s left
 sidebearing and takes the right sidebearing Instrument's `t` keeps after its
 tail. Groups: `public.kern1.KO_I.ss13` / `public.kern2.KO_I.ss13` (with
-`IJ.ss13` on the left side); `public.kern1.KO_l.ss13` for `l.ss13`, its accented
-forms, `lslash.ss13` and the tailed ligatures; `f_l.ss13` and `f_f_l.ss13` stay in
-`public.kern2.KO_f` and `zero.zero` in both `KO_zero` groups (with copies of
-`zero`'s glyph-level pairs), so the alternates keep every upstream pair.
-`lcaron.ss13` joins `KO_dcaron`, with its own pair against the serif I.
+`IJ.ss13` on the left side; its right side carries `IJ`'s pairs);
+`public.kern1.KO_l.ss13` for `l.ss13`, its accented forms, `lslash.ss13` and the
+tailed ligatures; `public.kern1.KO_lcaron.ss13` for `lcaron.ss13` alone (it must
+not share `ď`'s values: the caron overhang sets those, and the tail would run
+into the next letter). `f_l.ss13` and `f_f_l.ss13` stay in `public.kern2.KO_f`
+and `zero.zero` in both `KO_zero` groups (with copies of `zero`'s glyph-level
+pairs), so the alternates keep every upstream pair.
 
-The pairs were measured, not guessed: at each of the eight masters the ink gap
-was taken from the shaped font and set to these clearances:
+Every pair with one of these groups (or their members) is written by
+`scripts/il_kern.py`, never by hand. It measures ink gaps on the shaped fonts at
+all eight masters, with `ss13` on and off, and solves these rules (the script's
+docstring has the detail):
 
-- serif I against anything: at least 40 units, or the plain `I`'s gap where
-  that is already smaller (cap accent meeting cap accent). This opens the
-  lowercase-i accents `ì í î ï ī` (on both sides) and the apostrophe carons
-  `ď ľ ť ř` (45), which otherwise fuse with the top serif into `Γ`/`Π` shapes;
-- tail or baseline bar against the bottom serif (`t I`, `ť I`, `I J`): Instrument's
-  `L Z` gap; `l I` (the pair the feature exists for) and `ľ I`: the larger of
-  `L Z` and `Z Z`; `I I`: `Z Z`;
-- `l.ss13` against everything: never tighter than Instrument's `t`; against top
-  and middle shapes (`T V W Y 7 1 \`, quotes, dashes, guillemets, `·`) it keeps
-  half of its extra width over `l`;
-- serif I next to rounds and open diagonals (`O C Q`, `v w y`, `r`): about a third
-  of the white its inset stem adds over `H` is taken back.
+- the white beside the bare stem (between the serifs, above the tail) is the
+  plain `I`/`l` gap plus a little: 14 / 12 units for most partners (`t f v w y r`,
+  figures, operators), two thirds of the extra width next to rounds for the
+  serif I (`O C Q`, `o e`, `0 6 9`; one third for the tailed l, whose tail
+  already fills under a round), half of it next to top and middle shapes
+  (`T V W Y 7`, quotes, dashes, guillemets, `·`). Tightening stops where the tail
+  or a serif would sit closer to the partner than it sits to a straight stem
+  (`l n`, `I H`), so neither the tail nor the serifs collide and no hole opens
+  above the tail or beside the inset stem;
+- floors: the serif I at least 40 units from anything (or the plain `I`'s gap
+  where that is already closer), and always 40 against lowercase accents,
+  apostrophe carons and between accented serif I's (`ÏÏ ÎÏ ÍÌ ĪĪ`, accent to
+  accent); `II` at Instrument's `ZZ`; `IJ tI ťI` at `LZ`; `lI` at the larger of
+  `LZ` and `ZZ`; `ď ľ ť ř` before `I` 45; the tailed l never tighter than
+  Instrument's `t` or plain `l`; Condensed Bold `ll` and `lI` 10 units more so
+  they keep a pixel of white at 12–13 px;
+- `lcaron.ss13` takes the looser of the tailed l's value and plain `ľ`'s value
+  moved by the advance difference: the caron keeps `ľ`'s clearance, the tail
+  keeps `l.ss13`'s;
+- Catalan `l·l` (`locl CAT`): the middle dot stays centred between tailed l's.
 
-The italic masters were measured on their own outlines; because the italics
-are the uprights slanted, the gaps (and so most values) come out the same.
+The italic masters are measured on their own outlines.
+
+A new letter that can sit next to a serif I or tailed l (Vietnamese `Ĩ Ỉ Ị`,
+Cyrillic `і`, Greek `ι`, a new accent) needs no hand kerning against them: build,
+run `il_kern.py`, build again, and `il_kern.py --check` must report no changes.
+Upstream's glyph-level pairs on accented plain I's (`Ï`/`-`, `-`/`Î`, `«`/`Î`) and
+`f_l`/`_ ~` do not carry over: with `ss13` on, an accented serif I kerns like the
+serif I, and `f_l.ss13` like `l.ss13`.
 
 ## Anchors
 
