@@ -153,7 +153,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$OUT"
           ./os/dev/disk-image.sh "$GUEST_IMAGE" "$OUT" --bootloader grub --rootfs ext4 --size 16G
-          test -s "$OUT/qcow2/disk.qcow2"
+          test -s "$OUT/disk.qcow2"
       - name: Boot the disk until the agent serves
         timeout-minutes: 15
         run: |
@@ -164,7 +164,7 @@ jobs:
           fi
           sudo -n chmod 0666 /dev/kvm
           [[ ! -e /dev/vhost-vsock ]] || sudo -n chmod 0666 /dev/vhost-vsock
-          ./os/dev/legacy-guest-smoke.sh "$OUT/qcow2/disk.qcow2"
+          ./os/dev/legacy-guest-smoke.sh "$OUT/disk.qcow2"
       # Only main publishes: the release signing identity trusts main alone.
       - name: Log in to registry.tilo.so
         if: github.ref == 'refs/heads/main'
@@ -178,7 +178,7 @@ jobs:
         run: |
           set -euo pipefail
           wrap=$(mktemp -d /var/tmp/legacy-guest-wrap.XXXXXX)
-          mv "$OUT/qcow2/disk.qcow2" "$wrap/disk.qcow2"
+          sudo -n install -m 0644 -o "$(id -u)" -g "$(id -g)" "$OUT/disk.qcow2" "$wrap/disk.qcow2"
           printf 'FROM scratch\nCOPY disk.qcow2 /disk.qcow2\n' > "$wrap/Containerfile"
           tag="registry.tilo.so/tilo/legacy-guest:x86_64-$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           podman build -f "$wrap/Containerfile" \
