@@ -259,21 +259,7 @@ impl Treemap {
     }
 
     fn palette(theme: &Theme, index: usize) -> Color {
-        let colors = &theme.tokens.colors;
-        let palette = [
-            colors.accent.stops[5],
-            colors.semantic.success,
-            colors.semantic.warning,
-            colors.semantic.info,
-            colors.accent.stops[8],
-            colors.semantic.danger,
-            colors.accent.stops[3],
-            colors.neutral.stops[6],
-        ];
-        palette
-            .get(index % palette.len())
-            .copied()
-            .unwrap_or(theme.accent_primary)
+        theme.tokens.colors.presence.series(index)
     }
 
     fn update_hover(&mut self) {
@@ -436,7 +422,7 @@ impl Widget for Treemap {
                 transform,
                 theme.tokens.colors.surfaces.overlay,
                 None,
-                &RoundedRect::from_rect(tooltip, f64::from(theme.tokens.radii.md)),
+                &RoundedRect::from_rect(tooltip, f64::from(theme.tokens.radii.control)),
             );
             tr.draw_text_weighted(
                 scene,

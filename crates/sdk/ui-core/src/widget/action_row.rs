@@ -95,9 +95,9 @@ impl<'a> ActionRowFace<'a> {
         } else if self.interact.pressed {
             theme.bg_active
         } else if self.accented && self.interact.hovered {
-            theme.accent_hover
+            theme.tokens.colors.intent.inverted_hover
         } else if self.accented {
-            theme.accent_primary
+            theme.tokens.colors.intent.inverted
         } else if self.interact.hovered {
             theme.bg_hover
         } else if self.outlined {

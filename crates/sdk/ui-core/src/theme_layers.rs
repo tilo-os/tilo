@@ -2,18 +2,14 @@
 //!
 //! Precedence, lowest to highest, is fixed in [`resolve_theme_layers`].
 //! Accessibility always wins. Distribution defaults (`distribution` /
-//! `distribution_defaults`) set a palette and a default accent and may pin
-//! those fields; a pin beats the user theme only for the pinned field.
+//! `distribution_defaults`) set a palette and may pin it and the authored
+//! scales; a pin beats the user theme only for the pinned field.
 //! See `docs/architecture/theming.md`.
 
 use serde::{Deserialize, Serialize};
 use vello::peniko::Color;
 
-use crate::color::contrast_ratio;
-use crate::color_compat::ColorCompat;
 use crate::theme::{CustomThemeSpec, Theme};
-use crate::tokens::contrast;
-use crate::tokens::{NON_TEXT_MIN_CONTRAST, PaletteSpec};
 
 /// JSON id of the distribution-defaults layer. The same layer is also read
 /// from [`DISTRIBUTION_DEFAULTS_KEY`].
@@ -24,12 +20,6 @@ pub const DISTRIBUTION_DEFAULTS_KEY: &str = "distribution_defaults";
 
 /// Pin id for the colour palette (preset or custom spec).
 pub const PIN_PALETTE: &str = "palette";
-
-/// Pin id for the accent colour.
-pub const PIN_ACCENT: &str = "accent";
-
-/// Pin id for corner radius.
-pub const PIN_SHAPE: &str = "shape";
 
 /// Pin id for the spacing scale.
 pub const PIN_DENSITY: &str = "density";
@@ -56,30 +46,18 @@ pub const DISTRIBUTION_DEFAULTS_SCHEMA_MIN: u32 = 1;
 /// [`DISTRIBUTION_DEFAULTS_SCHEMA_MIN`]..=this value and clamp on materialize.
 pub const DISTRIBUTION_DEFAULTS_SCHEMA_VERSION: u32 = 1;
 
-/// Oldest workspace-tint schema this build still opens.
-pub const WORKSPACE_TINT_SCHEMA_MIN: u32 = 1;
-
-/// Schema this build writes for a workspace tint.
-pub const WORKSPACE_TINT_SCHEMA_VERSION: u32 = 1;
-
 /// Oldest accessibility schema this build still opens.
 pub const ACCESSIBILITY_SCHEMA_MIN: u32 = 1;
 
 /// Schema this build writes for the accessibility layer.
 pub const ACCESSIBILITY_SCHEMA_VERSION: u32 = 1;
 
-const WORKSPACE_TINT_KEY: &str = "workspace_tint";
-const APP_ACCENTS_KEY: &str = "app_accents";
 /// Versioned accessibility object inside `appearance`. Absent on files that
 /// still store the same fields as flat flags; those open as schema 1.
 const ACCESSIBILITY_LAYER_KEY: &str = "accessibility";
 
 fn schema_one() -> u32 {
     DISTRIBUTION_DEFAULTS_SCHEMA_VERSION
-}
-
-fn workspace_tint_schema() -> u32 {
-    WORKSPACE_TINT_SCHEMA_VERSION
 }
 
 fn accessibility_schema() -> u32 {
@@ -96,8 +74,8 @@ fn schema_admitted(version: u32, min: u32, max: u32) -> bool {
 
 /// Policy pins on a distribution-defaults document.
 ///
-/// Pins name fields of the shared theme document: palette, accent, shape,
-/// density, type, motion, material, icons, and chrome. Accessibility fields
+/// Pins name fields of the shared theme document: palette, density, type,
+/// motion, material, icons, and chrome. Accessibility fields
 /// (`high_contrast`, `forced_colors`, `text_scale`, `ui_scale`,
 /// `reduce_motion`) are not pinnable: a document may name them and they are
 /// ignored.
@@ -124,18 +102,6 @@ impl DistributionPolicy {
     #[must_use]
     pub fn pins_palette(&self) -> bool {
         self.admits_schema() && self.pins.iter().any(|pin| pin == PIN_PALETTE)
-    }
-
-    /// Whether the accent pin is set on a schema this build admits.
-    #[must_use]
-    pub fn pins_accent(&self) -> bool {
-        self.pins_named(PIN_ACCENT)
-    }
-
-    /// Whether corner radius is pinned.
-    #[must_use]
-    pub fn pins_shape(&self) -> bool {
-        self.pins_named(PIN_SHAPE)
     }
 
     /// Whether spacing is pinned.
@@ -188,7 +154,7 @@ impl DistributionPolicy {
 }
 
 /// Defaults a distribution ships with the OS image: a palette (preset name
-/// or [`CustomThemeSpec`]), a default accent, and the pins in [`Self::policy`].
+/// or [`CustomThemeSpec`]) and the pins in [`Self::policy`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DistributionDefaults {
     #[serde(default = "schema_one")]
@@ -200,9 +166,6 @@ pub struct DistributionDefaults {
     /// as a user custom theme.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom: Option<CustomThemeSpec>,
-    /// Default accent, checked and repaired against the palette it sits on.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub accent: Option<[u8; 3]>,
     #[serde(default)]
     pub policy: DistributionPolicy,
 }
@@ -213,7 +176,6 @@ impl Default for DistributionDefaults {
             schema_version: DISTRIBUTION_DEFAULTS_SCHEMA_VERSION,
             palette: None,
             custom: None,
-            accent: None,
             policy: DistributionPolicy::default(),
         }
     }
@@ -252,35 +214,6 @@ impl DistributionDefaults {
             return Err("unknown distribution palette");
         }
         Ok(())
-    }
-}
-
-/// An accent hint the person opted into for one workspace.
-///
-/// It is not an accessibility override: a colour that misses the accent
-/// floor is skipped, and high contrast / forced colours drop it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkspaceTint {
-    #[serde(default = "workspace_tint_schema")]
-    pub schema_version: u32,
-    pub accent: [u8; 3],
-}
-
-impl WorkspaceTint {
-    /// # Errors
-    ///
-    /// Returns a static message when `schema_version` is outside the admitted
-    /// range.
-    pub fn validate(&self) -> Result<(), &'static str> {
-        if schema_admitted(
-            self.schema_version,
-            WORKSPACE_TINT_SCHEMA_MIN,
-            WORKSPACE_TINT_SCHEMA_VERSION,
-        ) {
-            Ok(())
-        } else {
-            Err("unsupported workspace tint schema")
-        }
     }
 }
 
@@ -384,28 +317,17 @@ impl Default for AccessibilityLayer {
 }
 
 /// Inputs to [`resolve_theme_layers`]. Absent layers contribute nothing.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ThemeLayerStack {
     pub distribution_defaults: Option<DistributionDefaults>,
     /// Colour theme only. Scale, motion and contrast live on
     /// [`Self::accessibility`]. `None` means the person has not chosen a theme.
     pub user_theme: Option<Theme>,
-    pub workspace_tint: Option<WorkspaceTint>,
+    /// The active workspace's temperature (OKLCH hue), derived from its
+    /// wallpaper by [`crate::theme::workspace_hue`]. Set by the host that
+    /// knows which workspace is active; settings never carry it.
+    pub workspace_hue: Option<f32>,
     pub accessibility: AccessibilityLayer,
-    /// `appearance.app_accents`. Defaults on; the person can turn it off.
-    pub allow_app_accents: bool,
-}
-
-impl Default for ThemeLayerStack {
-    fn default() -> Self {
-        Self {
-            distribution_defaults: None,
-            user_theme: None,
-            workspace_tint: None,
-            accessibility: AccessibilityLayer::default(),
-            allow_app_accents: true,
-        }
-    }
 }
 
 impl ThemeLayerStack {
@@ -425,19 +347,11 @@ impl ThemeLayerStack {
                 .or_else(|| section.get(DISTRIBUTION_LAYER_ID))
                 .and_then(|value| serde_json::from_value(value.clone()).ok())
         });
-        let workspace_tint = appearance.and_then(|section| {
-            section
-                .get(WORKSPACE_TINT_KEY)
-                .and_then(|value| serde_json::from_value(value.clone()).ok())
-        });
         Self {
             distribution_defaults,
             user_theme: Theme::from_settings_json_at(text, moment),
-            workspace_tint,
+            workspace_hue: None,
             accessibility: accessibility_layer(document.as_ref(), appearance),
-            allow_app_accents: appearance
-                .and_then(|section| section.get(APP_ACCENTS_KEY)?.as_bool())
-                .unwrap_or(true),
         }
     }
 }
@@ -492,32 +406,21 @@ fn scale_field(section: Option<&serde_json::Value>, key: &str) -> f32 {
 
 struct PreparedDistribution {
     theme: Theme,
-    accent: [u8; 3],
     pins_palette: bool,
-    pins_accent: bool,
     policy: DistributionPolicy,
 }
 
 fn prepare_distribution(defaults: &DistributionDefaults) -> Option<PreparedDistribution> {
     defaults.validate().ok()?;
-    let mut theme = if let Some(custom) = &defaults.custom {
+    let theme = if let Some(custom) = &defaults.custom {
         Theme::from_custom_spec(custom)?
     } else if let Some(name) = &defaults.palette {
         Theme::named(name)?
     } else {
         Theme::dark()
     };
-    // The authored accent is repaired later, against the surfaces it lands on.
-    // Baking the repair into the stored accent would shift a colour that was
-    // only illegible on the distribution palette.
-    let palette_accent = bytes(theme.accent_primary);
-    if let Some(accent) = defaults.accent {
-        theme = apply_repaired_accent(theme, accent);
-    }
     Some(PreparedDistribution {
-        accent: defaults.accent.unwrap_or(palette_accent),
         pins_palette: defaults.policy.pins_palette(),
-        pins_accent: defaults.policy.pins_accent(),
         policy: defaults.policy.clone(),
         theme,
     })
@@ -528,15 +431,11 @@ fn prepare_distribution(defaults: &DistributionDefaults) -> Option<PreparedDistr
 /// 1. built-in defaults ([`Theme::dark`])
 /// 2. distribution defaults, when [`DistributionDefaults::validate`] accepts them
 /// 3. user theme, except fields named by [`DistributionPolicy::pins`]
-/// 4. workspace tint, when [`WorkspaceTint::validate`] accepts it and the
-///    colour clears the accent floor
+/// 4. the workspace temperature ([`ThemeLayerStack::workspace_hue`])
 /// 5. accessibility, when [`AccessibilityLayer::materialize`] accepts it
 ///    (high contrast / forced colours, clamped text and UI scale, reduced
 ///    motion, thick caret). A rejected payload leaves the theme unchanged
 ///    by this layer
-///
-/// A distribution accent that misses a contrast floor is repaired. A brand
-/// accent is not: see [`Theme::brand_accent`].
 #[must_use]
 pub fn resolve_theme_layers(stack: &ThemeLayerStack) -> Theme {
     let distribution = stack
@@ -549,46 +448,29 @@ pub fn resolve_theme_layers(stack: &ThemeLayerStack) -> Theme {
         .unwrap_or_else(Theme::dark);
 
     if let Some(user) = &stack.user_theme {
-        let user_accent = bytes(user.accent_primary);
         let pin_palette = distribution
             .as_ref()
             .is_some_and(|layer| layer.pins_palette);
-        let pin_accent = distribution.as_ref().is_some_and(|layer| layer.pins_accent);
         if !pin_palette {
             theme = user.clone();
-        }
-        if pin_accent {
-            if let Some(layer) = &distribution {
-                let accent = layer.accent;
-                theme = apply_repaired_accent(theme, accent);
-            }
-        } else if pin_palette {
-            theme = apply_repaired_accent(theme, user_accent);
         }
         if let Some(layer) = &distribution {
             merge_shared_roles(&mut theme, user, &layer.theme, &layer.policy, pin_palette);
         }
     }
 
-    if let Some(tint) = stack
-        .workspace_tint
-        .as_ref()
-        .filter(|tint| tint.validate().is_ok())
-        && accent_clears(&theme, tint.accent)
-    {
-        theme = theme.with_accent(tint.accent);
+    if let Some(hue) = stack.workspace_hue {
+        theme = theme.with_neutral_hue(hue);
     }
 
-    theme.allow_app_accents = stack.allow_app_accents;
     // A rejected accessibility payload — bad schema, or a non-finite scale —
     // does not change contrast, caret, type size, or motion.
     let Ok(access) = stack.accessibility.materialize() else {
         return theme;
     };
     if access.high_contrast || access.forced_colors {
-        let allow_app_accents = theme.allow_app_accents;
-        theme = Theme::high_contrast();
-        theme.allow_app_accents = allow_app_accents;
+        let you = crate::color::to_rgb8(theme.tokens.colors.intent.you);
+        theme = Theme::high_contrast().with_your_colour(you);
     }
     theme.caret_width = if access.thick_caret { 4.0 } else { 2.0 };
     theme
@@ -614,15 +496,6 @@ fn merge_shared_roles(
     let take = |pinned: bool| {
         if from_distribution { pinned } else { !pinned }
     };
-    if take(policy.pins_shape()) {
-        let src = if from_distribution {
-            distribution
-        } else {
-            user
-        };
-        theme.tokens.radii = src.tokens.radii.clone();
-        theme.radius_standard = src.radius_standard;
-    }
     if take(policy.pins_density()) {
         let src = if from_distribution {
             distribution
@@ -682,8 +555,7 @@ fn merge_shared_roles(
 
 fn copy_material(dst: &mut Theme, src: &Theme) {
     dst.tokens.elevation = src.tokens.elevation;
-    dst.tokens.colors.surfaces.glass_blur_px = src.tokens.colors.surfaces.glass_blur_px;
-    dst.tokens.material_tint = src.tokens.material_tint;
+    dst.tokens.colors.surfaces.material_blur_px = src.tokens.colors.surfaces.material_blur_px;
 }
 
 fn copy_icons(dst: &mut Theme, src: &Theme) {
@@ -693,73 +565,14 @@ fn copy_icons(dst: &mut Theme, src: &Theme) {
     dst.tokens.metrics.icon_label_gap = src.tokens.metrics.icon_label_gap;
 }
 
-fn apply_repaired_accent(theme: Theme, accent: [u8; 3]) -> Theme {
-    let accent = repaired_accent(&theme, accent);
-    theme.with_accent(accent)
-}
-
-fn bytes(color: Color) -> [u8; 3] {
-    [color.r(), color.g(), color.b()]
-}
-
-fn accent_clears(theme: &Theme, accent: [u8; 3]) -> bool {
-    let colour = Color::from_rgb8(accent[0], accent[1], accent[2]);
-    contrast_ratio(colour, theme.bg_app) >= NON_TEXT_MIN_CONTRAST
-        && contrast_ratio(colour, theme.bg_primary) >= NON_TEXT_MIN_CONTRAST
-}
-
-/// Step `accent` toward a contrasting extreme until it clears the accent
-/// floors on this theme's base and raised surfaces. A colour that already
-/// clears is returned unchanged.
-fn repaired_accent(theme: &Theme, accent: [u8; 3]) -> [u8; 3] {
-    if accent_clears(theme, accent) {
-        return accent;
-    }
-    let colours = &theme.tokens.colors;
-    let mut palette = PaletteSpec {
-        dark: true,
-        base: theme.bg_app,
-        raised: theme.bg_primary,
-        popover: colours.surfaces.overlay,
-        text: theme.text_primary,
-        text_dim: theme.text_dim,
-        text_tertiary: theme.text_tertiary,
-        border: theme.border_standard,
-        focus: theme.border_focus,
-        accent: Color::from_rgb8(accent[0], accent[1], accent[2]),
-        accent_hover: theme.accent_hover,
-        success: colours.semantic.success,
-        warning: colours.semantic.warning,
-        danger: colours.semantic.danger,
-        info: colours.semantic.info,
-        window_card: None,
-    };
-    palette.focus = palette.accent;
-    contrast::repair(&mut palette);
-    bytes(palette.accent)
-}
-
-/// Why [`Theme::brand_accent`] refused an app colour.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BrandAccentRejection {
-    /// `appearance.app_accents` is off.
-    Disabled,
-    /// High contrast or forced colours is active.
-    Accessibility,
-    /// Misses the 3:1 accent floor on the active base or raised surface.
-    Contrast,
-}
-
-/// Tokens a content surface paints with when [`ContentSurface::forced`] is set.
-/// When it is clear, the app keeps its own page palette; `accent` is still the
-/// theme accent, so a helper that already consults [`Theme`] is not undone.
+/// Tokens a content surface paints with when [`ContentSurface::forced`] is
+/// set. When it is clear, a document keeps its own page palette.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ContentSurface {
     pub forced: bool,
     pub page: Color,
     pub ink: Color,
     pub ink_dim: Color,
-    pub accent: Color,
 }
 
 impl Theme {
@@ -774,43 +587,10 @@ impl Theme {
     pub fn content_surface(&self) -> ContentSurface {
         ContentSurface {
             forced: self.forced_colors,
-            page: self.bg_app,
+            page: self.tokens.colors.surfaces.content,
             ink: self.text_primary,
             ink_dim: self.text_dim,
-            accent: self.accent_primary,
         }
-    }
-
-    /// Apply one app-supplied accent.
-    ///
-    /// Surfaces, text, chrome and accessibility stay this theme's. The colour
-    /// has to clear the same 3:1 floor as the theme accent on the active base
-    /// and raised surfaces. A miss, a disabled app-accent switch, or forced
-    /// colours leaves the theme accent in place — the colour is not repaired
-    /// into a different one.
-    ///
-    /// # Errors
-    ///
-    /// [`BrandAccentRejection::Disabled`], [`BrandAccentRejection::Accessibility`],
-    /// or [`BrandAccentRejection::Contrast`].
-    pub fn brand_accent(&self, accent: [u8; 3]) -> Result<Self, BrandAccentRejection> {
-        if !self.allow_app_accents {
-            return Err(BrandAccentRejection::Disabled);
-        }
-        if self.forced_colors {
-            return Err(BrandAccentRejection::Accessibility);
-        }
-        if !accent_clears(self, accent) {
-            return Err(BrandAccentRejection::Contrast);
-        }
-        Ok(self.clone().with_accent(accent))
-    }
-
-    /// [`Theme::brand_accent`], falling back to this theme when the colour
-    /// is rejected.
-    #[must_use]
-    pub fn with_brand_accent(&self, accent: [u8; 3]) -> Self {
-        self.brand_accent(accent).unwrap_or_else(|_| self.clone())
     }
 
     /// [`resolve_theme_layers`] for a settings document, including file
@@ -830,10 +610,6 @@ mod tests {
     use super::*;
     use crate::tokens::contrast::audit;
 
-    fn rgb(theme: &Theme) -> [u8; 3] {
-        bytes(theme.accent_primary)
-    }
-
     fn light_stack() -> ThemeLayerStack {
         ThemeLayerStack {
             user_theme: Some(Theme::light()),
@@ -841,130 +617,105 @@ mod tests {
         }
     }
 
-    #[test]
-    fn distribution_defaults_replace_the_builtin_theme() {
-        let theme = resolve_theme_layers(&ThemeLayerStack {
-            distribution_defaults: Some(DistributionDefaults {
-                palette: Some("Nord".into()),
-                ..DistributionDefaults::default()
-            }),
-            ..ThemeLayerStack::default()
-        });
-        assert_eq!(theme.name, Theme::nord().name);
-        assert_eq!(theme.bg_app, Theme::nord().bg_app);
-        assert_ne!(theme.bg_app, Theme::dark().bg_app);
-
-        // An accent that misses the floor is repaired, not dropped, and the
-        // repaired theme still clears every shipped floor.
-        let repaired = resolve_theme_layers(&ThemeLayerStack {
-            distribution_defaults: Some(DistributionDefaults {
-                palette: Some("Nord".into()),
-                accent: Some([0x28, 0x29, 0x2E]),
-                ..DistributionDefaults::default()
-            }),
-            ..ThemeLayerStack::default()
-        });
-        assert_eq!(repaired.name, Theme::nord().name);
-        assert_eq!(repaired.bg_app, Theme::nord().bg_app);
-        assert_ne!(rgb(&repaired), [0x28, 0x29, 0x2E]);
-        assert!(
-            accent_clears(&repaired, rgb(&repaired)),
-            "repaired distribution accent must clear the 3:1 floor"
-        );
-        assert!(
-            audit(&repaired.tokens.colors).is_empty(),
-            "repair must not weaken contrast floors"
-        );
+    fn spec(id: &str, name: &str) -> CustomThemeSpec {
+        CustomThemeSpec {
+            schema_version: crate::theme::CUSTOM_THEME_SCHEMA_VERSION,
+            id: id.into(),
+            name: name.into(),
+            dark_base: true,
+            neutral_hue: 220.0,
+            spacing_px: 12.0,
+            font: "Inter".into(),
+            motion_scale: 1.0,
+            material_scale: 1.0,
+            icon_scale: 1.0,
+            chrome_weight: 1.0,
+            motion_character: 1.0,
+        }
     }
 
     #[test]
-    fn user_theme_overrides_unpinned_distribution_defaults() {
+    fn distribution_defaults_replace_the_builtin_theme_and_the_user_wins_unpinned() {
         let theme = resolve_theme_layers(&ThemeLayerStack {
             distribution_defaults: Some(DistributionDefaults {
-                palette: Some("Nord".into()),
-                accent: Some([0x0B, 0x3A, 0x82]),
+                palette: Some("Light".into()),
                 ..DistributionDefaults::default()
             }),
-            ..light_stack()
+            ..ThemeLayerStack::default()
         });
         assert_eq!(theme.name, Theme::light().name);
         assert_eq!(theme.bg_app, Theme::light().bg_app);
-        assert_eq!(rgb(&theme), rgb(&Theme::light()));
+
+        let user_wins = resolve_theme_layers(&ThemeLayerStack {
+            distribution_defaults: Some(DistributionDefaults {
+                palette: Some("Dark".into()),
+                ..DistributionDefaults::default()
+            }),
+            ..light_stack()
+        });
+        assert_eq!(user_wins.name, Theme::light().name);
     }
 
     #[test]
-    fn pinned_policy_overrides_only_the_pinned_fields() {
-        let accent = [0x0B, 0x3A, 0x82];
-        let pin_accent = resolve_theme_layers(&ThemeLayerStack {
+    fn a_palette_pin_keeps_the_distribution_palette() {
+        let pinned = resolve_theme_layers(&ThemeLayerStack {
             distribution_defaults: Some(DistributionDefaults {
-                palette: Some("Nord".into()),
-                accent: Some(accent),
+                custom: Some(spec("house", "House")),
                 policy: DistributionPolicy {
-                    pins: vec![PIN_ACCENT.into(), "high_contrast".into()],
+                    pins: vec![PIN_PALETTE.into(), "high_contrast".into()],
                     ..DistributionPolicy::default()
                 },
                 ..DistributionDefaults::default()
             }),
             ..light_stack()
         });
-        assert_eq!(
-            pin_accent.name,
-            Theme::light().name,
-            "palette stays the user's"
-        );
-        assert_eq!(pin_accent.bg_app, Theme::light().bg_app);
-        assert_eq!(rgb(&pin_accent), accent, "only the accent pin wins");
-        assert!(!pin_accent.colors_are_forced());
-
-        let pin_palette = resolve_theme_layers(&ThemeLayerStack {
-            distribution_defaults: Some(DistributionDefaults {
-                palette: Some("Nord".into()),
-                policy: DistributionPolicy {
-                    pins: vec![PIN_PALETTE.into()],
-                    ..DistributionPolicy::default()
-                },
-                ..DistributionDefaults::default()
-            }),
-            ..light_stack()
-        });
-        assert_eq!(pin_palette.name, Theme::nord().name);
-        assert_eq!(pin_palette.bg_app, Theme::nord().bg_app);
-        assert_eq!(
-            rgb(&pin_palette),
-            repaired_accent(&Theme::nord(), rgb(&Theme::light())),
-            "an unpinned accent stays the user's, repaired onto the pinned palette"
-        );
+        assert_eq!(pinned.name, "House");
+        assert!(!pinned.colors_are_forced(), "accessibility is not pinnable");
 
         // Alias key `distribution` is the same layer.
         let from_json = Theme::resolved_from_settings(
-            r#"{"appearance":{"theme":"Light","distribution":{"schema_version":1,"palette":"Nord","policy":{"pins":["palette"]}}}}"#,
+            r#"{"appearance":{"theme":"Dark","distribution":{"schema_version":1,"palette":"Light","policy":{"pins":["palette"]}}}}"#,
         );
-        assert_eq!(from_json.name, Theme::nord().name);
-        assert_eq!(
-            rgb(&from_json),
-            repaired_accent(&Theme::nord(), rgb(&Theme::light()))
-        );
+        assert_eq!(from_json.name, Theme::light().name);
     }
 
     #[test]
-    fn accessibility_wins_over_pins_tint_and_the_user_theme() {
+    fn the_workspace_temperature_tints_the_neutrals_until_accessibility() {
+        let warm = resolve_theme_layers(&ThemeLayerStack {
+            workspace_hue: Some(40.0),
+            ..light_stack()
+        });
+        assert_eq!(warm.name, Theme::light().name);
+        assert!((warm.tokens.colors.neutral_hue - 40.0).abs() < f32::EPSILON);
+        assert_ne!(warm.bg_app, Theme::light().bg_app);
+        assert!(audit(&warm.tokens.colors).is_empty());
+
+        let forced = resolve_theme_layers(&ThemeLayerStack {
+            workspace_hue: Some(40.0),
+            accessibility: AccessibilityLayer {
+                high_contrast: true,
+                ..AccessibilityLayer::default()
+            },
+            ..light_stack()
+        });
+        assert_eq!(forced.name, Theme::high_contrast().name);
+        assert_eq!(forced.bg_app, Theme::high_contrast().bg_app);
+    }
+
+    #[test]
+    fn accessibility_wins_over_pins_and_the_user_theme() {
         let theme = resolve_theme_layers(&ThemeLayerStack {
             distribution_defaults: Some(DistributionDefaults {
-                palette: Some("Nord".into()),
+                palette: Some("Light".into()),
                 policy: DistributionPolicy {
                     pins: vec![
                         PIN_PALETTE.into(),
-                        PIN_ACCENT.into(),
                         "text_scale".into(),
                         "high_contrast".into(),
                     ],
                     ..DistributionPolicy::default()
                 },
                 ..DistributionDefaults::default()
-            }),
-            workspace_tint: Some(WorkspaceTint {
-                schema_version: WORKSPACE_TINT_SCHEMA_VERSION,
-                accent: [0x0B, 0x3A, 0x82],
             }),
             accessibility: AccessibilityLayer {
                 high_contrast: true,
@@ -978,16 +729,13 @@ mod tests {
         });
         assert_eq!(theme.name, Theme::high_contrast().name);
         assert!(theme.colors_are_forced());
-        assert_eq!(theme.bg_app, Theme::high_contrast().bg_app);
-        assert_eq!(rgb(&theme), rgb(&Theme::high_contrast()));
-        assert_ne!(rgb(&theme), [0x0B, 0x3A, 0x82]);
         assert_eq!(theme.text_scale, 1.5);
         assert_eq!(theme.ui_scale, 1.25);
         assert!(theme.reduce_motion);
         assert_eq!(theme.caret_width, 4.0);
         let surface = theme.content_surface();
         assert!(surface.forced);
-        assert_eq!(surface.page, theme.bg_app);
+        assert_eq!(surface.page, theme.tokens.colors.surfaces.content);
         assert_eq!(surface.ink, theme.text_primary);
         assert!(audit(&theme.tokens.colors).is_empty());
     }
@@ -1010,12 +758,8 @@ mod tests {
             ..light_stack()
         });
         assert_eq!(theme.name, Theme::light().name);
-        assert_eq!(theme.bg_app, Theme::light().bg_app);
-        assert_eq!(rgb(&theme), rgb(&Theme::light()));
         assert!(!theme.colors_are_forced());
         assert_eq!(theme.text_scale, 1.0);
-        assert_eq!(theme.ui_scale, 1.0);
-        assert!(!theme.reduce_motion);
         assert_eq!(theme.caret_width, 2.0);
 
         let from_json = Theme::resolved_from_settings(
@@ -1023,10 +767,6 @@ mod tests {
         );
         assert_eq!(from_json.name, Theme::light().name);
         assert!(!from_json.colors_are_forced());
-        assert_eq!(from_json.text_scale, 1.0);
-        assert_eq!(from_json.ui_scale, 1.0);
-        assert!(!from_json.reduce_motion);
-        assert_eq!(from_json.caret_width, 2.0);
 
         let non_finite = AccessibilityLayer {
             text_scale: f32::NAN,
@@ -1038,9 +778,7 @@ mod tests {
             accessibility: non_finite,
             ..light_stack()
         });
-        assert_eq!(untouched.name, Theme::light().name);
         assert!(!untouched.colors_are_forced());
-        assert_eq!(untouched.text_scale, 1.0);
     }
 
     #[test]
@@ -1057,158 +795,20 @@ mod tests {
             accessibility: raw,
             ..light_stack()
         });
-        assert_eq!(theme.name, Theme::light().name);
         assert_eq!(theme.text_scale, AccessibilityLayer::TEXT_SCALE_MAX);
         assert_eq!(theme.ui_scale, AccessibilityLayer::UI_SCALE_MIN);
-        assert_ne!(theme.text_scale, raw.text_scale);
     }
 
     #[test]
-    fn a_rejected_workspace_tint_schema_leaves_the_theme() {
-        let tint = WorkspaceTint {
-            schema_version: 99,
-            accent: [0x0B, 0x3A, 0x82],
-        };
-        assert!(tint.validate().is_err());
-        let theme = resolve_theme_layers(&ThemeLayerStack {
-            workspace_tint: Some(tint),
-            ..light_stack()
-        });
-        assert_eq!(theme.name, Theme::light().name);
-        assert_eq!(theme.bg_app, Theme::light().bg_app);
-        assert_eq!(
-            rgb(&theme),
-            rgb(&Theme::light()),
-            "a schema the resolver does not accept must not recolour the accent"
-        );
-
-        let from_json = Theme::resolved_from_settings(
-            r#"{"appearance":{"theme":"Light","workspace_tint":{"schema_version":99,"accent":[11,58,130]}}}"#,
-        );
-        assert_eq!(from_json.name, Theme::light().name);
-        assert_eq!(rgb(&from_json), rgb(&Theme::light()));
-    }
-
-    #[test]
-    fn a_workspace_tint_recolours_the_accent_until_accessibility() {
-        let tint = [0x0B, 0x3A, 0x82];
-        let theme = resolve_theme_layers(&ThemeLayerStack {
-            workspace_tint: Some(WorkspaceTint {
-                schema_version: 1,
-                accent: tint,
-            }),
-            ..light_stack()
-        });
-        assert_eq!(theme.name, Theme::light().name);
-        assert_eq!(theme.bg_app, Theme::light().bg_app);
-        assert_eq!(rgb(&theme), tint);
-
-        let skipped = resolve_theme_layers(&ThemeLayerStack {
-            workspace_tint: Some(WorkspaceTint {
-                schema_version: 1,
-                accent: [0xF7, 0xF7, 0xF5],
-            }),
-            ..light_stack()
-        });
-        assert_eq!(
-            rgb(&skipped),
-            rgb(&Theme::light()),
-            "a tint that misses the floor is not applied"
-        );
-    }
-
-    #[test]
-    fn failing_brand_accent_is_rejected_and_a_passing_one_is_used() {
-        let dark = Theme::dark();
-        let failing = [0x18, 0x19, 0x1D];
-        assert!(matches!(
-            dark.brand_accent(failing),
-            Err(BrandAccentRejection::Contrast)
-        ));
-        let fallback = dark.with_brand_accent(failing);
-        assert_eq!(rgb(&fallback), rgb(&dark));
-        assert_eq!(fallback.bg_app, dark.bg_app);
-        assert_eq!(fallback.text_primary, dark.text_primary);
-
-        let passing = [0xF2, 0xC1, 0x4E];
-        let branded = dark
-            .brand_accent(passing)
-            .expect("amber clears 3:1 on dark");
-        assert_eq!(rgb(&branded), passing);
-        assert_eq!(branded.bg_app, dark.bg_app, "surfaces stay the theme's");
-        assert_eq!(
-            branded.text_primary, dark.text_primary,
-            "text stays the theme's"
-        );
-        assert_eq!(branded.text_dim, dark.text_dim);
-        assert!(!branded.colors_are_forced());
-        assert_eq!(branded.border_focus, branded.accent_primary);
-
-        let forced = Theme::high_contrast();
-        assert!(matches!(
-            forced.brand_accent(passing),
-            Err(BrandAccentRejection::Accessibility)
-        ));
-        assert_eq!(rgb(&forced.with_brand_accent(passing)), rgb(&forced));
-    }
-
-    #[test]
-    fn turning_app_accents_off_rejects_a_passing_colour() {
-        let theme =
-            Theme::resolved_from_settings(r#"{"appearance":{"theme":"Dark","app_accents":false}}"#);
-        assert!(!theme.allow_app_accents);
-        let passing = [0xF2, 0xC1, 0x4E];
-        assert!(matches!(
-            theme.brand_accent(passing),
-            Err(BrandAccentRejection::Disabled)
-        ));
-        assert_eq!(rgb(&theme.with_brand_accent(passing)), rgb(&Theme::dark()));
-    }
-
-    #[test]
-    fn every_shipped_preset_meets_the_contrast_floors() {
-        for name in Theme::ALL {
-            let theme = Theme::named(name).expect(name);
-            let findings = audit(&theme.tokens.colors);
-            assert!(
-                findings.is_empty(),
-                "{name} misses a contrast floor: {findings:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn distribution_and_the_user_share_the_motion_role() {
-        let mut spec = CustomThemeSpec {
-            schema_version: crate::theme::CUSTOM_THEME_SCHEMA_VERSION,
-            id: "slow".into(),
-            name: "Slow".into(),
-            dark_base: true,
-            accent: [12, 120, 220],
-            accent_hover: [8, 96, 190],
-            surface_base: [9, 18, 30],
-            surface_raised: [18, 32, 48],
-            text_primary: [238, 244, 250],
-            text_dim: [170, 184, 199],
-            border: [48, 68, 88],
-            success: [50, 190, 110],
-            warning: [230, 170, 50],
-            danger: [225, 75, 80],
-            info: [70, 165, 230],
-            radius_px: 8.0,
-            spacing_px: 12.0,
-            font: "Inter".into(),
-            motion_scale: 0.5,
-            material_scale: 1.0,
-            icon_scale: 1.5,
-            chrome_weight: 3.0,
-            motion_character: 1.0,
-            material_tint: 0.0,
-        };
+    fn distribution_and_the_user_share_the_motion_and_chrome_roles() {
+        let mut slow = spec("slow", "Slow");
+        slow.motion_scale = 0.5;
+        slow.icon_scale = 1.5;
+        slow.chrome_weight = 3.0;
         let stock = Theme::light().tokens.motion.durations.base_ms;
         let only = resolve_theme_layers(&ThemeLayerStack {
             distribution_defaults: Some(DistributionDefaults {
-                custom: Some(spec.clone()),
+                custom: Some(slow.clone()),
                 ..DistributionDefaults::default()
             }),
             ..ThemeLayerStack::default()
@@ -1216,23 +816,24 @@ mod tests {
         assert_eq!(only.name, "Slow");
         assert_eq!(only.tokens.motion.durations.base_ms, stock / 2);
         assert!((only.tokens.metrics.icon_md - 30.0).abs() < 0.01);
+        assert!((only.tokens.metrics.chrome_rule_px - 3.0).abs() < 0.01);
 
         let user_wins = resolve_theme_layers(&ThemeLayerStack {
             distribution_defaults: Some(DistributionDefaults {
-                custom: Some(spec.clone()),
+                custom: Some(slow.clone()),
                 ..DistributionDefaults::default()
             }),
             ..light_stack()
         });
         assert_eq!(user_wins.bg_app, Theme::light().bg_app);
         assert_eq!(user_wins.tokens.motion.durations.base_ms, stock);
+        assert!((user_wins.tokens.metrics.chrome_rule_px - 1.0).abs() < 0.01);
 
-        spec.motion_scale = 0.5;
         let pinned = resolve_theme_layers(&ThemeLayerStack {
             distribution_defaults: Some(DistributionDefaults {
-                custom: Some(spec),
+                custom: Some(slow),
                 policy: DistributionPolicy {
-                    pins: vec![PIN_MOTION.into()],
+                    pins: vec![PIN_MOTION.into(), PIN_CHROME.into()],
                     ..DistributionPolicy::default()
                 },
                 ..DistributionDefaults::default()
@@ -1244,149 +845,43 @@ mod tests {
             Theme::light().bg_app,
             "colour stays the user's"
         );
-        assert_eq!(
-            pinned.tokens.motion.durations.base_ms,
-            stock / 2,
-            "motion pin keeps the distribution scale"
-        );
+        assert_eq!(pinned.tokens.motion.durations.base_ms, stock / 2);
+        assert!((pinned.tokens.metrics.chrome_rule_px - 3.0).abs() < 0.01);
     }
 
     #[test]
-    fn distribution_and_the_user_share_the_chrome_role() {
-        let spec = CustomThemeSpec {
-            schema_version: crate::theme::CUSTOM_THEME_SCHEMA_VERSION,
-            id: "heavy-rule".into(),
-            name: "Heavy rule".into(),
-            dark_base: true,
-            accent: [12, 120, 220],
-            accent_hover: [8, 96, 190],
-            surface_base: [9, 18, 30],
-            surface_raised: [18, 32, 48],
-            text_primary: [238, 244, 250],
-            text_dim: [170, 184, 199],
-            border: [48, 68, 88],
-            success: [50, 190, 110],
-            warning: [230, 170, 50],
-            danger: [225, 75, 80],
-            info: [70, 165, 230],
-            radius_px: 8.0,
-            spacing_px: 12.0,
-            font: "Inter".into(),
-            motion_scale: 1.0,
-            material_scale: 1.0,
-            icon_scale: 1.0,
-            chrome_weight: 3.0,
-            motion_character: 0.0,
-            material_tint: 0.45,
-        };
-        let only = resolve_theme_layers(&ThemeLayerStack {
-            distribution_defaults: Some(DistributionDefaults {
-                custom: Some(spec.clone()),
-                ..DistributionDefaults::default()
-            }),
-            ..ThemeLayerStack::default()
-        });
-        assert!((only.tokens.metrics.chrome_rule_px - 3.0).abs() < 0.01);
-        assert!(only.material_glass().b() > only.tokens.colors.surfaces.glass.b());
-
-        let user_wins = resolve_theme_layers(&ThemeLayerStack {
-            distribution_defaults: Some(DistributionDefaults {
-                custom: Some(spec.clone()),
-                ..DistributionDefaults::default()
-            }),
-            ..light_stack()
-        });
-        assert_eq!(user_wins.bg_app, Theme::light().bg_app);
-        assert!((user_wins.tokens.metrics.chrome_rule_px - 1.0).abs() < 0.01);
-
-        let pinned = resolve_theme_layers(&ThemeLayerStack {
-            distribution_defaults: Some(DistributionDefaults {
-                custom: Some(spec),
-                policy: DistributionPolicy {
-                    pins: vec![PIN_CHROME.into()],
-                    ..DistributionPolicy::default()
-                },
-                ..DistributionDefaults::default()
-            }),
-            ..light_stack()
-        });
-        assert_eq!(pinned.bg_app, Theme::light().bg_app);
+    fn rejected_or_out_of_band_distribution_documents() {
+        let mut dense = spec("quiet-ocean", "Quiet Ocean");
+        dense.spacing_px = 2.0;
         assert!(
-            (pinned.tokens.metrics.chrome_rule_px - 3.0).abs() < 0.01,
-            "chrome pin keeps the distribution rule"
+            dense.validate().is_ok(),
+            "2 px is inside the admitted range"
         );
-    }
-
-    #[test]
-    fn old_settings_open_and_out_of_band_spacing_is_clamped() {
-        let legacy = Theme::resolved_from_settings(r#"{"appearance":{"theme":"Light"}}"#);
-        assert_eq!(legacy.name, Theme::light().name);
-        assert_eq!(rgb(&legacy), rgb(&Theme::light()));
-        assert!(!legacy.colors_are_forced());
-        assert!(legacy.allow_app_accents);
-
-        let omitted_schema = Theme::resolved_from_settings(
-            r#"{"appearance":{"distribution_defaults":{"palette":"Nord"}}}"#,
-        );
-        assert_eq!(omitted_schema.name, Theme::nord().name);
-
-        let spec = CustomThemeSpec {
-            schema_version: crate::theme::CUSTOM_THEME_SCHEMA_VERSION,
-            id: "quiet-ocean".into(),
-            name: "Quiet Ocean".into(),
-            dark_base: true,
-            accent: [12, 120, 220],
-            accent_hover: [8, 96, 190],
-            surface_base: [9, 18, 30],
-            surface_raised: [18, 32, 48],
-            text_primary: [238, 244, 250],
-            text_dim: [170, 184, 199],
-            border: [48, 68, 88],
-            success: [50, 190, 110],
-            warning: [230, 170, 50],
-            danger: [225, 75, 80],
-            info: [70, 165, 230],
-            radius_px: 8.0,
-            spacing_px: 2.0,
-            font: "Inter".into(),
-            motion_scale: 1.0,
-            material_scale: 1.0,
-            icon_scale: 1.0,
-            chrome_weight: 1.0,
-            motion_character: 1.0,
-            material_tint: 0.0,
-        };
-        assert!(spec.validate().is_ok(), "2 px is inside the admitted range");
         let clamped = resolve_theme_layers(&ThemeLayerStack {
             distribution_defaults: Some(DistributionDefaults {
-                custom: Some(spec),
+                custom: Some(dense),
                 ..DistributionDefaults::default()
             }),
             ..ThemeLayerStack::default()
         });
         assert_eq!(clamped.name, "Quiet Ocean");
         assert_eq!(clamped.tokens.spacing.s3, CustomThemeSpec::SPACING_PX_MIN);
-        assert!(audit(&clamped.tokens.colors).is_empty());
-    }
 
-    #[test]
-    fn a_rejected_distribution_schema_leaves_the_user_theme() {
         let future = DistributionDefaults {
             schema_version: 99,
-            palette: Some("Nord".into()),
+            palette: Some("Light".into()),
             ..DistributionDefaults::default()
         };
         assert!(future.validate().is_err());
         let theme = resolve_theme_layers(&ThemeLayerStack {
             distribution_defaults: Some(future),
-            ..light_stack()
+            ..ThemeLayerStack::default()
         });
-        assert_eq!(theme.name, Theme::light().name);
-        assert_eq!(theme.bg_app, Theme::light().bg_app);
+        assert_eq!(theme.name, Theme::dark().name);
 
         let unknown = resolve_theme_layers(&ThemeLayerStack {
             distribution_defaults: Some(DistributionDefaults {
-                palette: Some("Not A Palette".into()),
+                palette: Some("Nord".into()),
                 ..DistributionDefaults::default()
             }),
             ..ThemeLayerStack::default()
@@ -1395,12 +890,11 @@ mod tests {
     }
 
     #[test]
-    fn content_surfaces_read_theme_tokens_when_colours_are_forced() {
+    fn forced_colours_paint_content_surfaces_from_the_theme() {
         let dark = Theme::dark();
         let open = dark.content_surface();
         assert!(!open.forced);
-        assert_eq!(open.accent, dark.accent_primary);
-        assert_eq!(open.page, dark.bg_app);
+        assert_eq!(open.page, dark.tokens.colors.surfaces.content);
         assert_eq!(open.ink, dark.text_primary);
 
         let forced = Theme::resolved_from_settings(
@@ -1409,11 +903,8 @@ mod tests {
         assert!(forced.colors_are_forced());
         assert_eq!(forced.name, Theme::high_contrast().name);
         let surface = forced.content_surface();
-        assert!(surface.forced);
         assert_eq!(surface.page, Color::BLACK);
         assert_eq!(surface.ink, Color::WHITE);
-        assert_eq!(surface.ink_dim, forced.text_dim);
-        assert_eq!(surface.accent, forced.accent_primary);
     }
 
     #[test]
@@ -1422,12 +913,12 @@ mod tests {
         let settings = dir.path().join("settings.json");
         std::fs::write(
             &settings,
-            r#"{"appearance":{"distribution_defaults":{"palette":"Nord"}}}"#,
+            r#"{"appearance":{"distribution_defaults":{"palette":"Light"}}}"#,
         )
         .expect("write settings");
         assert_eq!(
             Theme::configured_from(Some(&settings)).name,
-            Theme::nord().name
+            Theme::light().name
         );
     }
 }

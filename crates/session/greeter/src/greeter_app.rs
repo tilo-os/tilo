@@ -343,7 +343,7 @@ impl Widget for VStack {
     ) {
         if self.chrome {
             let tokens = &theme.tokens;
-            let shape = RoundedRect::from_rect(self.rect, f64::from(tokens.radii.xl));
+            let shape = RoundedRect::from_rect(self.rect, f64::from(tokens.radii.panel));
             let ground = ui::chrome::shell::panel_ground(theme);
             // Credentials sit on one opaque, quiet surface. Its derived edge
             // separates it from the moving backdrop without a heavy shadow.

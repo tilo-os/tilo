@@ -679,7 +679,7 @@ impl Widget for CategoryChart {
                     .value(bar.series, bar.category)
                     .is_some_and(|value| value.total)
             {
-                theme.accent_primary
+                theme.tokens.colors.intent.inverted
             } else {
                 series.color
             };
@@ -814,7 +814,7 @@ impl Widget for CategoryChart {
                 transform,
                 theme.tokens.colors.surfaces.overlay,
                 None,
-                &RoundedRect::from_rect(tooltip, f64::from(theme.tokens.radii.md)),
+                &RoundedRect::from_rect(tooltip, f64::from(theme.tokens.radii.control)),
             );
             tr.draw_text_weighted(
                 scene,

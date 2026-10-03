@@ -129,8 +129,7 @@ impl CollaborationOverview {
         rect: Rect,
         ringed: bool,
     ) {
-        let c = user_color(identity.id);
-        let fill = Color::from_rgb8(c.0, c.1, c.2);
+        let fill = theme.tokens.colors.presence.of_rgb(user_color(identity.id));
         if ringed {
             Avatar::draw_ringed_at(
                 &mut crate::paint::PaintCtx::new(scene, transform, tr, theme),
@@ -278,7 +277,7 @@ impl CollaborationOverview {
             mark,
             OverviewTextStyle {
                 size: 15.0,
-                color: theme.accent_primary,
+                color: theme.tokens.colors.intent.inverted,
                 weight: TextWeight::Semibold,
             },
             r.x0 + 12.0,
@@ -332,7 +331,7 @@ impl CollaborationOverview {
                 Fill::NonZero,
                 transform,
                 if active {
-                    theme.accent_primary
+                    theme.tokens.colors.intent.inverted
                 } else {
                     theme.tokens.colors.lift(0.72)
                 },
@@ -347,10 +346,7 @@ impl CollaborationOverview {
                 OverviewTextStyle {
                     size: 11.0,
                     color: if active {
-                        theme
-                            .tokens
-                            .colors
-                            .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
+                        theme.tokens.colors.intent.on_inverted
                     } else {
                         theme.text_dim
                     },
@@ -484,7 +480,7 @@ impl CollaborationOverview {
                 &format!("{mark}{}", status.text),
                 OverviewTextStyle {
                     size: 11.0,
-                    color: theme.accent_primary,
+                    color: theme.tokens.colors.intent.inverted,
                     weight: TextWeight::Regular,
                 },
                 rect.x0 + 56.0,

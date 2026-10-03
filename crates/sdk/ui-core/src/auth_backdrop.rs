@@ -50,7 +50,7 @@ pub fn draw(scene: &mut Scene, theme: &Theme, bounds: Rect, elapsed_seconds: f64
     };
     let transform = Affine::translate((bounds.x0, bounds.y0))
         .pre_scale_non_uniform(bounds.width(), bounds.height());
-    let accent = theme.accent_primary;
+    let accent = theme.tokens.colors.intent.inverted;
     let light = if theme.tokens.colors.lifts_bright() {
         theme.text_primary
     } else {

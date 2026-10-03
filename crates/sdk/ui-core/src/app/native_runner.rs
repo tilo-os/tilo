@@ -1810,7 +1810,7 @@ impl AppHandler {
                 &user,
                 &label,
                 rect,
-                f64::from(app.theme.tokens.radii.sm),
+                f64::from(app.theme.tokens.radii.detail),
             );
         }
         // Action/resource callers have no synthetic pointer. Their truthful

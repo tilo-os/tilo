@@ -64,7 +64,7 @@ impl LegacyAppearance {
         let luma = 0.2126 * f64::from(background.r)
             + 0.7152 * f64::from(background.g)
             + 0.0722 * f64::from(background.b);
-        let accent = theme.tokens.colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX].to_rgba8();
+        let accent = theme.tokens.colors.intent.inverted.to_rgba8();
         let large_cursor =
             settings_store::bool_at(&document, "accessibility", "large_cursor").unwrap_or(false);
         let cursor_size = if large_cursor {

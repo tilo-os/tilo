@@ -2741,7 +2741,7 @@ impl Widget for ForeignSurfaceWidget {
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;
         }
-        let radius = f64::from(theme.tokens.radii.xl);
+        let radius = f64::from(theme.tokens.radii.tile);
         if crate::shell::capture_protection::painting_for_capture()
             && self.capture_protected_rect().is_some()
         {
@@ -2807,7 +2807,7 @@ impl Widget for ForeignSurfaceWidget {
         // Fixed ramp indices were a guess about which way round the card
         // is, not an answer: `neutral[1]` is near-black on the dark ramp
         // and the card is `#16171b`, so the app's own name measured 1.03:1 and was invisible. `on_card` derives both tiers from the card's actual luminance instead.
-        let tiers = theme.tokens.colors.on_card();
+        let tiers = theme.tokens.colors.on_content();
         let on_card = tiers.ink;
         let on_card_dim = tiers.ink_dim;
         let size = theme.tokens.typography.scale.xl;

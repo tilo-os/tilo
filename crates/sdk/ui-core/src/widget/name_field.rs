@@ -237,7 +237,7 @@ impl NameField {
             return;
         }
         let colors = &theme.tokens.colors;
-        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm));
+        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.detail));
         Self::draw_chrome(scene, transform, colors, &shape);
 
         let shows_placeholder = self.buffer.is_empty() && self.preedit.is_empty();
@@ -376,7 +376,7 @@ impl NameField {
         scene.stroke(
             &Stroke::new(1.5),
             transform,
-            colors.accent[4],
+            colors.intent.inverted_hover,
             None,
             &Line::new(
                 Point::new(caret.x0, caret.y0),

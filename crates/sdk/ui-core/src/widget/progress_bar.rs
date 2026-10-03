@@ -22,7 +22,6 @@ use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::colors::ACCENT_PRIMARY_IDX;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
@@ -230,7 +229,7 @@ impl Widget for ProgressBar {
         // The track is always painted: it provides the visual anchor
         // even at `progress == 0.0`. The fill is conditional — see
         // `progress_bar_at_zero_paints_no_fill` for the contract.
-        let radius = f64::from(theme.tokens.radii.md);
+        let radius = f64::from(theme.tokens.radii.control);
         let track_shape = RoundedRect::from_rect(self.rect, radius);
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -241,7 +240,7 @@ impl Widget for ProgressBar {
         );
 
         let track_width = self.rect.width();
-        let accent = theme.tokens.colors.accent[ACCENT_PRIMARY_IDX];
+        let accent = theme.tokens.colors.intent.inverted;
 
         if self.indeterminate {
             // Slide a fixed-width segment across the track. Phase [0,1)

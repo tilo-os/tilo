@@ -44,7 +44,7 @@ fn widget_trait_defaults_presence_draw_and_token_radius() {
     {
         use tilo_ui::tokens::Tokens;
         let mut t = Tokens::dark();
-        t.radii.md = 99.0;
+        t.radii.control = 99.0;
         let theme = tilo_ui::Theme {
             name: "T".into(),
             bg_app: t.colors.surfaces.base,
@@ -56,10 +56,8 @@ fn widget_trait_defaults_presence_draw_and_token_radius() {
             text_primary: t.colors.text_primary,
             text_dim: t.colors.text_dim,
             text_tertiary: t.colors.text_tertiary,
-            accent_primary: t.colors.accent[5],
-            accent_hover: t.colors.accent[4],
             status_success: t.colors.semantic.success,
-            radius_standard: f64::from(t.radii.md),
+            radius_standard: f64::from(t.radii.control),
             padding_standard: t.spacing.s3,
             gap_standard: t.spacing.s3,
             reduce_motion: false,
@@ -67,10 +65,9 @@ fn widget_trait_defaults_presence_draw_and_token_radius() {
             ui_scale: 1.0,
             caret_width: 2.0,
             forced_colors: false,
-            allow_app_accents: true,
             tokens: t,
         };
         assert_eq!(theme.radius_standard, 99.0);
-        assert_eq!(theme.tokens.radii.md, 99.0);
+        assert_eq!(theme.tokens.radii.control, 99.0);
     }
 }

@@ -301,8 +301,8 @@ impl WindowGroup {
             scene,
             transform,
             self.rect,
-            f64::from(theme.tokens.radii.xl),
-            &theme.tokens.elevation.e4,
+            f64::from(theme.tokens.radii.tile),
+            &theme.tokens.elevation.floating,
         );
         if !self.maximized {
             scene.push_layer(
@@ -1719,7 +1719,7 @@ impl WindowGroup {
             transform,
             title_pill,
             title_pill.height() / 2.0,
-            &theme.tokens.elevation.e2,
+            &theme.tokens.elevation.floating,
         );
         let (chip_fill, chip_border) = crate::surface::chip_colors(theme, false);
         crate::surface::pill(scene, transform, title_pill, chip_fill, chip_border, None);
@@ -1777,7 +1777,7 @@ impl WindowGroup {
             transform,
             self.restore_rect,
             self.restore_rect.height() / 2.0,
-            &theme.tokens.elevation.e2,
+            &theme.tokens.elevation.floating,
         );
         let (restore_fill, restore_border) = crate::surface::chip_colors(theme, self.restore_hover);
         crate::surface::pill(
@@ -1838,7 +1838,7 @@ impl WindowGroup {
             transform,
             self.close_rect,
             self.close_rect.height() / 2.0,
-            &theme.tokens.elevation.e2,
+            &theme.tokens.elevation.floating,
         );
         let close_fill = if self.close_hover {
             theme.tokens.colors.semantic.danger.with_alpha_factor(0.8)
@@ -1919,8 +1919,8 @@ impl WindowGroup {
             scene,
             preview_transform,
             source,
-            f64::from(theme.tokens.radii.xl),
-            &theme.tokens.elevation.e4,
+            f64::from(theme.tokens.radii.tile),
+            &theme.tokens.elevation.floating,
         );
         scene.push_layer(
             vello::peniko::Fill::NonZero,

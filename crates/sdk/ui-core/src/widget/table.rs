@@ -930,7 +930,7 @@ impl Table {
             &Stroke::new(1.5),
             transform,
             if hovered {
-                theme.accent_primary
+                theme.tokens.colors.intent.inverted
             } else {
                 crate::surface::edge_on(box_color)
             },
@@ -943,7 +943,7 @@ impl Table {
             transform,
             Point::new(c.x - 34.0, c.y),
             6.0,
-            theme.accent_primary,
+            theme.tokens.colors.intent.inverted,
             2.0,
         );
         #[allow(
@@ -1077,14 +1077,12 @@ impl Table {
             y1: gb,
         } = grid.body;
         let tk = &theme.tokens;
-        let accent = theme.accent_primary;
+        let accent = theme.tokens.colors.intent.inverted;
         // The glyph inside a gutter affordance is a mark on a themed chip, so
         // it is derived against that chip rather than assumed to be white: on
         // the high-contrast accent white lands a hair under the non-text floor,
         // which is the palette that can least afford it.
-        let on_accent_mark = tk
-            .colors
-            .on_accent(crate::tokens::colors::NON_TEXT_MIN_CONTRAST);
+        let on_accent_mark = tk.colors.intent.on_inverted;
         let danger = tk.colors.semantic.danger;
         let on_danger_mark = tk.colors.ink_on_any(
             &[danger],
@@ -1460,7 +1458,7 @@ impl Widget for Table {
         presence: &PresenceCtx,
     ) {
         let tk = &theme.tokens;
-        let radius = f64::from(tk.radii.md);
+        let radius = f64::from(tk.radii.control);
 
         // Outer frame (spans the gutters too).
         let frame = RoundedRect::from_rect(self.rect, radius);

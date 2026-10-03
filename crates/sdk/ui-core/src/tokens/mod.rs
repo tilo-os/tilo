@@ -10,8 +10,9 @@ pub mod terminal_palette;
 pub mod typography;
 
 pub use colors::{
-    AccentChip, ColorRamp, Colors, NON_TEXT_MIN_CONTRAST, OnCard, OverlayTiers, PaletteSpec,
-    SemanticColors, Surfaces, dark_overlays, light_overlays,
+    ColorRamp, Colors, DEFAULT_NEUTRAL_HUE, Intents, Material, NON_TEXT_MIN_CONTRAST, OnSurface,
+    OverlayTiers, PresencePalette, SemanticColors, Surfaces, TintedChip, dark_overlays,
+    light_overlays,
 };
 pub use elevation::{Elevation, Shadow};
 pub use metrics::Metrics;
@@ -42,10 +43,6 @@ pub struct Tokens {
     pub terminal_palette: TerminalPalette,
     /// The one syntax-highlighting palette every code surface paints with.
     pub syntax: SyntaxPalette,
-    /// How far glass carries the accent. `0` is the stock film. Draw sites
-    /// mix toward the accent at read time, so a material pin and a palette
-    /// pin compose instead of baking one layer's film onto the other's ground.
-    pub material_tint: f32,
     /// Authored UI-spring character. `1` is stock. Stored beside the springs
     /// it produces, because calm and lively are not separable from stiffness
     /// alone.
@@ -53,44 +50,38 @@ pub struct Tokens {
 }
 
 impl Tokens {
-    pub fn dark() -> Self {
+    /// The token set for `material` at the default temperature.
+    pub fn of_material(material: Material) -> Self {
         let typography = Typography::default();
         let font_mono = FontFamily::new(typography.mono_family.clone());
         let font_size_base = typography.scale.base;
+        let colors = Colors::of_material(material, DEFAULT_NEUTRAL_HUE);
+        let light = material == Material::Light;
         Self {
-            colors: Colors::dark(),
+            terminal_palette: TerminalPalette::from_colors(&colors),
+            syntax: SyntaxPalette::from_colors(&colors),
+            colors,
             typography,
             spacing: Spacing::default(),
             metrics: Metrics::default(),
             radii: Radii::default(),
-            elevation: Elevation::default(),
+            elevation: if light {
+                Elevation::light()
+            } else {
+                Elevation::dark()
+            },
             motion: Motion::default(),
             font_mono,
             font_size_base,
-            terminal_palette: TerminalPalette::dark(),
-            syntax: SyntaxPalette::dark(),
-            material_tint: 0.0,
             motion_character: 1.0,
         }
     }
+
+    pub fn dark() -> Self {
+        Self::of_material(Material::Dark)
+    }
+
     pub fn light() -> Self {
-        let typography = Typography::default();
-        let font_mono = FontFamily::new(typography.mono_family.clone());
-        let font_size_base = typography.scale.base;
-        Self {
-            colors: Colors::light(),
-            typography,
-            spacing: Spacing::default(),
-            metrics: Metrics::default(),
-            radii: Radii::default(),
-            elevation: Elevation::light(),
-            motion: Motion::default(),
-            font_mono,
-            font_size_base,
-            terminal_palette: TerminalPalette::light(),
-            syntax: SyntaxPalette::light(),
-            material_tint: 0.0,
-            motion_character: 1.0,
-        }
+        Self::of_material(Material::Light)
     }
 }

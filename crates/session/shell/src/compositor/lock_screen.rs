@@ -791,7 +791,7 @@ fn draw_lock_widget(
     // its edge is the derived Panel border rather than a declared colour.
     let panel = RoundedRect::from_rect(
         layout.panel,
-        f64::from(theme.tokens.radii.xl) * layout.scale / f64::from(theme.ui_scale).max(0.1),
+        f64::from(theme.tokens.radii.panel) * layout.scale / f64::from(theme.ui_scale).max(0.1),
     );
     scene.fill(
         Fill::NonZero,
@@ -850,7 +850,7 @@ fn draw_lock_media(
 ) {
     let card = RoundedRect::from_rect(
         media.card,
-        f64::from(theme.tokens.radii.lg) * layout.scale / f64::from(theme.ui_scale).max(0.1),
+        f64::from(theme.tokens.radii.control) * layout.scale / f64::from(theme.ui_scale).max(0.1),
     );
     scene.fill(
         Fill::NonZero,
@@ -1117,7 +1117,7 @@ fn draw_lock_icon(scene: &mut Scene, layout: &LockLayout, theme: &Theme) {
     scene.fill(
         Fill::NonZero,
         Affine::IDENTITY,
-        theme.accent_primary,
+        theme.tokens.colors.intent.inverted,
         None,
         &body,
     );
@@ -1127,7 +1127,7 @@ fn draw_lock_icon(scene: &mut Scene, layout: &LockLayout, theme: &Theme) {
     scene.stroke(
         &Stroke::new((5.0 * layout.scale).max(1.0)),
         Affine::IDENTITY,
-        theme.accent_primary,
+        theme.tokens.colors.intent.inverted,
         None,
         &shackle,
     );
@@ -1154,7 +1154,7 @@ fn draw_password_field(
 ) {
     let field = RoundedRect::from_rect(
         layout.password,
-        f64::from(theme.tokens.radii.md) * layout.scale / f64::from(theme.ui_scale).max(0.1),
+        f64::from(theme.tokens.radii.control) * layout.scale / f64::from(theme.ui_scale).max(0.1),
     );
     scene.fill(Fill::NonZero, Affine::IDENTITY, theme.bg_app, None, &field);
     // A subtle border — focused colour, since the field always holds focus

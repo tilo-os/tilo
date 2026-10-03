@@ -21,7 +21,6 @@ use crate::permissions::PermissionScope;
 use crate::presence::{PresenceCtx, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::colors::ACCENT_PRIMARY_IDX;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
@@ -356,7 +355,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         // The idle divider is a derived rule on the base surface (HIG
         // §9.5); the accent marks a live drag.
         let color = if active {
-            theme.tokens.colors.accent[ACCENT_PRIMARY_IDX]
+            theme.tokens.colors.intent.inverted
         } else {
             crate::surface::edge_on(theme.tokens.colors.surfaces.base)
         };
@@ -512,7 +511,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         // The idle divider is a derived rule on the base surface (HIG
         // §9.5); the accent marks a live drag.
         let color = if active {
-            theme.tokens.colors.accent[ACCENT_PRIMARY_IDX]
+            theme.tokens.colors.intent.inverted
         } else {
             crate::surface::edge_on(theme.tokens.colors.surfaces.base)
         };

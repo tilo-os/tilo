@@ -1,24 +1,90 @@
-#[derive(Clone, Debug)]
+//! Corner radii, by what the corner belongs to (`docs/design-language.md`,
+//! "Shape").
+//!
+//! Radii are **concentric**: an inner radius is its container's radius
+//! minus the inset between them, never below [`Radii::MIN`]. A thing that
+//! sits inside another rounded thing asks [`Radii::concentric`] for its
+//! radius instead of picking a token, so its corners run parallel to its
+//! container's at every inset and every scale.
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Radii {
-    pub sm: f32,
-    pub md: f32,
-    pub lg: f32,
-    pub xl: f32,
+    /// A window tile.
+    pub tile: f32,
+    /// A floating panel: menu, popover, palette, sheet, quick settings.
+    pub panel: f32,
+    /// A control: button, field, segmented track, a quick-settings tile.
+    pub control: f32,
+    /// An item inside a control or a list: a selected row, a segment thumb.
+    pub item: f32,
+    /// The smallest corner anything gets: a progress track, a badge, a
+    /// sparkline clip, a caret. Also the concentric floor.
+    pub detail: f32,
+    /// A pill: chips, presence pills, tags, avatars — things pill-shaped by
+    /// meaning. Buttons and tabs are not pills. A "make it a pill" sentinel,
+    /// not a real length; drawing code clamps it to half the short side.
     pub full: f32,
 }
 
-// Mapped onto Tailwind's radius scale per the tilo concept:
-// `rounded`(4)/`rounded-lg`(8)/`rounded-xl`(12)/`rounded-3xl`(24)/`rounded-full`(≈9999).
-// The 2xl step (16px) is intentionally absent — five slots, and the window
-// card's `rounded-3xl` is the visual anchor for `radii.xl`.
+impl Radii {
+    /// The concentric floor at 1×: no corner inside a container shrinks
+    /// below this.
+    pub const MIN: f32 = 4.0;
+
+    /// The radius of something inset `inset` inside a container whose
+    /// corner is `outer`: `outer - inset`, never below [`Self::detail`].
+    /// A full-pill container yields a full pill.
+    #[must_use]
+    pub fn concentric(&self, outer: f32, inset: f32) -> f32 {
+        if outer >= self.full {
+            return self.full;
+        }
+        (outer - inset.max(0.0)).max(self.detail)
+    }
+}
+
 impl Default for Radii {
     fn default() -> Self {
         Self {
-            sm: 4.0,
-            md: 8.0,
-            lg: 12.0,
-            xl: 24.0,
+            tile: 14.0,
+            panel: 18.0,
+            control: 8.0,
+            item: 6.0,
+            detail: Self::MIN,
             full: 9999.0,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn radii_follow_the_shape_table_and_nest_concentrically() {
+        // phase: the_scale_is_the_design_language_table
+        {
+            let r = Radii::default();
+            assert!((r.tile - 14.0).abs() < f32::EPSILON);
+            assert!((r.panel - 18.0).abs() < f32::EPSILON);
+            assert!((r.control - 8.0).abs() < f32::EPSILON);
+            assert!((r.item - 6.0).abs() < f32::EPSILON);
+            assert!((r.detail - 4.0).abs() < f32::EPSILON);
+        }
+        // phase: an_inset_child_takes_the_outer_radius_minus_the_inset
+        {
+            let r = Radii::default();
+            assert!((r.concentric(r.panel, 8.0) - 10.0).abs() < f32::EPSILON);
+            assert!((r.concentric(r.control, 2.0) - r.item).abs() < f32::EPSILON);
+            assert!((r.concentric(r.tile, 4.0) - 10.0).abs() < f32::EPSILON);
+        }
+        // phase: concentric_radii_never_drop_below_the_floor
+        {
+            let r = Radii::default();
+            assert!((r.concentric(r.control, 16.0) - Radii::MIN).abs() < f32::EPSILON);
+            assert!((r.concentric(r.item, 6.0) - Radii::MIN).abs() < f32::EPSILON);
+            assert!((r.concentric(r.full, 6.0) - r.full).abs() < f32::EPSILON);
+            assert!((r.concentric(r.panel, -3.0) - r.panel).abs() < f32::EPSILON);
         }
     }
 }

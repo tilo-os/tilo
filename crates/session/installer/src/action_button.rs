@@ -284,14 +284,12 @@ impl Widget for ActionButton {
         let (bg, label_color) = if self.disabled {
             (theme.bg_primary, theme.text_dim)
         } else if self.primary {
-            let bg = if self.is_pressed {
-                theme.tokens.colors.accent[3]
-            } else if self.is_hovered {
-                theme.accent_hover
+            let bg = if self.is_pressed || self.is_hovered {
+                theme.tokens.colors.intent.inverted_hover
             } else {
-                theme.accent_primary
+                theme.tokens.colors.intent.inverted
             };
-            (bg, Color::WHITE)
+            (bg, theme.tokens.colors.intent.on_inverted)
         } else {
             let bg = if self.is_pressed {
                 theme.bg_active
@@ -342,7 +340,7 @@ impl Widget for ActionButton {
                 Fill::NonZero,
                 transform,
                 if checked {
-                    theme.accent_primary
+                    theme.tokens.colors.intent.inverted
                 } else {
                     theme.bg_primary
                 },

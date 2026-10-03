@@ -357,11 +357,11 @@ impl Widget for IconGrid {
             let hovered = self.hover == Some(i) && !selected;
             if selected || hovered {
                 let bg = if selected {
-                    tokens.colors.accent.stops[crate::tokens::colors::ACCENT_PRIMARY_IDX]
+                    tokens.colors.lift_on(tokens.colors.surfaces.content, 1.0)
                 } else {
                     theme.bg_hover
                 };
-                let shape = RoundedRect::from_rect(cell, f64::from(tokens.radii.md));
+                let shape = RoundedRect::from_rect(cell, f64::from(tokens.radii.control));
                 scene.fill(vello::peniko::Fill::NonZero, transform, bg, None, &shape);
             }
 
@@ -377,13 +377,7 @@ impl Widget for IconGrid {
             let icon_x = cell.x0 + (self.cell_w - self.icon_px) / 2.0;
             let icon_y = cell.y0 + ((self.cell_h - block_h) / 2.0).max(0.0);
             let icon_rect = Rect::new(icon_x, icon_y, icon_x + self.icon_px, icon_y + self.icon_px);
-            let glyph_color = if selected {
-                tokens
-                    .colors
-                    .on_accent(crate::tokens::colors::NON_TEXT_MIN_CONTRAST)
-            } else {
-                tokens.colors.text_primary
-            };
+            let glyph_color = tokens.colors.text_primary;
             draw_icon(
                 scene,
                 transform,
@@ -395,13 +389,7 @@ impl Widget for IconGrid {
 
             let tx = cell.x0 + (self.cell_w - f64::from(tw)) / 2.0;
             let ty = icon_y + self.icon_px + label_gap;
-            let label_color = if selected {
-                tokens
-                    .colors
-                    .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
-            } else {
-                tokens.colors.text_primary
-            };
+            let label_color = tokens.colors.text_primary;
             text_renderer.draw_text(
                 scene,
                 &label,
@@ -419,7 +407,7 @@ impl Widget for IconGrid {
         {
             let cell = self.cell_rect(i);
             if !presence.should_cull(cell) {
-                let ring = RoundedRect::from_rect(cell, f64::from(tokens.radii.md));
+                let ring = RoundedRect::from_rect(cell, f64::from(tokens.radii.control));
                 scene.stroke(
                     &vello::kurbo::Stroke::new(2.0),
                     transform,

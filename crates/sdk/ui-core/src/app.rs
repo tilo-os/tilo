@@ -1915,8 +1915,11 @@ impl App {
     #[cfg(feature = "native")]
     fn apply_appearance_intent(&mut self, intent: crate::theme::AppearanceIntent) -> bool {
         let mut changed = false;
-        if intent.base_theme.name != self.accessibility.base_theme.name
-            || intent.base_theme.accent_primary != self.accessibility.base_theme.accent_primary
+        let base = &self.accessibility.base_theme;
+        // Same name, other temperature or other person: still a new theme.
+        if intent.base_theme.name != base.name
+            || intent.base_theme.bg_app != base.bg_app
+            || intent.base_theme.border_focus != base.border_focus
         {
             self.accessibility.base_theme = intent.base_theme;
             changed = true;

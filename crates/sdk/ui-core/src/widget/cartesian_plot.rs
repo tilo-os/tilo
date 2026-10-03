@@ -2561,7 +2561,7 @@ impl CartesianPlot {
             transform,
             theme.tokens.colors.surfaces.overlay,
             None,
-            &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
+            &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control)),
         );
         tr.draw_text_weighted(
             scene,
@@ -2633,14 +2633,14 @@ impl CartesianPlot {
             transform,
             theme.tokens.colors.surfaces.overlay,
             None,
-            &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
+            &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control)),
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
             alpha(annotation.color, 180),
             None,
-            &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md)),
+            &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control)),
         );
         tr.draw_text_weighted(
             scene,
@@ -3002,7 +3002,7 @@ impl Widget for CartesianPlot {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                alpha(theme.accent_primary, 42),
+                alpha(theme.tokens.colors.intent.inverted, 42),
                 None,
                 &brush,
             );

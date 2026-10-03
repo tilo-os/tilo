@@ -162,7 +162,7 @@ impl ShadowCase {
         // the paper itself and the shadow disappeared with it. The card is the
         // shared `surface::card`, so it carries its derived rest edge exactly as
         // the live surfaces do.
-        let tint = theme.tokens.elevation.e3.color;
+        let tint = theme.tokens.elevation.floating.color;
         // …at the authored intensity scaled the way the elevation ladder scales
         // a light theme's shadows, which is what the live call sites now do.
         let intensity = intensity * theme.tokens.elevation.shadow_scale;

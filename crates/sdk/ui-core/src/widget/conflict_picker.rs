@@ -32,7 +32,7 @@ use winit::keyboard::{Key, NamedKey};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::colors::{ACCENT_PRIMARY_IDX, ON_FILL_MIN_CONTRAST};
+use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::data_table::{renderer_type_size, text_band, type_line_height};
@@ -397,7 +397,7 @@ fn draw_card(
 
     // Hovered cards lift via accent border; at rest the edge derives from
     // the card fill (HIG §9.5) as a crisp 1 px inset stroke.
-    let radius = f64::from(theme.tokens.radii.md);
+    let radius = f64::from(theme.tokens.radii.control);
     let fill = theme.tokens.colors.surfaces.base;
     if chrome.hovered {
         let body = RoundedRect::from_rect(card, radius);
@@ -469,11 +469,11 @@ fn draw_card(
     );
 
     let pick_button = chrome.pick_button;
-    let btn_shape = RoundedRect::from_rect(pick_button, f64::from(theme.tokens.radii.sm));
+    let btn_shape = RoundedRect::from_rect(pick_button, f64::from(theme.tokens.radii.detail));
     // Fill and ink share one ground — the primary accent stop — so the label
     // is resolved against the colour it is painted on (the `Button` primary
     // convention: white ink stepped until it clears the fill).
-    let fill = theme.tokens.colors.accent[ACCENT_PRIMARY_IDX];
+    let fill = theme.tokens.colors.intent.inverted;
     scene.fill(
         vello::peniko::Fill::NonZero,
         transform,
@@ -583,18 +583,18 @@ impl Widget for ConflictPicker {
             &scrim_rect,
         );
 
-        let body = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.lg));
+        let body = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.control));
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.material_glass(),
+            theme.tokens.colors.surfaces.overlay,
             None,
             &body,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            theme.tokens.colors.accent[5],
+            theme.tokens.colors.intent.inverted,
             None,
             &body,
         );
@@ -799,7 +799,7 @@ impl ConflictPicker {
         theme: &Theme,
     ) {
         let keep = self.keep_current_rect();
-        let keep_radius = f64::from(theme.tokens.radii.sm);
+        let keep_radius = f64::from(theme.tokens.radii.detail);
         // A Neutral button face (HIG §9.5): the raised tier at rest, the
         // theme's hover fill when hovered, edge derived from the face — not
         // a white veneer that is invisible on a light palette.
@@ -843,7 +843,7 @@ fn draw_merged_overlay(
     theme: &Theme,
     pick_btn: Rect,
 ) {
-    let btn_shape = RoundedRect::from_rect(pick_btn, f64::from(theme.tokens.radii.sm));
+    let btn_shape = RoundedRect::from_rect(pick_btn, f64::from(theme.tokens.radii.detail));
     scene.fill(
         vello::peniko::Fill::NonZero,
         transform,

@@ -14,8 +14,14 @@ use crate::theme::Theme;
     reason = "shared floating-surface painting is staged for widget adoption"
 )]
 pub(super) fn draw(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
-    let radius = f64::from(theme.tokens.radii.md);
-    crate::surface::shadow(scene, transform, rect, radius, &theme.tokens.elevation.e3);
+    let radius = f64::from(theme.tokens.radii.control);
+    crate::surface::shadow(
+        scene,
+        transform,
+        rect,
+        radius,
+        &theme.tokens.elevation.floating,
+    );
 
     let shape = RoundedRect::from_rect(rect, radius);
     scene.fill(

@@ -1107,7 +1107,8 @@ impl EmojiPicker {
             if rect.y1 < g.grid.y0 || rect.y0 > g.grid.y1 {
                 continue;
             }
-            let shape = RoundedRect::from_rect(rect.inset(-2.0), f64::from(theme.tokens.radii.md));
+            let shape =
+                RoundedRect::from_rect(rect.inset(-2.0), f64::from(theme.tokens.radii.control));
             if i == self.selected {
                 scene.fill(Fill::NonZero, transform, theme.bg_active, None, &shape);
                 scene.stroke(
@@ -1181,13 +1182,13 @@ impl EmojiPicker {
         }
 
         if let Some(tones) = &self.tones {
-            let radius = f64::from(theme.tokens.radii.md);
+            let radius = f64::from(theme.tokens.radii.control);
             ui::surface::shadow(
                 scene,
                 transform,
                 tones.rect,
                 radius,
-                &theme.tokens.elevation.e2,
+                &theme.tokens.elevation.floating,
             );
             let shape = RoundedRect::from_rect(tones.rect, radius);
             scene.fill(
@@ -1206,8 +1207,10 @@ impl EmojiPicker {
             );
             for (i, (text, rect)) in tones.forms.iter().zip(&tones.cells).enumerate() {
                 if i == tones.selected {
-                    let cell_shape =
-                        RoundedRect::from_rect(rect.inset(-2.0), f64::from(theme.tokens.radii.md));
+                    let cell_shape = RoundedRect::from_rect(
+                        rect.inset(-2.0),
+                        f64::from(theme.tokens.radii.control),
+                    );
                     scene.fill(Fill::NonZero, transform, theme.bg_active, None, &cell_shape);
                     scene.stroke(
                         &vello::kurbo::Stroke::new(1.5),

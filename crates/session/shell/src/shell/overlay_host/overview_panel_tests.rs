@@ -531,12 +531,12 @@ fn overview_room_rows_pin_the_current_room_and_grow_on_the_spacing_scale() {
         assert_eq!(m.row_pad, f64::from(spacing.s4));
         assert_eq!(
             m.panel_radius,
-            f64::from(theme.tokens.radii.xl),
+            f64::from(theme.tokens.radii.panel),
             "Panel role"
         );
         assert_eq!(
             m.row_radius,
-            f64::from(theme.tokens.radii.lg),
+            f64::from(theme.tokens.radii.control),
             "Control role"
         );
         assert_eq!(OverviewMetrics::default(), m);
