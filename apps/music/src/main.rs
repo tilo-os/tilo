@@ -51,6 +51,7 @@ const SHOT_SCENARIOS: &[&str] = &[
     "empty",
     "skeleton",
     "nowplaying",
+    "player-menu",
     "queue",
     "lyrics",
     "downloading",

@@ -163,6 +163,8 @@ pub(crate) fn app_for_launch_source(
 /// `context` — track context menu open; `new-playlist` — the create-playlist
 /// prompt open; `empty` — a genuinely empty library's Home state; `skeleton`
 /// — Home in its loading state; `nowplaying` — a bundled track playing;
+/// `player-menu` — the same on a narrow window with the transport's More
+/// menu open;
 /// `queue` — the Queue view with sample tracks trailing it; `lyrics` —
 /// synced-lyrics view; `downloading`, `offline-cached`, and `offline-error` —
 /// active, successful, and retryable device-local download states;
@@ -190,6 +192,7 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
         "new-playlist" => app.snap_new_playlist_prompt(),
         "skeleton" => app.snap_skeleton(),
         "nowplaying" => app.snap_nowplaying(),
+        "player-menu" => app.snap_player_menu(),
         "queue" => app.snap_queue(),
         "lyrics" => app.snap_lyrics(),
         "downloading" => app.snap_downloading(),
