@@ -1,8 +1,0 @@
-# Built fonts: every checkout builds its own (build.py, a few seconds), so
-# parallel glyph work never conflicts on a binary.
-/fonts/
-# Upstream Instrument Sans checkout used by import_upstream.py and verify_upstream.py.
-/.upstream/
-# Proof sheets are generated from the sources with proof.py and never tracked.
-/proofs/
-__pycache__/
