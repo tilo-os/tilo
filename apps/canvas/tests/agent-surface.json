@@ -160,7 +160,7 @@
     "action": "apply",
     "resource_kind": "canvas.artwork",
     "label": "Apply Artwork edit",
-    "description": null,
+    "description": "One edit as a typed JSON value: {action: id, ...its params}. The named action does the same and says more.",
     "operation": "Document",
     "params": [
       {
@@ -1910,7 +1910,7 @@
     "action": "group",
     "resource_kind": "canvas.artwork",
     "label": "Apply several Artwork edits as one",
-    "description": null,
+    "description": "Several actions as one all-or-nothing step: one undo, and if any member refuses nothing is applied. actions: [{action: id, args: {..}}].",
     "operation": "Document",
     "params": [
       {
