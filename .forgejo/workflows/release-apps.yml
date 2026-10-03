@@ -17,8 +17,6 @@ on:
       - "crates/sdk/ui-core/**"
       - ".cargo/**"
       - "vendor/**"
-      # Font sources (vendor/fonts/*/build.py) are no Cargo input.
-      - "!vendor/fonts/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "rust-toolchain.toml"

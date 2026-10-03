@@ -74,11 +74,11 @@ face=0 nameID=14 platform=3 encoding=1 language=0x0409: http://scripts.sil.org/O
 face=0 nameID=0 platform=3 encoding=1 language=0x0409: Copyright 2016 The Inter Project Authors
 face=0 nameID=13 platform=3 encoding=1 language=0x0409: This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: http://scripts.sil.org/OFL
 face=0 nameID=14 platform=3 encoding=1 language=0x0409: http://scripts.sil.org/OFL
-tilo/tilo@cf769051cc76431fe21f17e5c22cb938c826ca60:vendor/fonts/tilo-sans/fonts/default/TiloSans[wdth,wght].ttf
+tilo/tilo-sans@a30688acf80960aac72dd91f7e42f53b37b110c4 (v1.001):fonts/default/TiloSans[wdth,wght].ttf
 face=0 nameID=0 platform=3 encoding=1 language=0x0409: Copyright 2022 The Instrument Sans Project Authors (https://github.com/Instrument/instrument-sans). Copyright 2026 The Tilo Sans Project Authors.
 face=0 nameID=13 platform=3 encoding=1 language=0x0409: This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: https://openfontlicense.org
 face=0 nameID=14 platform=3 encoding=1 language=0x0409: https://openfontlicense.org
-tilo/tilo@cf769051cc76431fe21f17e5c22cb938c826ca60:vendor/fonts/tilo-sans/fonts/default/TiloSans-Italic[wdth,wght].ttf
+tilo/tilo-sans@a30688acf80960aac72dd91f7e42f53b37b110c4 (v1.001):fonts/default/TiloSans-Italic[wdth,wght].ttf
 face=0 nameID=0 platform=3 encoding=1 language=0x0409: Copyright 2022 The Instrument Sans Project Authors (https://github.com/Instrument/instrument-sans). Copyright 2026 The Tilo Sans Project Authors.
 face=0 nameID=13 platform=3 encoding=1 language=0x0409: This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: https://openfontlicense.org
 face=0 nameID=14 platform=3 encoding=1 language=0x0409: https://openfontlicense.org
