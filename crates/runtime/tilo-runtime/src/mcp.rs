@@ -1184,7 +1184,9 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             .take()
             .filter(|action| !action.is_empty())
             .ok_or("name resource and action, or calls")?;
-        self.invoke_one(OneCall {
+        // Boxed: an invocation's future is large, and every tool call's
+        // future would otherwise carry it.
+        Box::pin(self.invoke_one(OneCall {
             peer_id: a.peer_id,
             app_id: a.app_id,
             workspace: a.workspace,
@@ -1194,7 +1196,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             arguments: a.arguments,
             invocation_id: a.invocation_id,
             wait_ms: a.wait_ms,
-        })
+        }))
         .await
     }
     /// `calls` in order on one peer. The first keeps the caller's revision
@@ -1204,19 +1206,18 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         let mut results = Vec::with_capacity(calls.len());
         let mut stopped = None;
         for (index, call) in calls.into_iter().enumerate() {
-            let value = self
-                .invoke_one(OneCall {
-                    peer_id: a.peer_id,
-                    app_id: a.app_id.clone(),
-                    workspace: a.workspace,
-                    revision: if index == 0 { a.revision.clone() } else { None },
-                    resource: call.resource,
-                    action: call.action,
-                    arguments: call.arguments,
-                    invocation_id: batch_invocation(a.invocation_id.as_deref(), index)?,
-                    wait_ms: a.wait_ms,
-                })
-                .await;
+            let value = Box::pin(self.invoke_one(OneCall {
+                peer_id: a.peer_id,
+                app_id: a.app_id.clone(),
+                workspace: a.workspace,
+                revision: if index == 0 { a.revision.clone() } else { None },
+                resource: call.resource,
+                action: call.action,
+                arguments: call.arguments,
+                invocation_id: batch_invocation(a.invocation_id.as_deref(), index)?,
+                wait_ms: a.wait_ms,
+            }))
+            .await;
             let failed = match &value {
                 Ok(value) => call_failed(value),
                 Err(_) => true,
