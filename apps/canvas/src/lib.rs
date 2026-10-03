@@ -178,11 +178,22 @@ fn sidebar(cx: &ViewCx<ArtworkResource>, tools: &tools::Tools, dock: &LocalState
         .with_vertical_padding(14.0)
         .with_horizontal_padding(16.0, 14.0)
         .push(panels::inspector::panel(cx, tools));
-    let tools_for_dock = tools.clone();
-    let docked = cx.switch(dock, move |cx, dock| match dock {
-        Dock::Layers => panels::layers::panel(cx, &tools_for_dock),
-        Dock::History => panels::history::panel(cx, &tools_for_dock),
-    });
+    // The dock folds away to its tabs, giving the inspector the height.
+    let open = LocalState::new(true);
+    let docked = {
+        let tools = tools.clone();
+        let dock = dock.clone();
+        cx.switch(&open, move |cx, open| {
+            if !*open {
+                return Box::new(Spacer::fixed(0.0)) as Element;
+            }
+            let tools = tools.clone();
+            cx.switch(&dock, move |cx, dock| match dock {
+                Dock::Layers => panels::layers::panel(cx, &tools),
+                Dock::History => panels::history::panel(cx, &tools),
+            })
+        })
+    };
     Box::new(
         Container::new()
             .with_no_padding()
@@ -198,7 +209,7 @@ fn sidebar(cx: &ViewCx<ArtworkResource>, tools: &tools::Tools, dock: &LocalState
                             .with_child(Box::new(inspector)),
                     ))
                     .push(Box::new(ui::widget::Divider::horizontal()))
-                    .push(dock_tabs(cx, tools, dock))
+                    .push(dock_tabs(cx, tools, dock, &open))
                     .push(docked),
             )),
     )
@@ -209,6 +220,7 @@ fn dock_tabs(
     cx: &ViewCx<ArtworkResource>,
     tools: &tools::Tools,
     dock: &LocalState<Dock>,
+    open: &LocalState<bool>,
 ) -> Element {
     let tab = |which: Dock, id: &str| {
         (
@@ -244,8 +256,32 @@ fn dock_tabs(
                     .with_min_width(0.0)
                     .with_child(Box::new(tabs)),
             ))
-            .push(action),
+            .push(action)
+            .push(fold(cx, open)),
     )
+}
+
+/// Folding the dock away to its tabs, or opening it again.
+fn fold(cx: &ViewCx<ArtworkResource>, open: &LocalState<bool>) -> Element {
+    let flip = open.clone();
+    cx.switch(open, move |_, shown| {
+        let (icon, id) = if *shown {
+            (ui::icons::Icon::ChevronDown, "canvas-dock-fold")
+        } else {
+            (ui::icons::Icon::ChevronUp, "canvas-dock-unfold")
+        };
+        let name = ui::i18n::I18nManager::lookup_plain(id);
+        let flip = flip.clone();
+        Box::new(
+            Button::new(id, "", None)
+                .with_icon(icon)
+                .ghost()
+                .with_accessible_name(&name)
+                .tooltip(name.clone())
+                .with_size(panels::ICON_BUTTON, panels::ICON_BUTTON)
+                .on_view(move || flip.set(!flip.with(|open| *open))),
+        )
+    })
 }
 
 ui::dev_reload_entry!(App);
