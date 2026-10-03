@@ -2289,7 +2289,8 @@ impl AppHandler {
                 Some(crate::platform::HostShortcut::History) => {
                     handled = app.invoke_host_shortcut(crate::platform::HostShortcut::History);
                 }
-                None => {}
+                // The window's shell owns it: it reaches the root widget.
+                Some(crate::platform::HostShortcut::Sidebar) | None => {}
             }
             if handled {
                 window.request_redraw();
