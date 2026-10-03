@@ -18,7 +18,7 @@ use crate::presence::{PathSegment, PresenceKey};
 use crate::richtext::{RichSpan, RichTextLayout, TextAlign};
 use crate::text_break::line_break_opportunities;
 use crate::text_break::{grapheme_indices, graphemes};
-use crate::text_render::{FontChoice, TextRenderer, TextScaling, TextStyle, TextWeight};
+use crate::text_render::{FontChoice, TextKind, TextRenderer, TextScaling, TextStyle, TextWeight};
 use crate::text_selection::{
     TextAffinity, TextPosition, clipboard_copy, clipboard_copy_primary, clipboard_paste,
     clipboard_paste_primary, extend_span_drag, grapheme_boundary_at_or_before, line_boundaries,
@@ -109,11 +109,27 @@ pub enum TextInputKind {
     Code,
     Number,
     Password,
+    /// A code or key typed or pasted in the clear: verification and
+    /// recovery codes, TOTP secrets, API and licence keys, Wi-Fi keys.
+    Secret,
 }
 
 impl TextInputKind {
     fn checks_spelling(self) -> bool {
         matches!(self, Self::Prose)
+    }
+
+    /// What the field's text is, for the features it is set with while
+    /// typing.
+    #[must_use]
+    pub const fn text_kind(self) -> TextKind {
+        match self {
+            Self::Prose | Self::Name | Self::Search => TextKind::Prose,
+            Self::Username | Self::Email | Self::Url | Self::Path => TextKind::Identifier,
+            Self::Code => TextKind::Code,
+            Self::Number => TextKind::Numeric,
+            Self::Password | Self::Secret => TextKind::Secret,
+        }
     }
 }
 
@@ -844,6 +860,7 @@ impl TextInput {
         display.hash(&mut hash);
         family.hash(&mut hash);
         size.to_bits().hash(&mut hash);
+        self.kind.text_kind().hash(&mut hash);
         (self.align as u8).hash(&mut hash);
         width.map(f32::to_bits).hash(&mut hash);
         if !self.preedit.is_empty() {
@@ -1939,6 +1956,7 @@ impl TextInput {
             .with_line_height(LINE_HEIGHT_RATIO)
             .with_family(family);
         style.scaling = TextScaling::Resolved;
+        style.kind = self.kind.text_kind();
         style
     }
 
@@ -3336,7 +3354,7 @@ impl TextInput {
 
     fn field_allows_spelling(&self) -> bool {
         !self.secret
-            && self.kind != TextInputKind::Password
+            && !matches!(self.kind, TextInputKind::Password | TextInputKind::Secret)
             && self.spellcheck.unwrap_or_else(|| {
                 self.kind.checks_spelling()
                     && !self.mono
@@ -4873,9 +4891,10 @@ impl TextInput {
                 FontChoice::SansSerif
             });
             let layout_size = text_size * text_scale;
-            let style = TextStyle::new(layout_size)
+            let mut style = TextStyle::new(layout_size)
                 .with_line_height(LINE_HEIGHT_RATIO)
                 .with_family(family.clone());
+            style.kind = self.kind.text_kind();
             let base = self.shaped_signature(display, &family, layout_size, None);
             let attributes = self.valid_single_attributes();
             let signature = attributes.map_or(base, |a| {
