@@ -269,9 +269,9 @@ impl App {
             if !self.document_history.has_search() {
                 return Err("Search host is unavailable".into());
             }
-            serde_json::from_slice::<()>(&encoded.payload)
+            let request = crate::search::SearchRequest::decode(&encoded.payload)
                 .map_err(|_| "Invalid Search operation")?;
-            self.open_action_palette();
+            self.open_search(request);
             return Ok(());
         }
         if encoded.type_id == HISTORY_OPERATION && !self.history_chrome_enabled {

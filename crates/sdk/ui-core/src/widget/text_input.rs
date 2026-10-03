@@ -300,6 +300,9 @@ pub struct TextInput {
     context_actions: Vec<Option<CtxAction>>,
     accessible_name: String,
     placeholder: String,
+    /// The placeholder stays while the field is focused and empty (a search
+    /// or filter field names what it searches until the first keystroke).
+    persistent_placeholder: bool,
     /// Measurement switches with this so the caret/selection stay aligned with the draw.
     mono: bool,
     /// Wins over `mono`; measurement uses the same family as the draw.
@@ -475,6 +478,7 @@ impl TextInput {
             context_actions: Vec::new(),
             accessible_name: String::new(),
             placeholder: String::new(),
+            persistent_placeholder: false,
             mono: false,
             family: None,
             multiline: false,
@@ -2960,7 +2964,17 @@ impl TextInput {
     }
 
     pub fn shows_placeholder(&self) -> bool {
-        !self.placeholder.is_empty() && self.text.is_empty() && !self.is_focused
+        !self.placeholder.is_empty()
+            && self.text.is_empty()
+            && self.preedit.is_empty()
+            && (!self.is_focused || self.persistent_placeholder)
+    }
+
+    /// Keep the placeholder visible while the field is focused and empty.
+    #[must_use]
+    pub fn with_persistent_placeholder(mut self) -> Self {
+        self.persistent_placeholder = true;
+        self
     }
 
     fn masked(&self) -> bool {

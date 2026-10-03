@@ -84,6 +84,7 @@ pub struct HostContext {
     construction: Rc<()>,
     lifetime_id: uuid::Uuid,
     queued_controls: Rc<RefCell<std::collections::VecDeque<tilo_actions::ControlInvocation>>>,
+    search_requests: Rc<RefCell<std::collections::VecDeque<crate::search::SearchRequest>>>,
     control_domain: crate::ControlDomain,
     closing: Rc<Cell<bool>>,
     services: crate::host::HostServices,
@@ -254,6 +255,7 @@ impl HostContext {
             construction: Rc::new(()),
             lifetime_id: uuid::Uuid::new_v4(),
             queued_controls: Rc::default(),
+            search_requests: Rc::default(),
             control_domain: crate::control_custody::ControlDomain::new(),
             closing: Rc::new(Cell::new(false)),
             services: crate::host::current(),
@@ -384,6 +386,7 @@ impl HostContext {
             registry_owner: Rc::downgrade(&self.construction),
             lifetime_id: self.lifetime_id,
             queued_controls: self.queued_controls.clone(),
+            search_requests: self.search_requests.clone(),
             control_domain: self.control_domain.downgrade(),
             instance_id: self.instance_id,
             app_id: self.app_id.clone(),
@@ -1172,17 +1175,25 @@ impl crate::search::SearchProvider for ComponentProvider {
     }
     fn search_page(
         &self,
-        query: &str,
+        query: &crate::search::SearchQuery,
         cursor: Option<&crate::search::SearchCursor>,
         work_budget: usize,
         result_limit: usize,
     ) -> crate::search::SearchPage {
         self.invoke(|provider| provider.search_page(query, cursor, work_budget, result_limit))
-            .unwrap_or_else(|| crate::search::SearchPage {
-                results: vec![],
-                next: None,
-                inspected: 0,
-            })
+            .unwrap_or_else(crate::search::SearchPage::empty)
+    }
+    fn poll_page(&self, token: &crate::search::PendingToken) -> crate::search::PagePoll {
+        self.invoke(|provider| provider.poll_page(token))
+            .unwrap_or_else(|| crate::search::PagePoll::Ready(crate::search::SearchPage::empty()))
+    }
+    fn facets(&self) -> Vec<crate::search::Facet> {
+        self.invoke(|provider| provider.facets())
+            .unwrap_or_default()
+    }
+    fn search_scopes(&self) -> Vec<crate::search::ScopeDecl> {
+        self.invoke(|provider| provider.search_scopes())
+            .unwrap_or_default()
     }
     fn resolve_action_resource(
         &self,

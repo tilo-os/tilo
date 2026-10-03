@@ -121,6 +121,15 @@ impl<R: Resource> Dispatcher<R> {
         });
     }
 
+    /// Open the platform search with `request`, narrowed to this app or one
+    /// part of it (`SearchRequest::within`). Searching is a view, so a
+    /// participant who may only view can search too.
+    pub fn open_search(&self, request: &ui_core::search::SearchRequest) {
+        self.queue
+            .borrow_mut()
+            .push_back(ui_core::search::open_search_invocation(request));
+    }
+
     /// Invoke an action published on a nested resource, such as one item of
     /// a collection.
     pub(crate) fn invoke_at(

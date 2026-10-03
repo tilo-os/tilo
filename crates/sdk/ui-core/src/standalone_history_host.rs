@@ -34,30 +34,7 @@ use crate::theme::Theme;
 use crate::widget::layout::CompositionFocus;
 use crate::widget::{Button, HistoryEntryId, TaffyTreeExt, Widget};
 
-pub(crate) const SEARCH_OPERATION: &str = "tilo.host.search.view";
-pub(crate) const SEARCH_RESOURCE: &str = "tilo.host:search";
-
-#[expect(
-    clippy::expect_used,
-    reason = "fixed nullary View payload serializes infallibly"
-)]
-pub(crate) fn search_resource() -> Resource {
-    Resource::new(
-        SEARCH_RESOURCE,
-        "tilo.host.search",
-        I18nManager::lookup_plain("standalone-search-title"),
-    )
-    .with_action(
-        ActionSpec::operation(
-            "open",
-            I18nManager::lookup_plain("standalone-search-title"),
-            OperationKind::View,
-            SEARCH_OPERATION,
-            &(),
-        )
-        .expect("unit Search operation serializes"),
-    )
-}
+pub(crate) use crate::search::{SEARCH_OPERATION, SEARCH_RESOURCE, search_resource};
 
 pub(crate) const HISTORY_OPERATION: &str = "tilo.host.history.view";
 pub(crate) const HISTORY_RESOURCE: &str = "tilo.host:history";
