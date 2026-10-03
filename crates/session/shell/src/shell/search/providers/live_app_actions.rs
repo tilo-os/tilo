@@ -1283,10 +1283,17 @@ impl LiveAppActionsProvider {
     /// action host offers them to the local user of that workspace,
     /// ordered by publisher.
     fn directory_roots(&self, ctx: &SearchContext<'_>) -> (Vec<ActionDirectoryRoot>, String) {
+        self.directory_roots_in(ctx.chrome)
+    }
+
+    /// [`Self::directory_roots`] as `chrome` sees them.
+    fn directory_roots_in(
+        &self,
+        chrome: &crate::shell::chrome_state::ChromeState,
+    ) -> (Vec<ActionDirectoryRoot>, String) {
         let mut roots = Vec::new();
         let mut revision = String::new();
-        let workspace_rooms = ctx
-            .chrome
+        let workspace_rooms = chrome
             .tree()
             .desktop
             .workspaces
@@ -1295,7 +1302,7 @@ impl LiveAppActionsProvider {
             .collect::<Vec<_>>();
         for workspace_room in workspace_rooms {
             let room = workspace_room.to_string();
-            let caller = Caller::local_person(ctx.chrome.local_user_for_room(&workspace_room))
+            let caller = Caller::local_person(chrome.local_user_for_room(&workspace_room))
                 .in_room(room.clone());
             let mut providers = self.host.query(
                 &caller,
@@ -1326,6 +1333,33 @@ impl LiveAppActionsProvider {
         roots.sort_by_key(|root| root.peer_id);
         roots.dedup_by_key(|root| root.peer_id);
         (roots, revision)
+    }
+
+    /// The drill-down scope for `resource` of the app `app_id` in the active
+    /// workspace, labelled `label`, as entering it from a directory row
+    /// would set it. `None` while the app publishes no browsable directory
+    /// there.
+    pub(crate) fn resource_scope_for(
+        &self,
+        chrome: &crate::shell::chrome_state::ChromeState,
+        app_id: &str,
+        resource: &str,
+        label: &str,
+    ) -> Option<crate::shell::chrome_state::SearchResourceScope> {
+        let room = chrome.tree().desktop.active_workspace()?.room.to_string();
+        let root = self
+            .directory_roots_in(chrome)
+            .0
+            .into_iter()
+            .find(|root| root.app_id == app_id && root.cluster_id == room)?;
+        Some(crate::shell::chrome_state::SearchResourceScope {
+            peer_id: root.peer_id,
+            cluster_id: root.cluster_id,
+            app_id: root.app_id,
+            resource: resource.to_owned(),
+            label: label.to_owned(),
+            kind: String::new(),
+        })
     }
 
     /// One bounded page of [`Self::directory_roots`] after `after_peer`,

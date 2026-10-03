@@ -171,8 +171,19 @@ pub trait Resource: Sized + 'static {
         Vec::new()
     }
 
-    /// Entries for the system search index.
+    /// Entries for the system search index. An entry's `anchor` is what a
+    /// hit opens; the app's view shows it when the hit is chosen
+    /// (`ViewCx::on_open` in the app framework).
     fn search(_state: &Self::State) -> Vec<SearchEntry> {
+        Vec::new()
+    }
+
+    /// The parts of this resource search can be narrowed to — a mailbox, a
+    /// notebook, a playlist. The palette offers each as a "Search in" row and
+    /// its scope pill reads "Only <label>"; an app opens search scoped to one
+    /// with `SearchRequest::within`. A scope holds the entries whose anchor
+    /// is its anchor or lies beneath it (`folder:inbox/msg:12`).
+    fn search_scopes(_state: &Self::State) -> Vec<ScopeDecl> {
         Vec::new()
     }
 
@@ -204,6 +215,41 @@ pub trait Resource: Sized + 'static {
 pub const APPLY: &str = "apply";
 /// The parameter of [`APPLY`] carrying the JSON-encoded action.
 pub const APPLY_PARAM: &str = "action";
+
+/// A part of an app that search can be narrowed to: a mailbox, a notebook,
+/// a playlist. `anchor` is that part's id; `label` is what the scope pill
+/// reads ("Only Inbox").
+///
+/// Anchors are paths: a scope contains the anchor that is its own anchor or
+/// begins with `anchor/` — `folder:inbox/msg:12` lies inside `folder:inbox`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, serde::Deserialize)]
+pub struct ScopeDecl {
+    pub anchor: String,
+    pub label: String,
+}
+
+impl ScopeDecl {
+    pub fn new(anchor: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            anchor: anchor.into(),
+            label: label.into(),
+        }
+    }
+
+    /// Whether the hit anchored at `anchor` lies inside this scope.
+    #[must_use]
+    pub fn contains(&self, anchor: &str) -> bool {
+        scope_contains(&self.anchor, anchor)
+    }
+}
+
+/// Whether `anchor` is `scope` or lies beneath it in the anchor path.
+#[must_use]
+pub fn scope_contains(scope: &str, anchor: &str) -> bool {
+    anchor
+        .strip_prefix(scope)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+}
 
 /// A search index entry. `anchor` addresses what a hit opens (an item id).
 #[derive(Clone, Debug, PartialEq, Eq)]
