@@ -15,6 +15,7 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use tilo_rich_text::{FieldOutcome, RichTextField, RichTextSource, RichTextSurface, SubmitKey};
+use ui::framework::Dispatcher;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
@@ -25,33 +26,34 @@ use ui::widget::{
 use crate::model::{Annotation, FontEntry, Settings};
 use crate::paint;
 use crate::reader_theme::ReaderPalette;
+use crate::resource::Ebook;
 
 /// The SDK editor a note or comment is written in, bound to the note's rich
-/// text: each keystroke is an [`EbookAction::EditNoteText`] the field
-/// dispatches, undone a word at a time. Enter asks to finish, Shift+Enter
-/// breaks the line and Escape cancels.
+/// text: each keystroke is an [`EbookAction::EditNoteText`] the library's
+/// dispatcher applies, undone a word at a time. Enter asks to finish,
+/// Shift+Enter breaks the line and Escape cancels. Until the library's
+/// dispatcher is attached the note is shown and not edited.
 ///
 /// [`EbookAction::EditNoteText`]: crate::actions::EbookAction::EditNoteText
 pub(crate) struct NoteEditor {
     id: Uuid,
-    host: Embedded<RichTextSurface<RichTextField<crate::actions::EbookAction>>>,
+    host: Embedded<RichTextSurface<RichTextField>>,
     /// The caret has been placed at the end of the note, once it was read.
     placed: bool,
 }
 
 impl NoteEditor {
-    pub(crate) fn new(id: Uuid, body_size: f32, hint: &str) -> Self {
-        let context = tilo_actions::ActionContext::for_action(
-            "so.tilo.ebook",
-            "Ebook",
-            &crate::actions::edit_note_action(id, ""),
-        );
-        let field = RichTextField::new(
-            crate::actions::EBOOK_ACTION_TYPE,
-            move |doc| crate::doc::BooksDoc::annotation_text(doc, id),
-            move |edit| crate::actions::edit_note_text_action(id, edit),
-        )
-        .with_context(context);
+    pub(crate) fn new(
+        id: Uuid,
+        body_size: f32,
+        hint: &str,
+        library: Option<&Dispatcher<Ebook>>,
+    ) -> Self {
+        let mut field =
+            RichTextField::view_only(move |doc| crate::doc::BooksDoc::annotation_text(doc, id));
+        if let Some(library) = library {
+            field.attach(crate::actions::note_text_dispatcher(library, id));
+        }
         let mut surface = RichTextSurface::field(field)
             .with_editor(
                 BlockEditor::new()
@@ -67,6 +69,14 @@ impl NoteEditor {
             host: Embedded::new(surface),
             placed: false,
         }
+    }
+
+    /// Edit the note through the library's dispatcher from now on.
+    pub(crate) fn attach(&mut self, library: &Dispatcher<Ebook>) {
+        self.host
+            .widget_mut()
+            .source_mut()
+            .attach(crate::actions::note_text_dispatcher(library, self.id));
     }
 
     pub(crate) fn id(&self) -> Uuid {
@@ -124,16 +134,6 @@ impl NoteEditor {
             theme,
             &ui::presence::PresenceCtx::empty(),
         );
-    }
-
-    /// The undo boundary the note's last edit opened, for the host.
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        ui::undo::take_committed_action(self.host.widget_mut())
-    }
-
-    /// Whether a typed word keeps its undo step open.
-    pub(crate) fn keeps_step_open(&self) -> bool {
-        ui::undo::keeps_undo_step_open(self.host.widget())
     }
 
     pub(crate) fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
@@ -494,8 +494,8 @@ impl NoteComposer {
     }
 
     /// Open the editor on note `id`; it shows the note on the next sync.
-    pub(crate) fn open(&mut self, id: Uuid) {
-        self.editor = Some(NoteEditor::new(id, 13.5, "Write a note…"));
+    pub(crate) fn open(&mut self, id: Uuid, library: Option<&Dispatcher<Ebook>>) {
+        self.editor = Some(NoteEditor::new(id, 13.5, "Write a note…", library));
     }
 
     pub(crate) fn close(&mut self) {
@@ -520,16 +520,11 @@ impl NoteComposer {
         }
     }
 
-    /// The undo boundary the note's last edit opened, for the host.
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.editor.as_mut().and_then(NoteEditor::take_committed)
-    }
-
-    /// Whether a typed word keeps its undo step open.
-    pub(crate) fn keeps_step_open(&self) -> bool {
-        self.editor
-            .as_ref()
-            .is_some_and(NoteEditor::keeps_step_open)
+    /// Edit the open note through the library's dispatcher from now on.
+    pub(crate) fn attach(&mut self, library: &Dispatcher<Ebook>) {
+        if let Some(editor) = self.editor.as_mut() {
+            editor.attach(library);
+        }
     }
 
     pub(crate) fn hit_test(&self, point: Point) -> Option<NoteAction> {
@@ -749,8 +744,9 @@ mod tests {
             let id = note.id;
             crate::doc::BooksDoc::upsert_annotation(&mut doc, &note);
             doc.commit();
+            let (_app, library) = crate::resource::library_dispatcher_for_test();
             let mut composer = NoteComposer::default();
-            composer.open(id);
+            composer.open(id, Some(&library));
             let root = automerge::ROOT;
             composer.sync(&mut doc, &root);
             let taffy = TaffyTree::new();
@@ -797,9 +793,20 @@ mod tests {
                 "helloworld",
                 "Enter finishes, it does not break"
             );
-            assert!(
-                composer.take_committed().is_some(),
-                "the typing is an undo step"
+
+            // Without the library's dispatcher the note is shown, not edited.
+            let mut composer = NoteComposer::default();
+            composer.open(id, None);
+            composer.sync(&mut doc, &root);
+            assert!(!press(
+                &mut composer,
+                &mut doc,
+                key(Key::Character("!".into()))
+            ));
+            assert_eq!(
+                stored(&doc),
+                "helloworld",
+                "a view-only note is not written"
             );
         }
 
@@ -807,7 +814,7 @@ mod tests {
         {
             let id = Uuid::new_v4();
             let mut composer = NoteComposer::default();
-            composer.open(id);
+            composer.open(id, None);
             composer.card = Rect::new(10.0, 10.0, 200.0, 160.0);
             composer.delete = Rect::new(20.0, 110.0, 80.0, 140.0);
             composer.save = Rect::new(110.0, 110.0, 180.0, 140.0);
