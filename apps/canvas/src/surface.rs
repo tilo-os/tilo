@@ -33,7 +33,7 @@ use ui::{LocalState, PresenceCtx, TextRenderer, Theme};
 use crate::actions::{CanvasAction, Draw, EditMarks, NewMark, NewStroke, Paint, RemoveMarks};
 use crate::model::{Artwork, Shape};
 use crate::render::{Options, Renderer};
-use crate::resource::{ArtworkResource, VIEW_TYPE, ViewOp};
+use crate::resource::{ArtworkResource, ExportSvg, VIEW_TYPE, ViewOp};
 use crate::view_ops;
 
 /// The largest SVG `export-svg` also answers inline, in bytes.
@@ -483,10 +483,21 @@ impl CanvasSurface {
         })
     }
 
-    fn export_svg(&mut self, art: &Artwork, revision: &str) -> Result<ActionOutput, String> {
+    fn export_svg(
+        &mut self,
+        art: &Artwork,
+        revision: &str,
+        export: &ExportSvg,
+    ) -> Result<ActionOutput, String> {
+        let part = match &export.ids {
+            Some(ids) => Some(view_ops::part(art, ids)?),
+            None => None,
+        };
+        let ground = part.is_none();
+        let art = part.as_ref().unwrap_or(art);
         let text = self.look_text.get_or_insert_with(TextRenderer::new);
         let renderer = &mut self.renderer;
-        let svg = crate::svg::export(art, |layer| {
+        let svg = crate::svg::export(art, ground, |layer| {
             let options = Options {
                 layers: Some(vec![layer.id.clone()]),
                 bare: true,
@@ -593,7 +604,7 @@ impl CanvasSurface {
                 &art,
                 compare,
             ))),
-            ViewOp::ExportSvg => self.export_svg(&art, &revision),
+            ViewOp::ExportSvg(export) => self.export_svg(&art, &revision, export),
             ViewOp::Inspect(inspect) => {
                 let mut value = view_ops::inspect(&art, inspect)?;
                 stamp(&mut value);

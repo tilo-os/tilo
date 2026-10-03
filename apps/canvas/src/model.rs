@@ -712,6 +712,13 @@ impl Mark {
             mark.transform = Some((Affine::translate((dx, dy)) * self.affine()).as_coeffs());
         } else {
             mark.shape = self.shape.translated(dx, dy);
+            // A gradient is placed in the same units as the geometry.
+            if let Some(gradient) = &mut mark.style.gradient {
+                for point in [&mut gradient.from, &mut gradient.to] {
+                    point[0] += dx;
+                    point[1] += dy;
+                }
+            }
         }
         mark
     }
