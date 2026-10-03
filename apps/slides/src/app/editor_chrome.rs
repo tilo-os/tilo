@@ -9,13 +9,12 @@
 
 use super::{
     Affine, ArgValue, Background, BlendMode, Element, ElementKind, FILL_ROLES, Fill, HashMap, Hit,
-    Icon, Layout, Mode, PaintCtx, Palette, PaletteKind, Point, Rect, SLIDE_H, SLIDE_W,
-    STROKE_ROLES, Scene, SidebarDrawer, SlidesApp, SplitLayout, TextAlign, TextRenderer, Theme,
-    custom_colour_hex, tr, tr_args,
+    Icon, Mode, PaintCtx, Palette, PaletteKind, Point, Rect, SLIDE_H, SLIDE_W, STROKE_ROLES, Scene,
+    SidebarDrawer, SlidesApp, SplitLayout, TextAlign, TextRenderer, Theme, custom_colour_hex, tr,
+    tr_args,
 };
 
 use ui::TextRole;
-use ui::chrome::{SelectionState, paint_row_selection};
 use ui::surface::Region;
 use ui::widget::{
     Button, ButtonFace, ButtonRole, ColorSwatchFace, ControlSize, DropZoneFace, SegmentedFace,
@@ -28,6 +27,8 @@ use ui::widget::{
 pub(super) enum Measure {
     /// A `Regular` button face.
     Button { icon: bool },
+    /// A `Small` button face: a header-row tool.
+    Tool { icon: bool },
     /// A line of `Heading` text (the deck title).
     Heading,
     /// The font-size field.
@@ -66,6 +67,9 @@ pub(super) struct ChromeMetrics {
     pub(super) field_pad: f64,
     /// Height of the drop-to-delete zone at the foot of the sidebar.
     pub(super) drop_zone_h: f64,
+    /// How far the open fill picker paints past its own right edge (its hex
+    /// field and colour readout), which its popover makes room for.
+    pub(super) picker_spill: f64,
 }
 
 impl ChromeMetrics {
@@ -97,6 +101,7 @@ impl ChromeMetrics {
                 + f64::from(metrics.icon_lg)
                 + f64::from(sp.s2)
                 + line(TextRole::Body),
+            picker_spill: 0.0,
         }
     }
 
@@ -110,9 +115,13 @@ impl ChromeMetrics {
         let mut metrics = Self::of(theme);
         for (label, measure) in labels {
             let width = match measure {
-                Measure::Button { icon } => {
-                    let face =
-                        ButtonFace::new(Rect::ZERO, &label).control_size(ControlSize::Regular);
+                Measure::Button { icon } | Measure::Tool { icon } => {
+                    let size = if matches!(measure, Measure::Tool { .. }) {
+                        ControlSize::Small
+                    } else {
+                        ControlSize::Regular
+                    };
+                    let face = ButtonFace::new(Rect::ZERO, &label).control_size(size);
                     let face = if icon { face.icon(Icon::Plus) } else { face };
                     face.intrinsic_width(tr, theme)
                 }
@@ -146,7 +155,7 @@ impl ChromeMetrics {
         // the next draw.
         let glyphs = label.chars().count() as f64;
         match measure {
-            Measure::Button { icon } => {
+            Measure::Button { icon } | Measure::Tool { icon } => {
                 glyphs * self.lh_label * 0.5
                     + 2.0 * self.s3
                     + if icon { self.lh_label + self.s2 } else { 0.0 }
@@ -179,6 +188,9 @@ pub(super) enum ButtonKind {
         icon: Option<Icon>,
         role: ButtonRole,
     },
+    /// An insert tool in the header row: a `Small` plain command, with its
+    /// icon where the icon set has one.
+    Tool { label: String, icon: Option<Icon> },
     /// An icon-only command; `name` is its accessible name and tooltip.
     /// `active` paints the lift of a toggle that is on.
     Icon {
@@ -201,6 +213,8 @@ pub(super) enum ButtonKind {
     Theme { kind: PaletteKind, selected: bool },
     /// The speaker-notes field (painted by its text field).
     Notes,
+    /// The slide layout picker (painted by its dropdown).
+    LayoutPicker,
 }
 
 #[derive(Clone)]
@@ -273,6 +287,13 @@ pub(super) struct Chrome {
 }
 
 impl Chrome {
+    /// Where the layout picker sits this frame, if the inspector shows it.
+    pub(super) fn layout_picker_rect(&self) -> Option<Rect> {
+        self.zone_buttons(Zone::Inspector)
+            .find(|b| matches!(b.kind, ButtonKind::LayoutPicker))
+            .map(|b| b.rect)
+    }
+
     /// The column the button at `index` belongs to.
     pub(super) fn button_zone(&self, index: usize) -> Zone {
         if index >= self.zones.inspector_buttons {
@@ -305,14 +326,31 @@ impl Chrome {
     }
 }
 
-/// The insert tools, in toolbar order.
-pub(super) fn insert_tools() -> [(String, Hit); 5] {
+/// The insert tools, in toolbar order, each with its icon where the shared
+/// icon set has one.
+pub(super) fn insert_tools() -> [(String, Option<Icon>, Hit); 5] {
     [
-        (tr("slides-tool-text"), Hit::Insert(ElementKind::Text)),
-        (tr("slides-tool-rectangle"), Hit::Insert(ElementKind::Rect)),
-        (tr("slides-tool-ellipse"), Hit::Insert(ElementKind::Ellipse)),
-        (tr("slides-tool-line"), Hit::Insert(ElementKind::Line)),
-        (tr("slides-tool-image"), Hit::Insert(ElementKind::Image)),
+        (tr("slides-tool-text"), None, Hit::Insert(ElementKind::Text)),
+        (
+            tr("slides-tool-rectangle"),
+            Some(Icon::Square),
+            Hit::Insert(ElementKind::Rect),
+        ),
+        (
+            tr("slides-tool-ellipse"),
+            None,
+            Hit::Insert(ElementKind::Ellipse),
+        ),
+        (
+            tr("slides-tool-line"),
+            Some(Icon::Minus),
+            Hit::Insert(ElementKind::Line),
+        ),
+        (
+            tr("slides-tool-image"),
+            Some(Icon::Image),
+            Hit::Insert(ElementKind::Image),
+        ),
     ]
 }
 
@@ -351,8 +389,14 @@ impl SlidesApp {
             button(tr("slides-bold")),
             button(tr("slides-italic")),
         ];
-        set.extend(insert_tools().into_iter().map(|(label, _)| button(label)));
-        set.extend(Layout::ALL.iter().map(|l| button(l.label().to_owned())));
+        set.extend(insert_tools().into_iter().map(|(label, icon, _)| {
+            (
+                label,
+                Measure::Tool {
+                    icon: icon.is_some(),
+                },
+            )
+        }));
         set.extend(
             TextAlign::ALL
                 .iter()
@@ -375,7 +419,38 @@ impl SlidesApp {
         let set = self.chrome_label_set();
         self.chrome_metrics = ChromeMetrics::resolve(tr, theme, set, font_input_w);
         self.chrome_metrics.field_pad = self.title_input.text_padding_x(theme);
+        let zone_w =
+            f64::from(theme.tokens.metrics.sidebar_min_width) - 2.0 * self.chrome_metrics.s3;
+        self.chrome_metrics.drop_zone_h =
+            DropZoneFace::new(&crate::strings::tr("slides-drop-to-delete"))
+                .icon(Icon::Trash)
+                .height(tr, theme, zone_w, 0.0);
+        self.chrome_metrics.picker_spill = self.fill_picker_spill(tr, theme);
         self.drawer_theme_scale(theme);
+    }
+
+    /// How far the fill picker's hex field and colour readout reach past
+    /// the picker's own width, measured on the picker laid out at its
+    /// preferred size. The readout is measured at its widest value so the
+    /// popover does not shift while a colour is dragged. Zero while closed.
+    fn fill_picker_spill(&mut self, tr: &mut TextRenderer, theme: &Theme) -> f64 {
+        if !self.fill_picker_open {
+            return 0.0;
+        }
+        let (w, h) = self.fill_picker.preferred_size();
+        self.fill_picker
+            .apply_layout_external(Rect::new(0.0, 0.0, w, h));
+        let hex = self.fill_picker.hex_input_rect();
+        let style = theme.text(TextRole::Caption);
+        let readout = [
+            "rgb(888, 888, 888)",
+            "rgb(000, 000, 000)",
+            &self.fill_picker.rgb_string(),
+        ]
+        .iter()
+        .map(|sample| f64::from(tr.measure_style(sample, None, &style).0))
+        .fold(0.0_f64, f64::max);
+        (hex.x1.max(hex.x0 + readout) - w).max(0.0).ceil()
     }
 
     /// The breakpoint below which both side panels become drawers: a slide
@@ -542,9 +617,11 @@ impl SlidesApp {
     ) -> (Rect, Point, Vec<UiButton>) {
         let m = &self.chrome_metrics;
         let control_y = toolbar.y0 + (toolbar.height() - m.control_h) / 2.0;
-        let mut x = toolbar.x0 + m.s3;
+        // The left edge of the title's slot: the column's edge, or the
+        // sidebar toggle when it shows.
+        let mut x = toolbar.x0;
         if rail_toggle {
-            let chip = self.chip(toolbar, x);
+            let chip = self.chip(toolbar, x + m.s3);
             buttons.push(UiButton {
                 rect: chip,
                 kind: ButtonKind::Icon {
@@ -554,8 +631,11 @@ impl SlidesApp {
                 },
                 hit: Hit::ToggleRail,
             });
-            x = chip.x1 + m.s2;
+            x = chip.x1;
         }
+        // The title stands where the rename field sets its text, so renaming
+        // does not move it, and that field stays a step clear of the edge.
+        let x = x + m.s2 + m.field_pad;
         let mut right = toolbar.x1 - m.s3;
         if inspector_toggle {
             let chip = self.chip(toolbar, right - m.target);
@@ -600,7 +680,14 @@ impl SlidesApp {
         let tools = insert_tools();
         let tool_w: Vec<f64> = tools
             .iter()
-            .map(|(label, _)| m.width(label, Measure::Button { icon: false }))
+            .map(|(label, icon, _)| {
+                m.width(
+                    label,
+                    Measure::Tool {
+                        icon: icon.is_some(),
+                    },
+                )
+            })
             .collect();
         let all_w = tool_w.iter().sum::<f64>() + m.s1 * (tool_w.len() as f64 - 1.0);
         let room = (right - x).max(0.0);
@@ -627,13 +714,13 @@ impl SlidesApp {
             (title_max, shown)
         };
         let mut tx = tools_x(title_max);
-        for ((label, hit), w) in tools.iter().zip(&tool_w).take(shown) {
+        let tool_y = toolbar.y0 + (toolbar.height() - m.small_h) / 2.0;
+        for ((label, icon, hit), w) in tools.iter().zip(&tool_w).take(shown) {
             buttons.push(UiButton {
-                rect: Rect::new(tx, control_y, tx + w, control_y + m.control_h),
-                kind: ButtonKind::Command {
+                rect: Rect::new(tx, tool_y, tx + w, tool_y + m.small_h),
+                kind: ButtonKind::Tool {
                     label: label.clone(),
-                    icon: None,
-                    role: ButtonRole::Plain,
+                    icon: *icon,
                 },
                 hit: hit.clone(),
             });
@@ -654,12 +741,11 @@ impl SlidesApp {
             overflow = tools
                 .iter()
                 .skip(shown)
-                .map(|(label, hit)| UiButton {
+                .map(|(label, icon, hit)| UiButton {
                     rect: more,
-                    kind: ButtonKind::Command {
+                    kind: ButtonKind::Tool {
                         label: label.clone(),
-                        icon: None,
-                        role: ButtonRole::Plain,
+                        icon: *icon,
                     },
                     hit: hit.clone(),
                 })
@@ -796,9 +882,9 @@ impl SlidesApp {
         let (w, h) = self.fill_picker.preferred_size();
         let (top, bottom) = self.fill_picker_panel_insets();
         let x = if inspector.width() > 1.0 {
-            inspector.x0 - m.s2 - m.s4 - w
+            inspector.x0 - m.s2 - m.s4 - m.picker_spill - w
         } else {
-            r.x1 - m.s4 - m.s2 - w
+            r.x1 - m.s4 - m.s2 - m.picker_spill - w
         }
         .max(r.x0 + m.s4 + m.s2);
         let y = (r.y0 + m.header_h + top + m.s2)
@@ -821,7 +907,7 @@ impl SlidesApp {
         Rect::new(
             picker.x0 - side,
             picker.y0 - top,
-            picker.x1 + side,
+            picker.x1 + self.chrome_metrics.picker_spill + side,
             picker.y1 + bottom,
         )
     }
@@ -1086,14 +1172,9 @@ impl SlidesApp {
         let mut y = y;
 
         Self::push_section_label(m, labels, x0, &mut y, &tr("slides-layout"));
-        let current = self.slide().map_or(Layout::TitleContent, |s| s.layout);
         buttons.push(UiButton {
             rect: Rect::new(x0, y, x1, y + m.control_h),
-            kind: ButtonKind::Command {
-                label: current.label().to_owned(),
-                icon: None,
-                role: ButtonRole::Secondary,
-            },
+            kind: ButtonKind::LayoutPicker,
             hit: Hit::OpenLayoutMenu,
         });
         y += m.control_h + m.s6;
@@ -1520,33 +1601,27 @@ impl SlidesApp {
                 Button::paint(scene, t, tr, theme, &face);
             }
             ButtonKind::Icon { icon, name, active } => {
-                if *active {
-                    paint_row_selection(
-                        scene,
-                        t,
-                        b.rect,
-                        SelectionState::active(true),
-                        ground,
-                        theme,
-                    );
-                }
-                let face = ButtonFace::icon_only(b.rect, *icon, name).hovered(hovered && !active);
+                let face = ButtonFace::icon_only(b.rect, *icon, name)
+                    .toggled(*active)
+                    .hovered(hovered);
+                Button::paint(scene, t, tr, theme, &face);
+            }
+            ButtonKind::Tool { label, icon } => {
+                let face = ButtonFace::new(b.rect, label)
+                    .role(ButtonRole::Plain)
+                    .control_size(ControlSize::Small)
+                    .hovered(hovered);
+                let face = match icon {
+                    Some(icon) => face.icon(*icon),
+                    None => face,
+                };
                 Button::paint(scene, t, tr, theme, &face);
             }
             ButtonKind::Toggle { label, active } => {
-                if *active {
-                    paint_row_selection(
-                        scene,
-                        t,
-                        b.rect,
-                        SelectionState::active(true),
-                        ground,
-                        theme,
-                    );
-                }
                 let face = ButtonFace::new(b.rect, label)
                     .role(ButtonRole::Plain)
-                    .hovered(hovered && !active);
+                    .toggled(*active)
+                    .hovered(hovered);
                 Button::paint(scene, t, tr, theme, &face);
             }
             ButtonKind::Segment { .. } => {
@@ -1570,7 +1645,7 @@ impl SlidesApp {
                     .hovered(hovered)
                     .paint(scene, t, tr, theme);
             }
-            ButtonKind::Notes => {}
+            ButtonKind::Notes | ButtonKind::LayoutPicker => {}
         }
     }
 }

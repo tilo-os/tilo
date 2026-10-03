@@ -181,7 +181,9 @@ fn chrome_labels_are_fluent_resolved_text() {
         .buttons
         .iter()
         .filter_map(|b| match &b.kind {
-            ButtonKind::Command { label, .. } => Some(label.clone()),
+            ButtonKind::Command { label, .. } | ButtonKind::Tool { label, .. } => {
+                Some(label.clone())
+            }
             _ => None,
         })
         .collect();
