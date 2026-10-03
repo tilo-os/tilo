@@ -134,6 +134,34 @@ fn selecting_environment_dispatches_the_set_active_action() {
     );
 }
 
+/// Renaming or deleting the active environment updates the picker to match
+/// instead of the stale picker switching the environment away.
+#[test]
+fn renaming_the_active_environment_keeps_it_active() {
+    let (mut a, mut doc) = demo();
+    let active = a.active_env.expect("demo has an active environment");
+    a.open_form(FormMode::RenameEnvironment, FormTarget::default());
+    a.form
+        .as_ref()
+        .expect("sheet open")
+        .fields
+        .name
+        .set("Live".into());
+    push(&a, Cmd::SubmitForm);
+    a.drain_commands(&mut doc, &ROOT);
+    a.sync(&mut doc, &ROOT);
+    assert_eq!(a.active_env, Some(active));
+    assert_eq!(ApiDoc::read_text(&doc, &ROOT, ENV_PATH), "Live");
+
+    a.open_form(FormMode::DeleteEnvironment, FormTarget::default());
+    push(&a, Cmd::SubmitForm);
+    a.drain_commands(&mut doc, &ROOT);
+    a.sync(&mut doc, &ROOT);
+    assert!(a.environments.iter().all(|e| e.id != active));
+    assert_eq!(a.active_env, None);
+    assert_eq!(ApiDoc::read_text(&doc, &ROOT, ENV_PATH), NO_ENV);
+}
+
 /// Each sheet collects what its action needs and dispatches the canonical
 /// action; a sheet opened from a row acts on that row.
 #[expect(

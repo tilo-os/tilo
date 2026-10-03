@@ -159,7 +159,7 @@ fn empty_and_error_response_surfaces_expose_recovery_actions() {
     assert!(
         error.focus_access_nodes().iter().any(|node| {
             node.role == Role::Group
-                && node.name.as_deref() == Some("Request failed")
+                && node.name.as_deref() == Some("Couldn't complete the request")
                 && node.children.iter().any(|child| {
                     child.role == Role::Button && child.name.as_deref() == Some("Try again")
                 })
@@ -321,6 +321,49 @@ fn escape_dismisses_a_sheet() {
             .any(|node| node.name.as_deref() == Some("Name")),
         "Escape closed the sheet"
     );
+}
+
+/// Typing in the table's blank row keeps the caret where it is, makes the row
+/// a pair and gives the table a new blank row to type the next one in.
+#[test]
+fn typing_in_the_blank_row_adds_a_pair_and_a_new_blank_row() {
+    let mut d = driver();
+    let keys = |d: &Driver| {
+        d.focus_access_nodes()
+            .iter()
+            .filter(|n| n.role == Role::TextInput && n.name.as_deref() == Some("Key"))
+            .count()
+    };
+    let before = keys(&d);
+    let mut reached = false;
+    for _ in 0..=d.focus_order().len() {
+        d.tab(false);
+        let focused = d.focused_access_node();
+        if focused.as_ref().is_some_and(|n| {
+            n.role == Role::TextInput
+                && n.name.as_deref() == Some("Key")
+                && n.value.as_deref().is_none_or(str::is_empty)
+        }) {
+            reached = true;
+            break;
+        }
+    }
+    assert!(reached, "Tab reaches the blank row's key field");
+    d.type_text("limit");
+    d.poll_frame().expect("a frame runs");
+    let focused = d.focused_access_node().expect("focus stays");
+    assert_eq!(
+        focused.value.as_deref(),
+        Some("limit"),
+        "the field kept focus while the table grew"
+    );
+    assert_eq!(keys(&d), before + 1, "a new blank row appeared");
+    let checked = d
+        .focus_access_nodes()
+        .iter()
+        .filter(|n| n.role == Role::Checkbox && n.state.checked == Some(true))
+        .count();
+    assert!(checked >= 3, "the typed row is included, got {checked}");
 }
 
 /// Choosing a tab replaces the panel, and each panel is made of real controls.
