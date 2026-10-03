@@ -178,11 +178,12 @@ fn share_host_font_database(font_system: &FontSystem) {
 
 /// Build the process's font system: the database a host built for it when
 /// there is one, otherwise the product font catalog with the system's fonts
-/// behind it and Tilo's script fallback. A binary run from a checkout, a
-/// screenshot and the Tilo image therefore all set text in the same faces,
-/// whether or not the machine has them installed. Only a platform without a
-/// catalog, or a catalog that fails to load, falls back to the system's
-/// fonts alone with the generic families pinned to the product names.
+/// behind it and Tilo's script fallback (Android copies its catalog out of
+/// the APK first). A binary run from a checkout, a screenshot and the Tilo
+/// image therefore all set text in the same faces, whether or not the
+/// machine has them installed. Only when no catalog loads does it fall back
+/// to the system's fonts alone with the generic families pinned to the
+/// product names.
 #[cfg(not(test))]
 pub fn configured_font_system() -> FontSystem {
     let host = HOST_FONT_DATABASE
@@ -192,15 +193,14 @@ pub fn configured_font_system() -> FontSystem {
     if let Some((locale, database)) = host {
         return crate::font_catalog::system_over(locale, database);
     }
-    #[cfg(any(windows, target_os = "linux"))]
-    if let Some(font_system) =
-        crate::font_catalog::bundled_font_system(crate::i18n::I18nManager::current_locale())
-    {
-        return font_system;
-    }
     #[cfg(all(target_os = "android", feature = "native"))]
     if let Some(font_system) =
         crate::font_catalog::android_font_system(crate::i18n::I18nManager::current_locale())
+    {
+        return font_system;
+    }
+    if let Some(font_system) =
+        crate::font_catalog::bundled_font_system(crate::i18n::I18nManager::current_locale())
     {
         return font_system;
     }
@@ -216,27 +216,19 @@ pub fn configured_font_system() -> FontSystem {
 /// The toolkit's color emoji face for engines that load their own fonts, as
 /// font data and face index.
 ///
-/// On Windows and Linux the toolkit sets text in its font catalog, so this
-/// returns the catalog's Noto Color Emoji face instead of relying on
-/// machine-specific font discovery. Elsewhere the platform's fonts provide
-/// emoji and this returns `None`.
+/// The toolkit sets text in its font catalog, so this is the catalog's Noto
+/// Color Emoji face rather than whatever the machine has installed. `None`
+/// only when no emoji face is loaded at all.
 #[must_use]
 pub fn bundled_emoji_face() -> Option<(Vec<u8>, u32)> {
-    #[cfg(any(windows, target_os = "linux"))]
-    {
-        let system = configured_font_system();
-        let database = system.db();
-        let face = database.faces().find(|face| {
-            face.families
-                .iter()
-                .any(|(name, _)| name == "Noto Color Emoji")
-        })?;
-        database.with_face_data(face.id, |data, index| (data.to_vec(), index))
-    }
-    #[cfg(not(any(windows, target_os = "linux")))]
-    {
-        None
-    }
+    let system = configured_font_system();
+    let database = system.db();
+    let face = database.faces().find(|face| {
+        face.families
+            .iter()
+            .any(|(name, _)| name == "Noto Color Emoji")
+    })?;
+    database.with_face_data(face.id, |data, index| (data.to_vec(), index))
 }
 
 pub(crate) fn balance_buffer(buffer: &mut Buffer, font_system: &mut FontSystem, max_width: f32) {
