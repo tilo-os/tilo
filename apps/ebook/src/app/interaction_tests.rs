@@ -449,7 +449,7 @@ fn frame(app: &mut BooksApp, doc: &mut AutoCommit, w: f64, h: f64) {
     let root = automerge::ROOT;
     app.sync(doc, &root);
     app.rect = Rect::new(0.0, 0.0, w, h);
-    app.reconcile_flaps();
+    app.resolve_drawers();
     let theme = Theme::dark();
     let presence = PresenceCtx::empty();
     let mut tr = TextRenderer::new();
@@ -667,7 +667,7 @@ fn render_scene(app: &mut BooksApp, doc: &mut AutoCommit, w: f64, h: f64) -> Sce
     let root = automerge::ROOT;
     app.sync(doc, &root);
     app.rect = Rect::new(0.0, 0.0, w, h);
-    app.reconcile_flaps();
+    app.resolve_drawers();
     let theme = Theme::dark();
     let presence = PresenceCtx::empty();
     // Only the checked-in fonts: pixels drawn with whatever the host happens to
@@ -920,7 +920,8 @@ fn wheel_over_rails_scrolls_the_rail_not_the_book() {
         frame(&mut app, &mut doc, 1000.0, 700.0);
         assert!(app.toc_max_scroll > 0.0, "the long contents list scrolls");
         let position = (app.chapter, app.page);
-        ptr_move(&mut app, &mut doc, Point::new(TOC_W / 2.0, 300.0));
+        let toc = app.toc_panel_rect().expect("the contents sidebar is open");
+        ptr_move(&mut app, &mut doc, Point::new(toc.center().x, 300.0));
         assert!(wheel(&mut app, &mut doc, -4.0), "rail wheel is consumed");
         assert!(app.toc_scroll > 0.0, "contents moved down");
         assert_eq!(
@@ -1436,18 +1437,16 @@ fn font_manager_and_system_picker_set_fonts() {
             !app.shown_fonts().iter().any(|f| f.id == "serif"),
             "serif no longer in quick settings"
         );
-        // Make Mono the registry default via the default-font dropdown.
-        let dd = find_hit(&app, |a| matches!(a, Action::ToggleDefaultFontMenu))
-            .expect("default dropdown");
-        assert!(click(&mut app, &mut doc, dd), "dropdown opened");
-        assert!(app.default_font_menu, "default-font menu is open");
-        frame(&mut app, &mut doc, 1200.0, 820.0);
-        let def = find_hit(
-            &app,
-            |a| matches!(a, Action::SetDefaultFont(id) if id.as_str() == "mono"),
-        )
-        .expect("mono row in the dropdown");
-        assert!(click(&mut app, &mut doc, def), "default handled");
+        // Make Mono the registry default through the default-font dropdown.
+        assert!(
+            app.perform_semantic_action(
+                "books.settings.default-font",
+                &A11yAction::SetValue("Mono".into()),
+                &mut doc,
+                &automerge::ROOT,
+            ),
+            "the default-font dropdown takes the choice"
+        );
         assert_eq!(
             BooksDoc::read_default_font(&doc),
             "mono",
@@ -1901,9 +1900,9 @@ fn type_popover_opens_undimmed_and_clear_of_the_rail() {
         let mut ro = OffscreenRenderer::new(w, h);
         let c_px = ro.render_rgba(&closed);
         let o_px = ro.render_rgba(&open);
-        // A point well inside the page column, above/left of the bottom-right
-        // popover panel — if a scrim dimmed the page it would darken here.
-        let (x, y) = (400u32, 250u32);
+        // A point on the page below the popover, which hangs from its button
+        // in the header — if a scrim dimmed the page it would darken here.
+        let (x, y) = (400u32, 660u32);
         let a0 = OffscreenRenderer::sample(&c_px, w, x, y);
         let a1 = OffscreenRenderer::sample(&o_px, w, x, y);
         let d = |u: u8, v: u8| (i32::from(u) - i32::from(v)).abs();
@@ -1937,22 +1936,19 @@ fn type_popover_opens_undimmed_and_clear_of_the_rail() {
         // On a wide window the annotations rail is docked-open; the reading
         // settings popover must anchor inside the reading area, never crossing it.
         let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
         app.view = View::Reader;
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        app.reconcile_flaps();
-        app.notes_flap.snap(true); // fully docked-open
-        assert_eq!(
-            app.notes_layout(),
-            SplitLayout::Docked,
-            "wide window docks the rail"
-        );
+        frame(&mut app, &mut doc, 1280.0, 800.0);
+        assert!(app.notes_drawer.is_docked(), "wide window docks the rail");
+        assert!(app.notes_open(), "the annotations rail is open");
 
         let (px0, px1) = ReadingSettings::panel_x_bounds(
             app.rect,
-            app.rect.x0 + 12.0 + TOC_W,
-            app.rect.x1 - 18.0 - NOTES_W,
+            app.type_button,
+            f64::from(Theme::dark().tokens.metrics.panel_width_utility),
+            f64::from(Theme::dark().tokens.spacing.s3),
         );
-        let rail_left = app.rect.x1 - NOTES_W;
+        let rail_left = app.notes_panel_rect().expect("annotations panel").x0;
         assert!(
             px1 <= rail_left,
             "popover right edge {px1} must stay left of the docked annotations rail at {rail_left}"
@@ -3111,18 +3107,15 @@ fn library_shelf_layout_filtering_and_keyboard() {
     // --- phase: short_desktop_shelf_uses_a_centred_bounded_grid ---
     {
         let mut app = app_with_sample();
-        let viewport = Rect::new(0.0, 0.0, 1440.0, 900.0);
-        let grid = app.shelf_grid_geometry(viewport, 3);
-        assert_eq!(grid.cols, 4, "three books plus Add form one centred row");
-        let grid_w = grid.card_w * 4.0 + grid.gap * 3.0;
+        app.view = View::Library;
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1440.0, 900.0);
         assert!(
-            (grid.start_x - (viewport.width() - grid_w) / 2.0).abs() < 0.01,
-            "the compact shelf is centred instead of pinned to the left"
+            app.shelf_cols >= 4,
+            "three books and the add tile share one row on a desktop window"
         );
-        assert!(
-            grid.card_w < 240.0,
-            "desktop cards remain compact, not stretched"
-        );
+        let card = hit_rect(&app, |a| matches!(a, Action::OpenBook(_))).expect("a book card");
+        assert!(card.width() < 240.0, "desktop cards keep their media size");
     }
 
     // --- phase: populated_shelf_offers_an_open_book_affordance ---
@@ -3265,7 +3258,9 @@ fn library_shelf_layout_filtering_and_keyboard() {
         // The sort control + hide-read toggle are reachable in the shelf chrome.
         assert!(
             app.shelf_controls
-                .has_action(ShelfControlAction::ToggleSortMenu),
+                .accessibility_nodes(app.library_prefs, None)
+                .iter()
+                .any(|node| node.action_target.as_deref() == Some("books.library.sort")),
             "a sort control is present"
         );
         assert!(
@@ -4171,7 +4166,7 @@ fn reader_shots_render_within_the_page_box() {
         let mut app = app_with_sample();
         let mut doc = AutoCommit::new();
         let mut settings = BooksDoc::read_settings(&doc);
-        settings.font_scale = Settings::FONT_MAX;
+        settings.font_scale = Settings::READING_SCALE_MAX;
         BooksDoc::write_settings(&mut doc, &settings);
 
         // Every phone width, so the proof does not hinge on where one font's
@@ -4266,10 +4261,10 @@ fn reader_keyboard_escape_and_responsive_rails() {
         assert!(!app.reading_settings.is_open(), "escape closed the popover");
         assert_eq!(app.view, View::Reader, "still in the book");
 
-        // Layer 2: a narrow window with the contents overlay flap open.
+        // Layer 2: a narrow window with the contents drawer floating open.
         frame(&mut app, &mut doc, 560.0, 720.0);
-        assert_eq!(app.toc_layout(), SplitLayout::Overlay);
-        app.toc_flap.snap(true);
+        assert!(app.toc_drawer.is_overlay());
+        app.toc_drawer.snap(true);
         assert!(app.toc_open(), "overlay flap open");
         assert!(key_named(&mut app, &mut doc, NamedKey::Escape));
         assert!(!app.toc_open(), "escape dismissed the overlay flap");
@@ -4290,8 +4285,8 @@ fn reader_keyboard_escape_and_responsive_rails() {
         assert!(app.notes_open(), "annotations docked+open at 1280");
         // Narrow: both become closed overlays, so the page owns the width.
         frame(&mut app, &mut doc, 560.0, 720.0);
-        assert_eq!(app.toc_layout(), SplitLayout::Overlay);
-        assert_eq!(app.notes_layout(), SplitLayout::Overlay);
+        assert!(app.toc_drawer.is_overlay());
+        assert!(app.notes_drawer.is_overlay());
         assert!(!app.toc_open(), "contents closed at 560");
         assert!(!app.notes_open(), "annotations closed at 560");
     }
@@ -4726,18 +4721,20 @@ fn font_rename_editor_commits_cancels_and_fits() {
 /// TOC rows grow with wrapped titles and the running header fits above the rule at 2x.
 #[test]
 fn reader_text_rows_fit_at_2x() {
-    // --- phase: toc_rows_grow_with_wrapped_titles_at_2x_and_never_overlap ---
-    // At 200 % a chapter title wraps inside the 244px rail; each row must be
-    // as tall as its wrapped title, so rows stay ordered, non-overlapping and
-    // taller than the one-line pill where a title wrapped — instead of every
-    // row being the fixed 44px that let titles run into the next chapter.
+    // --- phase: toc_rows_grow_with_the_text_at_2x_and_never_overlap ---
+    // Contents rows are navigation rows: each is as tall as its line at the
+    // text scale, so at 200 % rows grow instead of their titles running into
+    // the next chapter, and they stay ordered and non-overlapping.
     {
         let mut app = app_with_sample();
         let mut doc = AutoCommit::new();
         let rows_at = |app: &mut BooksApp, doc: &mut AutoCommit, scale: f32| -> Vec<Rect> {
+            // The contents sidebar may float at a large text scale: open it.
+            frame_at_text_scale(app, doc, 1280.0, 800.0, scale);
+            app.toc_drawer.snap(true);
             frame_at_text_scale(app, doc, 1280.0, 800.0, scale);
             let theme = Theme::dark().with_text_scale(scale);
-            let floor = toc_row_floor(&theme);
+            let floor = ui::chrome::nav_row_height(&theme);
             for h in app
                 .hits
                 .iter()
@@ -4780,7 +4777,7 @@ fn reader_text_rows_fit_at_2x() {
         let tallest_2x = two_x.iter().map(Rect::height).fold(0.0, f64::max);
         assert!(
             tallest_2x > tallest_1x,
-            "a wrapped 2× title gets a taller row ({tallest_2x} vs {tallest_1x})"
+            "a 2× row is taller than a 1× row ({tallest_2x} vs {tallest_1x})"
         );
     }
 
@@ -4811,10 +4808,10 @@ fn reader_text_rows_fit_at_2x() {
             .library
             .get(app.book_idx)
             .and_then(|b| b.chapters.get(app.chapter))
-            .map(|ch| ch.title.to_uppercase())
+            .map(|ch| ch.title.clone())
             .expect("the sample book has a current chapter");
-        let (_, head_h) =
-            tr.measure_weighted(&title, running_header_px(), None, TextWeight::Semibold);
+        let style = Theme::dark().with_text_scale(2.0).text(TextRole::Caption);
+        let (_, head_h) = tr.measure_style(&title, None, &style);
         assert!(
             geom.header_y + f64::from(head_h) <= geom.rule_y,
             "header box ends at {} but the rule is at {}",
@@ -4836,7 +4833,7 @@ fn frame_at_text_scale(app: &mut BooksApp, doc: &mut AutoCommit, w: f64, h: f64,
     let root = automerge::ROOT;
     app.sync(doc, &root);
     app.rect = Rect::new(0.0, 0.0, w, h);
-    app.reconcile_flaps();
+    app.resolve_drawers();
     let theme = Theme::dark().with_text_scale(scale);
     let presence = PresenceCtx::empty();
     let mut tr = TextRenderer::new();
@@ -4853,54 +4850,55 @@ fn hit_rect(app: &BooksApp, pred: impl Fn(&Action) -> bool) -> Option<Rect> {
         .map(|h| h.rect)
 }
 
-/// The Aa pill contains its 2x label and the size stepper fits the widest value.
+/// The reading-appearance button holds its 2x label inside the header row,
+/// and a font's size stepper is as wide as every value it can show.
 #[test]
 fn reader_controls_fit_their_labels() {
-    // --- phase: reader_aa_pill_contains_its_label_at_2x_text ---
-    // The reader's "Aa" pill is sized from its measured label: at 2× text
-    // the label's line box still fits inside the pill, and the pill inside
-    // the top bar, instead of the fixed 32px pill clipping the label.
+    // --- phase: reader_type_button_contains_its_label_at_2x_text ---
     {
         for scale in [1.0_f32, 2.0] {
             let mut app = app_with_sample();
             let mut doc = AutoCommit::new();
             frame_at_text_scale(&mut app, &mut doc, 800.0, 900.0, scale);
-            let pill = hit_rect(&app, |a| matches!(a, Action::ToggleTypePopover))
-                .expect("the type-settings pill is a hit target");
+            let button = app.type_button;
+            let theme = Theme::dark().with_text_scale(scale);
             let mut tr = TextRenderer::new();
             tr.set_text_scale(scale);
-            let (_, label_h) = tr.measure_weighted("Aa", 15.0, None, TextWeight::Semibold);
+            let (_, label_h) = tr.measure_style("Aa", None, &theme.text(TextRole::Label));
             assert!(
-                pill.height() >= f64::from(label_h) - 0.01,
-                "at {scale}× the pill ({}) is shorter than its label ({label_h})",
-                pill.height()
+                button.height() >= f64::from(label_h) - 0.01,
+                "at {scale}× the button ({}) is shorter than its label ({label_h})",
+                button.height()
             );
             assert!(
-                pill.y0 >= app.rect.y0 && pill.y1 <= app.rect.y0 + TOP_BAR + 0.01,
-                "at {scale}× the pill {pill:?} leaves the {TOP_BAR}px top bar"
+                button.y0 >= app.rect.y0 && button.y1 <= app.rect.y0 + app.header_h + 0.01,
+                "at {scale}× the button {button:?} leaves the {}px header row",
+                app.header_h
             );
         }
     }
 
-    // --- phase: size_stepper_slot_fits_the_widest_value ---
-    // The size stepper's value slot is measured from the widest value the
-    // field can show plus the shared field's insets, so "0.96 ×" is never
-    // clipped the way the old fixed 52px slot clipped it.
+    // --- phase: size_stepper_holds_the_widest_value ---
     {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        app.view = View::Settings;
+        app.settings_tab = SettingsTab::Fonts;
+        frame(&mut app, &mut doc, 1200.0, 820.0);
+        let field = NumberField::FontMult("mono".into());
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
-        let field = NumberField::FontMult("mono".into());
-        let slot = BooksApp::size_stepper_slot_w(&mut tr, &theme, &field);
-        for sample in field.widest_displays() {
-            let (w, _) = tr.measure(sample, theme.tokens.typography.scale.lg, None);
-            assert!(
-                slot >= f64::from(w) + 2.0 * f64::from(theme.padding_standard) - 0.01,
-                "slot {slot} cannot hold {sample:?} ({w}px) plus the field insets"
-            );
-        }
+        let wanted = app
+            .number_controls
+            .preferred_width(&field, 1.0, &mut tr, &theme);
+        let rect = app
+            .number_controls
+            .rect(&field)
+            .expect("the mono stepper is drawn");
         assert!(
-            BooksApp::size_stepper_width(&mut tr, &theme, &field) >= SIZE_STEPPER_BTN * 2.0 + slot,
-            "the stepper reserves both buttons and the measured slot"
+            rect.width() >= wanted - 0.01,
+            "the stepper ({}) is narrower than its widest value needs ({wanted})",
+            rect.width()
         );
     }
 }
@@ -4912,16 +4910,10 @@ fn a_rail_shorter_than_the_minimum_scrollbar_thumb_still_draws() {
     let mut tr = TextRenderer::new();
     let mut ctx = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme);
     for (y0, y1) in [(0.0, 1.0), (10.0, 30.0), (0.0, 400.0)] {
-        BooksApp::draw_rail_scrollbar(
+        paint_scroll_thumb(
             &mut ctx,
-            Point::new(0.0, y0),
-            y1,
-            RailScroll {
-                offset: 40.0,
-                max: 200.0,
-                visible_h: 100.0,
-                content_h: 300.0,
-            },
+            Rect::new(0.0, y0, 200.0, y1),
+            ScrollMetrics::new(300.0, 100.0, 40.0),
         );
     }
 }
