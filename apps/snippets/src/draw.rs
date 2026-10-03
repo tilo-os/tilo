@@ -1,146 +1,127 @@
-//! Small drawing helpers shared by the app's panes.
-//!
-//! These wrap the handful of Vello primitives the snippet manager paints
-//! (filled rounded rects, hairline borders, pills) so the pane code stays
-//! about layout, not about `kurbo` plumbing. Every colour comes in from a
-//! [`ui::theme::Theme`] token at the call site — nothing here invents a
-//! colour.
+//! Layout and paint helpers shared by the app's panes and its history
+//! preview.
 
+use std::collections::HashMap;
+
+use taffy::{NodeId, Style, TaffyTree};
 use ui::paint::PaintCtx;
-pub use ui::paint::{fill_rect, fill_round, stroke_round};
-use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::tokens::TextRole;
+use ui::widget::Widget;
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
-use vello::peniko::Color;
+use vello::kurbo::{Affine, Point, Rect};
 
-/// A crisp 1 px edge on `rect`'s outermost pixel row: strokes
-/// [`ui::surface::edge_outline`] (half a pixel *inside* the rect — kurbo's
-/// `Rect::inset(+x)` grows a rect, so this is the one place that geometry
-/// lives). For a surface whose fill and edge cannot go through
-/// [`ui::surface::card`] in one call (the code card paints its gutter
-/// between fill and edge; the modal strokes `panel_border`).
-pub fn stroke_edge(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, color: Color) {
-    scene.stroke(
-        &Stroke::new(1.0),
-        t,
-        color,
-        None,
-        &ui::surface::edge_outline(rect, radius),
-    );
+use crate::highlight;
+use crate::model::Snippet;
+
+/// A leaf node that fills what its parent gives it, registered for `widget`.
+#[allow(
+    clippy::expect_used,
+    reason = "TaffyTree::new_leaf only fails on allocation, which aborts anyway"
+)]
+pub(crate) fn fill_leaf<W: Widget + 'static>(
+    taffy: &mut TaffyTree<()>,
+    node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    widget: &mut W,
+) -> NodeId {
+    let node = taffy
+        .new_leaf(Style {
+            size: taffy::Size {
+                width: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::percent(1.0),
+            },
+            ..Default::default()
+        })
+        .expect("a leaf node");
+    node_map.insert(node, std::ptr::from_mut::<dyn Widget>(widget));
+    node
 }
 
-/// Stroke a straight line between two points (toggle glyphs: hamburger,
-/// close-X, back chevron).
-pub fn stroke_line(scene: &mut Scene, t: Affine, a: Point, b: Point, width: f64, color: Color) {
-    scene.stroke(&Stroke::new(width), t, color, None, &Line::new(a, b));
-}
-
-/// The monospace style the body preview / highlighter paints in.
-pub fn mono_style(size: f32, weight: TextWeight) -> TextStyle {
-    TextStyle::new(size)
-        .with_weight(weight)
-        .with_family(FontChoice::Monospace)
-}
-
-/// Measure the advance width of a monospace string at `size`.
-pub fn mono_width(tr: &mut TextRenderer, s: &str, size: f32) -> f64 {
-    f64::from(
-        tr.measure_styled(s, size, None, TextWeight::Regular, false, true)
-            .0,
+/// The rect taffy placed `node` at, in window coordinates.
+pub(crate) fn leaf_rect(taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> Rect {
+    let layout = taffy.layout(node).copied().unwrap_or_default();
+    let x = origin.x + f64::from(layout.location.x);
+    let y = origin.y + f64::from(layout.location.y);
+    Rect::new(
+        x,
+        y,
+        x + f64::from(layout.size.width),
+        y + f64::from(layout.size.height),
     )
 }
 
-/// Fit a monospace line into `max_w` px with a trailing ellipsis. Every
-/// glyph of a monospace face shares one advance, so one measurement gives
-/// the exact character budget — no per-candidate re-measuring. Proportional
-/// text uses the shared [`TextRenderer::elide_to_width_weighted`] instead.
-pub fn mono_fit(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> String {
-    if max_w <= 0.0 {
-        return String::new();
-    }
-    let advance = mono_width(tr, "0", size);
-    if advance <= 0.0 {
-        return s.to_string();
-    }
-    let budget = (max_w / advance).floor() as usize;
-    let len = s.chars().count();
-    if len <= budget {
-        return s.to_string();
-    }
-    if budget == 0 {
-        return String::new();
-    }
-    let mut out: String = s
-        .chars()
-        .take(budget - 1)
-        .collect::<String>()
-        .trim_end()
-        .to_string();
-    out.push('…');
-    out
-}
-
-/// Measured line box of one line at `size` as the renderer paints it (the
-/// accessibility scale included) — what stacked lines step by and what a
-/// band centres, never the bare font size.
-pub fn line_box(tr: &mut TextRenderer, size: f32) -> f64 {
-    let (_, h) = tr.measure("0", size, None);
-    f64::from(h)
-}
-
-/// Measured line box of one monospace line at `size`.
-pub fn mono_line_box(tr: &mut TextRenderer, size: f32) -> f64 {
-    let (_, h) = tr.measure_styled("0", size, None, TextWeight::Regular, false, true);
-    f64::from(h)
-}
-
-/// How much one line of `size` has grown over its 1× box at the current
-/// accessibility scale — what a 1×-designed row or control adds to keep
-/// seating its text. Zero at 1×.
-pub fn line_growth(tr: &mut TextRenderer, size: f32) -> f64 {
-    let line = line_box(tr, size);
-    let scale = f64::from(tr.text_scale()).max(f32::EPSILON.into());
-    (line - line / scale).max(0.0)
-}
-
-/// A left-to-right run of pills sharing one top edge, height and label size.
-pub struct PillRun {
-    /// Left edge of the next pill.
-    pub x: f64,
-    pub y: f64,
-    pub height: f64,
-    pub size: f32,
-}
-
-impl PillRun {
-    /// Draw a small filled pill (rounded capsule) with a centred label at
-    /// the run's cursor. Returns the pill's outer rect so callers can lay the
-    /// next pill out.
-    pub fn pill(&self, ctx: &mut PaintCtx<'_>, label: &str, fg: Color, bg: Color) -> Rect {
-        let (x, y, height, size) = (self.x, self.y, self.height, self.size);
-        let pad_x = 8.0;
-        let (text_w, text_h) = ctx.text.measure(label, size, None);
-        let w = f64::from(text_w) + pad_x * 2.0;
-        let rect = Rect::new(x, y, x + w, y + height);
-        // A capsule with its derived rest edge: a tinted pill on the same
-        // ground as its neighbours otherwise reads as bare text on a wash.
-        ui::surface::pill(
-            ctx.scene,
-            ctx.transform,
-            rect,
-            bg,
-            Some(ui::surface::edge_on(bg)),
-            None,
+/// Paint a snippet's body, syntax-highlighted with line numbers, in a code
+/// well at `card`: the read-only view History shows of a past version.
+pub fn paint_code(
+    scene: &mut Scene,
+    t: Affine,
+    text: &mut TextRenderer,
+    theme: &Theme,
+    card: Rect,
+    snippet: &Snippet,
+) {
+    let spacing = &theme.tokens.spacing;
+    let ground = theme.tokens.colors.surfaces.raised;
+    ui::surface::card(
+        scene,
+        t,
+        card,
+        f64::from(theme.tokens.radii.control),
+        ground,
+    );
+    let ink = theme.on_ground(ground);
+    let code = theme.text(TextRole::Code);
+    let line_h = f64::from(code.line_height_px());
+    let pad = f64::from(spacing.s4);
+    let lines = snippet.body.lines().count().max(1);
+    let number_w = f64::from(
+        text.measure_style(&lines.to_string(), None, &code.clone().numeric())
+            .0,
+    );
+    let code_x = card.x0 + pad + number_w + f64::from(spacing.s4);
+    let mut y = card.y0 + pad;
+    let mut ctx = PaintCtx::new(scene, t, text, &ink);
+    for (i, spans) in highlight::highlight_lines(&snippet.body, snippet.language).enumerate() {
+        if y + line_h > card.y1 - pad {
+            break;
+        }
+        let number = (i + 1).to_string();
+        let width = f64::from(
+            ctx.text
+                .measure_style(&number, None, &code.clone().numeric())
+                .0,
         );
-        // Centre the measured line box in the capsule, not the bare font size.
-        let ty = y + (height - f64::from(text_h)) / 2.0;
         ctx.text(
-            label,
-            &TextStyle::new(size).with_weight(TextWeight::Medium),
-            fg,
-            Point::new(x + pad_x, ty),
+            &number,
+            &code.clone().numeric(),
+            ink.text_tertiary,
+            Point::new(card.x0 + pad + number_w - width, y),
             None,
         );
-        rect
+        let mut x = code_x;
+        for span in spans {
+            let style = if span.kind == ui::widget::code_editor::TokenKind::Keyword {
+                code.clone().strong()
+            } else {
+                code.clone()
+            };
+            ctx.text(
+                &span.text,
+                &style,
+                theme.tokens.syntax.color(span.kind),
+                Point::new(x, y),
+                None,
+            );
+            x += f64::from(ctx.text.measure_style(&span.text, None, &style).0);
+        }
+        y += line_h;
     }
+}
+
+/// The height of a code well that shows all of `snippet`'s lines.
+pub fn code_height(theme: &Theme, snippet: &Snippet) -> f64 {
+    let line_h = f64::from(theme.text(TextRole::Code).line_height_px());
+    let lines = snippet.body.lines().count().max(1);
+    line_h * lines as f64 + f64::from(theme.tokens.spacing.s4) * 2.0
 }
