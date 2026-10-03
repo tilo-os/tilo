@@ -2168,35 +2168,33 @@ impl FrameHarness {
         Ok(true)
     }
 
-    /// Rasterise the most recently laid-out frame to a PNG.
+    /// Rasterise the most recently laid-out frame to a PNG over the window
+    /// ground (`surfaces.content`), exactly as a live window clears before
+    /// drawing. `--shots` writes this.
     ///
     /// `new`, input delivery, and `set_theme` all finish with `relayout`, so
     /// this never runs a separate screenshot-only widget pipeline. A browser
     /// page cannot read a frame back synchronously: there nothing is written.
     pub fn render_png(&self, out: &std::path::Path) {
-        self.render_png_on(out, vello::peniko::Color::TRANSPARENT);
-    }
-
-    /// Capture the composited native-window appearance: the frame over the
-    /// window ground (`surfaces.content`), exactly as a live window clears
-    /// before drawing. `--shots` writes this. Use it for rendered contrast
-    /// measurements. Nothing is written in a browser page, as for
-    /// [`FrameHarness::render_png`].
-    pub fn render_window_png(&self, out: &std::path::Path) {
         self.render_png_on(out, self.theme.tokens.colors.surfaces.content);
     }
 
-    /// Rasterise the most recently laid-out frame over a transparent
-    /// background, as tightly packed RGBA8 rows `viewport.0` pixels wide.
-    /// Empty in a browser page, which cannot read a frame back synchronously.
-    pub fn render_rgba(&self) -> Vec<u8> {
-        self.render_rgba_on(vello::peniko::Color::TRANSPARENT)
+    /// [`FrameHarness::render_png`] over a transparent background, for a
+    /// capture composited onto something else afterwards.
+    pub fn render_png_transparent(&self, out: &std::path::Path) {
+        self.render_png_on(out, vello::peniko::Color::TRANSPARENT);
     }
 
-    /// [`FrameHarness::render_rgba`] over the window ground, as the native
-    /// window composites it.
-    pub fn render_window_rgba(&self) -> Vec<u8> {
+    /// Rasterise the most recently laid-out frame over the window ground, as
+    /// tightly packed RGBA8 rows `viewport.0` pixels wide. Empty in a browser
+    /// page, which cannot read a frame back synchronously.
+    pub fn render_rgba(&self) -> Vec<u8> {
         self.render_rgba_on(self.theme.tokens.colors.surfaces.content)
+    }
+
+    /// [`FrameHarness::render_rgba`] over a transparent background.
+    pub fn render_rgba_transparent(&self) -> Vec<u8> {
+        self.render_rgba_on(vello::peniko::Color::TRANSPARENT)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -2788,7 +2786,6 @@ impl FrameHarness {
                 &self.theme,
                 &self.presence,
             );
-            history.mark_drawn();
         }
         if self
             .history
@@ -2855,6 +2852,7 @@ impl FrameHarness {
                 &self.theme,
                 &self.presence,
             );
+            history.mark_drawn();
         }
         if self.history_chrome_enabled {
             self.document_history.draw_overlay(
@@ -2968,6 +2966,19 @@ impl FrameHarness {
                 return true;
             }
         }
+    }
+
+    /// Run production frames until the window has settled, as a person sees
+    /// it a moment after it opened: no animation running (a tab's entrance, a
+    /// panel sliding in) and no image load the frame asked for still in
+    /// flight. Waits at most `bound` and returns whether it settled. A
+    /// capture calls this before it writes, so shots match the live window.
+    pub fn settle_for_capture(&mut self, bound: crate::time::Duration) -> bool {
+        self.wait_until(bound, |driver| {
+            !driver.frame_schedule().needs_animation_frame
+                && !driver.root.has_pending_visual_work()
+                && crate::image_store::loads_in_flight() == 0
+        })
     }
 
     /// Run the normal frame pipeline until requested visual work completes.
@@ -8038,6 +8049,84 @@ mod tests {
                 ("Root/Panel/Spinner".to_owned(), FrameDemand::Animation),
             ]
         );
+    }
+
+    /// Animates until `until`, like a tab's entrance or a sliding panel.
+    struct Entrance {
+        until: crate::time::Instant,
+    }
+
+    impl Widget for Entrance {
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = taffy.leaf_node(Style::default());
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+        fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _text_renderer: &mut TextRenderer,
+            _theme: &Theme,
+            _presence: &PresenceCtx,
+        ) {
+        }
+        fn needs_animation_frame(&self) -> bool {
+            crate::time::now() < self.until
+        }
+        fn name(&self) -> &str {
+            "Entrance"
+        }
+        fn get_rect(&self) -> Rect {
+            Rect::ZERO
+        }
+    }
+
+    #[test]
+    fn a_capture_settles_animations_and_lands_on_the_window_ground() {
+        // Case `capture_waits_until_the_animation_schedule_is_idle`.
+        {
+            let until = crate::time::now()
+                .checked_add(crate::time::Duration::from_millis(150))
+                .unwrap();
+            let mut harness =
+                FrameHarness::new(State::new(), Box::new(Entrance { until }), (200, 100));
+            assert!(harness.frame_schedule().needs_animation_frame);
+            assert!(harness.settle_for_capture(crate::time::Duration::from_secs(5)));
+            assert!(!harness.frame_schedule().needs_animation_frame);
+            assert!(crate::time::now() >= until, "it ran the animation out");
+        }
+
+        // Case `the_corner_pixel_is_the_content_ground`.
+        {
+            for theme in [Theme::dark(), Theme::light()] {
+                let harness = FrameHarness::new_with_theme(
+                    State::new(),
+                    Box::new(crate::widget::Spacer::new()),
+                    (64, 48),
+                    theme.clone(),
+                );
+                let ground = theme.tokens.colors.surfaces.content.to_rgba8();
+                let rgba = harness.render_rgba();
+                assert_eq!(
+                    rgba[..4],
+                    [ground.r, ground.g, ground.b, 255],
+                    "{}: a shot lands on the window ground",
+                    theme.name
+                );
+                assert_eq!(
+                    harness.render_rgba_transparent()[3],
+                    0,
+                    "transparency only when asked for"
+                );
+            }
+        }
     }
 
     #[test]

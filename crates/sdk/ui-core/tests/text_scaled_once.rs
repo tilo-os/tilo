@@ -50,7 +50,7 @@ fn capture(name: &str, root: Element, viewport: (u32, u32), scale: f32) -> Captu
         viewport,
         Theme::dark().with_text_scale(scale),
     );
-    let rgba = harness.render_window_rgba();
+    let rgba = harness.render_rgba();
     crate::support::evidence::save_png(
         &format!("text_scaled_once/{name}-{scale}x"),
         viewport.0,

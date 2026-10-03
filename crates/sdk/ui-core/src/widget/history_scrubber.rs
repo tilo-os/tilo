@@ -1909,7 +1909,7 @@ mod version_tests {
                         (1000, h as u32),
                         theme.clone(),
                     );
-                    harness.render_window_png(&png);
+                    harness.render_png(&png);
                     if let Ok(json) = harness.inspection_json() {
                         std::fs::write(png.with_extension("inspection.json"), json)
                             .expect("write inspection");

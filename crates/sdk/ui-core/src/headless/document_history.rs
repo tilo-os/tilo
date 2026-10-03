@@ -465,6 +465,9 @@ impl FrameHarness {
             }
             return self.child_node;
         }
+        self.document_history.set_app_presents_button(
+            crate::standalone_history_host::presents_history_button(self.root.as_ref()),
+        );
         let layout = self.document_history.build_layout(
             self.child_node,
             &mut self.taffy,
@@ -844,6 +847,44 @@ mod tests {
         );
         driver.enable_document_history_chrome();
         (driver, ids, calls)
+    }
+
+    /// A modal is presented in the window's top layer: its scrim dims the
+    /// History bar too, not only the pane the dialog is mounted in.
+    #[test]
+    fn a_modal_scrim_covers_the_history_bar() {
+        fn bar_pixel(open: bool) -> [u8; 4] {
+            let body = crate::widget::Column::new()
+                .push(Box::new(crate::widget::Text::new("Draft")))
+                .push(Box::new(
+                    crate::widget::ModalDialog::new(
+                        "Discard draft?",
+                        crate::widget::Text::new("The draft is not saved."),
+                    )
+                    .open(open)
+                    .secondary_action("Keep", || {})
+                    .primary_action("Discard", || {}),
+                ));
+            let mut driver = FrameHarness::new_with_theme(
+                State::new(),
+                Box::new(body),
+                (900, 600),
+                Theme::light(),
+            );
+            driver.enable_document_history_chrome();
+            driver.relayout();
+            let rgba = driver.render_rgba();
+            // Inside the History bar, clear of its button.
+            let (x, y) = (880_usize, 8_usize);
+            let at = (y * 900 + x) * 4;
+            [rgba[at], rgba[at + 1], rgba[at + 2], rgba[at + 3]]
+        }
+        let plain = bar_pixel(false);
+        let dimmed = bar_pixel(true);
+        assert!(
+            u16::from(dimmed[0]) + 20 < u16::from(plain[0]),
+            "the History bar is under the scrim: {plain:?} -> {dimmed:?}"
+        );
     }
 
     fn open_address() -> tilo_actions::ActionAddress {

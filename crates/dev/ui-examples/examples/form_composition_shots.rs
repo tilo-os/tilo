@@ -230,7 +230,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 shot_theme().with_text_scale(scale),
             );
             let stem = format!("{mode}-{name}");
-            harness.render_window_png(&output.join(format!("{stem}.png")));
+            harness.render_png(&output.join(format!("{stem}.png")));
             std::fs::write(
                 output.join(format!("{stem}.json")),
                 harness.inspection_json()?,
@@ -238,7 +238,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if name == "narrow-large-text" {
                 harness.click_at(5.0, 5.0);
                 harness.scroll(0.0, -10000.0);
-                harness.render_window_png(&output.join(format!("{stem}-end.png")));
+                harness.render_png(&output.join(format!("{stem}-end.png")));
                 std::fs::write(
                     output.join(format!("{stem}-end.json")),
                     harness.inspection_json()?,
@@ -253,7 +253,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         shot_theme(),
     );
     resized.resize((340, 800))?;
-    resized.render_window_png(&output.join("automatic-resized-narrow.png"));
+    resized.render_png(&output.join("automatic-resized-narrow.png"));
     std::fs::write(
         output.join("automatic-resized-narrow.json"),
         resized.inspection_json()?,
