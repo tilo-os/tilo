@@ -1998,10 +1998,24 @@ impl NotesApp {
     }
 
     /// Present the framework's workspace projection.
+    ///
+    /// Which note is open is this person's, not the document's: it stays
+    /// open, and its editor stays bound, while the note exists. Rebinding on
+    /// every edit would put the caret back at the start after each keystroke.
     pub(crate) fn adopt_resource_state(&mut self, state: &std::rc::Rc<Workspace>) {
+        let selected = self
+            .workspace
+            .selected()
+            .filter(|page| state.get(*page).is_some());
         self.workspace = (**state).clone();
+        self.workspace.set_selected(selected);
+        if self.bound_page != selected {
+            self.bound_page = None;
+        }
         self.sidebar.sync_from_workspace(&self.workspace);
-        self.bound_page = self.workspace.selected();
+        if let Some(page) = selected.and_then(|id| self.workspace.get(id)) {
+            self.main.set_title(Some(page.title.clone()));
+        }
         self.refresh_link_pages();
         self.self_dirty = true;
     }
@@ -2011,6 +2025,7 @@ impl NotesApp {
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::Notebook>,
     ) {
+        self.main.attach_notebook(dispatcher.clone());
         self.actions.attach(dispatcher);
         self.seeded = true;
         self.adopted = true;
@@ -5076,11 +5091,7 @@ impl ui::undo::CommittedActions for NotesApp {
     /// its page-tree action, so it records one undo boundary for it (see
     /// `Self::perform_action`). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        // A body edit dispatches through the page's editor; everything else
-        // through the app's own host. One event does one or the other.
-        let body = ui::undo::CommittedActions::take_committed_action(self.main.body_editor_mut());
-        let notes = self.actions.take_committed();
-        body.or(notes)
+        self.actions.take_committed()
     }
     /// Typing a word in a note is one undo step.
     fn keeps_undo_step_open(&self) -> bool {

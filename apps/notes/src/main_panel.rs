@@ -42,6 +42,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use tilo_rich_text::{RichTextField, RichTextSurface};
 use ui::Widget;
+use ui::framework::Dispatcher;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
@@ -96,30 +97,25 @@ pub struct BacklinkChip {
     pub references: u32,
 }
 
-/// A page's body in the SDK rich-text editor, edited as Notes actions.
-pub type NotesEditor = RichTextSurface<RichTextField<crate::actions::NotesAction>>;
+/// A page's body in the SDK rich-text editor, edited as the notebook's
+/// actions.
+pub type NotesEditor = RichTextSurface<RichTextField>;
 
 /// Notes is a prose editor, so ordinary blocks must reflow to the available
 /// column width. Keeping construction behind one helper prevents a page bind,
 /// remote rebind, or empty-state reset from silently returning to the shared
 /// editor's single-line (code/editor) default. `page` is the page whose body
-/// it edits; without one it shows what it is given and writes nothing.
-fn notes_editor(page: Option<PageId>) -> NotesEditor {
-    let context = page.map(|page| {
-        crate::actions::history_context(&crate::actions::edit_body_action(
-            page,
-            tilo_document::RichTextAction::AppendParagraph {
-                text: String::new(),
-            },
-        ))
+/// it edits, through the notebook's dispatcher; without either it shows what
+/// it is given and writes nothing.
+fn notes_editor(
+    page: Option<PageId>,
+    notebook: Option<&Dispatcher<crate::resource::Notebook>>,
+) -> NotesEditor {
+    let mut field = RichTextField::view_only(move |doc| {
+        page.and_then(|page| crate::doc::NotesDoc::page_body(doc, page))
     });
-    let mut field = RichTextField::new(
-        crate::actions::NOTES_ACTION_TYPE,
-        move |doc| page.and_then(|page| crate::doc::NotesDoc::page_body(doc, page)),
-        move |edit| crate::actions::edit_body_action(page.unwrap_or_default(), edit),
-    );
-    if let Some(context) = context {
-        field = field.with_context(context);
+    if let (Some(page), Some(notebook)) = (page, notebook) {
+        field.attach(crate::actions::page_body_dispatcher(notebook, page));
     }
     RichTextSurface::field(field).with_editor(
         BlockEditor::new()
@@ -234,6 +230,11 @@ pub struct MainPanel {
     /// Live editor. Always present (defaults to an empty document)
     /// so layout/draw don't need a `None` branch.
     editor: NotesEditor,
+    /// The page whose body `editor` edits, if any.
+    editor_page: Option<PageId>,
+    /// The notebook's dispatcher, once the app is hosted: page bodies are
+    /// edited through it.
+    notebook: Option<Dispatcher<crate::resource::Notebook>>,
     image_store: Option<ui::ImageStore>,
     /// Last markdown body the panel was loaded with. Used to detect
     /// whether the editor's current state still matches the loaded
@@ -317,7 +318,9 @@ impl MainPanel {
             pending_backlink_open: None,
             focused_backlink: None,
             hovered_backlink: None,
-            editor: notes_editor(None),
+            editor: notes_editor(None, None),
+            editor_page: None,
+            notebook: None,
             image_store: None,
             body: String::new(),
             rect: Rect::ZERO,
@@ -474,6 +477,7 @@ impl MainPanel {
         workspace: &crate::Workspace,
     ) -> Result<Self, String> {
         let mut panel = Self::new();
+        panel.notebook.clone_from(&self.notebook);
         panel.set_image_store(self.image_store.clone());
         panel.set_local_author(self.local_author.clone());
         if let Some(page) = workspace.selected() {
@@ -549,7 +553,7 @@ impl MainPanel {
         self.pending_backlink_open = None;
         self.focused_backlink = None;
         self.hovered_backlink = None;
-        self.editor = notes_editor(None);
+        self.editor = self.fresh_editor(None);
         self.body = String::new();
         self.scroll_y = 0.0;
         self.empty_action_rect = Rect::ZERO;
@@ -644,8 +648,20 @@ impl MainPanel {
         self.editor.editor_mut().set_image_store(store);
     }
 
-    fn fresh_editor(&self, page: Option<PageId>) -> NotesEditor {
-        let mut editor = notes_editor(page);
+    /// Edit page bodies through `notebook` from now on, the one shown
+    /// included.
+    pub(crate) fn attach_notebook(&mut self, notebook: Dispatcher<crate::resource::Notebook>) {
+        if let Some(page) = self.editor_page {
+            self.editor
+                .source_mut()
+                .attach(crate::actions::page_body_dispatcher(&notebook, page));
+        }
+        self.notebook = Some(notebook);
+    }
+
+    fn fresh_editor(&mut self, page: Option<PageId>) -> NotesEditor {
+        self.editor_page = page;
+        let mut editor = notes_editor(page, self.notebook.as_ref());
         editor
             .editor_mut()
             .set_image_store(self.image_store.clone());
