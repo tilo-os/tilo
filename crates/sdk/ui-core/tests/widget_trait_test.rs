@@ -47,6 +47,7 @@ fn widget_trait_defaults_presence_draw_and_token_radius() {
         t.radii.control = 99.0;
         let theme = tilo_ui::Theme {
             name: "T".into(),
+            document: tilo_ui::theme::Preset::Dark.document(),
             border_standard: t.colors.border_standard,
             border_focus: t.colors.border_focus,
             text_primary: t.colors.text_primary,

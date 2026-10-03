@@ -174,7 +174,7 @@ and presence palette. There is no accent colour any more: nothing in
 | `AccentChip` | `TintedChip` |
 | `ACCENT_PRIMARY_IDX`, `ACCENT_HOVER_IDX` imports | delete |
 | `colors.categorical(i)` | `colors.presence.series(i)` (chart/tag series) or `colors.presence.get(slot)` (a person) |
-| `Theme::with_accent(rgb)` | `Theme::with_your_colour(rgb)` (the person's own colour: focus ring, caret, selection) |
+| `Theme::with_accent(rgb)` | nothing in an app: the person's own colour is identity, applied by the host (`Theme::with_your_colour(PresenceHue)`) |
 | `Theme::brand_accent`, `Theme::with_brand_accent`, `BrandAccentRejection`, `Theme::allow_app_accents`, `appearance.app_accents` | delete: an app has no colour of its own. Brand hues an app needs for *content* (a calendar's event colour, a map pin) come from `colors.presence` |
 | `WorkspaceTint`, `appearance.workspace_tint` | delete; a workspace's temperature comes from its wallpaper (`ui::workspace_hue(pixels)` → `Theme::with_neutral_hue`, applied by the shell; `ThemeLayerStack::workspace_hue` for a host resolving layers) |
 | `PIN_ACCENT`, `PIN_SHAPE`, `DistributionDefaults::accent` | delete |
@@ -191,14 +191,14 @@ and presence palette. There is no accent colour any more: nothing in
 | `ON_CARD_SMALL_TEXT_CONTRAST` | `SMALL_TEXT_MIN_CONTRAST` |
 | `surface_white_5` / `_10` / `_20` | `overlay_subtle` / `overlay_medium` / `overlay_strong` |
 | `border_white_10` / `_20` | `overlay_border_subtle` / `overlay_border_strong` |
-| `PaletteSpec`, `Colors::themed`, `Colors::set_accent`, `Colors::set_overlays`, `contrast::repair` | delete; build colours with `Colors::of_material(material, hue)` |
+| `PaletteSpec`, `Colors::themed`, `Colors::set_accent`, `Colors::set_overlays` | delete; colours come from a theme document (`Theme::from_document`, `Theme::preset`, `Colors::of_palette`) |
 | `Colors::tilo_blue()`, `Theme::{tilo_blue, dracula, nord, gruvbox, gruvbox_light, catppuccin_mocha, catppuccin_latte, solarized, oled, warm_light, rose_pine}` | `Theme::dark()` / `Theme::light()` (`Theme::ALL` is now `Dark`, `Light`, `High Contrast`); a different temperature is `theme.with_neutral_hue(h)` |
-| `CustomThemeSpec` colour fields (`accent`, `accent_hover`, `surface_base`, `surface_raised`, `text_primary`, `text_dim`, `border`, `success`, `warning`, `danger`, `info`), `radius_px`, `material_tint`, `contrast_findings()` | delete; a custom theme is `dark_base` + `neutral_hue` + spacing/font/scales, schema 4 |
+| `CustomThemeSpec` (every schema), `Theme::from_custom_spec`, `appearance.theme`, `appearance.custom_theme` | `ThemeDocument` schema 5 (`Theme::from_document`); see [Theming](#theming) |
 | `ContentSurface::accent` | delete |
 | `QueryInk::accented(text, placeholder, accent)` | `QueryInk::of(&theme.tokens.colors)` (caret and selection in your colour) |
 | `palette.surface_radius_px()` (`CommandPalette`) | `CommandPalette::surface_radius_px(theme)` (the panel radius) |
 | `ui::presence::PEER_PALETTE` (24 entries), `user_color` returning Tailwind colours | 12 entries, the dark presence palette; `user_color` is an identity, paint it with `colors.presence.of_rgb(user_color(id))` |
-| `Theme::configured()` reading the person's colour | the shell applies it (`with_your_colour`); an app does nothing |
+| `Theme::configured()` reading the person's colour | it reads `identity.colour`; an app does nothing |
 | `elevation.e0` … `elevation.e4` | `elevation.floating` for anything floating (menu, popover, palette, sheet, quick settings, toast, tooltip, dragged object); **no shadow** for a window tile, a card, a bar or a selected control: delete the `surface::shadow` call |
 | `radii.sm` (4) | `radii.detail` (progress track, badge, sparkline clip, caret) |
 | `radii.md` (8), `radii.lg` (12) | `radii.control` (8) for a button, field, segmented track or a tile inside a panel; `radii.item` (6) for a selected row or a segment thumb |
@@ -231,8 +231,9 @@ A label that was hard-coded `Color::WHITE` on an accent fill must become
 
 ### New APIs
 
-- `Colors::of_material(Material::{Dark, Light, HighContrast}, hue)`,
-  `Colors::{dark, light, high_contrast}()`, `Tokens::of_material(material)`.
+- `Colors::of_palette(&palette, emphasis, presence_tone, you)`,
+  `Colors::{dark, light, high_contrast}()`, `Tokens::{dark, light}()`;
+  themes from `Theme::preset(Preset::…)` / `Theme::from_document`.
 - `surfaces.{base, content, sidebar, inspector, raised, overlay, scrim,
   material, material_blur_px, content_edge}`. Paint the window ground with
   `surfaces.content`, a navigation column with `surfaces.sidebar`, a detail
@@ -241,7 +242,7 @@ A label that was hard-coded `Color::WHITE` on an accent fill must become
   selection_hover, you, selection_tint}` and `colors.lift_on(ground, t)`.
 - `colors.presence` (`PresencePalette`): `get(slot)`, `series(index)`,
   `of(color)`, `of_rgb((r, g, b))`; `PRESENCE_LEN` = 12.
-- `Theme::with_neutral_hue(h)`, `Theme::with_your_colour(rgb)`,
+- `Theme::with_neutral_hue(h)`, `Theme::with_your_colour(PresenceHue)`,
   `ui::workspace_hue(rgba_pixels)`, `ui::color::{Oklch, oklch, dominant_hue}`.
 - `Radii { tile, panel, control, item, detail, full }` and
   `Radii::concentric(outer, inset)`.
@@ -260,8 +261,8 @@ A label that was hard-coded `Color::WHITE` on an accent fill must become
 
 ### What to delete in an app
 
-- Any theme picker, accent picker, "app accent" switch or workspace-tint
-  control (Settings, Themes).
+- Any accent picker, "app accent" switch or workspace-tint control; the
+  appearance controls Settings keeps are listed in [Theming](#theming).
 - Hard-coded per-app palettes (`const ACCENT_*`, Tailwind literals) that
   stood in for the accent ramp.
 - Shadows under window content, cards and selected controls.
@@ -548,3 +549,63 @@ A host that draws floating surfaces and renders the result itself:
 4. Shell: `FrameBuilder::paint_with_damage` puts it on `FramePaint::backdrop`;
    after `FrameBuilder::paint` take it with `FrameBuilder::take_backdrop()` and
    hand it on with `FramePaint::with_backdrop` or `OffscreenRenderer::set_backdrop`.
+
+## Theming
+
+A theme is one versioned document (`ui::theme::ThemeDocument`, schema 5) of
+semantic roles; `docs/architecture/theming.md` is the contract. Apps read
+tokens and never a theme's name, and Settings and Theme Studio are the only
+writers of the appearance state.
+
+### Removed APIs and their replacements
+
+| Old | New |
+|---|---|
+| `CustomThemeSpec`, `CUSTOM_THEME_SCHEMA_VERSION`, `CUSTOM_THEME_SCHEMA_MIN`, `Theme::from_custom_spec` | `ThemeDocument`, `THEME_SCHEMA_VERSION`, `Theme::from_document` (`None` for a document this build does not admit) |
+| `CustomThemeSpec::{spacing_px, font, motion_scale, material_scale, icon_scale, chrome_weight, motion_character, dark_base, neutral_hue}` | `density.spacing` (a multiple of the 4 px scale), `type.{face, base_size}`, `motion.character`, `material.{blur, tint_opacity}`, `palette.{dark, hue, chroma}`; icon scale, chrome weight and the duration scale are not theme roles |
+| `tokens::Material`, `Colors::of_material`, `Tokens::of_material`, `colors.material`, `colors.neutral_hue` | `tokens::Palette` (`Palette::dark()` …), `Colors::of_palette` / `Colors::stock`, `Tokens::around`, `colors.palette`, `colors.palette.hue` |
+| `Theme::high_contrast()` as the accessibility track | `theme.with_high_contrast()` (the high-contrast palette of the theme's own polarity); `Theme::high_contrast()` is the dark preset |
+| `Theme::ALL = ["Dark", "Light", "High Contrast"]`, the name `"High Contrast"` | `Preset::ALL` / `Theme::ALL` (seven presets, sentence case: `"High contrast"`, `"High contrast light"`). Never compare `theme.name`; ask `theme.colors_are_forced()` |
+| `Theme::with_your_colour([u8; 3])`, `Colors::set_you(Color)`, `DEFAULT_YOU_SLOT` | `Theme::with_your_colour(PresenceHue)`, `Colors::set_you(PresenceHue)`, `PresenceHue::Blue`; a host colour becomes `PresenceHue::nearest(colour)` |
+| `PIN_ICONS`, `PIN_CHROME`, `DistributionDefaults::{palette, custom}`, distribution schema 1 | `PIN_EMPHASIS`, `PIN_PRESENCE`, `PIN_SHAPE` beside `PIN_PALETTE`, `PIN_DENSITY`, `PIN_TYPE`, `PIN_MOTION`, `PIN_MATERIAL`; `DistributionDefaults::{theme, document}`, schema 2 |
+| `ThemeLayerStack::user_theme: Option<Theme>` | `Option<ThemeDocument>`, plus `your_colour: Option<PresenceHue>` |
+| `appearance.theme` (`"Dark"`, `"Light"`, `"Automatic"`, `"custom:<id>"`), `appearance.custom_theme`, `appearance.studio`, `appearance.app_accents`, `appearance.workspace_tint` | `appearance.mode`, `dark_theme`, `light_theme`, `custom_themes`, `density`, `workspace_temperatures`; `identity.colour` |
+| `day_schedule::AUTOMATIC_THEME` (`"Automatic"`) | `day_schedule::AUTOMATIC_MODE` (`"automatic"`), read from `appearance.mode` |
+| `backdrop::FLOATING_TINT_ALPHA` | `surfaces.material_opacity` (a theme role) |
+| A primary label resolved from `Color::WHITE` | `colors.intent.on_inverted` |
+
+### Settings > Appearance
+
+The Settings app exposes these and nothing else about appearance. Every
+control writes the shared settings document through the same actions an
+agent calls; labels are sentence case.
+
+| Control | Writes | Values |
+|---|---|---|
+| **Appearance** (segmented: Light, Dark, Automatic) | `appearance.mode` | `"light"`, `"dark"`, `"automatic"`. Automatic shows the schedule controls already in Settings (`schedule`, `sunrise`, `sunset`) |
+| **Dark theme** (a row of rendered previews, the four dark presets and the person's dark custom themes) | `appearance.dark_theme` | `"dark"` (default), `"dark-cool"`, `"dark-graphite"`, `"dark-soft"`, or `"custom:<id>"` for a document in `appearance.custom_themes` |
+| **Light theme** (previews: Light and the person's light custom themes) | `appearance.light_theme` | `"light"` (default) or `"custom:<id>"` |
+| **Your colour** (the twelve presence hues as swatches, with names for screen readers) | `identity.colour` | `"red"`, `"orange"`, `"amber"`, `"olive"`, `"green"`, `"teal"`, `"cyan"`, `"sky"`, `"blue"`, `"violet"`, `"magenta"`, `"pink"` (`PresenceHue::id`); absent means the colour derived from the identity, which the control shows selected |
+| **Density** (Compact, Regular, Roomy) | `appearance.density` | `0.85`, `1.0`, `1.2` (`ThemeDensity::{COMPACT, REGULAR, ROOMY}`) |
+| **Text size** | `appearance.accessibility.text_scale` | 0.5–4, stock steps 1, 1.15, 1.3, 1.5 |
+| **Reduce transparency** — "Make menus, panels and sheets opaque" | `appearance.accessibility.reduce_transparency` | bool |
+| **High contrast** | `appearance.accessibility.high_contrast` | bool; keeps the mode's polarity |
+| **Open Theme Studio** | — | launches `so.tilo.themes` to write a theme |
+
+The three accessibility rows write the versioned `appearance.accessibility`
+object (`AccessibilityLayer`, `schema_version` 1) as a whole; once it is
+present the flat `appearance.high_contrast` / `text_scale` flags are not read.
+
+Delete from Settings: the old theme list (`Dark`, `Light`, `High Contrast`,
+`Automatic` as one choice), the custom-theme summary, the "app accents"
+switch and any workspace tint control. Settings writes no theme document
+itself; Theme Studio writes `custom_themes`.
+
+### Theme Studio
+
+`apps/themes` is the reference for authoring: its resource stores each
+theme role by role (`themes::Studio`), every edit is an action, the gallery
+renders each preset with `themes::preview::ThemePreview`, and applying goes
+through `themes::apply` (refused while `ThemeDocument::findings` is not
+empty). `--shots --scenario gallery|editor|tinted|illegible` with
+`--theme <preset>` renders it in any preset.

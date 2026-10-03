@@ -847,13 +847,22 @@ fn persist_appearance(
     Ok(())
 }
 
-fn set_theme(st: &mut ChromeState, theme: &str, high_contrast: bool) -> Result<(), ActionError> {
+/// Dark or light mode, keeping whichever theme the person chose for it.
+/// Choosing a mode leaves high contrast.
+fn set_mode(st: &mut ChromeState, mode: &str) -> Result<(), ActionError> {
     let mut values = serde_json::Map::new();
-    values.insert("theme".into(), serde_json::Value::String(theme.into()));
     values.insert(
-        "high_contrast".into(),
-        serde_json::Value::Bool(high_contrast),
+        ui::theme::MODE_KEY.into(),
+        serde_json::Value::String(mode.into()),
     );
+    values.insert("high_contrast".into(), serde_json::Value::Bool(false));
+    persist_appearance(st, values)
+}
+
+/// High contrast in the current mode's polarity.
+fn set_high_contrast(st: &mut ChromeState) -> Result<(), ActionError> {
+    let mut values = serde_json::Map::new();
+    values.insert("high_contrast".into(), serde_json::Value::Bool(true));
     persist_appearance(st, values)
 }
 
@@ -1760,19 +1769,19 @@ impl Action {
             "appearance.theme.dark",
             "search-action-appearance-theme-dark",
             "search-action-appearance-theme-dark-subtitle",
-            |st, _| set_theme(st, "dark", false),
+            |st, _| set_mode(st, "dark"),
         ),
         chrome(
             "appearance.theme.light",
             "search-action-appearance-theme-light",
             "search-action-appearance-theme-light-subtitle",
-            |st, _| set_theme(st, "light", false),
+            |st, _| set_mode(st, "light"),
         ),
         chrome(
             "appearance.high-contrast",
             "search-action-appearance-high-contrast",
             "search-action-appearance-high-contrast-subtitle",
-            |st, _| set_theme(st, "dark", true),
+            |st, _| set_high_contrast(st),
         ),
         Action {
             id: "appearance.language",
@@ -3996,7 +4005,7 @@ mod tests {
         );
         let appearance = settings_store::load_section("appearance");
         assert_eq!(
-            appearance.get("theme").and_then(serde_json::Value::as_str),
+            appearance.get("mode").and_then(serde_json::Value::as_str),
             Some("dark")
         );
         assert_eq!(

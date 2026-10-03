@@ -14323,16 +14323,8 @@ name = "themes"
 version = "0.1.0"
 dependencies = [
  "runtime-dylib",
- "serde",
  "serde_json",
- "taffy",
- "tilo-actions",
  "tilo-app",
- "tilo-automerge",
- "tilo-automerge-fork",
- "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
  "uuid",
  "workspace-hack",
 ]
