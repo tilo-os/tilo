@@ -345,6 +345,18 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
     ));
 }
 
+fn fleet_lists(identities: &std::path::Path, user: [u8; 32], label: &str) -> bool {
+    let path = identities
+        .join("fleets")
+        .join(format!("{}.json", hex::encode(user)));
+    let fleet: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    fleet["certificates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|cert| cert["device_label"] == label)
+}
+
 /// A device onboarded today keeps the person's root only in their identity
 /// record, never as a seed under the identity root. Approving from it signs
 /// the new device through that record.
@@ -439,22 +451,9 @@ fn ordinary_device_enrollment_is_approved_with_the_identity_record() {
     assert!(!recipient_paths.user_privkey.exists());
     assert!(!approver_paths.user_privkey.exists());
 
-    let fleet: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(
-            approver_identities
-                .join("fleets")
-                .join(format!("{}.json", hex::encode(user))),
-        )
-        .unwrap(),
-    )
-    .unwrap();
     assert!(
-        fleet["certificates"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|cert| cert["device_label"] == "Headless board"),
-        "the approver's fleet must remember the device it admitted: {fleet}"
+        fleet_lists(&approver_identities, user, "Headless board"),
+        "the approver's fleet must remember the device it admitted"
     );
 }
 
