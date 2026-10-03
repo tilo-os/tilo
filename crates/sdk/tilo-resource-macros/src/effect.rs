@@ -37,6 +37,10 @@ fn enum_options(input: &DeriveInput) -> syn::Result<EnumOptions> {
 }
 
 #[derive(Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "one flag per option the attribute spells out"
+)]
 struct VariantOptions {
     label: Option<String>,
     job: bool,
@@ -178,21 +182,22 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 quote!(#krate::__private::ActionParam::required_owned(#param, #param_ty, #description))
             }
         });
-        let (job, cancellable, returns, destructive) = (
-            options.job,
-            options.cancellable,
-            options.returns,
-            options.destructive,
-        );
+        let answers = if options.job || options.cancellable {
+            let cancellable = options.cancellable;
+            quote!(#krate::effect::Answers::Later { cancellable: #cancellable })
+        } else if options.returns {
+            quote!(#krate::effect::Answers::Value)
+        } else {
+            quote!(#krate::effect::Answers::Nothing)
+        };
+        let destructive = options.destructive;
         decls.push(quote! {
             #krate::effect::EffectDecl {
                 id: #id,
                 label: #label,
                 description: #description,
                 params: ::std::vec![#(#params),*],
-                job: #job,
-                cancellable: #cancellable,
-                returns: #returns,
+                answers: #answers,
                 destructive: #destructive,
                 permission: #krate::__private::PermissionRequirement::#permission,
             }
@@ -238,10 +243,10 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         });
     }
 
-    let arguments_binding = if !any_arguments {
-        quote!(_arguments)
-    } else {
+    let arguments_binding = if any_arguments {
         quote!(arguments)
+    } else {
+        quote!(_arguments)
     };
     Ok(quote! {
         impl #krate::Effect for #name {

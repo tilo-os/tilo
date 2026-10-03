@@ -103,11 +103,21 @@ pub struct EffectDecl {
     pub label: &'static str,
     pub description: &'static str,
     pub params: Vec<ActionParam>,
-    pub job: bool,
-    pub cancellable: bool,
-    pub returns: bool,
+    pub answers: Answers,
+    /// Asks for confirmation: deletes, overwrites, sends.
     pub destructive: bool,
     pub permission: PermissionRequirement,
+}
+
+/// How an effect answers its caller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Answers {
+    /// At once, with nothing to report.
+    Nothing,
+    /// At once, with a JSON value.
+    Value,
+    /// Later: a job that reports progress, then its result.
+    Later { cancellable: bool },
 }
 
 impl EffectDecl {
@@ -150,21 +160,16 @@ impl EffectDecl {
             } else {
                 ConfirmationPolicy::None
             },
-            execution: if self.job || self.cancellable {
-                ExecutionMode::Background {
-                    cancellable: self.cancellable,
-                }
-            } else {
-                ExecutionMode::Immediate
+            execution: match self.answers {
+                Answers::Later { cancellable } => ExecutionMode::Background { cancellable },
+                Answers::Nothing | Answers::Value => ExecutionMode::Immediate,
             },
-            result: if self.job || self.cancellable {
-                ResultSpec::Job
-            } else if self.returns {
-                ResultSpec::Json {
+            result: match self.answers {
+                Answers::Later { .. } => ResultSpec::Job,
+                Answers::Value => ResultSpec::Json {
                     schema: serde_json::json!({}),
-                }
-            } else {
-                ResultSpec::None
+                },
+                Answers::Nothing => ResultSpec::None,
             },
             ..ActionContract::default()
         };
@@ -173,7 +178,7 @@ impl EffectDecl {
 
     /// Whether the effect runs in the background, reporting its result later.
     pub fn is_job(&self) -> bool {
-        self.job || self.cancellable
+        matches!(self.answers, Answers::Later { .. })
     }
 }
 
@@ -188,12 +193,13 @@ impl Effect for NoEffect {
         Vec::new()
     }
 
+    // No value of the type exists to ask.
     fn id(&self) -> &'static str {
-        match *self {}
+        ""
     }
 
     fn arguments(&self) -> serde_json::Map<String, serde_json::Value> {
-        match *self {}
+        serde_json::Map::new()
     }
 
     fn decode(id: &str, _: &serde_json::Map<String, serde_json::Value>) -> Result<Self, String> {
