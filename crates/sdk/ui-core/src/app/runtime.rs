@@ -212,6 +212,11 @@ pub(super) struct AccessibilityRuntime {
     /// Separate from the effective theme so disabling high contrast restores
     /// the configured theme exactly.
     pub(super) base_theme: Theme,
+    /// Where and for whom the window is shown, as its host said: the
+    /// workspace's temperature and the person's colour, applied over
+    /// [`Self::base_theme`] on every rebuild so a settings change keeps
+    /// them.
+    pub(super) window: crate::theme::WindowAppearance,
     pub(super) a11y: crate::a11y::A11ySettings,
     pub(super) text_scale: f32,
     pub(super) ui_scale: f32,
@@ -230,6 +235,7 @@ impl AccessibilityRuntime {
             focus_trap_active: false,
             focus_before_trap: None,
             base_theme,
+            window: crate::theme::WindowAppearance::default(),
             a11y: crate::a11y::A11ySettings::default(),
             text_scale: 1.0,
             ui_scale: 1.0,
