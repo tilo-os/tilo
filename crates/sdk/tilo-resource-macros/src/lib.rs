@@ -475,6 +475,7 @@ struct ActionOptions {
     permission: Option<String>,
     destructive: bool,
     housekeeping: bool,
+    external: bool,
     item: Option<String>,
 }
 
@@ -484,6 +485,7 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
         permission: None,
         destructive: false,
         housekeeping: false,
+        external: false,
         item: None,
     };
     if matches!(attr.meta, Meta::Path(_)) {
@@ -498,11 +500,17 @@ fn action_options(attr: &Attribute) -> syn::Result<ActionOptions> {
             options.destructive = true;
         } else if meta.path.is_ident("housekeeping") {
             options.housekeeping = true;
+        } else if meta.path.is_ident("external") {
+            options.external = true;
         } else if meta.path.is_ident("item") {
             options.item = Some(meta.value()?.parse::<syn::LitStr>()?.value());
         } else {
-            return Err(meta
-                .error("expected `label`, `permission`, `destructive`, `housekeeping` or `item`"));
+            return Err(meta.error(
+                "expected `label`, `permission`, `destructive`, `housekeeping`, `external` or `item`",
+            ));
+        }
+        if options.housekeeping && options.external {
+            return Err(meta.error("an action is `housekeeping` or `external`, not both"));
         }
         Ok(())
     })?;
@@ -593,7 +601,9 @@ fn is_action_cx(ty: &Type) -> bool {
 /// operation reached through the generic `apply` action, so either path asks
 /// for the same confirmation; `housekeeping` declares a change about the
 /// record rather than to it, such as a read marker, which workspace activity
-/// leaves out);
+/// leaves out; `external` declares content that came from outside rather than
+/// from anyone's edit, such as fetched rows, which syncs like any content but
+/// is nobody's undo step);
 /// `#[resource(search = path, children = path)]` override search entries and
 /// nested resources.
 #[proc_macro_attribute]
@@ -625,7 +635,7 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
     let mut variants = Vec::new();
     let mut arms = Vec::new();
     let mut risks = Vec::new();
-    let mut housekeeping = Vec::new();
+    let mut change_kinds = Vec::new();
     let mut consts = Vec::new();
     let mut decls = Vec::new();
     let mut item_actions = Vec::new();
@@ -776,8 +786,13 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
             });
         }
         if action.housekeeping {
-            housekeeping.push(quote! {
+            change_kinds.push(quote! {
                 Self::#variant { .. } => #krate::__private::ChangeKind::Housekeeping,
+            });
+        }
+        if action.external {
+            change_kinds.push(quote! {
+                Self::#variant { .. } => #krate::__private::ChangeKind::External,
             });
         }
         let const_ident = format_ident!("{}", method_name.to_uppercase());
@@ -891,14 +906,14 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
             }
         }
     };
-    let change_kind = if housekeeping.is_empty() {
+    let change_kind = if change_kinds.is_empty() {
         quote!()
     } else {
         quote! {
             fn change_kind(&self) -> #krate::__private::ChangeKind {
                 #[allow(unreachable_patterns, reason = "every other operation changes content")]
                 match self {
-                    #(#housekeeping)*
+                    #(#change_kinds)*
                     _ => #krate::__private::ChangeKind::Content,
                 }
             }

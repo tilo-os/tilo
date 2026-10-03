@@ -1313,9 +1313,14 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # Video codecs: the image ships only royalty-free software codecs — libvpx
 # (VP9, in -good), libaom and SVT-AV1 (in -bad-free) and dav1d — plus the
 # VA-API/Vulkan hardware paths stock Mesa exposes (AV1/VP9 decode, AV1 encode
-# on AMD). Cisco's openh264 GStreamer plugin is deliberately NOT baked in:
-# Cisco's patent licence covers only binaries the user downloads from Cisco.
-# It arrives with the opt-in additional-codecs pack, downloaded on the device.
+# on AMD). Cisco's OpenH264 binary and its GStreamer plugin are deliberately
+# NOT baked in: Cisco's patent licence covers only binaries the user downloads
+# from Cisco. libopenh264.so.8, which libavcodec-free links, is Fedora's
+# `noopenh264` stub (the frozen snapshot is resolved without Fedora's
+# fedora-cisco-openh264 repository, os/Containerfile.rpms). Cisco's build
+# arrives with the user-downloaded media-codecs extension, whose overlay
+# shadows the stub at the same path. os/scripts/verify-no-cisco-openh264.sh
+# fails the build if either ships.
 #
 # -bad-free's gtkwaylandsink plugin makes GTK 3 a hard dependency (see
 # os/scripts/verify-no-ui-toolkits.sh). Fedora's GTK sound-event helper and
@@ -1721,6 +1726,7 @@ COPY \
     os/dev/make-plymouth-assets.py \
     os/scripts/verify-runtime-crypto-packages.sh \
     os/scripts/verify-no-ui-toolkits.sh \
+    os/scripts/verify-no-cisco-openh264.sh \
     /usr/local/bin/
 
 # Splash rendering needs Pillow once. The frozen snapshot already carries it
@@ -2977,7 +2983,9 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/u
       \( -type f -o -type l \) -print -quit | grep -q . \
     && bash /usr/local/bin/verify-runtime-crypto-packages.sh \
     && bash /usr/local/bin/verify-no-ui-toolkits.sh \
+    && bash /usr/local/bin/verify-no-cisco-openh264.sh \
     && rm -f /usr/local/bin/verify-runtime-crypto-packages.sh /usr/local/bin/verify-no-ui-toolkits.sh \
+             /usr/local/bin/verify-no-cisco-openh264.sh \
              /usr/local/bin/dnf /usr/local/bin/rpm /usr/libexec/tilo/build-clock.so \
     # The system font cache, written once here: fontconfig records each font
     # directory's time, so those are pinned to the epoch first, the time the

@@ -52,11 +52,11 @@ pub trait ResourceApp: 'static {
     const ICON: Option<&'static str> = None;
     /// The `--shots` viewport.
     const SHOT_VIEWPORT: (u32, u32) = (1024, 720);
-    /// How the hosting window treats the app's tree.
-    const BEHAVIOUR: ComponentBehaviour = ComponentBehaviour {
-        autofocus_on_structure_change: false,
-        appearance_reconcile: false,
-    };
+    /// How every window hosting the app treats it: focus after a rebuild,
+    /// live appearance, and whether captures withhold it. An app that shows
+    /// secrets declares `capture_protected` here, so the live launch, the
+    /// shell and every other host of its component protect it alike.
+    const BEHAVIOUR: ComponentBehaviour = ComponentBehaviour::DEFAULT;
 
     /// Build the view. Called once for the live app, and again for every
     /// historical version History mode shows (with a read-only context), so
@@ -91,6 +91,42 @@ pub trait ResourceApp: 'static {
     fn scenario(name: Option<&str>) -> Vec<Invoke<Self::Resource>> {
         let _ = name;
         Vec::new()
+    }
+
+    /// What a brand-new record starts with that depends on who creates it or
+    /// where: the creator as its owner, a first-run import of settings that
+    /// already exist on this device. Everything that depends on neither is
+    /// the resource's [`initialize`](Resource::initialize), which is the same
+    /// on every device so that two people creating the same record converge
+    /// on one.
+    ///
+    /// The actions apply once, right after the genesis, attributed to the
+    /// creator and recorded as content from outside: they sync like any
+    /// edit but are nobody's undo step, so a first Ctrl+Z does not take the
+    /// seed back. A collaborator who creates the same record concurrently
+    /// seeds it too, so a seed sets values rather than adding rows.
+    fn seed(cx: &SeedCx<'_>) -> Vec<Invoke<Self::Resource>> {
+        let _ = cx;
+        Vec::new()
+    }
+}
+
+/// What [`ResourceApp::seed`] may read: who is creating the record, and the
+/// app's host — its settings, files and secrets on this device.
+pub struct SeedCx<'a> {
+    context: &'a HostContext,
+}
+
+impl SeedCx<'_> {
+    /// Who is creating the record: the id their views read as
+    /// [`ViewCx::me`] and the seed's actions read as their author.
+    pub fn me(&self) -> &str {
+        &self.context.author().0
+    }
+
+    /// The app's host on this device.
+    pub fn host(&self) -> &HostContext {
+        self.context
     }
 }
 
@@ -159,8 +195,12 @@ pub(crate) fn default_record<A: ResourceApp>() -> RecordCheckout {
 
 /// Who may edit the resource a root shows.
 pub(crate) enum Editing {
-    /// The participant's permissions, followed while the app runs.
-    Live(LivePermissions),
+    /// The participant (`me`) and their permissions, followed while the app
+    /// runs.
+    Live {
+        permissions: LivePermissions,
+        me: String,
+    },
     /// Never: a past version in History mode.
     ReadOnly,
 }
@@ -177,12 +217,12 @@ pub(crate) fn build_root<A: ResourceApp>(
     editing: Editing,
 ) -> ResourceRoot<A::Resource> {
     let scope = write_scope::<A>();
-    let (permissions, read_only) = match editing {
-        Editing::Live(permissions) => {
+    let (permissions, read_only, me) = match editing {
+        Editing::Live { permissions, me } => {
             let read_only = !permissions.check(&scope);
-            (Some(permissions), read_only)
+            (Some(permissions), read_only, Some(me))
         }
-        Editing::ReadOnly => (None, true),
+        Editing::ReadOnly => (None, true, None),
     };
     let label = A::label(reader.state());
     let resource_id = <A::Resource as Resource>::KIND;
@@ -190,7 +230,7 @@ pub(crate) fn build_root<A: ResourceApp>(
     let live = Live::new(reader);
     let updaters = Updaters::new();
     let alive = Rc::new(());
-    let dispatch = Dispatcher::new(A::ID, resource_id, read_only);
+    let dispatch = Dispatcher::new(A::ID, resource_id, read_only, me.as_deref());
     let saved = ui_core::LocalState::new(ui_core::record::RecordSaveStatus::Saved);
     let stages = Stages::new();
     // Effects run in the live app only; History shows a past version.
@@ -222,6 +262,48 @@ pub(crate) fn action_registry<A: ResourceApp>() -> tilo_actions::ActionRegistry 
     registry
 }
 
+/// Apply a new record's [`ResourceApp::seed`] through the replayable
+/// executor: attributed to `author` as their edits are, and recorded as
+/// content from outside, which no undo takes back.
+fn apply_seed<A: ResourceApp>(
+    doc: &mut tilo_resource::Doc,
+    author: &str,
+    seed: &[Invoke<A::Resource>],
+) -> Result<(), String> {
+    let now_ms = tilo_resource::origin_now_ms();
+    let mut actions = Vec::new();
+    for invoke in seed {
+        if invoke.is_group() {
+            actions.extend(
+                tilo_resource::group::build_group::<A::Resource>(&invoke.arguments, now_ms)?
+                    .actions,
+            );
+        } else {
+            actions.push(invoke.build(now_ms)?);
+        }
+    }
+    let writer = ui_core::history_source::authors::device_actor(author, doc.get_actor());
+    for action in &actions {
+        let encoded = tilo_resource::encode::<A::Resource>(action).map_err(|e| e.to_string())?;
+        let label = tilo_resource::action_label::<A::Resource>(action).unwrap_or_else(|| {
+            tilo_actions::ActionContext::for_action("", "", action).action_label
+        });
+        let context = tilo_actions::ActionContext::for_resource(
+            label,
+            <A::Resource as Resource>::KIND,
+            <A::Resource as Resource>::KIND,
+            <A::Resource as Resource>::LABEL,
+        )
+        .with_app(A::ID, A::TITLE)
+        .with_invoker(tilo_actions::ActionInvoker::actor(author))
+        .with_change(tilo_actions::ChangeKind::External)
+        .with_args_from_payload(&encoded.payload);
+        tilo_actions::apply_local_with_context(doc, action, encoded, Some(&writer), context)
+            .map_err(|error| format!("seeding the new record failed: {error}"))?;
+    }
+    Ok(())
+}
+
 #[allow(
     clippy::needless_pass_by_value,
     reason = "the toolkit's ComponentFactory signature passes the target owned"
@@ -232,10 +314,13 @@ fn create<A: ResourceApp>(
     _restore: RestoreInput,
 ) -> Result<AppComponent, LaunchError> {
     if matches!(target, LaunchTarget::New) {
+        let seed = A::seed(&SeedCx { context: &context });
+        let author = context.author().0.clone();
         context
-            .initialize_new_record(|doc| {
-                <A::Resource as Resource>::initialize(doc).map_err(|error| error.to_string())
-            })
+            .initialize_new_record_seeded(
+                |doc| <A::Resource as Resource>::initialize(doc).map_err(|error| error.to_string()),
+                |doc| apply_seed::<A>(doc, &author, &seed),
+            )
             .map_err(LaunchError::Record)?;
     }
     let permissions = context.live_permissions();
@@ -243,7 +328,8 @@ fn create<A: ResourceApp>(
         .read_record(Reader::<A::Resource>::read)
         .map_err(LaunchError::Record)?
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
-    let root = build_root::<A>(reader, Editing::Live(permissions));
+    let me = context.author().0.clone();
+    let root = build_root::<A>(reader, Editing::Live { permissions, me });
     let mut component = AppComponent::new(context, Box::new(root), action_registry::<A>());
     component.set_behaviour(A::BEHAVIOUR);
     component

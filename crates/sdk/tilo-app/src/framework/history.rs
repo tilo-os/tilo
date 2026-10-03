@@ -423,7 +423,7 @@ pub(crate) fn recent(doc: &mut AutoCommit, last: usize) -> Vec<HistoryVersion> {
                     .filter(|checkpoint| checkpoint.heads.contains(&version.hash))
                     .map(|checkpoint| checkpoint.name.clone())
                     .collect(),
-                housekeeping: context.is_some_and(|context| !context.change.is_content()),
+                housekeeping: context.is_some_and(tilo_actions::ActionContext::is_housekeeping),
             }
         })
         .collect()
