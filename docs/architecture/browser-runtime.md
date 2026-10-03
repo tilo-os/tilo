@@ -443,6 +443,37 @@ proof of possession) to `POST /peer/v1/certify`, then long-polls
   Revocation is enforced at request, at issuance and at every later
   handshake.
 
+### A browser-held root
+
+A person with only a browser holds their user root in the page
+(`web/root-identity.mjs`). The root is generated with WebCrypto and stored
+only wrapped, as a root envelope that any server may keep:
+
+```json
+{"version": 1, "root_public_key": "<hex>", "wraps": [
+  {"kind": "passkey", "credential_id": "…", "rp_id": "…", "prf_salt": "…", "nonce": "…", "ciphertext": "…"},
+  {"kind": "recovery", "salt": "…", "nonce": "…", "ciphertext": "…"}]}
+```
+
+Each wrap is AES-256-GCM over the root's PKCS#8 encoding under
+HKDF-SHA256 of a passkey's WebAuthn PRF output or of the recovery key (160
+random bits, shown once as `XXXX-XXXX-…` Crockford base32), bound to its kind,
+the root public key and the credential. `tilo_user_identity::root_envelope`
+reads and writes the same format natively. Unlocking unwraps straight into a
+non-extractable `CryptoKey`; the root never exists in the clear outside the
+page's memory.
+
+```ts
+createIdentity({rpId, userName, userId, displayName?, passkey?: boolean})
+  : Promise<{envelope, recoveryKey: string, identity: RootIdentity}>;
+unlockIdentity(envelope, {passkey: true, rpId?} | {recoveryKey: string}): Promise<RootIdentity>;
+addPasskey(envelope, {identity, rpId, userName, userId}): Promise<envelope>;
+// RootIdentity: {kind, publicKey, userPublicKey, sign(bytes), addPasskey(envelope, opts), lock()}
+```
+
+`createIdentity` refuses a passkey without PRF (`IdentityError` code
+`prf-unsupported`); `passkey: false` creates a recovery-key-only envelope.
+
 ### Live layer interface
 
 The live and speculation layer is its own module so the desktop mount
