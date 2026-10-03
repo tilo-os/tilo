@@ -111,9 +111,30 @@ pub struct Tools {
     pub selection: LocalState<Vec<String>>,
     /// A past version shown in place of the artwork, by change id.
     pub preview: LocalState<Option<String>>,
+    /// How far the canvas is zoomed: screen pixels per artwork unit, as
+    /// the canvas last showed it.
+    pub zoom: LocalState<f64>,
+    /// A change of view asked for from outside the canvas (the zoom
+    /// buttons), carried out by the canvas on its next frame.
+    pub view: LocalState<Option<ViewRequest>>,
+    /// Whether the sidebar of inspector, layers and history is shown.
+    pub sidebar: LocalState<bool>,
+    /// The stop of a gradient fill the swatches recolour.
+    pub stop: LocalState<usize>,
     /// Draws the artwork and keeps painted layers' simulations, shared by
     /// the canvas and the layer thumbnails so each layer is simulated once.
     pub renderer: Rc<RefCell<Renderer>>,
+}
+
+/// A change of view the canvas makes when asked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewRequest {
+    ZoomIn,
+    ZoomOut,
+    /// The whole artwork in view.
+    Fit,
+    /// One artwork unit to a screen pixel.
+    Actual,
 }
 
 impl Default for Tools {
@@ -129,6 +150,10 @@ impl Default for Tools {
             layer: LocalState::new(String::new()),
             selection: LocalState::new(Vec::new()),
             preview: LocalState::new(None),
+            zoom: LocalState::new(1.0),
+            view: LocalState::new(None),
+            sidebar: LocalState::new(true),
+            stop: LocalState::new(0),
             renderer: Rc::default(),
         }
     }

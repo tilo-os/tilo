@@ -35,6 +35,7 @@ pub use actions::CanvasAction;
 pub use model::Artwork;
 pub use resource::ArtworkResource;
 
+use panels::pane::{Edge, Pane};
 use ui::LocalState;
 use ui::prelude::*;
 
@@ -58,18 +59,32 @@ impl ResourceApp for App {
                 staged.set(Dock::History);
             }
         });
+        let work = Column::new()
+            .with_no_padding()
+            .with_gap(0.0)
+            .push(Box::new(
+                Pane::new(panels::header::header(cx, &tools), Edge::Bottom).grouping(),
+            ))
+            .push(canvas);
+        let sidebar = {
+            let tools = tools.clone();
+            cx.switch(&tools.sidebar.clone(), move |cx, shown| {
+                if *shown {
+                    Box::new(Pane::new(sidebar(cx, &tools, &dock), Edge::Left).grouping())
+                        as Element
+                } else {
+                    Box::new(Spacer::fixed(0.0))
+                }
+            })
+        };
         Box::new(
-            Column::new()
-                .with_no_padding()
+            Row::new()
+                .no_wrap()
+                .with_gap(0.0)
                 .with_fill_remaining_height()
-                .push(Box::new(
-                    Row::new()
-                        .no_wrap()
-                        .with_fill_remaining_height()
-                        .push(rail(&tools))
-                        .push(canvas)
-                        .push(sidebar(cx, &tools, &dock)),
-                )),
+                .push(Box::new(Pane::new(rail(&tools), Edge::Right)))
+                .push(Box::new(work))
+                .push(sidebar),
         )
     }
 
@@ -119,11 +134,10 @@ enum Dock {
 /// The tool rail's width.
 const RAIL: f32 = 56.0; // a pointer target and its inset, laid out before a theme is known
 /// The sidebar's width.
-const SIDEBAR: f32 = 300.0; // the colour picker's and swatches' width plus insets: a layout width, not spacing
-/// The height of the layers and history dock under the inspector.
-const DOCK: f32 = 320.0; // a share of the sidebar's height for the dock: a layout size, not spacing
+const SIDEBAR: f32 = 288.0; // the swatches' width plus insets: a layout width, not spacing
 
-/// The tools, top to bottom, each with its key.
+/// The tools, top to bottom, each with its key, and at the foot the paint
+/// the brush is loaded with.
 fn rail(tools: &tools::Tools) -> Element {
     let choices = tools::Tool::ALL
         .iter()
@@ -144,44 +158,26 @@ fn rail(tools: &tools::Tools) -> Element {
             .with_no_padding()
             .with_width(RAIL)
             .filling()
-            .with_background()
             .with_child(Box::new(
                 Column::new()
                     .with_vertical_padding(8.0)
                     .with_horizontal_padding(6.0, 6.0)
-                    .push(Box::new(rail)),
+                    .with_gap(0.0)
+                    .push(Box::new(rail))
+                    .push(Box::new(Spacer::new()))
+                    .push(Box::new(panels::well::Well::new(tools.clone()))),
             )),
     )
 }
 
-/// The inspector above, the layers or the history below.
+/// The inspector above; under it the layers or the history.
 fn sidebar(cx: &ViewCx<ArtworkResource>, tools: &tools::Tools, dock: &LocalState<Dock>) -> Element {
     let inspector = Column::new()
         .with_intrinsic_height()
         .with_gap(12.0)
-        .with_vertical_padding(12.0)
-        .with_horizontal_padding(12.0, 12.0)
+        .with_vertical_padding(14.0)
+        .with_horizontal_padding(16.0, 14.0)
         .push(panels::inspector::panel(cx, tools));
-    let tabs = ui::widget::ToggleGroup::from_state(
-        vec![
-            (
-                Dock::Layers,
-                ui::widget::toggle_group::Segment::new(ui::i18n::I18nManager::lookup_plain(
-                    "canvas-layers",
-                )),
-            ),
-            (
-                Dock::History,
-                ui::widget::toggle_group::Segment::new(ui::i18n::I18nManager::lookup_plain(
-                    "canvas-history",
-                )),
-            ),
-        ],
-        dock,
-    )
-    .underline()
-    .with_flexible_width()
-    .with_id("canvas-dock");
     let tools_for_dock = tools.clone();
     let docked = cx.switch(dock, move |cx, dock| match dock {
         Dock::Layers => panels::layers::panel(cx, &tools_for_dock),
@@ -192,32 +188,63 @@ fn sidebar(cx: &ViewCx<ArtworkResource>, tools: &tools::Tools, dock: &LocalState
             .with_no_padding()
             .with_width(SIDEBAR)
             .filling()
-            .with_background()
             .with_child(Box::new(
                 Column::new()
                     .with_no_padding()
+                    .with_gap(0.0)
                     .push(Box::new(
                         Scrollable::new_vertical()
                             .fill_parent_height()
                             .with_child(Box::new(inspector)),
                     ))
                     .push(Box::new(ui::widget::Divider::horizontal()))
-                    .push(Box::new(tabs))
-                    .push(Box::new(
-                        Container::new()
-                            .with_padding(10.0)
-                            .with_height(DOCK)
-                            .with_child(Box::new(
-                                Scrollable::new_vertical().with_child(Box::new(
-                                    Column::new()
-                                        .with_intrinsic_height()
-                                        .with_vertical_padding(0.0)
-                                        .with_horizontal_padding(2.0, 10.0)
-                                        .push(docked),
-                                )),
-                            )),
-                    )),
+                    .push(dock_tabs(cx, tools, dock))
+                    .push(docked),
             )),
+    )
+}
+
+/// The layers and history tabs, and beside the layers adding one.
+fn dock_tabs(
+    cx: &ViewCx<ArtworkResource>,
+    tools: &tools::Tools,
+    dock: &LocalState<Dock>,
+) -> Element {
+    let tab = |which: Dock, id: &str| {
+        (
+            which,
+            ui::widget::toggle_group::Segment::new(ui::i18n::I18nManager::lookup_plain(id)),
+        )
+    };
+    let tabs = ui::widget::ToggleGroup::from_state(
+        vec![
+            tab(Dock::Layers, "canvas-layers"),
+            tab(Dock::History, "canvas-history"),
+        ],
+        dock,
+    )
+    .underline()
+    .with_flexible_width()
+    .with_id("canvas-dock");
+    let tools = tools.clone();
+    let action = cx.switch(dock, move |cx, dock| match dock {
+        Dock::Layers => panels::layers::add_menu(cx, &tools),
+        Dock::History => panels::history::checkpoint_button(cx),
+    });
+    Box::new(
+        Row::new()
+            .no_wrap()
+            .with_padding(12.0, 4.0)
+            .with_gap(4.0)
+            .with_align_items(ui::taffy::AlignItems::Center)
+            .push(Box::new(
+                Container::new()
+                    .with_no_padding()
+                    .with_flex_grow()
+                    .with_min_width(0.0)
+                    .with_child(Box::new(tabs)),
+            ))
+            .push(action),
     )
 }
 
