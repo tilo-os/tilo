@@ -1,0 +1,132 @@
+#!/bin/bash
+# The waits a board session needs before its compositor starts. Each step is
+# one ExecStartPre= of tilo-board-headless-session@.service.
+#
+#   tilo-board-session-prepare user-manager ACCOUNT
+#   tilo-board-session-prepare network
+#   tilo-board-session-prepare clock
+#
+# Every path and bound has a TILO_BOARD_* override so os/tests/board_session.sh
+# can run the steps against fakes.
+set -euo pipefail
+
+systemctl_bin=${TILO_BOARD_SYSTEMCTL:-/usr/bin/systemctl}
+proc=${TILO_BOARD_PROC:-/proc}
+
+# A user manager that was already running when the account joined
+# tilo-identity keeps its old supplementary groups, and so does every session
+# it starts: the device key stays unreadable to the compositor. Restart it
+# only when its credential lacks the group; restarting on every attempt cuts
+# a slow start short each time.
+refresh_user_manager_groups() {
+  local account=$1 uid gid pid status
+  getent group tilo-identity >/dev/null 2>&1 || return 0
+  case " $(id -nG "$account" 2>/dev/null) " in
+    *" tilo-identity "*) ;;
+    *) return 0 ;;
+  esac
+  uid=$(id -u "$account")
+  gid=$(getent group tilo-identity | cut -d: -f3)
+  pid=$("$systemctl_bin" show -p MainPID --value "user@$uid.service" 2>/dev/null || true)
+  case "$pid" in ''|0) return 0 ;; esac
+  status=$(awk '/^Groups:/ { $1 = ""; print }' "$proc/$pid/status" 2>/dev/null || true)
+  case " $status " in
+    *" $gid "*) return 0 ;;
+  esac
+  "$systemctl_bin" try-restart "user@$uid.service" || true
+}
+
+# `loginctl enable-linger` returns before the user manager accepts units.
+# When the identity tooling is installed, also wait until the account can
+# read the device identity the compositor loads.
+wait_user_manager() {
+  local account=$1 ready=${TILO_BOARD_IDENTITY_READY:-/usr/libexec/tilo-board-identity-ready}
+  local i=0 limit=${TILO_BOARD_USER_WAIT_ITERS:-300}
+  while [ "$i" -lt "$limit" ]; do
+    if "$systemctl_bin" --user --machine="$account@" is-active --quiet default.target \
+       && { [ ! -x "$ready" ] || "$ready" "$account"; }; then
+      return 0
+    fi
+    i=$((i + 1))
+    sleep 0.1
+  done
+  printf 'board session: the user manager of %s is not ready\n' "$account" >&2
+  return 1
+}
+
+has_address() {
+  ip -4 route show default 2>/dev/null | grep -q . && return 0
+  ip -6 route show default 2>/dev/null | grep -q . && return 0
+  ip -4 addr show scope global 2>/dev/null | grep -q 'inet ' && return 0
+  ip -6 addr show scope global 2>/dev/null | grep -q 'inet6 ' && return 0
+  return 1
+}
+
+has_wifi_radio() {
+  local d
+  for d in "${TILO_BOARD_NET_SYS:-/sys/class/net}"/*/wireless; do
+    [ -e "$d" ] && return 0
+  done
+  return 1
+}
+
+# NetworkManager being active is not an address, and the first identity
+# announcement would go nowhere. When the imager wrote a Wi-Fi profile and the
+# machine has a radio, that connection has to be up with an address: NM
+# reports a profile active before DHCP finishes, and another link is not the
+# network this device was given. A machine with no radio (a VM proving the
+# same disk) settles for any address. Without a profile any address will do,
+# and after the wait the session starts anyway so peers are dialled again
+# once the network comes up.
+wait_network() {
+  local profile=${TILO_BOARD_WIFI_PROFILE:-/etc/NetworkManager/system-connections/tilo-setup.nmconnection}
+  local n=0 limit
+  if [ -f "$profile" ] && [ ! -L "$profile" ] && command -v nmcli >/dev/null 2>&1 && has_wifi_radio; then
+    limit=${TILO_BOARD_WIFI_WAIT_ITERS:-450}
+    while [ "$n" -lt "$limit" ]; do
+      if nmcli -t -f NAME connection show --active 2>/dev/null | grep -qx tilo-setup && has_address; then
+        return 0
+      fi
+      n=$((n + 1))
+      sleep 0.2
+    done
+    printf '%s\n' 'board session: Wi-Fi connection tilo-setup has no address' >&2
+    return 1
+  fi
+  limit=${TILO_BOARD_ADDR_WAIT_ITERS:-150}
+  while [ "$n" -lt "$limit" ]; do
+    has_address && return 0
+    n=$((n + 1))
+    sleep 0.2
+  done
+  return 0
+}
+
+# A board has no battery-backed clock and boots at the epoch or the image's
+# build date. Relay TLS and the device certificate check both fail on that
+# clock, so the session waits for chrony's first synchronisation.
+wait_clock() {
+  local n=0 limit=${TILO_BOARD_CLOCK_WAIT_SECS:-180}
+  command -v chronyc >/dev/null 2>&1 || return 0
+  while [ "$n" -lt "$limit" ]; do
+    chronyc -n waitsync 1 >/dev/null 2>&1 && return 0
+    n=$((n + 1))
+    sleep 1
+  done
+  printf '%s\n' 'board session: the clock is not synchronised' >&2
+  return 1
+}
+
+case "${1:-}:$#" in
+  user-manager:2)
+    case "$2" in ''|-*|*[!A-Za-z0-9._-]*) printf 'board session: refusing account %s\n' "$2" >&2; exit 1 ;; esac
+    refresh_user_manager_groups "$2"
+    wait_user_manager "$2"
+    ;;
+  network:1) wait_network ;;
+  clock:1) wait_clock ;;
+  *)
+    printf '%s\n' 'usage: tilo-board-session-prepare user-manager ACCOUNT | network | clock' >&2
+    exit 2
+    ;;
+esac

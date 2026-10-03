@@ -4,7 +4,10 @@
 # the same commit (BASE_IMAGE, a tilo-vm image built by os/Containerfile.dev).
 # The firmware comes from the board's pinned firmware artifact, imported into
 # os/hardware/firmware/<profile>/ before the build
-# (os/dev/hardware-firmware-artifact.py import).
+# (os/dev/hardware-firmware-artifact.py import, or for the Orange Pi
+# os/dev/fetch-orangepi-wifi-firmware.sh). os/dev/install-board-layer.sh adds
+# the board's system configuration, and for an always-on board the session
+# that runs without a greeter.
 #
 # Unlike the generic dev image, a board image is sealed: bootc takes a device
 # tree only from a UKI's .dtb section, never from ordinary boot entries, so the
@@ -39,6 +42,11 @@ ARG TILO_HARDWARE_PROFILE
 COPY os/dev/prepare-hardware-profile.py os/dev/hardware_profile.py /tilo/os/dev/
 COPY os/scripts/build-initramfs.sh /tilo/os/scripts/
 COPY os/hardware/profiles /tilo/os/hardware/profiles
+COPY os/dev/install-board-layer.sh /tilo/os/dev/
+COPY os/usr/lib/systemd/system/sshd.service.d/20-tilo-board.conf /tilo/os/usr/lib/systemd/system/sshd.service.d/
+COPY os/etc/NetworkManager/conf.d/10-tilo-brcmfmac.conf /tilo/os/etc/NetworkManager/conf.d/
+COPY os/usr/lib/systemd/system/tilo-board-headless-session@.service /tilo/os/usr/lib/systemd/system/
+COPY os/usr/libexec/tilo-board-session-prepare os/usr/libexec/tilo-seat-session os/usr/libexec/tilo-display-present /tilo/os/usr/libexec/
 COPY --from=board-firmware / /tilo/os/hardware/firmware/${TILO_HARDWARE_PROFILE}/
 
 FROM ${BASE_IMAGE} AS board-root
@@ -59,6 +67,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
         --profiles-dir /run/tilo-board/os/hardware/profiles \
         --firmware-dir "/run/tilo-board/os/hardware/firmware/$TILO_HARDWARE_PROFILE" \
         --target-update-ref "$TILO_TARGET_IMGREF" \
+    && bash /run/tilo-board/os/dev/install-board-layer.sh /run/tilo-board \
     && bash /run/tilo-board/os/scripts/build-initramfs.sh "$kver" \
     && rm -f /boot/vmlinuz-* /boot/initramfs-* /boot/System.map-* /boot/config-* \
     && dnf clean all \
