@@ -486,11 +486,31 @@ installNodeCertificate({origin, certificate, installToken}): Promise<{device_pub
 connectPeer({origin, identity, signal, …}): Promise<CertifiedPeer>;
 // Another person's workspace: what an invitation offers, then join it as
 // this identity (its own root certifies the device; the owner admits it).
-inspectInvitation(relayUrl, invitation): Promise<{workspaceName, role, room, workspaceId, expiresAtNs, inviter: undefined}>;
+inspectInvitation(relayUrl, invitation): Promise<{workspaceName, role, room, workspaceId, expiresAtNs, inviter?: {name, userPublicKey}}>;
 joinWorkspace({origin, invitation, identity?, displayName, signal, onProgress?}): Promise<CertifiedPeer>;
 // onProgress({phase: 'asking' | 'waiting' | 'admitted'}); rejects when declined or refused
 // RootIdentity: {kind, publicKey, userPublicKey, sign(bytes), addPasskey(envelope, opts?), lock()}
 ```
+
+A peer connected to a room its host governs administers it as the owner
+(`web/membership.mjs`; each call is one `/rooms` request the host
+authorizes):
+
+```ts
+peer.createInvitation({role?: 'editor' | 'commenter' | 'viewer', expiresIn?: seconds /* ≤ 30 days, default 7 */})
+  : Promise<string /* invitation text, base64url */>;
+peer.membership.list(): Promise<{room, name, generation,
+  members: [{userPublicKey, name, role, owner, removed}],
+  waiting: [{requestId, userPublicKey, devicePublicKey, name, role, requestedAtMs}],
+  invitations: [{inviteId, role, expiresAtMs}]}>;
+peer.membership.admit(requestId) / decline(requestId) / setRole(userPublicKey, role)
+  / remove(userPublicKey) / cancelInvitation(inviteId);
+```
+
+An invitation names its inviter: the host records the user root of the
+device that asked and the `displayName` the peer connected with, and signs
+both into the invitation (`tilo_peer_state::join::Inviter`, invitation
+version 2), so `inspectInvitation` shows who sent it as the host attests.
 
 `createIdentity` refuses a passkey without PRF (`IdentityError` code
 `prf-unsupported`); `passkey: false` creates a recovery-key-only envelope.
