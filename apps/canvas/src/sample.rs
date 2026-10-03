@@ -33,17 +33,17 @@ fn stroke(points: &[[f64; 3]], size: f64, colour: &str, wet: bool) -> NewStroke 
 )]
 pub fn landscape() -> Vec<CanvasAction> {
     let mut art = Vec::new();
-    let layer = |id: &str, medium: &str| {
+    let layer = |id: &str, name: &str, medium: &str| {
         CanvasAction::AddLayer(AddLayer {
             id: Some(id.into()),
-            name: id.into(),
+            name: name.into(),
             medium: Some(medium.into()),
             ..AddLayer::default()
         })
     };
-    art.push(layer("sky", "watercolour-wet"));
-    art.push(layer("land", "oil"));
-    art.push(layer("ink", ""));
+    art.push(layer("sky", "Sky", "watercolour-wet"));
+    art.push(layer("land", "Land", "oil"));
+    art.push(layer("ink", "Linework", ""));
     art.push(CanvasAction::Draw(Draw {
         layer: Some("sky".into()),
         marks: vec![
