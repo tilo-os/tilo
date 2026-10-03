@@ -15,8 +15,8 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::modal_dialog::{self, MODAL_MAX_WIDTH};
 use ui::widget::{
-    Dropdown, EventCtx, Field, Form, FormSection, LabelPlacement, ModalDialog, ModalSpec,
-    Scrollable, Toggle, Widget,
+    Dropdown, EventCtx, Field, Form, FormSection, ModalDialog, ModalSpec, Scrollable, Toggle,
+    Widget,
 };
 use vello::kurbo::Rect;
 use winit::event::WindowEvent;
@@ -46,8 +46,8 @@ struct Fit {
     room: i64,
     /// The form is taller than that: it scrolls and shows its bar.
     overflows: bool,
-    /// A compact window: the labels stay beside their choosers, so the
-    /// settings remain one list of rows instead of stacking.
+    /// A compact window: the choosers are an ordinary form, each label
+    /// above a chooser as wide as the sheet.
     compact: bool,
 }
 
@@ -91,7 +91,7 @@ fn timer_value(timer: Timer) -> &'static str {
 }
 
 /// A chooser row. The dropdowns of a section share one column at the
-/// trailing edge; on a compact window each fills the room beside its label.
+/// trailing edge; on a compact window each spans the sheet under its label.
 fn choice(
     label: &str,
     all: Vec<(String, String)>,
@@ -142,9 +142,11 @@ impl States {
     fn form(&self, queue: &ActionQueue, compact: bool) -> Form {
         // Each section holds one kind of control, so every control in it
         // lines up at the trailing edge.
-        let capture = FormSection::new("Capture")
-            .grouped()
-            .with_label_placement(compact.then_some(LabelPlacement::Beside))
+        // On a compact window the choosers are an ordinary form: each label
+        // above a chooser that spans the sheet, with the form's spacing.
+        let capture = FormSection::new("Capture");
+        let capture = if compact { capture } else { capture.grouped() };
+        let capture = capture
             .field(choice(
                 "Resolution",
                 options(&Resolution::ALL, Resolution::as_str, Resolution::label),
