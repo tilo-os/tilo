@@ -365,20 +365,60 @@ pub(crate) fn entry(
     Value::Object(entry)
 }
 
+/// Leaves out of each version the author and time it shares with the one
+/// before: a run of forty steps names its run once, not forty times.
+fn carry_over(listed: &mut [Value]) {
+    let mut before = serde_json::Map::new();
+    for entry in listed {
+        let Value::Object(fields) = entry else {
+            continue;
+        };
+        let same_author = ["run_id", "by"].iter().any(|key| {
+            fields
+                .get(*key)
+                .is_some_and(|value| before.get(*key) == Some(value))
+        });
+        let author: Vec<&str> = ["run", "run_id", "by"]
+            .into_iter()
+            .filter(|key| fields.contains_key(*key))
+            .collect();
+        let time = fields.get("time_ms").cloned();
+        let shown = std::mem::take(&mut before);
+        for key in &author {
+            if let Some(value) = fields.get(*key) {
+                before.insert((*key).to_owned(), value.clone());
+            }
+        }
+        if same_author {
+            for key in &author {
+                fields.remove(*key);
+            }
+        }
+        if let Some(time) = time {
+            if shown.get("time_ms") == Some(&time) {
+                fields.remove("time_ms");
+            }
+            before.insert("time_ms".into(), time);
+        }
+    }
+}
+
 /// The versions as `history` lists them: the last `last`, oldest first.
 pub(crate) fn history(doc: &mut AutoCommit, last: usize) -> Value {
     let versions = tilo_resource::history::versions(doc);
     let undone = steps::undone(doc);
     let checkpoints = steps::checkpoints(doc);
     let total = versions.len();
-    let listed: Vec<Value> = versions
+    let mut listed: Vec<Value> = versions
         .iter()
         .skip(total.saturating_sub(last))
         .filter(|version| !steps::is_schema_genesis(version))
         .map(|version| entry(version, &undone, &checkpoints))
         .collect();
+    carry_over(&mut listed);
     json!({
         "versions": listed,
+        "carried": "run, run_id, by and time_ms, where absent, are the version before's",
         "total": total,
         "now": version_name(&doc.get_heads()),
         "checkpoints": checkpoints.iter().map(|checkpoint| json!({

@@ -1030,7 +1030,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                 }
                 page.rows
                     .first()
-                    .map(|row| json!({"row":row_json(row)}))
+                    .map(|row| json!({"row":resolved_row_json(row)}))
                     .ok_or_else(|| "NotFound".into())
             }
             "tilo_invoke" => self.invoke(parse(args)?).await,
@@ -2000,6 +2000,38 @@ fn browsed_row_json(row: &CatalogueRow) -> Value {
                     "schema_omitted".into(),
                     json!("large schema: tilo_resolve this action to read it"),
                 );
+            }
+        }
+    }
+    value
+}
+/// [`row_json`] without what it says twice: the descriptor's resource,
+/// kind and label are the row's, a parent that is the resource itself, and
+/// a visibility that is the action's own contract. Every resolve pays for
+/// them, and the schema is what the agent came for.
+fn resolved_row_json(row: &CatalogueRow) -> Value {
+    let mut value = row_json(row);
+    let own_visibility = value.get("visibility_action") == value.get("action")
+        && value.get("visibility_contract") == value.pointer("/descriptor/contract");
+    let Some(fields) = value.as_object_mut() else {
+        return value;
+    };
+    if fields.get("parent_resource") == fields.get("resource") {
+        fields.remove("parent_resource");
+    }
+    if own_visibility {
+        fields.remove("visibility_action");
+        fields.remove("visibility_contract");
+    }
+    let row_fields = [
+        ("resource", fields.get("resource").cloned()),
+        ("resource_kind", fields.get("resource_kind").cloned()),
+        ("resource_label", fields.get("resource_label").cloned()),
+    ];
+    if let Some(Value::Object(descriptor)) = fields.get_mut("descriptor") {
+        for (key, row_value) in row_fields {
+            if descriptor.get(key) == row_value.as_ref() {
+                descriptor.remove(key);
             }
         }
     }

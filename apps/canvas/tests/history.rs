@@ -97,7 +97,7 @@ fn a_bad_passage_is_found_by_diff_and_undone_by_its_run() {
     assert_eq!(same["same"], true, "{same}");
 
     let history = app.call("history", json!({})).unwrap().unwrap();
-    let versions = history["versions"].as_array().unwrap();
+    let versions = carried(history["versions"].as_array().unwrap());
     let blot = versions
         .iter()
         .find(|version| {
@@ -109,6 +109,35 @@ fn a_bad_passage_is_found_by_diff_and_undone_by_its_run() {
         .unwrap_or_else(|| panic!("the blot step is listed as undone: {history}"));
     assert_eq!(blot["run_id"], RUN, "{history}");
     assert_eq!(history["checkpoints"][0]["name"], "before sky rework");
+}
+
+/// Versions with the run, author and time each carries over from the one
+/// before filled in.
+fn carried(versions: &[Value]) -> Vec<Value> {
+    let mut before = serde_json::Map::new();
+    versions
+        .iter()
+        .map(|version| {
+            let mut version = version.as_object().unwrap().clone();
+            if !["run_id", "by"]
+                .iter()
+                .any(|key| version.contains_key(*key))
+            {
+                for key in ["run", "run_id", "by"] {
+                    if let Some(value) = before.get(key) {
+                        version.insert(key.into(), value.clone());
+                    }
+                }
+            }
+            if !version.contains_key("time_ms")
+                && let Some(time) = before.get("time_ms")
+            {
+                version.insert("time_ms".into(), time.clone());
+            }
+            before.clone_from(&version);
+            Value::Object(version)
+        })
+        .collect()
 }
 
 #[test]
