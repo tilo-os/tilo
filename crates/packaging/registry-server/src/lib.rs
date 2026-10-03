@@ -55,7 +55,7 @@ pub use moderation::{ModerationError, ModerationService};
 pub use moderation_api::{ModerationApiError, ModerationApiService};
 pub use serve::{AppState, handle};
 pub use storage::{
-    PendingSubmission, PromotionJournal, ReviewDecision, ReviewRecord, ReviewSubject,
+    PendingSubmission, PromotionJournal, PruneReport, ReviewDecision, ReviewRecord, ReviewSubject,
     ServerIdentity, StagedArtifact, StagedPromotion, Storage, StorageError,
 };
 
