@@ -1170,7 +1170,7 @@ pub struct WordProcessorWidget {
     sidebar_w: f64,
     /// Crash-recovery persistence and its Restore/Discard surface.
     recovery: RecoveryBanner,
-    /// The "New ▾" picker owns its shared menu, lifecycle, and typed outcomes.
+    /// The "New" picker owns its shared menu, lifecycle, and typed outcomes.
     template_picker: TemplatePicker,
     unsaved_changes: UnsavedChanges,
     pending_replacement: Option<PendingReplacement>,
@@ -1385,7 +1385,8 @@ impl WordProcessorWidget {
                     .with_editor(
                         BlockEditor::new()
                             .with_wrap_lines(true)
-                            .with_compact_paragraph_spacing(true),
+                            .with_compact_paragraph_spacing(true)
+                            .with_block_handles(false),
                     )
                     .with_placeholder(&t("review-reply-placeholder"))
                     .with_submit(SubmitKey::ModEnter),
@@ -2772,6 +2773,20 @@ impl WordProcessorWidget {
     /// examples, visual regression shots and embedders.
     pub fn set_styles_panel_open(&mut self, open: bool) {
         self.view.styles_panel_visible = open;
+        self.lifecycle.dirty = true;
+    }
+
+    /// Edit the page margins on the page, as choosing Margins in the status
+    /// band does.
+    pub fn set_margins_mode(&mut self) {
+        self.toggle_layout_mode(LayoutMode::Margins);
+    }
+
+    /// Show or hide the document outline.
+    pub fn set_outline_open(&mut self, open: bool) {
+        if self.outline.is_open() != open {
+            self.outline.toggle();
+        }
         self.lifecycle.dirty = true;
     }
 
@@ -4894,7 +4909,16 @@ impl WordProcessorWidget {
             self.panel_hits.push((rb, PanelHit::ToggleBold));
             self.panel_hits.push((ri, PanelHit::ToggleItalic));
         }
+        self.draw_panel_style_properties(ctx, st);
+    }
 
+    /// The style's colour, sizes and spacing, then a new style from this
+    /// paragraph's look.
+    fn draw_panel_style_properties(
+        &mut self,
+        ctx: &mut PanelCtx<'_>,
+        st: &crate::styles::StyleProps,
+    ) {
         // Colour: the document palette as swatches and a custom colour.
         ctx.field_label(&t("panel-colour"));
         let swatch_gap = f64::from(ctx.theme.tokens.spacing.s1);
@@ -5498,7 +5522,7 @@ fn tool_action_id(action: ToolAction) -> String {
 }
 
 /// A human-readable accessible name for a toolbar [`ToolAction`]. The visible
-/// toolbar labels are terse glyphs ("B", "H1", "🖼 Image") tuned for sighted
+/// toolbar faces are terse ("B", "x²", an icon) for sighted
 /// users; a screen reader needs the spelled-out verb instead.
 fn tool_action_a11y_label(a: ToolAction) -> String {
     let key = match a {
@@ -7694,7 +7718,7 @@ impl WordProcessorWidget {
             fg.ctf,
             chrome.paper_tint,
             None,
-            &vello::kurbo::RoundedRect::from_rect(box_rect, 4.0),
+            &vello::kurbo::RoundedRect::from_rect(box_rect, f64::from(paper.tokens.radii.detail)),
         );
         let label = t("canvas-embedded-content");
         let style = paper.text(TextRole::Body);
@@ -8073,7 +8097,7 @@ impl WordProcessorWidget {
             text_renderer.draw_style(
                 scene,
                 &placeholder,
-                self.paper_theme.tokens.colors.text_dim,
+                self.paper_theme.tokens.colors.text_tertiary,
                 ctf * Affine::translate((x, l.y_top)),
                 // The empty-state hint shares the authored paragraph's live
                 // column width. At 200% text a one-line hint used to extend
@@ -8516,7 +8540,7 @@ impl WordProcessorWidget {
         self.handle_left_press_body(state, shift, ctrl, handled);
     }
 
-    /// While the context / "New ▾" template / paragraph-style menu is open,
+    /// While the context / "New" template / paragraph-style menu is open,
     /// route the left press to it: a row dispatches its action, a click
     /// outside dismisses it. Either way the click is consumed so it never
     /// reaches the page beneath. Returns whether a menu claimed the press.
@@ -8539,7 +8563,7 @@ impl WordProcessorWidget {
             *handled = true;
             return true;
         }
-        // Likewise route the press to the "New ▾" template picker when open.
+        // Likewise route the press to the "New" template picker when open.
         if self.template_picker.is_open() {
             if let Some(template) = self.template_picker.click(self.pointer) {
                 self.request_template(state, template);
@@ -12566,9 +12590,9 @@ impl WordProcessorWidget {
         self.lifecycle.dirty = true;
     }
 
-    /// Open the "New ▾" picker below the toolbar's leading edge.
+    /// Open the "New" picker below the toolbar's leading edge.
     fn open_template_picker(&mut self) {
-        // Anchor below the toolbar's left edge (where the "New ▾" button lives).
+        // Anchor below the toolbar's left edge (where the "New" button lives).
         let anchor_x = self
             .toolbar
             .first()
@@ -12961,30 +12985,12 @@ impl WordProcessorWidget {
                         key.logical_key,
                         Key::Named(NamedKey::Enter | NamedKey::Escape | NamedKey::Tab)
                     );
-                if let Some(field) = self.editing_field {
-                    if let Some(slot) = self.num_inputs.iter_mut().find(|s| s.field == field) {
-                        Self::forward(&mut slot.input, event, ctx);
-                    }
-                    took = true;
-                } else if Widget::is_focused(&self.zoom_input) {
-                    Self::forward(&mut self.zoom_input, event, ctx);
-                    took = true;
-                }
+                took = self.type_into_hosted(event, ctx);
                 if took && done {
                     self.focus_hosted(None, false);
                 }
             }
-            WindowEvent::Ime(_) => {
-                if let Some(field) = self.editing_field {
-                    if let Some(slot) = self.num_inputs.iter_mut().find(|s| s.field == field) {
-                        Self::forward(&mut slot.input, event, ctx);
-                    }
-                    took = true;
-                } else if Widget::is_focused(&self.zoom_input) {
-                    Self::forward(&mut self.zoom_input, event, ctx);
-                    took = true;
-                }
-            }
+            WindowEvent::Ime(_) => took = self.type_into_hosted(event, ctx),
             _ => {}
         }
         self.drain_hosted_fields(ctx.state);
@@ -12993,6 +12999,26 @@ impl WordProcessorWidget {
             self.lifecycle.dirty = true;
         }
         took
+    }
+
+    /// Hand typing to the hosted field that has the keyboard; returns
+    /// whether one had it.
+    fn type_into_hosted(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        if let Some(field) = self.editing_field {
+            if let Some(slot) = self.num_inputs.iter_mut().find(|s| s.field == field) {
+                Self::forward(&mut slot.input, event, ctx);
+            }
+            true
+        } else if Widget::is_focused(&self.zoom_input) {
+            Self::forward(&mut self.zoom_input, event, ctx);
+            true
+        } else {
+            false
+        }
     }
 
     /// Give keyboard focus to one hosted field (a style property, or the

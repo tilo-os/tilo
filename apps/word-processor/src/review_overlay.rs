@@ -316,18 +316,25 @@ impl ReviewOverlay {
             y += text_h;
         }
         let row = Rect::new(inner.x0, inner.y1 - button_h, inner.x1, inner.y1);
+        self.draw_comment_actions(ctx, row, &comment.id);
+        height
+    }
+
+    /// Reply and Resolve along the bottom of a comment card.
+    fn draw_comment_actions(&mut self, ctx: &mut PaintCtx<'_>, row: Rect, id: &str) {
+        let theme = ctx.theme;
         let reply = t("review-reply");
         let resolve = t("review-resolve");
         let mut x = row.x0;
         for (label, action, role) in [
             (
                 &reply,
-                ReviewAction::OpenCommentThread(comment.id.clone()),
+                ReviewAction::OpenCommentThread(id.to_owned()),
                 ButtonRole::Secondary,
             ),
             (
                 &resolve,
-                ReviewAction::ResolveComment(comment.id.clone()),
+                ReviewAction::ResolveComment(id.to_owned()),
                 ButtonRole::Plain,
             ),
         ] {
@@ -344,7 +351,6 @@ impl ReviewOverlay {
             self.hits.push((rect, action));
             x = rect.x1 + f64::from(theme.tokens.spacing.s2);
         }
-        height
     }
 
     /// Paint the card for the tracked `change` at the top of `slot` and
