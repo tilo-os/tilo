@@ -3995,7 +3995,7 @@ impl ShellOverlayHost {
                 let Some(host) = group.active_host_mut() else {
                     continue;
                 };
-                let ui::widget::TileContent::App(app) = host.content_mut() else {
+                let ui::widget::TileContent::App(app) = host.content() else {
                     continue;
                 };
                 if app.test_id() == Some(wanted.as_str()) {
@@ -4279,10 +4279,9 @@ impl ShellOverlayHost {
                 let Some(host) = group.active_host_mut() else {
                     continue;
                 };
-                let ui::widget::TileContent::App(app) = host.content_mut() else {
-                    continue;
-                };
-                if let Some(intent) = app.take_host_intent() {
+                // Not `content_mut`: that ends the tile's document lifetime,
+                // and this runs on every frame.
+                if let Some(intent) = host.take_host_intent() {
                     intents.push((source_tab, intent));
                 }
             }

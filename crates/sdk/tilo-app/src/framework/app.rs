@@ -50,11 +50,11 @@ pub trait ResourceApp: 'static {
     const TITLE: &'static str;
     /// A named icon; defaults to the app id's last segment.
     const ICON: Option<&'static str> = None;
-    /// How the hosting window treats the app's tree.
-    const BEHAVIOUR: ComponentBehaviour = ComponentBehaviour {
-        autofocus_on_structure_change: false,
-        appearance_reconcile: false,
-    };
+    /// How every window hosting the app treats it: focus after a rebuild,
+    /// live appearance, and whether captures withhold it. An app that shows
+    /// secrets declares `capture_protected` here, so the live launch, the
+    /// shell and every other host of its component protect it alike.
+    const BEHAVIOUR: ComponentBehaviour = ComponentBehaviour::DEFAULT;
 
     /// Build the view. Called once for the live app, and again for every
     /// historical version History mode shows (with a read-only context), so

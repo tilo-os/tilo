@@ -108,6 +108,7 @@ impl ResourceApp for SettingsShell {
     const BEHAVIOUR: ComponentBehaviour = ComponentBehaviour {
         autofocus_on_structure_change: true,
         appearance_reconcile: true,
+        ..ComponentBehaviour::DEFAULT
     };
 
     fn view(cx: &mut ViewCx<Settings>) -> Element {
