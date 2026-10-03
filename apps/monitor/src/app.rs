@@ -4,8 +4,9 @@
 //! a compact horizontal summary strip; the Resources tab is a reflowing
 //! dashboard of gauges and charts. Shared view preferences (tab, sort, tree
 //! mode, filter, selection) live on [`crate::resource::Monitor`] via
-//! [`tilo_resource::publish`]; the live process snapshot and device-observation
-//! prefs ([`crate::prefs::Prefs`]) stay host-local.
+//! [`tilo_resource::publish`]; the live process snapshot stays host-local, and
+//! the person's preferences ([`crate::prefs::MonitorPreferences`]) are a
+//! personal settings section.
 //!
 //! The widget owns its own geometry: `build_layout` is a single
 //! full-bleed leaf, and `draw` lays out every region by hand and renders
@@ -50,7 +51,7 @@ use ui::widget::{
 use crate::layout;
 use crate::model::{MonitorModel, ProcessDataStatus, ProcessInfo, fmt_rate, fmt_uptime};
 use crate::paint::{self, ts, with_alpha};
-use crate::prefs::Prefs;
+use crate::prefs::{MonitorPreferences, Prefs};
 use crate::sampler::{Sampler, StopKind};
 use crate::tree::{FlattenOpts, Forest, Row, SumMode};
 use ui::charts::{
@@ -760,6 +761,12 @@ pub struct MonitorApp {
     /// PID-generation ids as every resource action and update only per sample.
     process_search: MonitorProcessSearchProvider,
     prefs: Prefs,
+    /// The person's Monitor preferences when hosted, and the value last
+    /// stored, which tells a change made here from one made elsewhere.
+    preferences: Option<(
+        ui::framework::Setting<MonitorPreferences>,
+        MonitorPreferences,
+    )>,
 
     // view state
     tab: Tab,
@@ -945,6 +952,7 @@ impl MonitorApp {
             sampler,
             process_search,
             prefs: Prefs::default(),
+            preferences: None,
             tab: Tab::Processes,
             sort_key: SortKey::Cpu,
             sort_desc: true,
@@ -1231,6 +1239,39 @@ impl MonitorApp {
         dispatcher: ui::framework::Dispatcher<crate::resource::Monitor>,
     ) {
         self.actions.attach(dispatcher);
+    }
+
+    /// Follow the person's Monitor preferences: this window starts from
+    /// them, stores what it changes, and takes what another window or device
+    /// changed.
+    pub(crate) fn follow_preferences(
+        &mut self,
+        setting: ui::framework::Setting<MonitorPreferences>,
+    ) {
+        let stored = setting.get();
+        self.prefs.adopt(&stored);
+        self.preferences = Some((setting, stored));
+    }
+
+    fn sync_preferences(&mut self) {
+        let Some((setting, last)) = &mut self.preferences else {
+            return;
+        };
+        let stored = setting.get();
+        if stored != *last {
+            self.prefs.adopt(&stored);
+            *last = stored;
+            return;
+        }
+        let here = self.prefs.personal();
+        if here != *last {
+            match setting.set(here.clone()) {
+                Ok(()) => *last = here,
+                Err(error) => {
+                    tracing::warn!(%error, "could not keep the Monitor preferences");
+                }
+            }
+        }
     }
 
     pub(crate) fn is_hosted(&self) -> bool {
@@ -5620,8 +5661,9 @@ impl Widget for MonitorApp {
     }
 
     fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
-        // Monitor's observation and safety preferences are device-local, so a
-        // shared document sync must never overwrite this window's state.
+        // The preferences follow the person's settings, never the shared
+        // document.
+        self.sync_preferences();
         self.clear_selection_if_filtered_out();
     }
 
