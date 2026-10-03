@@ -505,6 +505,9 @@ peer.membership.list(): Promise<{room, name, generation,
   invitations: [{inviteId, role, expiresAtMs}]}>;
 peer.membership.admit(requestId) / decline(requestId) / setRole(userPublicKey, role)
   / remove(userPublicKey) / cancelInvitation(inviteId);
+// The rooms the host governs, before the peer is in one (connect again with `room`):
+peer.workspaces.list(): Promise<[{room, name, generation, members}]>;
+peer.workspaces.create(name) / enter(room): Promise<{room, name, generation, members}>;
 ```
 
 An invitation names its inviter: the host records the user root of the
