@@ -32,7 +32,7 @@ use crate::model::{Account, AccountId, account_color};
 use crate::totp;
 
 /// Seconds left in a period at which the countdown ring turns to a warning.
-const EXPIRING_SECONDS: u32 = 5;
+pub(crate) const EXPIRING_SECONDS: u32 = 5;
 /// The widest six- and eight-digit codes, which size the code column so
 /// every row's code and ring line up whichever account is shown.
 const CODE_PROBE: &str = "0000\u{2009}0000";
@@ -563,9 +563,7 @@ impl AccountList {
         };
         let id = account.id.to_string();
         let colour = account_color(theme, account.color);
-        let avatar = AvatarFace::new(account.title(), &id)
-            .presence(colour)
-            .square();
+        let avatar = AvatarFace::new(account.title(), &id).presence(colour);
         let mut face = ListRowFace::new(account.title())
             .leading(RowLeading::Avatar(avatar))
             .selected(selected)
@@ -580,12 +578,15 @@ impl AccountList {
         }
         face.paint(ctx, self.at(i, layout.face));
 
-        // The inset rule between two rows hides beside a selected one.
+        // The inset rule between two rows hides beside a lifted one: a selected
+        // row, or the row the pointer is on.
         let next_selected = self
             .accounts
             .get(i + 1)
             .is_some_and(|next| self.selected == Some(next.id));
-        if i + 1 < self.accounts.len() && !selected && !next_selected {
+        let next_hovered =
+            self.hover.is_some_and(|(row, _)| row == i + 1) && !self.bar.is_dragging();
+        if i + 1 < self.accounts.len() && !selected && !hovered && !next_selected && !next_hovered {
             // Where the title starts: past the avatar, which is the list-size
             // avatar beside a secondary line and the inline size without one.
             let metrics = &theme.tokens.metrics;
@@ -699,6 +700,7 @@ impl AccountList {
     fn paint_empty(&mut self, ctx: &mut PaintCtx<'_>) {
         let content = EmptyStateContent {
             icon: Some(Icon::Shield),
+            message: Some("Scan a QR code or paste a setup link to see its one-time codes here."),
             action_label: Some("Add account"),
             ..EmptyStateContent::new("No accounts yet")
         };

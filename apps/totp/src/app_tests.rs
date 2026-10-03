@@ -651,8 +651,13 @@ fn persistence_failures_keep_the_vault_dirty_with_bounded_retry() {
         assert!(app.retry_rect.x0 >= app.rect.x0);
         assert!(app.retry_rect.x1 <= app.rect.x1);
         assert!(
-            app.banner_rect.x1 <= app.retry_rect.x0,
-            "the banner stops short of Retry"
+            app.banner_rect.union(app.retry_rect) == app.banner_rect
+                || app.retry_rect.y0 >= app.banner_rect.y1,
+            "Retry stands inside the banner's box, or under it, never beside it"
+        );
+        assert!(
+            app.retry_rect.x1 <= app.banner_rect.x1,
+            "Retry ends at or inside the banner's trailing edge"
         );
         assert!(app.retry_rect.y0 >= app.rect.y0);
 
@@ -699,7 +704,7 @@ fn persistence_failures_keep_the_vault_dirty_with_bounded_retry() {
         let first = app.vault.ordered()[0].id;
         let row = app.list.account_bounds(first).expect("first row on screen");
         assert!(
-            row.y0 >= app.banner_rect.y1,
+            row.y0 >= app.banner_rect.y1 && row.y0 >= app.retry_rect.y1,
             "banner reserves its band above the list"
         );
         layout_at(&mut app, 1000, 800);
@@ -975,6 +980,7 @@ fn every_capture_scenario_stages_its_state() {
         "provision",
         "missing-secret",
         "persistence-error",
+        "expiring",
     ] {
         let mut app = AuthenticatorApp::new();
         app.stage_scenario(Some(scenario));
@@ -1145,4 +1151,23 @@ fn render_qr_png(data: &str, path: &std::path::Path) {
         }
     }
     img.save(path).unwrap();
+}
+
+/// The capture steps leave every ring part-way round, and the expiring one
+/// inside the warning window.
+#[test]
+fn the_capture_steps_show_the_countdown_part_way_and_nearly_out() {
+    let account = &crate::model::demo_accounts()[0];
+    let period = f64::from(account.period);
+    let at = |elapsed: u64| 1_000.0 * period + elapsed as f64;
+    let remaining = |elapsed| crate::totp::seconds_remaining(account, at(elapsed));
+    let part_way = remaining(CAPTURE_ELAPSED);
+    assert!(
+        part_way > crate::list::EXPIRING_SECONDS && part_way < account.period,
+        "the ordinary captures show a ring part-way round, not full and not warning"
+    );
+    assert!(
+        remaining(CAPTURE_EXPIRING_ELAPSED) <= crate::list::EXPIRING_SECONDS,
+        "the expiring capture is inside the warning window"
+    );
 }

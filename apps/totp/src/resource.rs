@@ -7,7 +7,8 @@ use ui::icons::Icon;
 use ui::search::SearchRequest;
 use ui::tilo_actions::{ActionBinding, ActionSpec};
 use ui::tilo_resource::{Doc, ModelError, Resource, SearchEntry};
-use ui::widget::{Button, ButtonRole, Element, NavShell, history_button};
+use ui::tokens::SpacingStep;
+use ui::widget::{Button, ButtonRole, Element, NavShell, Spacer};
 
 use crate::actions::{
     ADD_ACCOUNT_OPERATION, TOTP_ACTION_TYPE, TotpAction, account_resource_id, add_account_view,
@@ -100,6 +101,7 @@ const SCENARIOS: &[&str] = &[
     "provision",
     "missing-secret",
     "persistence-error",
+    "expiring",
 ];
 
 /// Framework app: the navigation shell, whose header row carries the search
@@ -114,18 +116,27 @@ impl ResourceApp for TotpShell {
     const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
 
     fn view(cx: &mut ViewCx<Totp>) -> Element {
-        let search = cx.search_button(SearchRequest::this_app());
+        // The header's actions are for a vault with accounts in it: with none,
+        // the empty state asks for the first one and the header stays quiet.
+        let has_accounts = cx.local(true);
+        let search = cx.switch(&has_accounts, |cx, has_accounts| -> Element {
+            if *has_accounts {
+                Box::new(cx.search_button(SearchRequest::this_app()))
+            } else {
+                Box::new(Spacer::token(SpacingStep::S0))
+            }
+        });
+        let add = cx.switch(&has_accounts, |_, has_accounts| -> Element {
+            if *has_accounts {
+                Box::new(add_button())
+            } else {
+                Box::new(Spacer::token(SpacingStep::S0))
+            }
+        });
         Box::new(
             NavShell::new()
-                .content(cx.surface(AuthenticatorApp::new()))
-                .content_header(
-                    "Accounts",
-                    vec![
-                        Box::new(history_button()),
-                        Box::new(search),
-                        Box::new(add_button()),
-                    ],
-                ),
+                .content(cx.surface(AuthenticatorApp::new().with_account_signal(has_accounts)))
+                .content_header("Accounts", vec![search, add]),
         )
     }
 

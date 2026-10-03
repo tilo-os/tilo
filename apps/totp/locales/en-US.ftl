@@ -17,6 +17,9 @@ totp-add-link-label = Setup link
 
 ## Manual fields
 totp-add-details = Or enter details
+totp-add-placeholder-issuer = Service name
+totp-add-placeholder-account = Email or username
+totp-add-placeholder-secret = Key from the service
 totp-add-label-issuer = Issuer
 totp-add-label-account = Account name
 totp-add-label-secret = Secret key
