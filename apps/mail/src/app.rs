@@ -751,7 +751,7 @@ impl MailApp {
         let request_id = request.request_id();
         let request_kind = request.kind();
         if engine.tx.send(request).is_err() {
-            self.shared.borrow_mut().status = Some("Mail worker is unavailable".into());
+            self.shared.borrow_mut().status = Some("Mail couldn’t reach the mail server".into());
             self.dirty = true;
             return None;
         }
@@ -2570,7 +2570,6 @@ impl MailApp {
         doc: &mut AutoCommit,
         st: &mut MailState,
         request_id: EngineRequestId,
-        wire_bytes: usize,
     ) {
         if self
             .pending_send
@@ -2595,7 +2594,7 @@ impl MailApp {
         st.mailbox.insert(pending.message);
         self.editing_draft = None;
         self.compose.close();
-        st.status = Some(format!("Delivered ({wire_bytes} bytes)"));
+        st.status = Some("Message sent".into());
     }
 
     fn apply_engine_error(
@@ -2672,11 +2671,10 @@ impl MailApp {
             } if self.expects_engine_event(request_id, EngineRequestKind::Fetch) => {
                 self.apply_fetched_messages(doc, st, request_id, &account_id, folder, messages);
             }
-            EngineEvent::Sent {
-                request_id,
-                wire_bytes,
-            } if self.expects_engine_event(request_id, EngineRequestKind::Send) => {
-                self.apply_sent_message(doc, st, request_id, wire_bytes);
+            EngineEvent::Sent { request_id, .. }
+                if self.expects_engine_event(request_id, EngineRequestKind::Send) =>
+            {
+                self.apply_sent_message(doc, st, request_id);
             }
             EngineEvent::Authorized {
                 request_id,
@@ -7085,7 +7083,7 @@ mod tests {
                     .borrow()
                     .status
                     .as_deref()
-                    .is_none_or(|status| !status.contains("Delivered")),
+                    .is_none_or(|status| !status.contains("sent")),
                 "an unmatched Sent event must not claim delivery"
             );
 
