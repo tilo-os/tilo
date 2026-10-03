@@ -10,14 +10,14 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 use tilo_automation::{
-    ActionCatalog, AiTransform, Binding, BindingOption, CheckError, Condition, ResourceTarget,
-    Selector, Shortcut, Step, StepKind, StepPath, binding_options, check,
+    ActionCatalog, AiTransform, Binding, BindingOption, CheckError, CheckErrorKind, Condition,
+    ResourceTarget, Selector, Shortcut, Step, StepKind, StepPath, binding_options, check,
 };
 use ui::tilo_actions::remote::CatalogueRow;
 use ui::tilo_actions::{ActionParam, ParamType};
 
 use crate::grant;
-use crate::model::Draft;
+use crate::model::{Draft, step_at};
 
 /// The shortcut `draft` would save as, with the least grant it needs, as the
 /// checker and the save effect see it.
@@ -39,13 +39,114 @@ pub fn problems(
     let resolver = |id: &str| saved.iter().find(|other| other.id == id).cloned();
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
     if let Err(errors) = check(&shortcut, catalog, &resolver) {
-        for CheckError { path, kind } in errors {
-            out.entry(path.as_str().to_owned())
+        for error in &errors {
+            out.entry(error.path.as_str().to_owned())
                 .or_default()
-                .push(kind.to_string());
+                .push(explain(error, &shortcut.steps, catalog));
         }
     }
     out
+}
+
+/// Every problem as a line for a list: where it is ("Step 2", "Result",
+/// "Shortcut") and what is wrong.
+#[must_use]
+pub fn problem_lines(steps: &[Step], problems: &BTreeMap<String, Vec<String>>) -> Vec<String> {
+    let mut lines = Vec::new();
+    for (path, reasons) in problems {
+        let place = match path.as_str() {
+            "" => String::from("Shortcut"),
+            "output" => String::from("Result"),
+            path => step_at(steps, path)
+                .and_then(|step| step_number(steps, &step.id))
+                .map_or_else(|| String::from("A step"), |number| format!("Step {number}")),
+        };
+        lines.extend(reasons.iter().map(|reason| format!("{place}: {reason}")));
+    }
+    lines
+}
+
+/// What the checker found, in words for the person editing: the step is
+/// named by its number, a parameter by the label it has on the step.
+#[must_use]
+pub fn explain(error: &CheckError, steps: &[Step], catalog: &ActionCatalog) -> String {
+    let step_label = |id: &str| {
+        step_number(steps, id)
+            .map_or_else(|| String::from("an earlier step"), |n| format!("step {n}"))
+    };
+    let here = step_at(steps, error.path.as_str());
+    match &error.kind {
+        CheckErrorKind::InvalidName { what, value } => {
+            format!("The {what} “{value}” may use only letters, digits, hyphens and underscores")
+        }
+        CheckErrorKind::MissingName => String::from("Give the shortcut a name"),
+        CheckErrorKind::DuplicateStep(_) => String::from("Two steps share the same name"),
+        CheckErrorKind::DuplicateInput(name) => format!("There are two inputs called {name}"),
+        CheckErrorKind::InvalidParam { name, reason } => {
+            format!("The input {name} is not valid: {reason}")
+        }
+        CheckErrorKind::UnknownInput(name) => format!("There is no input called {name}"),
+        CheckErrorKind::UnknownVariable(name) => {
+            format!("The variable {name} is not set before this step")
+        }
+        CheckErrorKind::UnknownStep(_) => {
+            String::from("A value comes from a step that does not run before this one")
+        }
+        CheckErrorKind::NoOutput(id) => step_number(steps, id).map_or_else(
+            || String::from("An earlier step gives no result to use"),
+            |number| format!("Step {number} gives no result to use"),
+        ),
+        CheckErrorKind::UnknownAction { .. } => {
+            String::from("The app no longer offers this action")
+        }
+        CheckErrorKind::UnknownArgument { name } => {
+            format!("This action does not take {name}")
+        }
+        CheckErrorKind::MissingArgument { name } => {
+            let label = here
+                .map(|step| params_of(step, catalog))
+                .unwrap_or_default()
+                .into_iter()
+                .find(|param| param.name.as_ref() == name.as_str())
+                .map(|param| param.description.to_string())
+                .filter(|label| !label.is_empty())
+                .unwrap_or_else(|| name.clone());
+            format!("{label} needs a value")
+        }
+        CheckErrorKind::Incompatible(reason) => capitalised(reason),
+        CheckErrorKind::BadPointer { step, .. } => format!(
+            "This points at a part of the result of {} that does not exist",
+            step_label(step)
+        ),
+        CheckErrorKind::BadTemplate(reason) => format!("The text is not valid: {reason}"),
+        CheckErrorKind::SecretInTemplate(what) => {
+            format!("Text cannot include {what}, which is secret")
+        }
+        CheckErrorKind::NotIterable(what) => format!("Repeat needs a list, not {what}"),
+        CheckErrorKind::OutsideGrant { app_id, .. } => {
+            format!(
+                "This shortcut is not allowed to act in {}",
+                app_label(app_id)
+            )
+        }
+        CheckErrorKind::UnresolvableShortcut => {
+            String::from("Choose exactly which shortcut this step runs")
+        }
+        CheckErrorKind::Recursion { .. } => {
+            String::from("This shortcut would end up running itself")
+        }
+        CheckErrorKind::UnusedConsent { .. } => {
+            String::from("A saved permission matches none of the steps")
+        }
+    }
+}
+
+/// `text` with its first letter in upper case.
+fn capitalised(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
 }
 
 /// One value a parameter may be bound to, as the editor offers it.
@@ -67,11 +168,8 @@ pub fn choices(
     let shortcut = candidate(draft, catalog);
     binding_options(&shortcut, catalog, &step_path(path), param)
         .into_iter()
-        .map(|BindingOption { binding, describes }| Choice {
-            label: format!(
-                "{} ({describes})",
-                describe(&binding, &draft.program.0.steps)
-            ),
+        .map(|BindingOption { binding, .. }| Choice {
+            label: describe(&binding, &draft.program.0.steps),
             binding,
         })
         .collect()
@@ -338,11 +436,7 @@ pub fn app_label(app_id: &str) -> String {
         if index > 0 {
             out.push(' ');
         }
-        let mut chars = word.chars();
-        if let Some(first) = chars.next() {
-            out.extend(first.to_uppercase());
-            out.push_str(chars.as_str());
-        }
+        out.push_str(&capitalised(word));
     }
     if out.is_empty() {
         app_id.to_owned()
