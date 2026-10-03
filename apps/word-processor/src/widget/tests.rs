@@ -5368,14 +5368,14 @@ fn hosted_selection_publishes_set_hyperlink_on_the_caret() {
 #[test]
 fn the_new_menu_paints_feedback_and_selects_by_keyboard() {
     // Phase: new_menu_button_is_in_the_toolbar.
-    // The "New ▾" toolbar button is present and registered as a click target.
+    // The "New" toolbar button is present and registered as a click target.
     {
         let (state, wp) = bound();
         let mut framed = mount(state, wp, 1200, 700);
         let (wp, _) = Framed::split(&mut framed);
         assert!(
             wp.toolbar.iter().any(|(a, _)| *a == ToolAction::NewMenu),
-            "the New ▾ button is a registered toolbar action"
+            "the New button is a registered toolbar action"
         );
     }
 
@@ -5539,7 +5539,7 @@ fn templates_replace_the_document_only_when_chosen() {
     }
 
     // Phase: selecting_a_template_replaces_the_document_content.
-    // Selecting from the "New ▾" picker replaces the document content with that
+    // Selecting from the "New" picker replaces the document content with that
     // template's first heading through the production pointer-routing path.
     {
         let (mut state, mut wp) = bound();
@@ -5558,7 +5558,7 @@ fn templates_replace_the_document_only_when_chosen() {
         let mut framed = mount(state, wp, 1200, 700);
         let (wp, state) = Framed::split(&mut framed);
         wp.apply_tool(&mut state.doc, ToolAction::NewMenu);
-        assert!(wp.template_picker.is_open(), "the New ▾ picker opens");
+        assert!(wp.template_picker.is_open(), "the New picker opens");
 
         // Select "Report" (its first heading is a known, stable string) using
         // the shared menu's current layout rather than copied row metrics.
