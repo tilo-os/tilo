@@ -592,6 +592,85 @@ impl Shape {
     }
 }
 
+impl Shape {
+    /// The same shape under `affine`, when the geometry itself can carry it:
+    /// a move and a stretch along the axes, the same both ways for text and
+    /// brush strokes. `None` asks for a transform instead (a turn, a skew, a
+    /// flip).
+    #[must_use]
+    pub fn transformed(&self, affine: Affine) -> Option<Self> {
+        let [sx, b, c, sy, dx, dy] = affine.as_coeffs();
+        if b != 0.0 || c != 0.0 || sx <= 0.0 || sy <= 0.0 {
+            return None;
+        }
+        let uniform = (sx - sy).abs() <= 1e-9 * sx.max(sy);
+        let map = |[x, y]: [f64; 2]| [x * sx + dx, y * sy + dy];
+        let points = |points: &[[f64; 2]]| points.iter().copied().map(map).collect();
+        Some(match self {
+            Self::Rect {
+                x,
+                y,
+                width,
+                height,
+                radius,
+            } => {
+                let [x, y] = map([*x, *y]);
+                Self::Rect {
+                    x,
+                    y,
+                    width: width * sx,
+                    height: height * sy,
+                    radius: radius * sx.min(sy),
+                }
+            }
+            Self::Ellipse { cx, cy, rx, ry } => {
+                let [cx, cy] = map([*cx, *cy]);
+                Self::Ellipse {
+                    cx,
+                    cy,
+                    rx: rx * sx,
+                    ry: ry * sy,
+                }
+            }
+            Self::Polygon { points: at } => Self::Polygon { points: points(at) },
+            Self::Line { points: at } => Self::Line { points: points(at) },
+            Self::Path { d } => {
+                let mut path = BezPath::from_svg(d).ok()?;
+                path.apply_affine(affine);
+                Self::Path {
+                    d: path_data(&path),
+                }
+            }
+            Self::Text { .. } if uniform => {
+                let mut text = self.clone();
+                if let Self::Text {
+                    x, y, size, width, ..
+                } = &mut text
+                {
+                    [*x, *y] = map([*x, *y]);
+                    *size *= sx;
+                    *width = width.map(|width| width * sx);
+                }
+                text
+            }
+            Self::Stroke { points, size } if uniform => Self::Stroke {
+                points: points
+                    .iter()
+                    .map(|point| {
+                        let mut moved = point.clone();
+                        if let [x, y, ..] = moved.as_mut_slice() {
+                            [*x, *y] = map([*x, *y]);
+                        }
+                        moved
+                    })
+                    .collect(),
+                size: size * sx,
+            },
+            Self::Text { .. } | Self::Stroke { .. } => return None,
+        })
+    }
+}
+
 /// A number as path data writes it: at most three decimals, no trailing
 /// zeros.
 #[must_use]
@@ -712,6 +791,24 @@ impl Mark {
             mark.transform = Some((Affine::translate((dx, dy)) * self.affine()).as_coeffs());
         } else {
             mark.shape = self.shape.translated(dx, dy);
+        }
+        mark
+    }
+
+    /// The mark under `affine` (artwork units): baked into its geometry
+    /// where the geometry can carry it, so a stretched rectangle stays a
+    /// rectangle; otherwise composed onto its transform.
+    #[must_use]
+    pub fn transformed(&self, affine: Affine) -> Self {
+        let mut mark = self.clone();
+        match self
+            .transform
+            .is_none()
+            .then(|| self.shape.transformed(affine))
+            .flatten()
+        {
+            Some(shape) => mark.shape = shape,
+            None => mark.transform = Some((affine * self.affine()).as_coeffs()),
         }
         mark
     }

@@ -807,6 +807,18 @@
                   "null"
                 ],
                 "description": "Cut to this mark's shape (opacity 0 hides that mark)."
+              },
+              "transform": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 6,
+                "maxItems": 6,
+                "description": "An affine `[a, b, c, d, e, f]` on the geometry, as `inspect` shows."
               }
             },
             "additionalProperties": false,
@@ -1525,6 +1537,25 @@
             "null"
           ],
           "description": "Move the marks onto this layer, on top."
+        },
+        "nullable": true
+      },
+      {
+        "name": "transform",
+        "ty": "array",
+        "required": false,
+        "description": "An affine `[a, b, c, d, e, f]` in artwork units applied after the rest, to all the marks as one: a stretch or turn about any point.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number"
+          },
+          "minItems": 6,
+          "maxItems": 6,
+          "description": "An affine `[a, b, c, d, e, f]` in artwork units applied after the rest, to all the marks as one: a stretch or turn about any point."
         },
         "nullable": true
       }
