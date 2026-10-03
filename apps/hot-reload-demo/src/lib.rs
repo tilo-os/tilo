@@ -12,7 +12,7 @@ fn install_catalog() {
 }
 
 use ui::prelude::*;
-use ui::widget::{Column, EmptyState, Field, Form, FormPage, FormSection};
+use ui::widget::{Column, Field, Form, FormPage, FormSection, LabelPlacement};
 
 /// A durable document. Text fields are collaborative text: two people typing
 /// in the same field merge character by character.
@@ -122,21 +122,20 @@ impl ResourceApp for App {
                         )),
                 )
             } else {
-                Box::new(EmptyState::new(ui::i18n::I18nManager::format(
-                    "document-preview-empty",
-                    &[],
-                )))
+                Box::new(
+                    Text::new("document-preview-empty")
+                        .with_role(TextRole::Body)
+                        .dimmed(),
+                )
             }
         });
         Box::new(FormPage::new(
             "document-heading",
             Form::new()
+                .with_label_placement(Some(LabelPlacement::Above))
                 .section(
                     FormSection::new("document-edit-heading")
-                        .field(
-                            Field::new("document-title-label", title)
-                                .with_help("document-title-help"),
-                        )
+                        .field(Field::new("document-title-label", title))
                         .field(Field::new("document-body-label", body)),
                 )
                 .section(FormSection::new("document-preview-heading").content(preview)),
