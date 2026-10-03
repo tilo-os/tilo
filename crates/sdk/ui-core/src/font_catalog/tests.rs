@@ -338,3 +338,79 @@ fn a_face_installed_twice_resolves_the_same_whatever_the_discovery_order() {
         );
     }
 }
+
+/// What a process run from a checkout or a screenshot gets on a machine
+/// without Tilo Sans installed: the product catalog, found past roots that do
+/// not hold one this build accepts, sets UI text in Tilo Sans. The host's own
+/// copy of a catalog family sorts before the catalog's path and must still
+/// not displace the catalog's face.
+#[cfg(unix)]
+#[test]
+fn a_machine_without_tilo_sans_sets_ui_text_in_the_bundled_catalog() {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");
+    assert_eq!(catalog_roots().last(), Some(&source));
+
+    let tmp = tempfile::tempdir().unwrap();
+    let host = tmp.path().join("a-host");
+    std::fs::create_dir(&host).unwrap();
+    std::fs::copy(source.join("NotoSans[wght].ttf"), host.join("NotoSans.ttf")).unwrap();
+    let stale = tmp.path().join("b-stale");
+    std::fs::create_dir(&stale).unwrap();
+    std::fs::write(stale.join("manifest.toml"), "# another Tilo build\n").unwrap();
+    // The catalog under a path that sorts after the host copy, as /usr does
+    // before a checkout.
+    let catalog = tmp.path().join("c-catalog");
+    std::fs::create_dir(&catalog).unwrap();
+    for entry in std::fs::read_dir(&source).unwrap() {
+        let entry = entry.unwrap().path();
+        std::os::unix::fs::symlink(&entry, catalog.join(entry.file_name().unwrap())).unwrap();
+    }
+
+    let roots = [tmp.path().join("missing"), stale, catalog.clone()];
+    let mut fs = load_first_catalog(&roots, "en-US", |db| {
+        db.load_fonts_dir(&host);
+    })
+    .unwrap();
+    let catalog = catalog.canonicalize().unwrap();
+
+    for (family, expected) in [
+        (Family::SansSerif, crate::text_render::UI_SANS_FAMILY),
+        (Family::Name("Noto Sans"), "Noto Sans"),
+    ] {
+        let id = fs
+            .db()
+            .query(&Query {
+                families: &[family],
+                ..Query::default()
+            })
+            .unwrap();
+        let face = fs.db().face(id).unwrap();
+        assert!(face.families.iter().any(|f| f.0 == expected), "{expected}");
+        assert!(
+            matches!(&face.source, fontdb::Source::File(path) if path.starts_with(&catalog)),
+            "{expected} must come from the catalog: {:?}",
+            face.source
+        );
+    }
+
+    let mut buffer = Buffer::new(&mut fs, Metrics::new(14.0, 20.0));
+    buffer.set_text(
+        "Settings",
+        &Attrs::new().family(Family::SansSerif),
+        Shaping::Advanced,
+        None,
+    );
+    buffer.shape_until_scroll(&mut fs, false);
+    let glyphs: Vec<_> = buffer.layout_runs().flat_map(|run| run.glyphs).collect();
+    assert_eq!(glyphs.len(), "Settings".len());
+    for glyph in glyphs {
+        assert!(
+            fs.db()
+                .face(glyph.font_id)
+                .unwrap()
+                .families
+                .iter()
+                .any(|f| f.0 == crate::text_render::UI_SANS_FAMILY)
+        );
+    }
+}

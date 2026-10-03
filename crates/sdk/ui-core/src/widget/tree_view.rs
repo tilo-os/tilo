@@ -951,6 +951,36 @@ const MAX_TRANSITION_ROWS: usize = 512;
 /// The role every row label is set in; the rename field matches it.
 const LABEL_ROLE: TextRole = TextRole::Body;
 
+/// A branch row's disclosure: a chevron from the icon set at the small
+/// glyph size, at the start of the disclosure `column` on the row's centre
+/// line, so the rest of the column is air before the label.
+fn paint_disclosure(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    column: Rect,
+    expanded: bool,
+    opacity: f32,
+) {
+    let edge = f64::from(theme.tokens.metrics.icon_sm);
+    let centre = Point::new(
+        column.x0 + edge.min(column.width()) / 2.0,
+        column.center().y,
+    );
+    crate::icons::draw_icon(
+        scene,
+        transform,
+        Rect::from_center_size(centre, (edge, edge)),
+        if expanded {
+            crate::icons::Icon::ChevronDown
+        } else {
+            crate::icons::Icon::ChevronRight
+        },
+        theme.tokens.colors.text_dim.with_alpha_factor(opacity),
+        crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+    );
+}
+
 fn idx_to_f64(index: usize) -> f64 {
     f64::from(u32::try_from(index).unwrap_or(u32::MAX))
 }
@@ -2883,7 +2913,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         let text_style = tokens.typography.style(LABEL_ROLE);
         // Every label and disclosure glyph is one line of this style, so one
         // measured line box centres every row identically.
-        let (_, line_h) = text_renderer.measure_style("\u{25B6}", None, &text_style);
+        let (_, line_h) = text_renderer.measure_style("Tree", None, &text_style);
         // The indent and disclosure column hit-testing uses, resolved from
         // this theme at layout.
         let indent_px = self.indent_px;
@@ -3128,23 +3158,18 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                 let TreeRowKey::Node(id) = key else {
                     continue;
                 };
-                let glyph = if self.expanded.contains(&id) {
-                    "\u{25BC}"
-                } else {
-                    "\u{25B6}"
-                };
-                #[allow(
-                    clippy::arithmetic_side_effects,
-                    reason = "kurbo Affine composition is floating-point matrix math; it cannot overflow or panic"
-                )]
-                let glyph_xf = transform * Affine::translate((glyph_x, text_y));
-                text_renderer.draw_style(
+                paint_disclosure(
                     scene,
-                    glyph,
-                    tokens.colors.text_dim.with_alpha_factor(opacity),
-                    glyph_xf,
-                    None,
-                    &text_style,
+                    transform,
+                    theme,
+                    Rect::new(
+                        glyph_x,
+                        row_rect.y0,
+                        glyph_x + self.disclosure_w,
+                        row_rect.y1,
+                    ),
+                    self.expanded.contains(&id),
+                    opacity,
                 );
             }
 
@@ -3294,19 +3319,18 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             let glyph_x = self.rect.x0 + self.row_inset + idx_to_f64(payload.depth) * indent_px;
             let text_y = centered_text_top(y0, visual.geometry.height, line_h);
             if payload.is_branch {
-                let glyph = if payload.expanded { "▼" } else { "▶" };
-                #[allow(
-                    clippy::arithmetic_side_effects,
-                    reason = "kurbo Affine composition is finite screen-space matrix math"
-                )]
-                let glyph_transform = transform * Affine::translate((glyph_x, text_y));
-                text_renderer.draw_style(
+                paint_disclosure(
                     scene,
-                    glyph,
-                    tokens.colors.text_dim.with_alpha_factor(opacity),
-                    glyph_transform,
-                    None,
-                    &text_style,
+                    transform,
+                    theme,
+                    Rect::new(
+                        glyph_x,
+                        row_rect.y0,
+                        glyph_x + self.disclosure_w,
+                        row_rect.y1,
+                    ),
+                    payload.expanded,
+                    opacity,
                 );
             }
             let color = match payload.tone {

@@ -378,26 +378,12 @@ impl Slider {
         let knob_center = Point::new(active.x1, face.rect.center().y);
         let knob_shape = Circle::new(knob_center, knob_radius);
         // One thumb colour held across rest / hover / drag; hover and drag
-        // read from the radius (above), a firmer edge, and the halo. On a
-        // light material the thumb is a raised white object ringed in a tone
-        // that clears both halves of the track, never a dark disc; on a dark
-        // one it is the primary ink, which already clears both.
-        let colors = &theme.tokens.colors;
-        let floor = crate::tokens::colors::NON_TEXT_MIN_CONTRAST;
-        let (fill_color, border_color) = if crate::widget::toggle::light_material(colors) {
-            let ring =
-                crate::widget::toggle::ink_across(&[filled, unfilled], colors.text_tertiary, floor);
-            (colors.surfaces.raised, ring)
-        } else {
-            let fill =
-                crate::widget::toggle::ink_across(&[filled, unfilled], colors.text_primary, floor);
-            let edge = if face.dragging || face.hovered {
-                crate::surface::edge_on_with(fill, crate::chrome::PANEL_BORDER_ALPHA)
-            } else {
-                crate::surface::edge_on(fill)
-            };
-            (fill, edge)
-        };
+        // read from the radius (above) and the halo. On a light material the
+        // thumb is a raised white object ringed in a tone that clears both
+        // halves of the track, never a dark disc; on a dark one it is the
+        // primary ink (HIG §9.5), ringed in the ground so it stays a disc of
+        // its own where it sits on the filled half, which is the same ink.
+        let (fill_color, border_color) = thumb_colors(theme, filled, unfilled);
         let border_width = 1.5;
         // Pressed halo: nested hairlines outside the knob, derived against
         // the track they ring, drawn first so the knob sits cleanly on top.
@@ -453,6 +439,25 @@ impl Slider {
         if face.disabled {
             scene.pop_layer();
         }
+    }
+}
+
+/// The thumb's fill and ring over a track whose halves are `filled` and
+/// `unfilled`.
+fn thumb_colors(
+    theme: &Theme,
+    filled: vello::peniko::Color,
+    unfilled: vello::peniko::Color,
+) -> (vello::peniko::Color, vello::peniko::Color) {
+    let colors = &theme.tokens.colors;
+    let floor = crate::tokens::colors::NON_TEXT_MIN_CONTRAST;
+    if crate::widget::toggle::light_material(colors) {
+        let ring =
+            crate::widget::toggle::ink_across(&[filled, unfilled], colors.text_tertiary, floor);
+        (colors.surfaces.raised, ring)
+    } else {
+        let ring = crate::widget::toggle::ink_across(&[filled], colors.surfaces.content, floor);
+        (colors.text_primary, ring)
     }
 }
 
@@ -850,6 +855,21 @@ mod tests {
             );
         }
         assert!(crate::a11y::relative_luminance(raised) > 0.9);
+    }
+
+    /// On a dark material the thumb is the primary ink, ringed so it reads
+    /// as a disc of its own over the filled half (the same ink) and over
+    /// the unfilled one.
+    #[test]
+    fn the_dark_thumb_is_primary_ink_and_ringed() {
+        let theme = Theme::dark();
+        let colors = &theme.tokens.colors;
+        let (filled, unfilled) = (colors.intent.inverted, colors.intent.selection);
+        let (fill, ring) = thumb_colors(&theme, filled, unfilled);
+        assert_eq!(fill, colors.text_primary);
+        let floor = crate::tokens::colors::NON_TEXT_MIN_CONTRAST;
+        assert!(crate::a11y::contrast_ratio(ring, filled) >= floor);
+        assert!(crate::a11y::contrast_ratio(fill, unfilled) >= floor);
     }
 
     /// Build a slider with a known rect so we don't need a full taffy pass.
