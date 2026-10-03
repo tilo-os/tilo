@@ -515,6 +515,14 @@ pub fn local_user_id() -> UserId {
     std::env::var("USER").unwrap_or_else(|_| "local".to_string())
 }
 
+/// The colour the person at this machine wears: their stored choice
+/// (`identity.colour`, roaming with their other personal settings), or the
+/// hue their identity derives until they choose one.
+pub fn local_presence_hue() -> ui::tokens::PresenceHue {
+    ui::tokens::PresenceHue::chosen_in(&serde_json::Value::Object(settings_store::load()))
+        .unwrap_or_else(|| ui::tokens::PresenceHue::of_identity(&local_user_id()))
+}
+
 /// Identity acting in a specific durable room.
 ///
 /// Registry errors fail back to the session identity for compatibility, but

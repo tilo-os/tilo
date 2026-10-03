@@ -80,7 +80,7 @@ fn a_recording_registers_each_floating_surface_with_what_is_below_it() {
     assert_eq!(surface.below.encoding().draw_tags.len(), below_len);
     assert_eq!((surface.image.width, surface.image.height), (64, 48));
     assert!(
-        (surface.blur_px - f64::from(theme.tokens.colors.surfaces.glass_blur_px)).abs()
+        (surface.blur_px - f64::from(theme.tokens.colors.surfaces.material_blur_px)).abs()
             < f64::EPSILON
     );
     assert!(
@@ -169,7 +169,7 @@ fn the_blur_pass_shows_the_tinted_average_of_the_backdrop() {
         close(pixel(&opaque, width, centre.0, centre.1), ground, 1),
         "without the pass the placeholder is the opaque ground"
     );
-    let tint = f64::from(FLOATING_TINT_ALPHA);
+    let tint = f64::from(theme.tokens.colors.surfaces.material_opacity);
     let expected = ground.map(|channel| {
         let mixed = f64::from(channel).mul_add(tint, 127.5 * (1.0 - tint));
         #[allow(
@@ -254,7 +254,7 @@ fn cost_at_1080p() {
     let region = BackdropRegion {
         image: placeholder(0, texels(rect.width()), texels(rect.height()), ground),
         rect,
-        blur_px: f64::from(theme.tokens.colors.surfaces.glass_blur_px),
+        blur_px: f64::from(theme.tokens.colors.surfaces.material_blur_px),
         below: stripes(target.0, target.1),
         ground,
     };

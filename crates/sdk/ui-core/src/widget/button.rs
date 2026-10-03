@@ -606,15 +606,15 @@ pub fn face_colors(
             } else {
                 rest
             };
-            // White is the label this style wants and, on a dark enough
-            // accent, what comes back; on a bright one it walks out far
-            // enough to be read — resolved once over both fills so it
-            // doesn't change under the pointer.
-            let fg =
-                theme
-                    .tokens
-                    .colors
-                    .ink_on_any(&[rest, active], Color::WHITE, ON_FILL_MIN_CONTRAST);
+            // The label of the emphasis fill is the theme's own
+            // (`intent.on_inverted`, the window ground), which the contrast
+            // floors hold on both fills; resolved once over both so it does
+            // not change under the pointer.
+            let fg = theme.tokens.colors.ink_on_any(
+                &[rest, active],
+                theme.tokens.colors.intent.on_inverted,
+                ON_FILL_MIN_CONTRAST,
+            );
             (bg, None, fg)
         }
         ButtonStyle::Danger => danger_face_colors(theme, interact),
