@@ -113,7 +113,15 @@ impl ResourceApp for DbClientShell {
     }
 
     fn scenarios() -> &'static [&'static str] {
-        &["data", "structure", "connect", "confirm", "error", "empty"]
+        &[
+            "data",
+            "structure",
+            "wide",
+            "connect",
+            "confirm",
+            "error",
+            "empty",
+        ]
     }
 }
 
@@ -143,10 +151,17 @@ impl ResourceSurface<DbClient> for DbClientApp {
                 self.open_table("tracks");
                 self.show_tab(crate::session::MainTab::Structure);
             }
+            Some("wide") => self.show_query_result(
+                "SELECT * FROM tracks t \
+                 JOIN albums a ON a.album_id = t.album_id \
+                 JOIN artists r ON r.artist_id = a.artist_id",
+            ),
             Some("connect") => self.open_connect_dialog(),
             Some("confirm") => self.confirm_statement("DROP TABLE albums;"),
             Some("error") => {
-                self.fail_with("Connection refused: the server at db.internal:5432 did not answer.")
+                self.fail_with(
+                    "Connection refused: the server at db.internal:5432 did not answer.",
+                );
             }
             _ => {}
         }
