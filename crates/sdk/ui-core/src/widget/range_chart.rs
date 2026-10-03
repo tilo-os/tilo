@@ -311,9 +311,17 @@ impl Widget for RangeChart {
         }
         let plot = self.plot();
         let domain = self.domain();
-        let ticks = self.style.tick_count.max(2);
-        for tick in 0..ticks {
-            let fraction = f64::from(tick) / f64::from(ticks.saturating_sub(1));
+        let span = domain.1 - domain.0;
+        for value in crate::charts::nice_ticks(
+            domain.0,
+            domain.1,
+            usize::from(self.style.tick_count.max(2)),
+        ) {
+            let fraction = if span > 0.0 {
+                (value - domain.0) / span
+            } else {
+                0.0
+            };
             let x = fraction.mul_add(plot.width(), plot.x0);
             if self.style.show_grid {
                 scene.stroke(
@@ -326,7 +334,7 @@ impl Widget for RangeChart {
             }
             tr.draw_style(
                 scene,
-                &self.format(fraction.mul_add(domain.1 - domain.0, domain.0)),
+                &self.format(value),
                 theme.tokens.colors.text_dim,
                 transform * Affine::translate((x - 12.0, plot.y1 + 9.0)),
                 None,
