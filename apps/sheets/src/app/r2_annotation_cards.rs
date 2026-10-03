@@ -52,42 +52,41 @@ fn annotation_cards_keep_rows_and_targets_clear() {
     }
 
     // Case `painted_annotation_targets_follow_the_measured_rows`.
-    // On the production paint path the registered action targets sit inside
-    // their card, below its title, each at least a small control tall and
-    // clear of each other.
+    // On the production paint path the dock stands under the grid, the cards
+    // stand inside it clear of each other and of the sheet, and the
+    // registered action targets sit inside their card, below its title, each
+    // at least a small control tall and clear of each other.
     {
-        // A window wide enough for both cards side by side at 2× text.
-        let (mut app, mut tr, theme) = measured_app(1800.0, 800.0, 2.0);
-        app.sheet_charts = vec![crate::doc::ChartSnapshot {
-            id: "c1".into(),
-            title: "Quarterly spend".into(),
-            kind: crate::doc::ChartKind::Column,
-            start: (1, 1),
-            end: (4, 6),
-        }];
-        app.sheet_comments = vec![crate::doc::CommentThread {
-            id: "t1".into(),
-            start: (1, 1),
-            end: (4, 1),
-            author: "Alex".into(),
-            body: "Check the rent increase before sending this budget.".into(),
-            resolved: true,
-            replies: Vec::new(),
-        }];
+        // Tall enough at 2× text that the dock is not given up for the grid.
+        let (mut app, mut tr, theme) = measured_app(1800.0, 1600.0, 2.0);
+        seed_annotations(&mut app);
         paint_frame(&mut app, &mut tr, &theme);
 
         let m = app.metrics.clone();
-        // Cards float `s3` below the column-header band (never over its labels).
-        // Computed here from the grid geometry, independently of the painter.
-        let body_top = app.grid_rect.y0 + m.grid.col_header_h();
-        let card_top = body_top + m.s3;
-        // The comment card floats at the sheet's leading edge, the charts at
-        // its trailing edge.
-        let middle = app.grid_rect.center().x;
+        assert_eq!(app.dock_cards.len(), 2, "the comment and the chart");
+        assert!(
+            (app.dock_rect.y1 - app.tabs_rect.y0).abs() < 0.01
+                && (app.grid_rect.y1 - app.dock_rect.y0).abs() < 0.01,
+            "the dock stands between the grid and the tabs"
+        );
+        for (_, card) in &app.dock_cards {
+            assert!(
+                card.y0 >= app.grid_rect.y1 && card.y1 <= app.dock_rect.y1 - m.s3 + 0.01,
+                "card {card:?} is not inside the dock {:?}",
+                app.dock_rect
+            );
+        }
+        let cards: Vec<Rect> = app.dock_cards.iter().map(|(_, rect)| *rect).collect();
+        for pair in cards.windows(2) {
+            assert!(pair[0].x1 <= pair[1].x0 + 0.01, "the cards overlap");
+        }
+
+        // The comment card is the first in the row.
+        let comment = cards[0];
         let (comment_buttons, comment_card): (Vec<_>, Vec<_>) = app
             .annotation_clicks
             .iter()
-            .filter(|(rect, _)| rect.center().x < middle)
+            .filter(|(rect, _)| rect.center().x < comment.x1)
             .partition(|(rect, _)| rect.height() < 3.0 * m.control_h);
         assert_eq!(
             comment_buttons.len(),
@@ -96,10 +95,6 @@ fn annotation_cards_keep_rows_and_targets_clear() {
         );
         assert_eq!(comment_card.len(), 1, "the card itself opens its range");
         let card = comment_card[0].0;
-        assert!(
-            (card.y0 - card_top).abs() < 0.5,
-            "the card clears the header band"
-        );
         for (rect, _) in &comment_buttons {
             assert!(rect.height() >= m.control_h - 0.01);
             assert!(
@@ -121,10 +116,22 @@ fn annotation_cards_keep_rows_and_targets_clear() {
         }
         assert!(
             matches!(
-                app.annotation_clicks.last(),
+                app.annotation_clicks.iter().find(|(rect, _)| *rect == card),
                 Some((_, AnnotationClick::Open(_)))
             ),
-            "the card-wide target is registered last, so a button wins where they meet"
+            "the card-wide target opens the thread's range"
+        );
+        let comment_pos = app
+            .annotation_clicks
+            .iter()
+            .position(|(rect, _)| *rect == card);
+        let last_comment_button = app
+            .annotation_clicks
+            .iter()
+            .rposition(|(rect, _)| comment_buttons.iter().any(|(b, _)| b == rect));
+        assert!(
+            comment_pos > last_comment_button,
+            "the card-wide target is registered after its buttons, so a button wins where they meet"
         );
 
         let chart_buttons: Vec<Rect> = app
@@ -142,9 +149,66 @@ fn annotation_cards_keep_rows_and_targets_clear() {
         for rect in &chart_buttons {
             assert!(rect.height() >= m.control_h - 0.01);
             assert!(
-                rect.y0 >= card_top + m.lh_label,
+                rect.y0 >= cards[1].y0 + m.lh_label,
                 "chart action {rect:?} sits under the 2x title"
             );
         }
     }
+
+    // Case `annotations_never_cover_the_sheet`.
+    // At the narrow shot size every card still stands under the grid, and in
+    // a window too short to give the height up there is no dock at all: the
+    // annotations wait rather than cover cells.
+    {
+        let (mut app, mut tr, theme) = measured_app(800.0, 600.0, 1.0);
+        seed_annotations(&mut app);
+        app.sheet_charts.push(crate::doc::ChartSnapshot {
+            id: "c2".into(),
+            title: "Monthly total".into(),
+            kind: crate::doc::ChartKind::Line,
+            start: (1, 6),
+            end: (3, 6),
+        });
+        app.relayout();
+        paint_frame(&mut app, &mut tr, &theme);
+        assert_eq!(app.dock_cards.len(), 3, "all three cards fit 800 px");
+        for (_, card) in &app.dock_cards {
+            assert!(card.y0 >= app.grid_rect.y1, "{card:?} covers the sheet");
+            assert!(
+                card.x0 >= 0.0 && card.x1 <= 800.0,
+                "{card:?} leaves the window"
+            );
+        }
+        assert!(
+            app.grid_rect.height() > 6.0 * app.metrics.grid.default_row_h(),
+            "the sheet keeps its rows"
+        );
+
+        let (mut short, mut tr, theme) = measured_app(800.0, 360.0, 1.0);
+        seed_annotations(&mut short);
+        paint_frame(&mut short, &mut tr, &theme);
+        assert!(short.dock_cards.is_empty(), "no room, no dock");
+        assert!(short.annotation_clicks.is_empty());
+    }
+}
+
+/// A comment thread and a chart on the sheet, as the document would supply.
+fn seed_annotations(app: &mut SheetsApp) {
+    app.sheet_charts = vec![crate::doc::ChartSnapshot {
+        id: "c1".into(),
+        title: "Q1 spend by category".into(),
+        kind: crate::doc::ChartKind::Column,
+        start: (4, 1),
+        end: (4, 5),
+    }];
+    app.sheet_comments = vec![crate::doc::CommentThread {
+        id: "t1".into(),
+        start: (1, 1),
+        end: (4, 1),
+        author: "Alex".into(),
+        body: "Check the rent increase before sending this budget.".into(),
+        resolved: true,
+        replies: Vec::new(),
+    }];
+    app.relayout();
 }

@@ -22,7 +22,7 @@ use ui::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 
@@ -387,12 +387,17 @@ enum AnnotationClick {
 /// An in-progress inline rename of a sheet tab.
 struct TabRename {
     idx: usize,
+    /// The tab's slot: the editor stands exactly on it.
     rect: Rect,
+    /// Measured width of the text being typed, so the slot (and the tabs
+    /// after it) make room for a longer name instead of the editor covering
+    /// its neighbours.
+    text_w: f64,
     editor: EditableLabel,
 }
 
 /// How many theme-derived tab colours the picker offers. A sheet stores a
-/// slot index, not an RGB, so the underline follows the live theme.
+/// slot index, not an RGB, so the tab's colour dot follows the live theme.
 const TAB_PALETTE_LEN: usize = 6;
 
 /// The concrete colour for a stored tab-colour palette index. Indices wrap
@@ -488,10 +493,12 @@ pub struct SheetsApp {
     tab_menu: ContextMenu,
     tab_menu_rows: Vec<Option<overlays::TabMenuRow>>,
     tab_colour: Popover<ColorSwatchPicker>,
+    /// The tab and colour the popover's picker was last built for.
+    tab_colour_shown: Option<(usize, Option<usize>)>,
     /// Whether the active cell is bold, for the Bold command's toggle state.
     active_cell_bold: bool,
     /// A screenshot scenario waiting for the seeded workbook, and one waiting
-    /// for the first layout (see [`SheetsApp::stage_scenario`]).
+    /// for the first measured frame (see [`SheetsApp::stage_scenario`]).
     staged_scenario: Option<String>,
     staged_overlay: Option<String>,
     /// An inline sheet-tab rename editor, when active.
@@ -519,6 +526,10 @@ pub struct SheetsApp {
     /// Rebuilt on paint: annotation cards stay a visual projection of the
     /// shared records, while their click routes dispatch canonical actions.
     annotation_clicks: Vec<(Rect, AnnotationClick)>,
+    /// The strip under the grid that holds the annotation cards, and where
+    /// each card stands in it. Empty when the sheet has no annotations.
+    dock_rect: Rect,
+    dock_cards: Vec<(annotations::DockCard, Rect)>,
     /// Query-ready workbook projection, rebuilt only when document heads
     /// change so global search never reads the CRDT synchronously.
     searchable_sheets: Vec<actions::SearchableSheet>,
@@ -670,6 +681,7 @@ impl SheetsApp {
             tab_menu_rows: Vec::new(),
             tab_colour: Popover::with_content(ColorSwatchPicker::new(Vec::new(), 1))
                 .side(PopoverSide::Above),
+            tab_colour_shown: None,
             active_cell_bold: false,
             staged_scenario: None,
             staged_overlay: None,
@@ -684,6 +696,8 @@ impl SheetsApp {
             sheet_charts: Vec::new(),
             sheet_comments: Vec::new(),
             annotation_clicks: Vec::new(),
+            dock_rect: Rect::ZERO,
+            dock_cards: Vec::new(),
             searchable_sheets: Vec::new(),
             search_projection_heads: None,
             search_provider: crate::search_provider::SheetSearchProvider::new(&[]),
@@ -727,7 +741,11 @@ impl SheetsApp {
             interchange_wake: ui::wake::WakeHandle::detached(),
             pending_reveal: None,
             clipboard: None,
-            palette: CommandPalette::commands(),
+            palette: {
+                let mut palette = CommandPalette::commands();
+                palette.set_query_placeholder("Search commands\u{2026}");
+                palette
+            },
             actions: crate::resource::ActionSink::default(),
         }
     }
@@ -1059,11 +1077,15 @@ impl SheetsApp {
     }
 
     /// Stage a named screenshot scenario. The scenario takes effect once the
-    /// sample workbook is seeded: a menu or sheet opens after the first
-    /// layout (it anchors to what the layout placed), everything else on the
+    /// sample workbook is seeded: a menu or sheet opens in the first measured
+    /// frame (it anchors to what that frame lays out), everything else on the
     /// first sync (it acts on the live document).
     pub fn stage_scenario(&mut self, name: &str) {
         self.run = RunMode::Shots;
+        if name == "tabcolour" {
+            // The popover opens over tabs that already carry a colour.
+            self.staged_scenario = Some(name.to_owned());
+        }
         if matches!(
             name,
             "file" | "format" | "more" | "docsettings" | "tabmenu" | "tabcolour" | "tabrename"
@@ -1095,12 +1117,13 @@ impl SheetsApp {
             "reducedmotion" => self.shots_show_reduced_motion(),
             "charts" | "comments" => self.shots_seed_charts_and_comments(doc),
             "bold" => self.shots_select_header(),
+            "tabcolour" => self.shots_colour_tabs(doc),
             _ => {}
         }
     }
 
-    /// Open the staged menu or sheet, if any, now that the layout has placed
-    /// what it anchors to.
+    /// Open the staged menu or sheet, if any, now that the chrome is measured
+    /// and laid out where it will be painted.
     fn apply_staged_overlay(&mut self) {
         let Some(name) = self.staged_overlay.take() else {
             return;
@@ -1108,7 +1131,25 @@ impl SheetsApp {
         match name.as_str() {
             "file" => self.open_command_menu(OpenMenu::File),
             "format" => self.open_command_menu(OpenMenu::Format),
-            "more" => self.open_command_menu(OpenMenu::More),
+            "more" => {
+                let overflowing = self
+                    .menu_buttons
+                    .iter()
+                    .any(|button| button.opens == Some(OpenMenu::More));
+                if overflowing {
+                    self.open_command_menu(OpenMenu::More);
+                } else {
+                    // Nothing to open, and a capture of the plain window under
+                    // this name would pass for the menu.
+                    #[allow(clippy::print_stderr, reason = "a capture-time diagnostic")]
+                    {
+                        eprintln!(
+                            "sheets: scenario `more` needs a window too narrow for the command \
+                             bar, for example --viewport 520x600 or --text-scale 2"
+                        );
+                    }
+                }
+            }
             "docsettings" => self.shots_open_doc_settings(),
             "tabmenu" => self.open_tab_menu(0),
             "tabrename" => self.begin_tab_rename(0),
@@ -1159,6 +1200,14 @@ impl SheetsApp {
     fn shots_open_doc_settings(&mut self) {
         self.close_overlays();
         self.settings_panel = SettingsPanel::Document;
+    }
+
+    /// Give both sheet tabs a colour, so the tab strip shows the colour dot on
+    /// the chosen tab and on one that is not.
+    fn shots_colour_tabs(&mut self, doc: &mut AutoCommit) {
+        for (idx, slot) in [(0, 0), (1, 2)] {
+            self.run_tab_action(doc, idx, TabAction::SetColor(Some(slot)));
+        }
     }
 
     /// Select the bold header row, so the Bold command shows it is on.
@@ -1267,16 +1316,16 @@ impl SheetsApp {
         self.reload(doc);
     }
 
-    /// Shots hook: copy the `=SUM(B2:D2)` cell and paste it one column to the
-    /// right, then select the pasted cell — the frame shows the *adjusted*
-    /// formula `=SUM(C2:E2)` in the formula bar and its recomputed result in
-    /// the cell, demonstrating relative-reference adjustment on paste.
+    /// Shots hook: copy the `=SUM(B2:D2)` cell and paste it one row down, then
+    /// select the pasted cell: the frame shows the *adjusted* formula
+    /// `=SUM(B3:D3)` in the formula bar and its recomputed result in the cell,
+    /// demonstrating relative-reference adjustment on paste.
     fn shots_paste_formula(&mut self, doc: &mut AutoCommit) {
         self.grid.select_only((4, 1)); // E2 = =SUM(B2:D2)
         self.copy_selection(false);
-        self.grid.select_only((5, 1)); // F2 (seeded AVERAGE; overwritten)
+        self.grid.select_only((4, 2)); // E3, the Groceries total
         self.paste(doc);
-        self.grid.select_only((5, 1));
+        self.grid.select_only((4, 2));
         self.reload(doc);
     }
 
@@ -1288,17 +1337,17 @@ impl SheetsApp {
             actions::put_chart_action(
                 self.active_sheet,
                 sheet_id.clone(),
-                "Quarterly spend",
+                "Q1 spend by category",
                 ChartKind::Column,
-                (1, 1),
-                (4, 6),
+                (4, 1),
+                (4, 5),
             ),
             actions::put_chart_action(
                 self.active_sheet,
                 sheet_id.clone(),
-                "Monthly trend",
+                "Monthly total",
                 ChartKind::Line,
-                (1, 1),
+                (1, 6),
                 (3, 6),
             ),
         ];
@@ -1334,7 +1383,6 @@ impl SheetsApp {
         );
         self.reload(doc);
         self.status = "2 charts and 1 resolved comment thread added".into();
-        self.arm_status_bubble_for_shots();
     }
 
     /// The document's effective locale (per-doc overrides over global).
@@ -1699,6 +1747,9 @@ impl SheetsApp {
         let snap = SheetsDoc::snapshot_sheet(doc, self.active_sheet, cur);
         self.sheet_charts = SheetsDoc::charts(doc, self.active_sheet);
         self.sheet_comments = SheetsDoc::comments(doc, self.active_sheet);
+        // The dock takes its height from the annotations, so the sheet
+        // re-lays out whenever they change.
+        self.relayout();
         let values = formula::recalculate(&snap.raw);
 
         // Effective per-cell formats: an explicit cell format wins; a
@@ -3371,11 +3422,11 @@ impl SheetsApp {
         [
             ("New sheet", MenuItem::NewSheet),
             ("Import CSV", MenuItem::ImportCsv),
-            ("Import Excel (.xlsx)", MenuItem::ImportXlsx),
-            ("Import Calc (.ods)", MenuItem::ImportOds),
+            ("Import Excel workbook", MenuItem::ImportXlsx),
+            ("Import OpenDocument spreadsheet", MenuItem::ImportOds),
             ("Export CSV", MenuItem::ExportCsv),
-            ("Export Excel (.xlsx)", MenuItem::ExportXlsx),
-            ("Export Calc (.ods)", MenuItem::ExportOds),
+            ("Export Excel workbook", MenuItem::ExportXlsx),
+            ("Export OpenDocument spreadsheet", MenuItem::ExportOds),
         ]
     }
 
@@ -3827,7 +3878,6 @@ impl Widget for SheetsApp {
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
         self.relayout();
-        self.apply_staged_overlay();
     }
 
     fn draw(
@@ -3842,13 +3892,16 @@ impl Widget for SheetsApp {
         // Measure first, so this frame's chrome (and the hit-rects it leaves
         // behind) is laid out from the renderer that is about to paint it.
         self.refresh_chrome_metrics(text_renderer, theme);
+        // A staged menu or sheet opens once the chrome is measured, so it
+        // anchors to what is painted (and the More menu knows whether the bar
+        // overflowed).
+        self.apply_staged_overlay();
         self.draw_chrome(scene, transform, text_renderer, theme);
         if self.is_loading() {
             self.draw_loading(scene, transform, text_renderer, theme);
         } else {
             self.grid.draw(scene, transform, text_renderer, theme);
-            self.draw_charts(scene, transform, text_renderer, theme);
-            self.draw_comment_threads(scene, transform, text_renderer, theme);
+            self.draw_annotation_dock(scene, transform, text_renderer, theme);
         }
         // The transient floating status bubble sits above the grid and the
         // tab strip, below the top layer.
@@ -5477,7 +5530,12 @@ impl SheetsApp {
             .with_id("sheet_tab_rename");
         editor.begin_edit();
         self.tab_menu_target = None;
-        self.tab_rename = Some(TabRename { idx, rect, editor });
+        self.tab_rename = Some(TabRename {
+            idx,
+            rect,
+            text_w: 0.0,
+            editor,
+        });
         self.pending.redraw = true;
     }
 
@@ -5949,7 +6007,7 @@ mod tests {
         // Case `chrome_metrics_keep_the_one_x_density`.
         // At 1× the measured chrome is built from the toolkit's control
         // heights and the spacing scale: a 44 px command bar (a small control
-        // with `s2` around it), a 40 px formula bar, a 36 px tab strip, the
+        // with `s2` around it), a 40 px formula bar, a 44 px tab strip, the
         // small control height for the column header and the default row, and
         // a 56 px row header.
         {
@@ -5962,7 +6020,7 @@ mod tests {
                 (app.formula_rect.height() - 40.0).abs() < 0.01,
                 "formula bar"
             );
-            assert!((app.tabs_rect.height() - 36.0).abs() < 0.01, "tab strip");
+            assert!((app.tabs_rect.height() - 44.0).abs() < 0.01, "tab strip");
             let g = app.grid.metrics();
             assert!((g.col_header_h() - 28.0).abs() < 1.0, "column header");
             assert!(
