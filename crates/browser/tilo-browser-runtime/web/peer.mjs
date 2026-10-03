@@ -885,6 +885,12 @@ async function connect({
       if (!room || !peer) return Promise.resolve(false);
       return peer.legacyInput(room, publisher, surface, JSON.stringify(events));
     },
+    /** The device (hex) of the session the node runs beside the host (the
+     * one that opens the node's legacy apps), or `null`. */
+    async nodeSession() {
+      if (!peer) return null;
+      return (await peer.nodeSession()) ?? null;
+    },
     /** The room's app actions (`actions.mjs`), or `undefined` without a room. */
     get actions() { return actions; },
     /** The room's calls (`voice-peer.mjs`), or `undefined` without a room. */
