@@ -5,23 +5,27 @@
 //! note until then (never a fabricated build log).
 //!
 //! The tabs are the toolkit's [`TabBar`], the same strip as the document
-//! tabs above it, and each diagnostic is a [`ListRowFace`]. The panel renders
-//! the data the app feeds it and reports what the user chose; it owns no
-//! filesystem or language-server state of its own.
+//! tabs above it, and the diagnostics are retained [`ListRow`]s in a
+//! [`Section`] inside the toolkit's scroll view, so hover, activation, focus
+//! and scrolling are the toolkit's. The panel renders the data the app feeds
+//! it and reports what the user chose; it owns no filesystem or
+//! language-server state of its own.
 
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    EmptyState, EmptyStateContent, Interaction, ListRowFace, RowLeading, RowStatus, TabBar,
-    TabDescriptor, Widget,
+    Element, EmptyState, EmptyStateContent, ListRow, Scrollable, Section, TabBar, TabDescriptor,
+    Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{MouseScrollDelta, WindowEvent};
+use winit::event::WindowEvent;
 
 /// Rows of diagnostics the panel shows before it scrolls.
 const VISIBLE_ROWS: usize = 4;
@@ -79,7 +83,6 @@ pub struct BottomPanel {
     problems: Vec<Diagnostic>,
     tabs: TabBar,
     tabs_node: Option<NodeId>,
-    last_cursor: Point,
     /// Set when the user picks a tab — read and cleared by the app.
     tab_changed: bool,
     /// Set when the user closes a tab, which closes the whole panel.
@@ -96,10 +99,14 @@ pub struct BottomPanel {
     /// "analysed and clean", and the panel must say so — see
     /// [`BottomPanel::set_analysis`].
     analysis: Option<String>,
-    /// First visible diagnostic row, advanced by the wheel.
-    scroll: usize,
-    /// Row rects recorded during `draw`, for hover and wheel hit-testing.
-    row_rects: Vec<Rect>,
+    /// The diagnostics as a scrolling list of rows; `None` while there are
+    /// none.
+    list: Option<Scrollable>,
+    list_node: Option<NodeId>,
+    /// The scroll position, kept when the list is rebuilt for new problems.
+    list_offset: Rc<Cell<(f32, f32)>>,
+    /// The index of the row the user activated, read and cleared by the app.
+    activated: Rc<Cell<Option<usize>>>,
     /// The tab strip's height, cached from layout.
     strip_height: f64,
     /// The panel's own height, from the theme at layout time.
@@ -115,14 +122,15 @@ impl BottomPanel {
             problems: Vec::new(),
             tabs: Self::fresh_tabs(PanelTab::Problems, 0),
             tabs_node: None,
-            last_cursor: Point::ZERO,
             tab_changed: false,
             close_requested: false,
             has_live_terminal: false,
             terminal_note: None,
             analysis: None,
-            scroll: 0,
-            row_rects: Vec::new(),
+            list: None,
+            list_node: None,
+            list_offset: Rc::new(Cell::new((0.0, 0.0))),
+            activated: Rc::new(Cell::new(None)),
             strip_height: 0.0,
             height: 0.0,
             dirty: true,
@@ -177,10 +185,51 @@ impl BottomPanel {
     pub fn set_problems(&mut self, problems: Vec<Diagnostic>) {
         if self.problems != problems {
             self.problems = problems;
-            self.scroll = self.scroll.min(self.problems.len().saturating_sub(1));
+            self.rebuild_list();
             self.refresh_tab_titles();
             self.dirty = true;
         }
+    }
+
+    /// One retained row per diagnostic, in a scroll view that keeps its
+    /// position across rebuilds.
+    fn rebuild_list(&mut self) {
+        self.list_node = None;
+        if self.problems.is_empty() {
+            self.list = None;
+            self.list_offset.set((0.0, 0.0));
+            return;
+        }
+        let rows: Vec<Element> = self
+            .problems
+            .iter()
+            .enumerate()
+            .map(|(index, d)| {
+                let activated = Rc::clone(&self.activated);
+                let row = ListRow::new(format!("problem-{index}"), d.message.clone())
+                    .meta(format!("Ln {}, Col {}", d.line, d.col))
+                    .on_activate(move || activated.set(Some(index)));
+                let row = match d.severity {
+                    Severity::Error => row.icon(ui::icons::Icon::Ban).error(),
+                    Severity::Warning => row.icon(ui::icons::Icon::TriangleAlert).warning(),
+                    Severity::Info | Severity::Hint => row.icon(ui::icons::Icon::Info),
+                };
+                Box::new(row) as Element
+            })
+            .collect();
+        self.list = Some(
+            Scrollable::new_vertical()
+                .fill_parent_height()
+                .with_persisted_offset(Rc::clone(&self.list_offset))
+                .with_child(Box::new(Section::new(rows))),
+        );
+    }
+
+    /// The (line, column) of the diagnostic the user activated, once. Both are
+    /// 1-based, as listed.
+    pub fn take_jump(&self) -> Option<(usize, usize)> {
+        let index = self.activated.take()?;
+        self.problems.get(index).map(|d| (d.line, d.col))
     }
 
     /// Say what the language server is still doing, or `None` once it has
@@ -279,60 +328,33 @@ impl BottomPanel {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
     ) {
-        self.row_rects.clear();
-        let body = self.content_rect();
-        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
-        if self.problems.is_empty() {
-            // An empty list means two different things, and the panel must
-            // not state the wrong one. While a language server is still
-            // working nothing has been analysed yet; only once it has
-            // answered is "no problems" a finding. Scoped to the open file,
-            // because that is what was actually checked — the linter reads
-            // the active buffer, not every file under the root.
-            let (icon, title) = match &self.analysis {
-                Some(note) => (ui::icons::Icon::RotateCw, note.as_str()),
-                None => (ui::icons::Icon::Check, "No problems in this file"),
-            };
-            EmptyState::paint(
-                &mut ctx,
-                body,
-                &EmptyStateContent {
-                    icon: Some(icon),
-                    ..EmptyStateContent::new(title)
-                },
-                Point::new(-1.0, -1.0),
-            );
+        if let Some(list) = self.list.as_mut() {
+            list.draw(scene, transform, text_renderer, theme, presence);
             return;
         }
-        let inset = f64::from(theme.tokens.spacing.s2);
-        let mut y = body.y0;
-        for d in self.problems.iter().skip(self.scroll) {
-            let location = format!("Ln {}, Col {}", d.line, d.col);
-            let (icon, status) = match d.severity {
-                Severity::Error => (ui::icons::Icon::TriangleAlert, Some(RowStatus::Error)),
-                Severity::Warning => (ui::icons::Icon::TriangleAlert, Some(RowStatus::Warning)),
-                Severity::Info | Severity::Hint => (ui::icons::Icon::Info, None),
-            };
-            let mut face = ListRowFace::new(&d.message)
-                .leading(RowLeading::Icon(icon))
-                .meta(&location);
-            if let Some(status) = status {
-                face = face.status(status);
-            }
-            let height = face.height(ctx.text, ctx.theme);
-            let rect = Rect::new(body.x0 + inset, y, body.x1 - inset, y + height);
-            if rect.y1 > body.y1 + 0.5 {
-                break;
-            }
-            let face = face.interaction(Interaction {
-                hovered: rect.contains(self.last_cursor),
-                ..Interaction::default()
-            });
-            face.paint(&mut ctx, rect);
-            self.row_rects.push(rect);
-            y += height;
-        }
+        let body = self.content_rect();
+        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
+        // An empty list means two different things, and the panel must
+        // not state the wrong one. While a language server is still
+        // working nothing has been analysed yet; only once it has
+        // answered is "no problems" a finding. Scoped to the open file,
+        // because that is what was actually checked — the linter reads
+        // the active buffer, not every file under the root.
+        let (icon, title) = match &self.analysis {
+            Some(note) => (ui::icons::Icon::RotateCw, note.as_str()),
+            None => (ui::icons::Icon::Check, "No problems in this file"),
+        };
+        EmptyState::paint(
+            &mut ctx,
+            body,
+            &EmptyStateContent {
+                icon: Some(icon),
+                ..EmptyStateContent::new(title)
+            },
+            Point::new(-1.0, -1.0),
+        );
     }
 
     fn draw_terminal_note(
@@ -380,6 +402,14 @@ impl Widget for BottomPanel {
         self.strip_height = ui::widget::tabs::TAB_BAR_HEIGHT;
         let tabs_node = self.tabs.build_layout(taffy, theme, node_map);
         self.tabs_node = Some(tabs_node);
+        // The list sits under the strip in every tab so the panel's height is
+        // stable; it is drawn and reached only on the Problems tab.
+        self.list_node = self
+            .list
+            .as_mut()
+            .map(|list| list.build_layout(taffy, theme, node_map));
+        let mut kids = vec![tabs_node];
+        kids.extend(self.list_node);
         #[allow(
             clippy::unwrap_used,
             reason = "Widget::build_layout is infallible by trait contract; inserting a node over a freshly created child cannot fail short of an already-corrupted taffy arena, which nothing here could recover from"
@@ -396,7 +426,7 @@ impl Widget for BottomPanel {
                     flex_shrink: 0.0,
                     ..Default::default()
                 },
-                &[tabs_node],
+                &kids,
             )
             .unwrap();
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
@@ -415,9 +445,12 @@ impl Widget for BottomPanel {
             origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
+        let origin = Point::new(self.rect.x0, self.rect.y0);
         if let Some(n) = self.tabs_node {
-            self.tabs
-                .apply_layout(taffy, n, Point::new(self.rect.x0, self.rect.y0));
+            self.tabs.apply_layout(taffy, n, origin);
+        }
+        if let (Some(list), Some(n)) = (self.list.as_mut(), self.list_node) {
+            list.apply_layout(taffy, n, origin);
         }
     }
 
@@ -443,40 +476,22 @@ impl Widget for BottomPanel {
         self.tabs
             .draw(scene, transform, text_renderer, theme, presence);
         match self.tab {
-            PanelTab::Problems => self.draw_problems(scene, transform, text_renderer, theme),
+            PanelTab::Problems => {
+                self.draw_problems(scene, transform, text_renderer, theme, presence);
+            }
             PanelTab::Terminal => self.draw_terminal_note(scene, transform, text_renderer, theme),
         }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            let next = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-            if self.row_rects.iter().any(|r| r.contains(next))
-                != self.row_rects.iter().any(|r| r.contains(self.last_cursor))
-                || self.row_rects.iter().any(|r| r.contains(next))
-            {
+        if self.tab == PanelTab::Problems
+            && let (Some(list), Some(n)) = (self.list.as_mut(), self.list_node)
+        {
+            list.handle_event(event, &mut ctx.reborrow(ctx.path, n));
+            if *ctx.handled {
                 self.dirty = true;
-            }
-            self.last_cursor = next;
-        }
-        if let WindowEvent::MouseWheel { delta, .. } = event {
-            if self.tab != PanelTab::Problems || !self.rect.contains(self.last_cursor) {
                 return;
             }
-            let lines = match delta {
-                MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
-                MouseScrollDelta::PixelDelta(p) => p.y / 20.0,
-            };
-            let step = (-lines).round() as i64;
-            let visible = self.row_rects.len().max(1);
-            let max = self.problems.len().saturating_sub(visible);
-            let next = (self.scroll as i64 + step).clamp(0, max as i64) as usize;
-            if next != self.scroll {
-                self.scroll = next;
-                self.dirty = true;
-            }
-            *ctx.handled = true;
-            return;
         }
         if let Some(n) = self.tabs_node {
             self.tabs
@@ -516,24 +531,45 @@ impl Widget for BottomPanel {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        vec![&self.tabs]
+        let mut out: Vec<&dyn Widget> = vec![&self.tabs];
+        if self.tab == PanelTab::Problems
+            && let Some(list) = &self.list
+        {
+            out.push(list);
+        }
+        out
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![&mut self.tabs]
+        let mut out: Vec<&mut (dyn Widget + '_)> = vec![&mut self.tabs];
+        if self.tab == PanelTab::Problems
+            && let Some(list) = self.list.as_mut()
+        {
+            out.push(list);
+        }
+        out
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.tabs.needs_redraw()
+        self.dirty
+            || self.tabs.needs_redraw()
+            || self.list.as_ref().is_some_and(Widget::needs_redraw)
     }
 
     fn needs_animation_frame(&self) -> bool {
         self.tabs.needs_animation_frame()
+            || self
+                .list
+                .as_ref()
+                .is_some_and(Widget::needs_animation_frame)
     }
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
         self.tabs.mark_drawn();
+        if let Some(list) = self.list.as_mut() {
+            list.mark_drawn();
+        }
     }
 }
 
@@ -566,6 +602,24 @@ mod tests {
         assert_eq!(titles(&panel), ["Problems (1)", "Terminal"]);
         panel.set_problems(Vec::new());
         assert_eq!(titles(&panel), ["Problems", "Terminal"]);
+    }
+
+    #[test]
+    fn each_problem_is_a_row_and_activating_one_reports_where_it_was_found() {
+        let mut panel = BottomPanel::new();
+        assert!(panel.list.is_none(), "no problems, no list");
+        panel.set_problems(vec![
+            diagnostic(Severity::Error, 3),
+            diagnostic(Severity::Warning, 9),
+        ]);
+        assert!(panel.list.is_some());
+        assert_eq!(panel.take_jump(), None);
+        // The row's activation is the one thing that writes this.
+        panel.activated.set(Some(1));
+        assert_eq!(panel.take_jump(), Some((9, 1)));
+        assert_eq!(panel.take_jump(), None, "cleared on read");
+        panel.set_problems(Vec::new());
+        assert!(panel.list.is_none());
     }
 
     #[test]

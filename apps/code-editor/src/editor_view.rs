@@ -31,8 +31,8 @@ use ui::text_selection::{
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::{
-    AppModel, Autocomplete, Button, ButtonFace, ControlSize, EmptyState, EmptyStateContent,
-    ModelPath, Suggestion, Widget,
+    AppModel, Autocomplete, Button, ButtonFace, ControlSize, EmptyState, ModelPath, Suggestion,
+    Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, Stroke};
@@ -228,12 +228,9 @@ pub struct EditorView {
     find_current: Option<usize>,
 
     // ---- empty state ----
-    /// The "Open File" action pill's rect in the no-buffer zero-state, recorded
-    /// each draw for hit-testing. Empty when a buffer is open.
-    empty_action_rect: Rect,
-    /// Rising-edge flag set when the zero-state's action pill is clicked; the
-    /// app drains it and opens the file picker.
-    empty_action: bool,
+    /// The no-buffer zero-state and its one "Open file" action; the app
+    /// drains the action and opens the file picker.
+    empty: EmptyState,
     /// Compact recovery affordance shown only after horizontal scrolling. It
     /// makes the current offset explicit and returns to column zero on click;
     /// Home provides the matching keyboard path.
@@ -289,8 +286,9 @@ impl EditorView {
             lsp_ask: None,
             find_matches: Vec::new(),
             find_current: None,
-            empty_action_rect: Rect::ZERO,
-            empty_action: false,
+            empty: EmptyState::new("No file open")
+                .with_icon(Icon::FileCode)
+                .with_action("Open file"),
             horizontal_scroll_reset_rect: Rect::ZERO,
             pending_text_edit: None,
         }
@@ -311,7 +309,7 @@ impl EditorView {
 
     /// Drain the rising-edge "Open File" click from the zero-state, if any.
     pub fn take_empty_action(&mut self) -> bool {
-        std::mem::take(&mut self.empty_action)
+        self.empty.take_action()
     }
 
     /// The primary caret. `carets` is always non-empty by construction (`new`
@@ -753,6 +751,20 @@ impl EditorView {
     fn gutter_width(&self) -> f64 {
         let digits = self.lines.len().max(1).to_string().len().max(2);
         self.gutter_pad() * 2.0 + digits as f64 * self.cell_w
+    }
+
+    /// The viewport trimmed to a whole number of lines.
+    fn whole_line_rect(&self) -> Rect {
+        let lines = (self.rect.height() / self.line_h).floor();
+        if lines < 1.0 {
+            return self.rect;
+        }
+        Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y0 + lines * self.line_h,
+        )
     }
 
     /// Visible-line capacity of the viewport.
@@ -2328,28 +2340,21 @@ impl Widget for EditorView {
             // A composed zero-state through the shared primitive: a hero icon,
             // one sentence, and an actionable "Open file" button that summons
             // the portal picker.
-            self.empty_action_rect = EmptyState::paint(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                self.rect,
-                &EmptyStateContent {
-                    icon: Some(Icon::FileCode),
-                    action_label: Some("Open file"),
-                    ..EmptyStateContent::new("No file open")
-                },
-                self.last_cursor,
-            )
-            .unwrap_or(Rect::ZERO);
+            self.empty.apply_layout_external(self.rect);
+            self.empty
+                .draw(scene, transform, text_renderer, theme, presence);
             return;
         }
 
-        // The last visible row is usually cut by the editor's bottom edge; keep
-        // what is cut off from painting into the bar below.
+        // The viewport shows whole lines: a line the bottom edge would cut in
+        // half is not drawn at all, so no half-glyphs sit against the panel
+        // or the status bar.
         scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
             1.0,
             transform,
-            &self.rect,
+            &self.whole_line_rect(),
         );
         let primary_line = self.primary().line;
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
@@ -2379,30 +2384,15 @@ impl Widget for EditorView {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if self.text_obj.is_none() {
-            // Unbound: the only interactive thing is the zero-state's "Open
-            // File" pill. Track the cursor for its hover (redrawing only when
-            // the pointer crosses the pill so an idle screen stays still), and
-            // fire the action on a click inside it.
-            match event {
-                WindowEvent::CursorMoved { position, .. } => {
-                    let next =
-                        Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                    let was = self.empty_action_rect.contains(self.last_cursor);
-                    let now = self.empty_action_rect.contains(next);
-                    self.last_cursor = next;
-                    if was != now {
-                        self.dirty = true;
-                    }
-                }
-                WindowEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                    ..
-                } if self.empty_action_rect.contains(self.last_cursor) => {
-                    self.empty_action = true;
-                    *ctx.handled = true;
-                }
-                _ => {}
+            // Unbound: the only interactive thing is the zero-state's
+            // "Open file" action.
+            self.empty
+                .handle_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
+            if matches!(
+                event,
+                WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
+            ) {
+                self.dirty = true;
             }
             return;
         }
@@ -2468,6 +2458,22 @@ impl Widget for EditorView {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        if self.text_obj.is_none() {
+            vec![&self.empty]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if self.text_obj.is_none() {
+            vec![&mut self.empty]
+        } else {
+            Vec::new()
+        }
     }
 
     fn is_focusable(&self) -> bool {
@@ -2589,6 +2595,19 @@ mod tests {
         let root = automerge::ROOT;
         ev.sync(&mut doc, &root);
         (ev, doc)
+    }
+
+    #[test]
+    fn the_viewport_is_clipped_to_whole_lines() {
+        let (mut ev, _doc) = bound_editor("a\nb\nc\n");
+        ev.line_h = 20.0;
+        ev.rect = Rect::new(0.0, 10.0, 400.0, 10.0 + 5.0 * 20.0 + 13.0);
+        let view = ev.whole_line_rect();
+        assert!((view.height() - 100.0).abs() < 1e-9, "{view:?}");
+        assert!((view.y0 - ev.rect.y0).abs() < 1e-9);
+        // A viewport shorter than one line is left as it is.
+        ev.rect = Rect::new(0.0, 0.0, 400.0, 12.0);
+        assert_eq!(ev.whole_line_rect(), ev.rect);
     }
 
     #[test]
