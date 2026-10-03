@@ -100,6 +100,14 @@ impl<R: Resource> SurfaceCx<R> {
         self.live.clone()
     }
 
+    /// Who the surface is for: the participant reading and editing through
+    /// it, the same id an action they invoke reads as its author. See
+    /// [`ViewCx::me`](super::ViewCx::me). `None` when the surface shows a
+    /// past version.
+    pub fn me(&self) -> Option<&str> {
+        self.dispatch.me()
+    }
+
     /// Whether the participant may only view, as of now.
     pub fn read_only(&self) -> bool {
         self.dispatch.read_only()

@@ -377,6 +377,23 @@ impl HostContext {
         self.reservation = None;
         Ok(())
     }
+    /// [`Self::initialize_new_record`], then `seed` the record as this
+    /// author on this device. The genesis `initialize` writes is the same on
+    /// every device; the seed is what depends on who creates the record or
+    /// where, and is nobody's undo step. See
+    /// [`RecordReservation::initialize_seeded`].
+    /// # Errors
+    /// As [`Self::initialize_new_record`]; a failing seed fails it too.
+    pub fn initialize_new_record_seeded(
+        &mut self,
+        initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
+        seed: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
+    ) -> Result<(), RecordOpenError> {
+        let reservation = self.reservation.as_mut().ok_or(RecordOpenError::Busy)?;
+        reservation.initialize_seeded(initialize, seed)?;
+        self.reservation = None;
+        Ok(())
+    }
     pub(crate) fn callback_binding(&self) -> crate::bound_dispatch::CallbackBinding {
         crate::bound_dispatch::CallbackBinding {
             lifetime: self.wake_scope.handle(),
