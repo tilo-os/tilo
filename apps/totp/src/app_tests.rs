@@ -963,6 +963,8 @@ fn add_requests_and_the_empty_action_open_the_sheet() {
 fn every_capture_scenario_stages_its_state() {
     for scenario in [
         "list",
+        "hover",
+        "copied",
         "empty",
         "add",
         "add-advanced",
@@ -998,6 +1000,17 @@ fn every_capture_scenario_stages_its_state() {
                 assert!(framed.persistence_pending, "{scenario}");
                 assert!(framed.banner_rect.area() > 0.0, "{scenario}");
             }
+            "hover" => assert_eq!(framed.list.hovered_row(), Some(2), "{scenario}"),
+            "copied" => {
+                assert!(framed.last_copied().is_some(), "{scenario}");
+                assert!(
+                    framed
+                        .toast
+                        .as_ref()
+                        .is_some_and(|(_, shown, _)| shown.elapsed() == Duration::ZERO),
+                    "{scenario}: the toast waits for the capture"
+                );
+            }
             _ => assert_eq!(framed.list.len(), 5, "{scenario}"),
         }
         assert!(
@@ -1005,6 +1018,101 @@ fn every_capture_scenario_stages_its_state() {
             "{scenario}: the screen is accessible"
         );
     }
+}
+
+/// The app as the framework runs it: the shell's header buttons, the staged
+/// vault and the sheet, driven through the real host.
+#[test]
+fn the_hosted_app_opens_the_sheet_from_the_header_and_copies_from_the_keyboard() {
+    use crate::resource::TotpShell;
+    let mut hosted =
+        ui::framework::testing::HeadlessApp::<TotpShell>::new().expect("the app mounts");
+    hosted.stage(Some("list")).expect("the list stages");
+    let harness = hosted.harness();
+    harness.relayout();
+    let names = |harness: &ui::headless::FrameHarness| -> Vec<(String, String)> {
+        harness
+            .a11y_nodes()
+            .into_iter()
+            .map(|(_, node)| {
+                (
+                    format!("{:?}", node.role()),
+                    node.label().unwrap_or_default().to_owned(),
+                )
+            })
+            .collect()
+    };
+
+    // Case `the_staged_vault_is_listed_under_the_shell_header`.
+    let listed = names(harness);
+    assert!(
+        listed
+            .iter()
+            .any(|(role, name)| role == "ListItem" && name.starts_with("GitHub")),
+        "the demo accounts are listed: {listed:?}"
+    );
+    assert!(
+        listed
+            .iter()
+            .any(|(role, name)| role == "Button" && name == "Add account"),
+        "the header carries the add button"
+    );
+
+    // Case `the_header_button_opens_the_sheet`.
+    harness
+        .click_named("totp-add")
+        .expect("the header button is a target");
+    for _ in 0..3 {
+        harness.relayout();
+    }
+    let opened = names(harness);
+    assert!(
+        opened
+            .iter()
+            .any(|(role, name)| role == "Dialog" && name == "Add account"),
+        "pressing it opens the sheet: {opened:?}"
+    );
+    assert!(
+        opened.iter().any(|(_, name)| name == "Secret key"),
+        "with its fields"
+    );
+
+    // Case `a_click_in_a_field_of_the_hosted_sheet_puts_the_caret_there`.
+    harness
+        .click_named("totp-issuer")
+        .expect("the issuer field is a target");
+    harness.type_text("Acme");
+    harness.tab(false);
+    harness.type_text("bob");
+    let typed: Vec<_> = harness
+        .a11y_nodes()
+        .into_iter()
+        .filter(|(_, node)| format!("{:?}", node.role()) == "TextInput")
+        .map(|(_, node)| node.value().unwrap_or_default().to_owned())
+        .collect();
+    assert!(
+        typed.iter().any(|value| value == "Acme") && typed.iter().any(|value| value == "bob"),
+        "the click and Tab each put the caret in a field: {typed:?}"
+    );
+
+    // Case `escape_closes_the_sheet_and_enter_copies_the_selected_code`.
+    harness.key("Escape");
+    for _ in 0..3 {
+        harness.relayout();
+    }
+    assert!(
+        !names(harness)
+            .iter()
+            .any(|(role, name)| role == "Dialog" && name == "Add account"),
+        "Escape closes it"
+    );
+    harness.key("Enter");
+    harness.relayout();
+    let copied = names(harness);
+    assert!(
+        copied.iter().any(|(_, name)| name == "Copied GitHub code"),
+        "Enter copies the selected account and says so: {copied:?}"
+    );
 }
 
 /// Rasterise `data` as a QR code into a greyscale PNG on disk, scaling

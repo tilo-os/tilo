@@ -73,6 +73,8 @@ impl Resource for Totp {
 /// The capture scenarios: the list, and each state the app has a screen for.
 const SCENARIOS: &[&str] = &[
     "list",
+    "hover",
+    "copied",
     "empty",
     "add",
     "add-advanced",
