@@ -60,6 +60,10 @@ pub struct WebArgs {
     /// `files:<chain.pem>,<key.pem>`.
     #[arg(long, default_value = "dev", value_name = "SOURCE")]
     pub tls: TlsArg,
+    /// The host name browsers reach this listener by (the certificate's
+    /// name), for `--tls files:…` on an unspecified address.
+    #[arg(long = "public-host", value_name = "NAME")]
+    pub public_host: Option<String>,
     /// Also serve the HTTPS routes as plain HTTP at this loopback address,
     /// so a local page needs no certificate exception (the live plane then
     /// uses the HTTPS stream fallback).
@@ -205,6 +209,7 @@ fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) -> WebConfi
         TlsArg::Files { chain, key } => TlsSource::Files {
             certificate_chain: chain.clone(),
             private_key: key.clone(),
+            host: args.public_host.clone(),
         },
     };
     WebConfig {
