@@ -400,7 +400,7 @@ mod tests {
             "stopped serving"
         );
 
-        let relay = crate::daemon::Relay::start(
+        crate::daemon::Relay::start(
             crate::RelayConfig {
                 state_root: dir.path().join("state"),
                 identity_root: dir.path().join("identity"),
@@ -416,7 +416,8 @@ mod tests {
             },
         )
         .await
-        .unwrap();
-        relay.shutdown().await;
+        .unwrap()
+        .shutdown()
+        .await;
     }
 }
