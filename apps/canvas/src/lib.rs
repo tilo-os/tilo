@@ -68,8 +68,11 @@ impl ResourceApp for App {
             .push(Box::new(
                 Pane::new(panels::header::header(cx, &tools), Edge::Bottom).grouping(),
             ))
-            .push(panels::header::context_bar(cx, &tools))
-            .push(canvas);
+            .push(Box::new(
+                ui::widget::Stack::new()
+                    .push(canvas)
+                    .push(panels::header::context_bar(cx, &tools)),
+            ));
         let sidebar = {
             let tools = tools.clone();
             cx.switch(&tools.sidebar.clone(), move |cx, shown| {

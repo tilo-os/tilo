@@ -69,7 +69,7 @@ pub fn header(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
     )
 }
 
-/// The strip under the header while there is something to do with what is
+/// The strip over the canvas while there is something to do with what is
 /// selected: an area to fill, outline, mask the chosen layer to, clear,
 /// invert or drop; shapes to combine into one. Nothing otherwise.
 pub fn context_bar(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
@@ -83,8 +83,8 @@ pub fn context_bar(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
             if !area && !combine {
                 return Box::new(Spacer::fixed(0.0)) as Element;
             }
+            // Wrapping, so a narrow window keeps its panels in view.
             let mut row = Row::new()
-                .no_wrap()
                 .with_padding(10.0, 4.0)
                 .with_gap(2.0)
                 .with_align_items(ui::taffy::AlignItems::Center);
@@ -129,7 +129,6 @@ fn area_buttons(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
     let lookup = ui::i18n::I18nManager::lookup_plain;
     Box::new(
         Row::new()
-            .no_wrap()
             .with_gap(2.0)
             .with_align_items(ui::taffy::AlignItems::Center)
             .push(Box::new(
@@ -163,7 +162,6 @@ fn area_buttons(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
 fn combine_buttons(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
     let lookup = ui::i18n::I18nManager::lookup_plain;
     let mut row = Row::new()
-        .no_wrap()
         .with_gap(2.0)
         .with_align_items(ui::taffy::AlignItems::Center)
         .push(Box::new(
