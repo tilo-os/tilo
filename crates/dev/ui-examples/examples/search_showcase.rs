@@ -1,13 +1,15 @@
-//! Offscreen renders of the shared global-search surface — a real
-//! [`SearchField`] input over a real [`SearchResultsView`] overlay, fed by a
-//! real [`SearchRegistry`] with a few demo providers. Proves the whole seam
-//! renders end-to-end (declare providers → query → merge/rank → grouped,
-//! selectable overlay) without opening a window.
+//! Offscreen renders of the platform search surfaces, from real widgets:
+//! the results overlay fed by a real [`SearchRegistry`]; the palette narrowed
+//! to a scope with facet chips, message rows and a slow page still loading;
+//! media and file-hit rows; the in-content filter field in its states; and
+//! the find bar over a document with its match highlights.
 //!
-//! Run:  `cargo run -p ui-examples --example ui-shots -- search_showcase`
-//! Out:  `$SEARCH_SHOWCASE_OUT` (default `/tmp/search_showcase`) —
+//! Run:  `cargo run -p ui-examples --example ui-shots -- search_showcase [OUT_DIR]`
+//! Out:  `OUT_DIR`, else `$SEARCH_SHOWCASE_OUT`, else `/tmp/search_showcase` —
 //!       search-{dark,light}-populated.png, search-dark-selected.png,
-//!       search-dark-empty.png
+//!       search-dark-empty.png, palette-scoped-{dark,light}.png,
+//!       palette-rows-{dark,light}.png, filter-{dark,light}.png,
+//!       find-bar-{dark,light}.png
 //!
 //! Each shot drives the real five-pass path for the field and the real
 //! self-layout of the overlay, so the pixels match the live widgets.
@@ -19,13 +21,21 @@ use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
+use tilo_ui::ActionPalette;
 use tilo_ui::icons::Icon;
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
-use tilo_ui::search::{FieldWeight, ListIndex, SearchRegistry, SearchResult};
+use tilo_ui::search::{
+    Facet, FieldWeight, ListIndex, PagePoll, PendingToken, ScopeDecl, SearchPage, SearchProvider,
+    SearchQuery, SearchRegistry, SearchResult, SearchRow,
+};
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
-use tilo_ui::widget::{SearchField, SearchResultsView, Widget};
+use tilo_ui::tokens::TextRole;
+use tilo_ui::widget::{
+    FilterCount, Filterable, FindBar, FindMatch, FindOptions, Findable, SearchField,
+    SearchResultsView, Widget, paint_find_match,
+};
 
 const WIDTH: u32 = 480;
 const PAD: f64 = 16.0;
@@ -191,10 +201,11 @@ fn shoot(theme: &Theme, out: &Path, query: &str, cursor: usize) {
     println!("wrote {} ({}x{})", out.display(), WIDTH, height);
 }
 
-pub fn run(_args: &[String]) {
+pub fn run(args: &[String]) {
     tilo_ui::i18n::I18nManager::init("en-US");
-    let dir =
-        std::env::var("SEARCH_SHOWCASE_OUT").unwrap_or_else(|_| "/tmp/search_showcase".into());
+    let dir = args.first().cloned().unwrap_or_else(|| {
+        std::env::var("SEARCH_SHOWCASE_OUT").unwrap_or_else(|_| "/tmp/search_showcase".into())
+    });
     if let Err(e) = std::fs::create_dir_all(&dir) {
         eprintln!("failed to create output dir {dir}: {e}");
         return;
@@ -212,4 +223,322 @@ pub fn run(_args: &[String]) {
     shoot(&dark, &dir.join("search-dark-selected.png"), "al", 3);
     // Empty state.
     shoot(&dark, &dir.join("search-dark-empty.png"), "zzqq", 0);
+
+    for (theme, name) in [(&dark, "dark"), (&light, "light")] {
+        shoot_palette(theme, &dir.join(format!("palette-scoped-{name}.png")), true);
+        shoot_palette(theme, &dir.join(format!("palette-rows-{name}.png")), false);
+        shoot_filters(theme, &dir.join(format!("filter-{name}.png")));
+        shoot_find(theme, &dir.join(format!("find-bar-{name}.png")));
+    }
+}
+
+/// A mailbox whose server answers late: the cached hits now, the rest pending.
+struct Mailbox;
+
+impl SearchProvider for Mailbox {
+    fn name(&self) -> &'static str {
+        "Messages"
+    }
+    fn search(&self, _: &str) -> Vec<SearchResult> {
+        Vec::new()
+    }
+    fn search_page(
+        &self,
+        query: &SearchQuery,
+        cursor: Option<&tilo_ui::search::SearchCursor>,
+        _: usize,
+        _: usize,
+    ) -> SearchPage {
+        if cursor.is_some() {
+            return SearchPage::empty();
+        }
+        let hits = [
+            (
+                "Ada Lovelace",
+                "March invoice",
+                "The invoice for March is attached, with the hours by week.",
+                "Tue",
+                true,
+                "ada",
+            ),
+            (
+                "Grace Hopper",
+                "Invoice correction",
+                "One line was billed twice; here is the corrected total.",
+                "12 Mar",
+                false,
+                "grace",
+            ),
+            (
+                "Alan Turing",
+                "Re: invoice numbering",
+                "Numbering by quarter works for us. I updated the template.",
+                "9 Mar",
+                false,
+                "alan",
+            ),
+        ]
+        .into_iter()
+        .filter(|(.., from)| query.admits("from", &[from]))
+        .map(|(sender, subject, snippet, date, unread, from)| {
+            SearchResult::new("Messages", subject, format!("folder:inbox/msg:{from}")).with_row(
+                SearchRow::message(sender, subject)
+                    .snippet(snippet)
+                    .date(date)
+                    .unread(unread),
+            )
+        })
+        .collect();
+        SearchPage::pending(hits, PendingToken::new(1))
+    }
+    fn poll_page(&self, _: &PendingToken) -> PagePoll {
+        PagePoll::Pending
+    }
+    fn facets(&self) -> Vec<Facet> {
+        vec![
+            Facet::new("from", "From")
+                .value("ada", "Ada Lovelace")
+                .value("grace", "Grace Hopper")
+                .value("alan", "Alan Turing"),
+        ]
+    }
+}
+
+/// Media and code hits, drawn as what they are.
+struct Library;
+
+impl SearchProvider for Library {
+    fn name(&self) -> &'static str {
+        "Library"
+    }
+    fn search(&self, query: &str) -> Vec<SearchResult> {
+        let videos = [
+            ("Parsing with combinators", "Rust Belt Rust", "41:12"),
+            ("Writing a parser by hand", "Systems Week", "18:05"),
+        ]
+        .into_iter()
+        .map(|(title, channel, duration)| {
+            SearchResult::new("Videos", title, format!("video:{title}"))
+                .with_row(SearchRow::media(title).byline(channel).duration(duration))
+        });
+        let code = [
+            (
+                "crates/text/src/parse.rs",
+                42,
+                "    pub fn parse(input: &str) -> Result<Doc, Error> {",
+            ),
+            (
+                "crates/text/src/lexer.rs",
+                7,
+                "/// Splits input into tokens before parse runs.",
+            ),
+        ]
+        .into_iter()
+        .map(|(path, line, text)| {
+            let start = text.find("parse").unwrap_or(0);
+            SearchResult::new("Code", path, format!("code:{path}:{line}")).with_row(
+                SearchRow::file_hit(path, text)
+                    .line(line)
+                    .matched(start..start.saturating_add("parse".len())),
+            )
+        });
+        let apps = std::iter::once(
+            SearchResult::new("Apps", "Text editor", "app:text").with_icon(Icon::FileText),
+        );
+        videos
+            .chain(code)
+            .chain(apps)
+            .filter(|hit| {
+                query.is_empty() || hit.title.to_lowercase().contains("pars") || hit.kind == "Apps"
+            })
+            .collect()
+    }
+}
+
+fn shoot_palette(theme: &Theme, out: &Path, scoped: bool) {
+    let presence = PresenceCtx::default();
+    let width = 640.0;
+    let mut palette = ActionPalette::with_text_renderer(TextRenderer::new());
+    if scoped {
+        palette.set_providers(vec![Box::new(Mailbox)]);
+        palette.open();
+        palette.set_scope(Some(ScopeDecl::new("folder:inbox", "Inbox")));
+        palette.set_query("invoice");
+        palette.select_query();
+    } else {
+        palette.set_providers(vec![Box::new(Library)]);
+        palette.open();
+        palette.set_query("parse");
+    }
+    for _ in 0..8 {
+        if !palette.advance_search_page().pending {
+            break;
+        }
+    }
+    palette.layout(theme, Point::new(PAD, PAD), width);
+    let height = px_dim(palette.rect().y1 + PAD);
+    let mut scene = Scene::new();
+    let mut tr = TextRenderer::new();
+    palette.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+    let mut r = OffscreenRenderer::new(px_dim(width + PAD * 2.0), height);
+    r.render_png(&scene, theme.tokens.colors.surfaces.content, out);
+    println!("wrote {}", out.display());
+}
+
+/// A list the filter narrows: people, by name.
+struct People {
+    query: String,
+}
+
+impl Filterable for People {
+    fn set_filter(&mut self, query: &str) {
+        query.clone_into(&mut self.query);
+    }
+    fn filter_count(&self) -> Option<FilterCount> {
+        let names = ["Ada Lovelace", "Alan Turing", "Grace Hopper"];
+        let shown = names
+            .iter()
+            .filter(|name| name.to_lowercase().contains(&self.query.to_lowercase()))
+            .count();
+        Some(FilterCount::new(shown, 120))
+    }
+}
+
+fn shoot_filters(theme: &Theme, out: &Path) {
+    let presence = PresenceCtx::default();
+    let width = 420.0;
+    let row = 32.0 + GAP;
+    let states: [(&str, bool, f64); 4] = [
+        ("", true, width),
+        ("a", false, width),
+        ("zebra", false, width),
+        ("", false, 90.0),
+    ];
+    let mut scene = Scene::new();
+    let mut tr = TextRenderer::new();
+    for (index, (query, focused, w)) in states.into_iter().enumerate() {
+        let mut field = SearchField::filter().with_placeholder("Filter people by name or team");
+        field.set_query(query);
+        if !query.is_empty() {
+            let mut people = People {
+                query: String::new(),
+            };
+            people.set_filter(query);
+            field.set_count(people.filter_count());
+        }
+        field.set_focused(focused);
+        let top = PAD + row * f64::from(u8::try_from(index).unwrap_or(0));
+        lay_out_field(&mut field, theme, w, Point::new(PAD, top));
+        field.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+    }
+    let height = px_dim(PAD * 2.0 + row * 4.0);
+    let mut r = OffscreenRenderer::new(px_dim(width + PAD * 2.0), height);
+    r.render_png(&scene, theme.tokens.colors.surfaces.content, out);
+    println!("wrote {}", out.display());
+}
+
+const PROSE: [&str; 4] = [
+    "The parser reads the whole input before it builds a tree,",
+    "so a parse error names the line it found. Each parse step",
+    "keeps the span it covered; the tree keeps every span.",
+    "Errors list in reading order.",
+];
+
+/// The prose above as a findable document, laid out one line per row.
+struct Prose {
+    found: Vec<FindMatch>,
+    current: usize,
+}
+
+impl Findable for Prose {
+    fn find(&mut self, query: &str, options: FindOptions) -> Vec<FindMatch> {
+        self.found.clear();
+        if query.is_empty() {
+            return Vec::new();
+        }
+        for (line, text) in PROSE.iter().enumerate() {
+            let (hay, needle) = if options.match_case {
+                ((*text).to_owned(), query.to_owned())
+            } else {
+                (text.to_lowercase(), query.to_lowercase())
+            };
+            let mut at = 0;
+            while let Some(offset) = hay.get(at..).and_then(|rest| rest.find(&needle)) {
+                let start = line
+                    .saturating_mul(1000)
+                    .saturating_add(at)
+                    .saturating_add(offset);
+                self.found
+                    .push(FindMatch::new(start, start.saturating_add(needle.len())));
+                at = at.saturating_add(offset).saturating_add(needle.len());
+            }
+        }
+        self.found.clone()
+    }
+    fn reveal(&mut self, index: usize) {
+        self.current = index;
+    }
+    fn supports_replace(&self) -> bool {
+        true
+    }
+}
+
+fn shoot_find(theme: &Theme, out: &Path) {
+    let presence = PresenceCtx::default();
+    let width = 640.0;
+    let mut tr = TextRenderer::new();
+    let mut bar = FindBar::new();
+    let mut prose = Prose {
+        found: Vec::new(),
+        current: 0,
+    };
+    bar.set_query("parse");
+    bar.drive(&mut prose);
+    bar.next();
+    bar.drive(&mut prose);
+    bar.focus_query();
+    let band = Rect::new(0.0, 0.0, width, bar.height(theme));
+    bar.layout(band, theme, &mut tr);
+
+    let mut scene = Scene::new();
+    let reading = theme.text(TextRole::Reading);
+    let line_h = f64::from(tr.measure_style("Ag", None, &reading).1);
+    let left = 24.0;
+    let mut y = band.y1 + 24.0;
+    for (line, text) in PROSE.iter().enumerate() {
+        for (index, found) in prose.found.iter().enumerate() {
+            if found.start / 1000 != line {
+                continue;
+            }
+            let start = found.start % 1000;
+            let end = found.end % 1000;
+            let before = tr
+                .measure_style(text.get(..start).unwrap_or(""), None, &reading)
+                .0;
+            let hit = tr
+                .measure_style(text.get(start..end).unwrap_or(""), None, &reading)
+                .0;
+            let x0 = left + f64::from(before);
+            paint_find_match(
+                &mut scene,
+                Affine::IDENTITY,
+                Rect::new(x0, y, x0 + f64::from(hit), y + line_h),
+                index == prose.current,
+                theme,
+            );
+        }
+        tr.draw_style(
+            &mut scene,
+            text,
+            theme.text_primary,
+            Affine::translate((left, y)),
+            None,
+            &reading,
+        );
+        y += line_h;
+    }
+    bar.paint(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+    let mut r = OffscreenRenderer::new(px_dim(width), px_dim(y + 24.0));
+    r.render_png(&scene, theme.tokens.colors.surfaces.content, out);
+    println!("wrote {}", out.display());
 }
