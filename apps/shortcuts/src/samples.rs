@@ -21,7 +21,7 @@ use crate::view;
 
 /// The `--shots` scenarios.
 pub const SCENARIOS: &[&str] = &[
-    "library", "editor", "review", "saved", "empty", "blocks", "drafted",
+    "library", "editor", "review", "saved", "empty", "blocks", "drafted", "picker",
 ];
 
 const NOTES: &str = "so.tilo.notes";
@@ -172,6 +172,23 @@ fn morning_digest() -> Value {
     })
 }
 
+/// A draft being worked on: a shortcut no one has saved yet.
+fn weekly_summary() -> Value {
+    json!({
+        "id": "weekly-summary",
+        "name": "Weekly summary",
+        "steps": [
+            {"id": "list", "step": "invoke", "app_id": NOTES,
+             "resource": {"fixed": "notes.folder:inbox"}, "action": "list"},
+            {"id": "ai", "step": "ai", "transform": "summarise",
+             "input": {"template": "{{step.list/titles}}"}},
+            {"id": "send", "step": "invoke", "app_id": MAIL,
+             "resource": {"fixed": "mail.outbox"}, "action": "send",
+             "args": {"to": {"literal": "me@example.org"}, "body": {"step_output": {"step": "ai"}}}}
+        ]
+    })
+}
+
 fn quick_note() -> Value {
     json!({
         "id": "quick-note",
@@ -203,8 +220,8 @@ fn mail_me_my_notes() -> Value {
     })
 }
 
-/// What the agent drafted from a description: a shortcut with one thing
-/// left for the person to fill in.
+/// What the agent drafted from a description: a complete shortcut, offered
+/// to open as a draft.
 fn drafted() -> Option<Drafting> {
     let shortcut = json!({
         "id": "note-the-inbox",
@@ -214,17 +231,17 @@ fn drafted() -> Option<Drafting> {
              "resource": {"fixed": "notes.folder:inbox"}, "action": "list"},
             {"id": "create", "step": "invoke", "app_id": NOTES,
              "resource": {"fixed": "notes.folder:inbox"}, "action": "create",
-             "args": {"title": {"literal": "Inbox today"}}}
+             "args": {"title": {"literal": "Inbox today"}, "pinned": {"literal": false}}}
         ]
     });
     let shortcut = serde_json::from_value(shortcut).ok()?;
     Some(Drafting::Ready(Box::new(Drafted {
         shortcut,
-        problems: vec![String::from("required argument `pinned` is not bound")],
+        problems: Vec::new(),
     })))
 }
 
-/// A shortcut with a repeat and a condition, one step unfinished.
+/// A shortcut with a repeat and a condition.
 fn tidy_notes() -> Value {
     json!({
         "id": "tidy-notes",
@@ -242,7 +259,7 @@ fn tidy_notes() -> Value {
              "body": [
                 {"id": "create", "step": "invoke", "app_id": NOTES,
                  "resource": {"fixed": "notes.folder:inbox"}, "action": "create",
-                 "args": {"title": {"var": "title"}}}
+                 "args": {"title": {"var": "title"}, "pinned": {"literal": false}}}
              ]},
             {"id": "if", "step": "if", "cond": {"truthy": {"input": "keyword"}},
              "then": [
@@ -257,10 +274,10 @@ fn tidy_notes() -> Value {
 /// The drafts a scenario starts with.
 #[must_use]
 pub fn drafts(name: Option<&str>) -> Vec<Invoke<Workbench>> {
-    let weekly = Workbench::NEW_DRAFT.with(String::from("Weekly planning"));
+    let weekly = Workbench::NEW_DRAFT.with(String::from("Standup notes"));
     match name {
-        Some("editor" | "review") => vec![weekly, Workbench::OPEN_SHORTCUT.with(morning_digest())],
-        Some("blocks") => vec![Workbench::OPEN_SHORTCUT.with(tidy_notes())],
+        Some("editor" | "review") => vec![weekly, Workbench::OPEN_SHORTCUT.with(weekly_summary())],
+        Some("blocks" | "picker") => vec![Workbench::OPEN_SHORTCUT.with(tidy_notes())],
         Some("library" | "saved") => vec![weekly],
         _ => Vec::new(),
     }
@@ -274,11 +291,13 @@ pub fn stage(
     selected: &LocalState<Option<String>>,
     pane: &LocalState<NavPane>,
     sheet: &LocalState<bool>,
+    picker: &LocalState<Option<String>>,
 ) {
     let door = door.clone();
     let selected = selected.clone();
     let pane = pane.clone();
     let sheet = sheet.clone();
+    let picker = picker.clone();
     let live = cx.live().clone();
     cx.on_stage(move |scenario| {
         let saved: Vec<Shortcut> = [morning_digest(), quick_note(), mail_me_my_notes()]
@@ -340,8 +359,8 @@ pub fn stage(
             })
         };
         let open = match scenario {
-            Some("editor" | "review") => draft("Morning digest"),
-            Some("blocks") => draft("Tidy notes"),
+            Some("editor" | "review") => draft("Weekly summary"),
+            Some("blocks" | "picker") => draft("Tidy notes"),
             Some("saved") => Some(format!("{}quick-note", view::SAVED)),
             _ => None,
         };
@@ -354,5 +373,7 @@ pub fn stage(
         });
         selected.set(Some(open.unwrap_or_else(|| view::OVERVIEW.to_owned())));
         sheet.set(scenario == Some("review"));
+        // The picker of the top-level block, open.
+        picker.set((scenario == Some("picker")).then(String::new));
     });
 }

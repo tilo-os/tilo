@@ -26,8 +26,8 @@ use ui::icons::Icon;
 use ui::prelude::*;
 use ui::tilo_actions::{ActionBinding, ActionParam, ParamType};
 use ui::widget::{
-    Actions as ActionGroup, ButtonRole, ControlSize, ListRow, ModalDialog, NumberInput, Property,
-    PropertyList, Section, SectionHeader, labeled_field,
+    Actions as ActionGroup, ButtonRole, ControlSize, ListRow, ModalDialog, NumberInput, Section,
+    SectionHeader, labeled_field,
 };
 use ui::{LocalState, RemoteActions, TextKind};
 
@@ -36,6 +36,10 @@ use crate::editor::{self, Choice};
 use crate::grant::{self, Permission};
 use crate::model::{Draft, INPUT_TYPES, Workbench, block_at};
 
+/// The size of the controls that sit with text fields in a form. A text
+/// field is as tall as a `Large` control, so dropdowns and buttons beside or
+/// above one are too, and the edges line up.
+const FIELD_HEIGHT: ControlSize = ControlSize::Large;
 /// Choice value meaning "type a value here".
 const LITERAL: &str = "literal";
 /// Choice value meaning "not bound".
@@ -88,8 +92,15 @@ impl EditorInput {
         let program = &draft.program.0;
         let mut shape = String::new();
         shape_of(&program.steps, &mut shape);
+        // What each step reports is part of how its card is built; what the
+        // shortcut itself reports (its name) changes as the name is typed.
+        let step_problems: Vec<_> = self
+            .problems
+            .iter()
+            .filter(|(path, _)| !path.is_empty())
+            .collect();
         format!(
-            "{}|{}|{:?}|{}|{}|{:?}|{:?}|{}|{}",
+            "{}|{}|{:?}|{}|{}|{:?}|{:?}|{}|{}|{step_problems:?}",
             id.as_str(),
             shape,
             program
@@ -241,7 +252,7 @@ pub(crate) fn root(cx: &ViewCx<Workbench>) -> Element {
         door_resource: door::resource(),
     };
     core.borrow_mut().refresh(None);
-    crate::samples::stage(cx, &ui.door, &ui.selected, &ui.pane, &ui.sheet);
+    crate::samples::stage(cx, &ui.door, &ui.selected, &ui.pane, &ui.sheet, &ui.picker);
 
     let follow = Rc::new(RefCell::new(follow(cx.live().clone(), &ui)));
     let shell = NavShell::new()
@@ -581,7 +592,8 @@ fn overview_page(ui: &Ui) -> Element {
 
 fn overview_body(ui: &Ui, description: &LocalState<String>, door: &DoorState) -> Element {
     let mut items: Vec<Element> = Vec::new();
-    if drafting_offered(door) {
+    let drafting = drafting_offered(door);
+    if drafting {
         items.push(describe_panel(ui, description, door.drafted.as_ref()));
     }
     match &door.library {
@@ -599,8 +611,13 @@ fn overview_body(ui: &Ui, description: &LocalState<String>, door: &DoorState) ->
     if door.runs.is_empty() {
         if matches!(&door.library, Loaded::Ready(library) if library.is_empty()) {
             items.push(Box::new(
-                EmptyState::new(ui::i18n!("shortcuts-saved-empty"))
-                    .with_message(ui::i18n!("shortcuts-saved-empty-message")),
+                EmptyState::new(ui::i18n!("shortcuts-saved-empty")).with_message(ui::i18n!(
+                    if drafting {
+                        "shortcuts-saved-empty-draft"
+                    } else {
+                        "shortcuts-saved-empty-blank"
+                    }
+                )),
             ));
         } else {
             items.push(Box::new(Section::titled(
@@ -627,38 +644,7 @@ fn describe_panel(
         .with_accessible_name("shortcuts-describe")
         .with_placeholder("shortcuts-describe-placeholder")
         .multiline(true);
-    let source = description.clone();
-    // Asking is the main action until there is a draft to open.
-    let role = if matches!(drafted, Some(door::Drafting::Ready(_))) {
-        ButtonRole::Secondary
-    } else {
-        ButtonRole::Primary
-    };
-    let ask = ui
-        .door_resource
-        .actions
-        .iter()
-        .find(|spec| spec.id == door::DESCRIBE)
-        .and_then(|spec| {
-            ActionBinding::new(&ui.door_resource, spec, move |()| {
-                serde_json::Map::from_iter([(
-                    "description".to_owned(),
-                    Value::String(source.get()),
-                )])
-            })
-            .ok()
-        })
-        .map_or_else(
-            || Button::new("draft-with-agent", "shortcuts-draft-it", None).with_enabled(false),
-            |binding| {
-                Button::new("draft-with-agent", "shortcuts-draft-it", None)
-                    .role(role)
-                    .with_enabled(!matches!(drafted, Some(door::Drafting::Drafting)))
-                    .on_action(binding)
-            },
-        );
     let mut items: Vec<Element> = vec![Box::new(field)];
-    let mut open_drafted = None;
     match drafted {
         None => {}
         Some(door::Drafting::Drafting) => {
@@ -690,22 +676,82 @@ fn describe_panel(
                         .with_message(drafted.problems.join("\n")),
                 ));
             }
+        }
+    }
+    // The buttons follow what is typed, so asking is offered only once there
+    // is something to ask; the field above is not rebuilt with them.
+    let buttons = {
+        let ui = ui.clone();
+        let typed = description.clone();
+        ModelView::from_document(
+            {
+                let door = ui.door.clone();
+                let typed = typed.clone();
+                move |_, _| {
+                    (
+                        door.with(|door| door.drafted.clone()),
+                        typed.get().trim().is_empty(),
+                    )
+                }
+            },
+            move |(drafted, empty)| describe_buttons(&ui, &typed, drafted.as_ref(), *empty),
+        )
+    };
+    items.push(Box::new(buttons));
+    Box::new(Section::titled(ui::i18n!("shortcuts-describe"), items))
+}
+
+/// Draft it, and once there is a draft, open it.
+fn describe_buttons(
+    ui: &Ui,
+    description: &LocalState<String>,
+    drafted: Option<&door::Drafting>,
+    empty: bool,
+) -> Element {
+    let source = description.clone();
+    // Asking is the main action until there is a draft to open.
+    let role = if matches!(drafted, Some(door::Drafting::Ready(_))) {
+        ButtonRole::Secondary
+    } else {
+        ButtonRole::Primary
+    };
+    let ask = ui
+        .door_resource
+        .actions
+        .iter()
+        .find(|spec| spec.id == door::DESCRIBE)
+        .and_then(|spec| {
+            ActionBinding::new(&ui.door_resource, spec, move |()| {
+                serde_json::Map::from_iter([(
+                    "description".to_owned(),
+                    Value::String(source.get()),
+                )])
+            })
+            .ok()
+        })
+        .map_or_else(
+            || Button::new("draft-with-agent", "shortcuts-draft-it", None).with_enabled(false),
+            |binding| {
+                Button::new("draft-with-agent", "shortcuts-draft-it", None)
+                    .role(role)
+                    .with_enabled(!empty && !matches!(drafted, Some(door::Drafting::Drafting)))
+                    .on_action(binding)
+            },
+        );
+    // Opening a draft is the main action once there is one; asking again is
+    // the quieter choice beside it.
+    Box::new(match drafted {
+        Some(door::Drafting::Ready(drafted)) => {
             let json = serde_json::to_value(&drafted.shortcut).unwrap_or(Value::Null);
             let open = ui.bind(
                 Button::new("open-drafted", "shortcuts-open-drafted", None)
                     .role(ButtonRole::Primary),
                 Workbench::OPEN_SHORTCUT.map(move |()| json.clone()),
             );
-            open_drafted = Some(open);
+            ActionGroup::new(open).secondary(ask)
         }
-    }
-    // Opening a draft is the main action once there is one; asking again is
-    // the quieter choice beside it.
-    items.push(Box::new(match open_drafted {
-        Some(open) => ActionGroup::new(open).secondary(ask),
-        None => ActionGroup::new(ask),
-    }));
-    Box::new(Section::titled(ui::i18n!("shortcuts-describe"), items))
+        _ => ActionGroup::new(ask),
+    })
 }
 
 fn run_history(ui: &Ui, door: &DoorState) -> Element {
@@ -713,9 +759,7 @@ fn run_history(ui: &Ui, door: &DoorState) -> Element {
     for run in door.runs.iter().take(20) {
         let secondary = match &run.status {
             RunStatus::Running => String::from("Running…"),
-            RunStatus::Completed(Some(value)) => {
-                format!("Finished with {}", editor::literal_text(value))
-            }
+            RunStatus::Completed(Some(value)) => editor::literal_text(value),
             RunStatus::Completed(None) => String::from("Finished"),
             RunStatus::Failed(reason) => format!("Stopped: {reason}"),
         };
@@ -731,7 +775,8 @@ fn run_history(ui: &Ui, door: &DoorState) -> Element {
         item = match &run.status {
             RunStatus::Running => item.active(),
             RunStatus::Failed(_) => item.error(),
-            RunStatus::Completed(_) => item,
+            // Every row carries a dot, so the times line up down the list.
+            RunStatus::Completed(_) => item.idle(),
         };
         rows.push(Box::new(item));
     }
@@ -742,11 +787,13 @@ fn run_history(ui: &Ui, door: &DoorState) -> Element {
 
 /// What the last run of `shortcut` came to, in words.
 fn last_run_text(door: &DoorState, shortcut: &str) -> String {
-    match door.last_run(shortcut).map(|run| &run.status) {
-        None => String::from("Not run yet"),
-        Some(RunStatus::Running) => String::from("Running…"),
-        Some(RunStatus::Completed(_)) => String::from("Finished"),
-        Some(RunStatus::Failed(reason)) => format!("Stopped: {reason}"),
+    let Some(run) = door.last_run(shortcut) else {
+        return String::from("Not run yet");
+    };
+    match &run.status {
+        RunStatus::Running => format!("Running since {}", run.started),
+        RunStatus::Completed(_) => format!("Finished at {}", run.started),
+        RunStatus::Failed(reason) => format!("Stopped at {}: {reason}", run.started),
     }
 }
 
@@ -821,7 +868,8 @@ fn saved_page(ui: &Ui, input: &EditorInput, shortcut: &Shortcut) -> Element {
                 param.description.to_string(),
                 TextInput::from_state(value)
                     .with_id(&format!("run-{id}-input-{}", param.name))
-                    .with_accessible_name(param.description.to_string()),
+                    .with_accessible_name(param.description.to_string())
+                    .with_placeholder("shortcuts-input-placeholder"),
             )));
         }
         items.push(Box::new(Section::titled(
@@ -829,29 +877,31 @@ fn saved_page(ui: &Ui, input: &EditorInput, shortcut: &Shortcut) -> Element {
             form,
         )));
     }
+    // Deleting sits apart from the actions that carry on with the shortcut.
     items.push(Box::new(
-        ActionGroup::new(run).secondary(edit).secondary(delete),
+        Row::new()
+            .with_justify(ui::taffy::JustifyContent::SpaceBetween)
+            .push(Box::new(ActionGroup::new(delete)))
+            .push(Box::new(ActionGroup::new(run).secondary(edit))),
     ));
 
-    let numbered: Vec<Property> = shortcut
+    let numbered: Vec<Element> = shortcut
         .steps
         .iter()
         .map(|step| {
             let number = editor::step_number(&shortcut.steps, &step.id).unwrap_or(0);
             let title = editor::title(step, &input.catalog, &shortcut.steps);
-            Property::new(
-                format!("Step {number}"),
-                match editor::context(step, &input.catalog) {
-                    Some(context) => format!("{title}, {context}"),
-                    None => title,
-                },
-            )
+            let line = match editor::context(step, &input.catalog) {
+                Some(context) => format!("{number}. {title}, {context}"),
+                None => format!("{number}. {title}"),
+            };
+            Box::new(Text::new(&line)) as Element
         })
         .collect();
     if !numbered.is_empty() {
         items.push(Box::new(Section::titled(
             ui::i18n!("shortcuts-steps"),
-            vec![Box::new(PropertyList::new(numbered))],
+            numbered,
         )));
     }
     page(ui, items)
@@ -867,10 +917,10 @@ fn saved_facts(ui: &Ui, shortcut: &Shortcut) -> Element {
             move |door| last_run_text(door, &id)
         },
         move |door| -> Element {
-            Box::new(PropertyList::new(vec![Property::new(
-                "Last run",
-                last_run_text(door, &id),
-            )]))
+            Box::new(Section::titled(
+                ui::i18n!("shortcuts-last-run"),
+                vec![Box::new(Text::new(&last_run_text(door, &id)))],
+            ))
         },
     ))
 }
@@ -1185,7 +1235,7 @@ fn inputs_section(ui: &Ui, draft_id: &Id, draft: &Draft) -> Element {
     let name = LocalState::new(String::new());
     let kind = LocalState::new(String::from("text"));
     let add = ui.bind(
-        Button::new("add-input", "shortcuts-add-input", None),
+        Button::new("add-input", "shortcuts-add-input", None).control_size(FIELD_HEIGHT),
         Workbench::ADD_INPUT.map({
             let draft = draft_id.clone();
             let name = name.clone();
@@ -1208,7 +1258,8 @@ fn inputs_section(ui: &Ui, draft_id: &Id, draft: &Draft) -> Element {
                     &kind,
                 )
                 .with_id("new-input-type")
-                .with_accessible_name("shortcuts-input-type"),
+                .with_accessible_name("shortcuts-input-type")
+                .control_size(FIELD_HEIGHT),
             ))
             .push(Box::new(add)),
     ));
@@ -1225,11 +1276,7 @@ fn output_section(ui: &Ui, input: &EditorInput, draft_id: &Id, draft: &Draft) ->
     let choices: Vec<Choice> = values
         .into_iter()
         .map(|option| Choice {
-            label: format!(
-                "{} ({})",
-                editor::describe(&option.binding, &program.steps),
-                option.describes
-            ),
+            label: editor::describe(&option.binding, &program.steps),
             binding: option.binding,
         })
         .collect();
@@ -1238,7 +1285,8 @@ fn output_section(ui: &Ui, input: &EditorInput, draft_id: &Id, draft: &Draft) ->
     let state = LocalState::new(current);
     let mut picker = Dropdown::from_state(labels, &state)
         .with_id("draft-output")
-        .with_accessible_name("shortcuts-output");
+        .with_accessible_name("shortcuts-output")
+        .control_size(FIELD_HEIGHT);
     picker.set_value_options(values);
     let picker = ui.bind(
         picker,
@@ -1341,55 +1389,60 @@ fn add_controls(ui: &Ui, input: &EditorInput, draft_id: &Id, address: &str) -> E
     if input.picker.as_deref() == Some(address) {
         return action_picker(ui, input, draft_id, address);
     }
-    let open = {
-        let picker = ui.picker.clone();
-        let address = address.to_owned();
-        Button::new(&format!("add-action-{key}"), "shortcuts-add-action", None)
-            .control_size(ControlSize::Small)
-            .on_view(move || picker.set(Some(address.clone())))
-    };
-    let block_button = |suffix: &str, label: &str, step: Value| {
-        ui.bind(
-            Button::new(&format!("add-{suffix}-{key}"), label, None)
-                .control_size(ControlSize::Small),
-            Workbench::ADD_STEP.map({
-                let draft = draft_id.clone();
-                let address = address.to_owned();
-                move |()| (draft.clone(), address.clone(), step.clone())
-            }),
-        )
-    };
+    let picker = ui.picker.clone();
+    let address = address.to_owned();
     Box::new(
-        Row::new()
-            .push(Box::new(open))
-            .push(Box::new(block_button(
-                "if",
-                "shortcuts-add-if",
-                json!({"step": "if", "cond": {"truthy": {"literal": true}}, "then": []}),
-            )))
-            .push(Box::new(block_button(
-                "repeat",
-                "shortcuts-add-repeat",
-                json!({"step": "for_each", "items": {"literal": []}, "body": []}),
-            )))
-            .push(Box::new(block_button(
-                "set",
-                "shortcuts-add-set",
-                json!({"step": "set_var", "name": "value", "value": {"literal": ""}}),
-            )))
-            .push(Box::new(block_button(
-                "ask",
-                "shortcuts-add-ask",
-                json!({"step": "ask", "param": {
-                    "name": "answer", "ty": "text", "required": true, "description": "Your answer"
-                }}),
-            )))
-            .push(Box::new(block_button(
-                "ai",
-                "shortcuts-add-ai",
-                json!({"step": "ai", "transform": "summarise", "input": {"literal": ""}}),
-            ))),
+        Row::new().push(Box::new(
+            Button::new(&format!("add-action-{key}"), "shortcuts-add-step", None)
+                .on_view(move || picker.set(Some(address.clone()))),
+        )),
     )
+}
+
+/// One kind of step that is not an app's action, as the picker offers it:
+/// what it is called, what it does, and the step it adds.
+struct BlockOffer {
+    id: &'static str,
+    label: &'static str,
+    detail: &'static str,
+    step: Value,
+}
+
+fn block_offers() -> Vec<BlockOffer> {
+    vec![
+        BlockOffer {
+            id: "if",
+            label: "If",
+            detail: "Do some steps only when a value is set",
+            step: json!({"step": "if", "cond": {"truthy": {"literal": true}}, "then": []}),
+        },
+        BlockOffer {
+            id: "repeat",
+            label: "Repeat with each",
+            detail: "Do some steps for every item in a list",
+            step: json!({"step": "for_each", "items": {"literal": []}, "body": []}),
+        },
+        BlockOffer {
+            id: "set",
+            label: "Set variable",
+            detail: "Keep a value to use in later steps",
+            step: json!({"step": "set_var", "name": "value", "value": {"literal": ""}}),
+        },
+        BlockOffer {
+            id: "ask",
+            label: "Ask for a value",
+            detail: "Ask whoever runs the shortcut for something",
+            step: json!({"step": "ask", "param": {
+                "name": "answer", "ty": "text", "required": true, "description": "Your answer"
+            }}),
+        },
+        BlockOffer {
+            id: "ai",
+            label: "Summarise with the agent",
+            detail: "Have the agent write a short summary of some text",
+            step: json!({"step": "ai", "transform": "summarise", "input": {"literal": ""}}),
+        },
+    ]
 }
 
 /// The live catalogue, grouped by app, each action with what it takes.
@@ -1408,6 +1461,24 @@ fn action_picker(ui: &Ui, input: &EditorInput, draft_id: &Id, address: &str) -> 
         .on_view(move || picker.set(None))
     };
     let mut groups: Vec<Element> = Vec::new();
+    let blocks: Vec<Element> = block_offers()
+        .into_iter()
+        .map(|offer| {
+            let mut row =
+                ListRow::new(format!("offer-{}", offer.id), offer.label).secondary(offer.detail);
+            if let Some(binding) = ui.actions.invocation(Workbench::ADD_STEP.with((
+                draft_id.clone(),
+                address.to_owned(),
+                offer.step,
+            ))) {
+                row = row.on_action(binding);
+            }
+            Box::new(row) as Element
+        })
+        .collect();
+    groups.push(Box::new(
+        Section::new(blocks).with_header(SectionHeader::group(ui::i18n!("shortcuts-blocks"))),
+    ));
     for group in editor::picker(&input.catalog) {
         let mut rows: Vec<Element> = Vec::new();
         for kind in group.kinds {
@@ -1449,7 +1520,7 @@ fn action_picker(ui: &Ui, input: &EditorInput, draft_id: &Id, address: &str) -> 
     }
     Box::new(
         Section::new(groups)
-            .with_header(SectionHeader::heading(ui::i18n!("shortcuts-add-action")).action(close)),
+            .with_header(SectionHeader::heading(ui::i18n!("shortcuts-add-step")).action(close)),
     )
 }
 
@@ -1474,20 +1545,8 @@ fn step_card(
     };
     let number = editor::step_number(steps, &step.id).unwrap_or(0);
     let title = format!("{number}. {}", editor::title(step, &input.catalog, steps));
-    let problems = {
-        let key = path.to_owned();
-        Text::from_state(&ui.editor, move |input| {
-            input
-                .problems
-                .get(&key)
-                .map(|reasons| reasons.join("; "))
-                .unwrap_or_default()
-        })
-        .with_id(format!("step-problems-{path}"))
-        .with_role(TextRole::Caption)
-    };
     let actions = step_actions(ui, draft_id, path, (index, count));
-    let (body, nested) = step_fields(&at, step, problems);
+    let (body, nested) = step_fields(&at, step);
     let card = Card::new(Box::new(body)).with_title_action(title, Box::new(actions));
     let mut items: Vec<Element> = vec![Box::new(card)];
     items.extend(nested);
@@ -1569,11 +1628,7 @@ fn value_row(
     let choices: Vec<Choice> = values_at(&shortcut, &input.catalog, &editor::step_path(path))
         .into_iter()
         .map(|option| Choice {
-            label: format!(
-                "{} ({})",
-                editor::describe(&option.binding, &program.steps),
-                option.describes
-            ),
+            label: editor::describe(&option.binding, &program.steps),
             binding: option.binding,
         })
         .collect();
@@ -1581,7 +1636,8 @@ fn value_row(
     let state = LocalState::new(selected.clone());
     let mut picker = Dropdown::from_state(labels, &state)
         .with_id(&format!("step-{suffix}-source-{path}"))
-        .with_accessible_name(label);
+        .with_accessible_name(label)
+        .control_size(FIELD_HEIGHT);
     picker.set_value_options(values);
     let rewrite = std::sync::Arc::new(rewrite);
     let picker = ui.bind(
@@ -1658,7 +1714,8 @@ fn argument_row(
     let state = LocalState::new(selected);
     let mut source = Dropdown::from_state(labels, &state)
         .with_id(&format!("arg-{path}-{name}"))
-        .with_accessible_name(label.clone());
+        .with_accessible_name(label.clone())
+        .control_size(FIELD_HEIGHT);
     source.set_value_options(values);
     let source = ui.bind(
         source,
@@ -1791,28 +1848,18 @@ fn grant_body(_ui: &Ui, input: &EditorInput) -> Element {
     if permissions.is_empty() {
         body = body.push(Box::new(caption("shortcuts-grant-none")));
     } else {
-        body = body.push(Box::new(PropertyList::new(
-            permissions
-                .iter()
-                .map(|permission| Property::new(&permission.label, verb_label(permission.verb)))
-                .collect(),
-        )));
+        for permission in &permissions {
+            body = body.push(Box::new(Text::new(&format!(
+                "{} ({})",
+                permission.label,
+                verb_label(permission.verb)
+            ))));
+        }
     }
     if !input.problems.is_empty() {
         body = body.push(Box::new(
             Banner::warning(ui::i18n!("shortcuts-grant-blocked")).with_message(
-                input
-                    .problems
-                    .iter()
-                    .map(|(path, reasons)| {
-                        format!(
-                            "{}: {}",
-                            if path.is_empty() { "shortcut" } else { path },
-                            reasons.join("; ")
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n"),
+                editor::problem_lines(&draft.program.0.steps, &input.problems).join("\n"),
             ),
         ));
     }
@@ -1821,11 +1868,11 @@ fn grant_body(_ui: &Ui, input: &EditorInput) -> Element {
 
 const fn verb_label(verb: collab_types::Verb) -> &'static str {
     match verb {
-        collab_types::Verb::Read => "Read",
-        collab_types::Verb::Comment => "Comment",
-        collab_types::Verb::Write => "Change",
-        collab_types::Verb::Invite => "Invite",
-        collab_types::Verb::Admin => "Administer",
+        collab_types::Verb::Read => "read",
+        collab_types::Verb::Comment => "comment",
+        collab_types::Verb::Write => "change",
+        collab_types::Verb::Invite => "invite",
+        collab_types::Verb::Admin => "administer",
     }
 }
 
@@ -1874,7 +1921,7 @@ fn step_actions(ui: &Ui, draft_id: &Id, path: &str, (index, count): (usize, usiz
     clippy::too_many_lines,
     reason = "one arm per step kind, read top to bottom like the editor"
 )]
-fn step_fields(at: &StepEditor<'_>, step: &Step, problems: Text) -> (Column, Vec<Element>) {
+fn step_fields(at: &StepEditor<'_>, step: &Step) -> (Column, Vec<Element>) {
     let StepEditor {
         ui,
         input,
@@ -1886,7 +1933,11 @@ fn step_fields(at: &StepEditor<'_>, step: &Step, problems: Text) -> (Column, Vec
     if let Some(context) = editor::context(step, &input.catalog) {
         body = body.push(Box::new(caption(&context)));
     }
-    body = body.push(Box::new(problems));
+    // What the checker found with this step, one notice each; the card is
+    // rebuilt when that changes, so a step with nothing to report has none.
+    for reason in input.problems.get(path).into_iter().flatten() {
+        body = body.push(Box::new(Banner::warning(reason.clone())));
+    }
     let mut nested: Vec<Element> = Vec::new();
     match &step.kind {
         StepKind::Invoke { args, .. } => {
@@ -1935,7 +1986,9 @@ fn step_fields(at: &StepEditor<'_>, step: &Step, problems: Text) -> (Column, Vec
                 let repeated = repeated.clone();
                 move |binding| json!({"step": "for_each", "items": binding, "item": item, "body": repeated})
             }));
-            body = body.push(Box::new(caption(&format!("Each item is called {item}"))));
+            body = body.push(Box::new(caption(&format!(
+                "Inside the repeat, each item is the variable {item}"
+            ))));
             nested.push(branch(
                 ui::i18n!("shortcuts-repeat"),
                 block(ui, input, draft_id, draft, &format!("{path}.each"), 1),
