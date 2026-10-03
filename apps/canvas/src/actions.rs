@@ -1570,12 +1570,8 @@ impl NewArtwork {
     }
 }
 
-/// Make the artwork `file`: everything the artwork had is removed and the
-/// file's title, size, ground, layers, marks and media written in their
-/// order.
-fn replace(doc: &mut Doc, file: &crate::document::ArtworkFile) -> Result<(), ActionError> {
-    use ui::automerge::ROOT;
-    use ui::automerge::transaction::Transactable as _;
+/// Refuse a file whose sides, marks, layer ids or media are not valid.
+fn check_file(file: &crate::document::ArtworkFile) -> Result<(), ActionError> {
     for (value, what) in [(file.width, "width"), (file.height, "height")] {
         if !(16.0..=MAX_SIDE).contains(&value) {
             return Err(refuse(format!("{what} must be within 16..={MAX_SIDE}")));
@@ -1614,6 +1610,16 @@ fn replace(doc: &mut Doc, file: &crate::document::ArtworkFile) -> Result<(), Act
             )));
         }
     }
+    Ok(())
+}
+
+/// Make the artwork `file`: everything the artwork had is removed and the
+/// file's title, size, ground, layers, marks and media written in their
+/// order.
+fn replace(doc: &mut Doc, file: &crate::document::ArtworkFile) -> Result<(), ActionError> {
+    use ui::automerge::ROOT;
+    use ui::automerge::transaction::Transactable as _;
+    check_file(file)?;
     let old = doc::read(doc);
     for mark in &old.marks {
         doc::remove(doc, doc::MARKS, &mark.id)?;

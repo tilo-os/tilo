@@ -1912,19 +1912,7 @@ impl CanvasSurface {
                 value: Some(view_ops::media(&art)),
                 resources: Vec::new(),
             }),
-            ViewOp::SaveArtwork(save) => {
-                let mut value = crate::document::save(&art, save)?;
-                stamp(&mut value);
-                let resources = value
-                    .get("content")
-                    .and_then(Value::as_str)
-                    .map(|address| vec![address.to_owned()])
-                    .unwrap_or_default();
-                Ok(ActionOutput {
-                    value: Some(value),
-                    resources,
-                })
-            }
+            ViewOp::SaveArtwork(save) => saved(crate::document::save(&art, save), &stamp),
         }
     }
 
@@ -2763,6 +2751,25 @@ impl ResourceSurface<ArtworkResource> for CanvasSurface {
             _ => {}
         }
     }
+}
+
+/// The answer of `save-artwork`: where the file went, or the content it
+/// was kept as.
+fn saved(
+    result: Result<Value, String>,
+    stamp: &dyn Fn(&mut Value),
+) -> Result<ActionOutput, String> {
+    let mut value = result?;
+    stamp(&mut value);
+    let resources = value
+        .get("content")
+        .and_then(Value::as_str)
+        .map(|address| vec![address.to_owned()])
+        .unwrap_or_default();
+    Ok(ActionOutput {
+        value: Some(value),
+        resources,
+    })
 }
 
 #[cfg(test)]

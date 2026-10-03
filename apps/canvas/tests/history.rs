@@ -237,8 +237,16 @@ fn pixel_at(app: &mut TestApp<App>, (x, y): (f64, f64)) -> [u8; 4] {
         clippy::cast_sign_loss,
         reason = "a point inside the window"
     )]
-    let at = ((y as usize) * (width as usize) + (x as usize)) * 4;
-    [rgba[at], rgba[at + 1], rgba[at + 2], rgba[at + 3]]
+    let at = (y as usize)
+        .saturating_mul(width as usize)
+        .saturating_add(x as usize)
+        .saturating_mul(4);
+    let mut pixel = [0; 4];
+    pixel.copy_from_slice(
+        rgba.get(at..at.saturating_add(4))
+            .expect("inside the window"),
+    );
+    pixel
 }
 
 #[test]

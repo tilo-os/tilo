@@ -291,51 +291,7 @@ pub fn body(cx: &ViewCx<crate::resource::ArtworkResource>, tools: &Tools) -> Ele
     let transparent = ui::widget::Checkbox::from_state(&choices.transparent)
         .with_label(lookup("canvas-export-transparent"))
         .with_id("canvas-export-transparent");
-    let summary = {
-        let tools = tools.clone();
-        let live = cx.live().clone();
-        Text::dynamic(move || {
-            let settings = tools.export.settings();
-            let art = live.get();
-            let selection = tools.selection.get();
-            let view = tools.visible.get();
-            match part(&art, settings.area, view, &selection) {
-                Err(why) => why,
-                Ok((_, region)) if !settings.format.raster() => {
-                    let (width, height) = pixels(region, 1.0);
-                    ui::i18n::I18nManager::format(
-                        "canvas-export-svg-summary",
-                        &[("width", width.into()), ("height", height.into())],
-                    )
-                }
-                Ok((_, region)) => {
-                    if region.width().max(region.height()) * settings.scale > MAX_PIXELS {
-                        return ui::i18n::I18nManager::format(
-                            "canvas-export-too-large",
-                            &[("pixels", MAX_PIXELS.to_string().into())],
-                        );
-                    }
-                    let (width, height) = pixels(region, settings.scale);
-                    let mut said = ui::i18n::I18nManager::format(
-                        "canvas-export-summary",
-                        &[
-                            ("width", width.into()),
-                            ("height", height.into()),
-                            ("format", settings.format.label().into()),
-                        ],
-                    );
-                    if settings.transparent && !settings.format.transparent() {
-                        said.push_str(" · ");
-                        said.push_str(&ui::i18n::I18nManager::lookup_plain(
-                            "canvas-export-jpeg-opaque",
-                        ));
-                    }
-                    said
-                }
-            }
-        })
-        .with_role(TextRole::Label)
-    };
+    let summary = summary(cx, tools);
     let field = |label: &str, control: Element| -> Element {
         Box::new(
             Column::new()
@@ -357,4 +313,51 @@ pub fn body(cx: &ViewCx<crate::resource::ArtworkResource>, tools: &Tools) -> Ele
             .push(Box::new(transparent))
             .push(Box::new(summary)),
     )
+}
+
+/// What the export comes to: its size and format, or why there is none.
+fn summary(cx: &ViewCx<crate::resource::ArtworkResource>, tools: &Tools) -> Text {
+    let tools = tools.clone();
+    let live = cx.live().clone();
+    Text::dynamic(move || {
+        let settings = tools.export.settings();
+        let art = live.get();
+        let selection = tools.selection.get();
+        let view = tools.visible.get();
+        match part(&art, settings.area, view, &selection) {
+            Err(why) => why,
+            Ok((_, region)) if !settings.format.raster() => {
+                let (width, height) = pixels(region, 1.0);
+                ui::i18n::I18nManager::format(
+                    "canvas-export-svg-summary",
+                    &[("width", width.into()), ("height", height.into())],
+                )
+            }
+            Ok((_, region)) => {
+                if region.width().max(region.height()) * settings.scale > MAX_PIXELS {
+                    return ui::i18n::I18nManager::format(
+                        "canvas-export-too-large",
+                        &[("pixels", MAX_PIXELS.to_string().into())],
+                    );
+                }
+                let (width, height) = pixels(region, settings.scale);
+                let mut said = ui::i18n::I18nManager::format(
+                    "canvas-export-summary",
+                    &[
+                        ("width", width.into()),
+                        ("height", height.into()),
+                        ("format", settings.format.label().into()),
+                    ],
+                );
+                if settings.transparent && !settings.format.transparent() {
+                    said.push_str(" · ");
+                    said.push_str(&ui::i18n::I18nManager::lookup_plain(
+                        "canvas-export-jpeg-opaque",
+                    ));
+                }
+                said
+            }
+        }
+    })
+    .with_role(TextRole::Label)
 }

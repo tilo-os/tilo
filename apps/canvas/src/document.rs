@@ -156,6 +156,10 @@ pub fn start(id: &str) -> Option<Start> {
 }
 
 /// One layer as the file keeps it; its place is its index.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "the file keeps a layer's flags one to one"
+)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FileLayer {
     pub id: String,
@@ -202,7 +206,7 @@ fn one() -> f64 {
     reason = "serde's skip_serializing_if passes the field by reference"
 )]
 fn is_one(value: &f64) -> bool {
-    *value == 1.0
+    (*value - 1.0).abs() < f64::EPSILON
 }
 
 fn yes() -> bool {

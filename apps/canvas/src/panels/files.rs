@@ -259,7 +259,7 @@ impl FileDesk {
     }
 
     /// Open the artwork or SVG at `path` in place of this one.
-    fn open(&mut self, path: &Path) {
+    fn open(&self, path: &Path) {
         let svg = path
             .extension()
             .and_then(|extension| extension.to_str())
@@ -309,7 +309,7 @@ impl FileDesk {
     }
 
     /// Save the artwork to `path`; keep working there when `follow`.
-    fn save_to(&mut self, path: &Path, follow: bool) {
+    fn save_to(&self, path: &Path, follow: bool) {
         let file = ArtworkFile::of(&self.live.get());
         match document::write(path, &file.to_bytes()) {
             Ok(()) => {
@@ -402,15 +402,15 @@ fn open_svg(path: &Path) -> Result<Vec<CanvasAction>, String> {
     let markup = crate::svg::source(&path.display().to_string())?;
     let tree = usvg::Tree::from_str(&markup, &usvg::Options::default())
         .map_err(|error| format!("not an SVG this can read: {error}"))?;
-    let size = tree.size();
+    let extent = tree.size();
     let side = |value: f32| f64::from(value).round().clamp(16.0, crate::model::MAX_SIDE);
     let title = path
         .file_stem()
         .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned());
     let new = CanvasAction::NewArtwork(NewArtwork {
         title: Some(title),
-        width: Some(side(size.width())),
-        height: Some(side(size.height())),
+        width: Some(side(extent.width())),
+        height: Some(side(extent.height())),
         start: Some("white".into()),
         ..NewArtwork::default()
     });
