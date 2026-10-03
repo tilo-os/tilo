@@ -9,7 +9,6 @@ toolbar-table = Tabelle
 toolbar-link = Link
 toolbar-styles = Stile
 toolbar-ruler = Lineal
-toolbar-outline = Gliederung
 toolbar-toc = Inhalt
 toolbar-row-add = Zeile einfügen
 toolbar-row-del = Zeile löschen

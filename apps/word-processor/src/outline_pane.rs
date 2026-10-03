@@ -2,7 +2,6 @@ use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Fill;
 
 use ui::chrome::{self, NavRowFace, NavSectionFace, SelectionState};
-use ui::surface::Region;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 
@@ -71,8 +70,9 @@ impl OutlinePane {
         self.hits.clear();
     }
 
-    /// Paint the outline as the window's navigation column: the sidebar
-    /// region, an "Outline" section header and one navigation row per
+    /// Paint the outline on the navigation panel `panel` (painted by its
+    /// drawer; `theme` is the theme of that ground): an "Outline" section
+    /// header and one navigation row per
     /// heading, indented by its level, with the heading the caret is in
     /// lifted.
     pub fn draw(
@@ -85,14 +85,7 @@ impl OutlinePane {
     ) {
         self.rect = panel;
         self.hits.clear();
-        ui::surface::region(
-            context.scene,
-            context.transform,
-            panel,
-            Region::Sidebar,
-            theme,
-        );
-        let local = theme.in_region(Region::Sidebar);
+        let local = theme;
         context.scene.push_layer(
             Fill::NonZero,
             vello::peniko::BlendMode::default(),
@@ -104,13 +97,13 @@ impl OutlinePane {
         let x0 = panel.x0 + inset;
         let x1 = panel.x1 - inset;
         let mut y = panel.y0 + inset;
-        let header_h = chrome::nav_section_height(&local, true);
+        let header_h = chrome::nav_section_height(local, true);
         let header = t("outline-header");
         chrome::paint_nav_section(
             context.scene,
             context.transform,
             context.text,
-            &local,
+            local,
             &NavSectionFace::new(Rect::new(x0, y, x1, y + header_h), &header),
         );
         y += header_h;
@@ -130,7 +123,7 @@ impl OutlinePane {
             return;
         }
 
-        let row_h = chrome::nav_row_height(&local);
+        let row_h = chrome::nav_row_height(local);
         for heading in entries {
             if y > panel.y1 {
                 break;
@@ -147,7 +140,7 @@ impl OutlinePane {
                 context.scene,
                 context.transform,
                 context.text,
-                &local,
+                local,
                 &NavRowFace::new(rect, &label)
                     .depth(usize::try_from(heading.level.max(1) - 1).unwrap_or(0))
                     .state(SelectionState::new(active, hovered, false)),

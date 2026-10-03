@@ -928,7 +928,11 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
         );
         assert!(wp.tool_bar.has_overflow(), "the rest are in More");
         for (action, _) in &wp.toolbar {
-            assert!(all.contains(action), "{action:?} is a toolbar command");
+            assert!(
+                all.contains(action)
+                    || matches!(action, ToolAction::ToggleOutline | ToolAction::ToggleStyles),
+                "{action:?} is a toolbar command or a panel toggle"
+            );
         }
         let mut framed = mount(ui::State::new(), WordProcessorWidget::new(), 1800, 700);
         let (wp, _) = Framed::split(&mut framed);
