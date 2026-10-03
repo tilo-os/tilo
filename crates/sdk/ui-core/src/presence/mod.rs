@@ -855,6 +855,29 @@ impl PresenceCtx {
         }
     }
 
+    /// Paint `user` in the presence colour they wear — their choice, or the
+    /// one their stable identity derives, as their own machine said it — in
+    /// place of the colour their id derives here. Recolours a cursor already
+    /// on screen.
+    pub fn set_presence_hue(&mut self, user: UserId, hue: crate::tokens::PresenceHue) {
+        let rgb = identity_rgb(hue);
+        if self.color_overrides.get(&user) == Some(&rgb) {
+            return;
+        }
+        for cursor in &mut self.remote_cursors {
+            if cursor.user_id == user.0 {
+                let alpha = cursor.color[3];
+                cursor.color = [
+                    f32::from(rgb.0) / 255.0,
+                    f32::from(rgb.1) / 255.0,
+                    f32::from(rgb.2) / 255.0,
+                    alpha,
+                ];
+            }
+        }
+        self.color_overrides.insert(user, rgb);
+    }
+
     pub fn color_for(&self, user: &UserId) -> (u8, u8, u8) {
         if let Some(rgb) = self.color_overrides.get(user) {
             return *rgb;
@@ -1604,6 +1627,45 @@ mod color_override_tests {
 #[cfg(test)]
 mod remote_cursor_tests {
     use super::*;
+
+    #[test]
+    fn a_peer_wears_the_colour_their_machine_says() {
+        let mut ctx = PresenceCtx::empty();
+        let peer = UserId("peer@42".into());
+        ctx.upsert_remote_cursor(peer.0.clone(), [1.0, 2.0], None);
+        assert_eq!(ctx.color_for(&peer), user_color("peer@42"));
+        ctx.set_presence_hue(peer.clone(), crate::tokens::PresenceHue::Violet);
+        let violet = identity_rgb(crate::tokens::PresenceHue::Violet);
+        assert_eq!(ctx.color_for(&peer), violet);
+        let painted = ctx.remote_cursors[0].color;
+        assert!((painted[0] - f32::from(violet.0) / 255.0).abs() < 1e-3);
+        assert!((painted[3] - 1.0).abs() < f32::EPSILON, "alpha is kept");
+        let packed = crate::collaboration::Collaborator {
+            id: peer.0.clone(),
+            name: "Ada".into(),
+            colour: Some(crate::tokens::PresenceHue::Violet),
+            is_agent: false,
+            is_self: false,
+        }
+        .packed_colour();
+        assert_eq!(
+            crate::collaboration::Collaborator::colour_from_packed(packed),
+            Some(crate::tokens::PresenceHue::Violet),
+            "every presence colour survives the roster's wire"
+        );
+        for hue in crate::tokens::PresenceHue::ALL {
+            let (r, g, b) = identity_rgb(hue);
+            let packed = (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b);
+            assert_eq!(
+                crate::collaboration::Collaborator::colour_from_packed(packed),
+                Some(hue)
+            );
+        }
+        assert_eq!(
+            crate::collaboration::Collaborator::colour_from_packed(0),
+            None
+        );
+    }
 
     #[test]
     fn remote_cursors_upsert_in_place_and_remove() {
