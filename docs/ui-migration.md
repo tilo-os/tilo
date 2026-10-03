@@ -916,6 +916,168 @@ tile.paint(&mut ctx, Rect::new(x, y, x + w, y + h));
 
 ## Search
 
+Search belongs to the platform. An app draws no search field, no result list
+and no palette of its own. Sort every search-like thing in the app into one
+of three jobs and apply that job's mapping:
+
+| The person wants to… | The app provides | The person sees |
+|---|---|---|
+| find something the app holds (a message, a video, a store item, a place) | a `SearchProvider` per findable kind (framework apps: `Resource::search`), `SearchRow`s, scopes, facets | the platform palette: Ctrl+K, `/`, or the app's magnifier button |
+| narrow the list already on screen | `Filterable` on that list | `SearchField::filter()` in the navigation shell's filter slot, or `Filtered` |
+| find in the document on screen | `Findable` on that view | the `FindBar` band at the top of the content (`FindScope`), Ctrl+F |
+
+If a field does two of these (a sidebar box that filters the list *and*
+queries a server on Enter), it is a filter whose Enter escalates — the filter
+mapping covers both.
+
+### Removed APIs
+
+| Removed | Replacement |
+|---|---|
+| `SearchField::opens_palette()` | `ui::search::search_button(SearchRequest::this_app())` in the toolbar. |
+| `SearchField::is_palette_launcher()`, `SearchField::take_palette_request()` | Nothing to poll: the button's action opens search. Delete the polling code and whatever it called (`open_container_palette`, a private `CommandPalette`). |
+| `SearchProvider::search_page(&self, query: &str, …)` | `search_page(&self, query: &SearchQuery, …)`. Use `query.text()` where you used `query`; see steps 4 (scopes) and 5 (facets) under Replace for the rest. Providers that only implement `search`/`search_limited` change nothing. |
+| `SearchPage { results, next, inspected }` | Add `pending: None`, or build it with `SearchPage::of(results, next)` (finished) / `SearchPage::pending(results, token)` (more coming). |
+| The 38 px pill `SearchField` | Nothing: the field is a regular control now (32 px, `radii.control`). Delete any height, radius or padding the app set around it. |
+
+### New API
+
+| API | Use |
+|---|---|
+| `ui::search::search_button(request) -> Button` | The search launcher: an icon-only magnifier button. The only search affordance in an app's chrome. |
+| `ui::search::SearchRequest::{this_app(), within(ScopeDecl), with_query(q)}` | What the launcher opens: this app, or one part of it, optionally pre-filled. |
+| `ui::search::ScopeDecl::new(anchor, label)` (also `tilo_resource::ScopeDecl`) | A part of the app search can be narrowed to. `label` fills the pill "Only Inbox". |
+| `ui::search::open_search_binding(&request)` | Bind any other action control to open search (a menu item, a "Search in this folder" link). |
+| `ui::search::SearchOpener` / `open_search_invocation(&request)` | A painted widget opening search from its own input handler: call `opener.open(request)`, return `opener.take()` from `ActionControls::take_control_invocation`. |
+| `ViewCx::search_button(request)`, `ViewCx::open_search(&request)`, `Dispatcher::open_search(&request)` | The same in a framework app. |
+| `ViewCx::on_open(|anchor| …)` | Show the item a search hit (or an agent's `open` call) points to. |
+| `Resource::search_scopes(state)`, `#[resource(scopes = path)]`, `SearchProvider::search_scopes()` | Declare the parts search can be narrowed to; the palette lists each as a "Search in" row. |
+| `ui::search::SearchQuery` | What a provider receives: `text()`, `filters()` / `filter_values(key)` / `admits(key, values)`, `scope()` / `in_scope(anchor)`. |
+| `ui::search::{Facet, FacetValue, FacetFilter}`, `SearchProvider::facets()`, `CatalogSearchProvider::{facets, admits}` | Filter dimensions: chips in the palette, typed `key:value` tokens parsed by the platform. |
+| `SearchPage::pending(results, PendingToken)`, `SearchProvider::poll_page(&token) -> PagePoll` | A slow source (IMAP, YouTube, a store catalogue, a geocoder): return what you have now, answer the rest when it arrives. |
+| `ui::search::SearchRow::{message, media, file_hit}` + `SearchResult::with_row` | Say what a hit is; the platform draws the row. |
+| `SearchField::filter()`, `.escalates_within(scope)`, `.with_placeholder(..)`, `set_count(Some(FilterCount::new(shown, total)))` | The in-content filter field. |
+| `ui::widget::{Filterable, FilterCount, apply_filter, sync_filter, Filtered}` | Bind a filter field to a list. |
+| `ui::widget::{Findable, FindOptions, FindMode, FindMatch, FindBar, FindScope, paint_find_match, with_findable}` | Find in a document. |
+
+### Replace
+
+Work through these in order. "The field" is the app's own search/filter/find
+input and everything drawn around it.
+
+1. **A field that searches the app's content** (mail's search box, tube's and
+   music's YouTube search, the store search, the maps place search, a
+   snippets/notes search box, containers' launcher pill):
+   - Delete the field, its result list or overlay, any private
+     `CommandPalette`/`ActionPalette`, and the code that runs the query.
+   - Move the query into a provider. A framework app returns its findable items
+     from `Resource::search` as `SearchEntry { anchor, title, text }`; any
+     other app implements `SearchProvider` (prefer `CatalogSearchProvider`
+     over a `SearchCatalog` for local data) and returns it from
+     `SearchSource::search_providers`.
+   - Put `search_button(SearchRequest::this_app())` where the field was in the
+     toolbar or header (framework app: `cx.search_button(..)`).
+   - A source behind the network: `search_page` starts the request, returns
+     the hits it already has (cache, local index) with
+     `SearchPage::pending(hits, PendingToken::new(id))`, and `poll_page`
+     answers `PagePoll::Pending` until the reply is in, then
+     `PagePoll::Ready(SearchPage::of(more, None))`. Never block in either; a
+     token you no longer know answers `Ready(SearchPage::empty())`.
+2. **Hits the app drew itself.** Pick the row shape by what the hit is and
+   fill it with the same values the app drew:
+   - a message, mail, chat line → `SearchRow::message(sender, subject).snippet(..).date(..).unread(..)`;
+   - a video, track, episode → `SearchRow::media(title).thumbnail(AppImage).byline(channel).duration(..)`;
+   - a match in a file or a code search hit → `SearchRow::file_hit(path, line_text).line(n).matched(byte_range)`;
+   - anything else → no row: `title`, `with_subtitle`, `with_icon` (the generic row).
+   Dates and durations are passed already formatted. Delete the app's row
+   painting.
+3. **Opening a hit.** A framework app registers `cx.on_open(|anchor| …)` in
+   the view that shows items and sets the `LocalState` that selects / scrolls
+   to the item, exactly as a click in the list would. The framework then
+   answers both a picked hit and the resource's `open` action (agents) with
+   it. Other apps keep `SearchSource::activate_search_result(action_id, ..)`.
+   Anchors are paths: give items inside a part of the app the part's anchor
+   as prefix (`folder:inbox/msg:12`).
+4. **Scopes** ("Search this folder", "Search in playlist",
+   per-mailbox search): declare each part as a `ScopeDecl { anchor, label }`
+   — framework apps with `#[resource(scopes = my_scopes)]` (or
+   `Resource::search_scopes`), others with `SearchProvider::search_scopes`.
+   A button that searched one part becomes
+   `search_button(SearchRequest::within(ScopeDecl::new(anchor, label)))`.
+   Providers that can narrow cheaply read `query.scope()`; the palette drops
+   hits outside the scope (`query.in_scope(hit.anchor())`) either way. For the
+   shell's drill-down the anchor must also be a published resource id (a
+   `Resource::children` entry).
+5. **Facets** (snippets `language:`/`tag:`, store
+   source/category, a mail `from:`): return them from
+   `SearchProvider::facets()` as `Facet::new("language", "Language").value("rust", "Rust")`.
+   Read the applied values in `search_page` with `query.filter_values("language")`
+   or test a hit with `query.admits("language", &[hit_language])`
+   (`CatalogSearchProvider::admits` for catalogue providers). Delete the app's
+   own token parsing and filter dropdowns next to its search field.
+6. **A field that narrows the visible list** (sidebar filters, a table filter,
+   containers' panel filter, a settings search over the visible settings):
+   - Implement `Filterable` on the list: `set_filter(query)` narrows (match
+     with `ui::search::ListIndex` so it agrees with search), `filter_count()`
+     returns `FilterCount::new(shown, total)`, and `search_scope()` returns the
+     `ScopeDecl` the list shows (or `None` for the whole app).
+   - Place the field: in a `NavShell` sidebar it is the shell's filter slot
+     (see [Navigation](#navigation)); anywhere else wrap the list:
+     `Filtered::new(Box::new(list)).with_placeholder("Filter people")`.
+     A painted host keeps a `SearchField::filter()` and calls
+     `sync_filter(&mut field, &mut list)` after routing each event.
+   - Delete the app's count text ("3 results"), its key-cap or count
+     workaround drawn over the field, its own Escape-to-clear and its "no
+     matches, search online" button: the field shows "3 of 120", clears on
+     Escape, and offers "Search everywhere" when nothing matches.
+   - Placeholder copy names what is filtered ("Filter people"), sentence case,
+     no ellipsis, no marketing.
+7. **Find in a document** (pdf-viewer, hex-editor, ebook, terminal
+   scrollback, text and code views):
+   - Implement `Findable` on the document view: `find(query, options)`
+     searches its own content and keeps the matches, `reveal(i)` scrolls match
+     `i` into view and makes it current, `clear_find()` stops painting. Offer
+     `supports_replace`/`replace`/`replace_all` only where the view edits
+     (replacements go through the view's own actions, so they are undoable),
+     and `supports_hex` in a byte view (`FindMode::Hex`).
+   - Paint each match with `paint_find_match(scene, transform, span_rect, is_current, theme)`
+     over the matched glyphs only — one call per line a match covers. Never
+     tint a whole block, page or row.
+   - Wrap the content: `FindScope::new(Box::new(view))` (configure with
+     `.with_bar(FindBar::new().with_replace())` if needed). A painted app that
+     lays out its own chrome hosts a `FindBar`: `layout(band_rect, theme, text)`,
+     `paint(..)`, `route(event, ctx)`, then `drive(&mut view)`, with the band
+     `FindBar::height(theme)` tall at the top of the content.
+   - Delete the app's find field, counter, case/word toggles, next/previous
+     buttons, its Ctrl+F / F3 / Enter handling and its match colour.
+8. **Keys.** Delete every app handler for Ctrl+K, `/` and Ctrl+F that opens
+   search or find: Ctrl+K and `/` open the platform search (a focused text
+   field or terminal still types `/`), Ctrl+F belongs to the `FindScope` or
+   `Filtered` around the content.
+
+### Delete
+
+- Every app-drawn search field, search pill, magnifier-in-a-box, result list,
+  search overlay and private palette.
+- `open_container_palette` and any other path that builds a `CommandPalette`
+  or `ActionPalette` in the app.
+- Hand-drawn match counters, find toolbars, case/word toggles, highlight
+  colours and whole-block match tints.
+- App handlers for Ctrl+K, `/`, Ctrl+F, F3.
+- App shard entries these leave behind (lower them as in
+  [Updating shards](#updating-shards)).
+
+### What each host shows
+
+The app does the same thing in every host; what the host does with it:
+
+- **A standalone window** opens its own palette: scope pill and "Search in"
+  rows, facet chips, slow pages under a loading row, row shapes.
+- **The Tilo shell** opens the system palette scoped to the app's tab with the
+  request's query, and drills into a scope the app publishes as a browsable
+  resource. App hits reach it through the action directory. Implement rows,
+  facets and slow pages anyway: the provider contract is the same in both.
+
 ## Window chrome & shots
 
 Overlays, status and captures behave the same in every app: one modal, one
