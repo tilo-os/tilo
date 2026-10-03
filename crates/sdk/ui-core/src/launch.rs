@@ -183,6 +183,9 @@ pub struct LaunchArgs {
     /// ([`crate::theme::WindowAppearance`]). Without them a capture is what
     /// a window without a shell shows: neutral, in the default colour.
     pub window: crate::theme::WindowAppearance,
+    /// `--history`: a capture shows History open, where the app has
+    /// History.
+    pub history: bool,
     extras: Vec<String>,
     values: Vec<(String, String)>,
     positionals: Vec<String>,
@@ -203,6 +206,7 @@ impl LaunchArgs {
             text_scale: None,
             theme: None,
             window: crate::theme::WindowAppearance::default(),
+            history: false,
             extras: Vec::new(),
             values: Vec::new(),
             positionals: Vec::new(),
@@ -1309,9 +1313,11 @@ fn run_with_args_with_attachment(
             DefinitionDispatch::Rendered(mut driver) => {
                 if let Some(out) = &args.shots {
                     driver.prepare_component_output();
+                    show_history_for_capture(&mut driver, &args)?;
                     driver.settle_for_capture(CAPTURE_SETTLE_BOUND);
                     driver.render_png(out);
                 } else if let Some(directory) = &args.responsive_matrix {
+                    show_history_for_capture(&mut driver, &args)?;
                     for (name, viewport) in RESPONSIVE_VIEWPORTS {
                         driver.resize_component_capture(viewport);
                         driver.settle_for_capture(CAPTURE_SETTLE_BOUND);
@@ -1364,6 +1370,7 @@ fn run_with_args_with_attachment(
         let root = spec.screenshot_root(&args)?;
         let viewport = args.viewport.unwrap_or_else(|| (spec.shot_viewport)(&args));
         let mut harness = build_history_capture(spec, &args, root, viewport)?;
+        show_history_for_capture(&mut harness, &args)?;
         harness.settle_for_capture(CAPTURE_SETTLE_BOUND);
         harness.render_png(out);
         println!("{}: wrote shot to {}", spec.app_id, out.display());
@@ -1388,6 +1395,7 @@ fn run_with_args_with_attachment(
             } else {
                 let root = spec.screenshot_root(&matrix_args)?;
                 let mut harness = build_history_capture(spec, &matrix_args, root, viewport)?;
+                show_history_for_capture(&mut harness, &matrix_args)?;
                 harness.settle_for_capture(CAPTURE_SETTLE_BOUND);
                 harness.render_png(&out);
             }
@@ -1628,6 +1636,21 @@ fn dispatch_definition_with_manager(
     .map_err(LaunchError::Operation)??;
     crate::collaboration::native_initial::check_current().map_err(LaunchError::Operation)?;
     Ok(DefinitionDispatch::Native(Box::new(app)))
+}
+
+/// `--history`: open History before the capture settles, so the shot shows
+/// History mode as a person sees it.
+#[cfg(feature = "native")]
+fn show_history_for_capture(
+    driver: &mut FrameHarness,
+    args: &LaunchArgs,
+) -> Result<(), LaunchError> {
+    if args.history {
+        driver
+            .open_history()
+            .map_err(|error| LaunchError::Operation(format!("--history: {error}")))?;
+    }
+    Ok(())
 }
 
 #[cfg(feature = "native")]
@@ -2159,6 +2182,7 @@ fn parse_args_extended(
         text_scale: None,
         theme: None,
         window: crate::theme::WindowAppearance::default(),
+        history: false,
         extras: Vec::new(),
         values: Vec::new(),
         positionals: Vec::new(),
@@ -2249,6 +2273,12 @@ fn parse_args_extended(
                 }
                 parsed.native_audit = true;
             }
+            "--history" if inline.is_none() => {
+                if parsed.history {
+                    return Err(LaunchError::Duplicate(flag.to_owned()));
+                }
+                parsed.history = true;
+            }
             // A Jump List task: run this host command once the window exists.
             #[cfg(all(windows, feature = "native"))]
             crate::host_chrome::windows_items::LAUNCH_OPTION => {
@@ -2288,6 +2318,9 @@ fn parse_args_extended(
         .saturating_add(usize::from(parsed.native_audit));
     if mode_count > 1 {
         return Err(LaunchError::ConflictingModes);
+    }
+    if parsed.history && parsed.shots.is_none() && parsed.responsive_matrix.is_none() {
+        return Err(LaunchError::ShotsOnly("--history".to_owned()));
     }
     if parsed.shots.is_none() && parsed.responsive_matrix.is_none() && !parsed.native_audit {
         if parsed.viewport.is_some() {
@@ -2967,6 +3000,21 @@ mod tests {
             assert!(matches!(
                 parse_args(&strings(&["app", "--scenario=a", "--scenario=b"]), &[], &[],),
                 Err(LaunchError::Duplicate(_))
+            ));
+        }
+
+        // Case `history_is_a_capture_option`.
+        {
+            let shot = parse_args(
+                &strings(&["app", "--shots", "/tmp/a.png", "--history"]),
+                &[],
+                &[],
+            )
+            .unwrap();
+            assert!(shot.history);
+            assert!(matches!(
+                parse_args(&strings(&["app", "--history"]), &[], &[]),
+                Err(LaunchError::ShotsOnly(flag)) if flag == "--history"
             ));
         }
 
