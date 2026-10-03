@@ -332,7 +332,9 @@ pub use state::{
     RevisionId, State, UndoEntry, UndoLog, UnknownRevision,
 };
 pub use text_break::discretionary_hyphen_breaks;
-pub use theme::{AppearanceIntent, ContentSurface, Theme, resolve_theme_layers, workspace_hue};
+pub use theme::{
+    AppearanceIntent, ContentSurface, Theme, WindowAppearance, resolve_theme_layers, workspace_hue,
+};
 pub use ui_graph::{
     LIVE_GRAPH_DIR_ENV, LIVE_GRAPH_OPERATION, LiveUi, UI_GRAPH_VERSION, UiBuildContext,
     UiButtonRole, UiComponentRequest, UiDocument, UiDocumentExt, UiGraphEdit, UiGraphEditor,
