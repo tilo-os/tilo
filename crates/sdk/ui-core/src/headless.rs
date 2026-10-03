@@ -529,6 +529,9 @@ pub struct FrameHarness {
     /// Scratch scene for the draw pass. Never rasterised — see
     /// [`Driver::relayout`] for why it is drawn at all.
     scene: Scene,
+    /// The backdrops the scene's floating surfaces were drawn over, which
+    /// the capture renderer blurs under the material as a live window does.
+    backdrop: std::sync::Arc<crate::backdrop::BackdropFrame>,
     presence: PresenceCtx,
     /// Presence changed through [`Self::update_presence`]: the next frame
     /// redraws (the collaborator overlays read presence at draw time) without
@@ -1338,6 +1341,7 @@ impl FrameHarness {
             text,
             theme,
             scene: Scene::new(),
+            backdrop: std::sync::Arc::default(),
             records: None,
             record_persistence: None,
             room_index: None,
@@ -2206,7 +2210,9 @@ impl FrameHarness {
     fn render_rgba_on(&self, background: vello::peniko::Color) -> Vec<u8> {
         self.drain_component_wakes();
         let (w, h) = self.viewport;
-        crate::offscreen::OffscreenRenderer::new(w, h).render_resilient(&self.scene, background)
+        let mut renderer = crate::offscreen::OffscreenRenderer::new(w, h);
+        renderer.set_backdrop(Some(self.backdrop.clone()));
+        renderer.render_resilient(&self.scene, background)
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -2228,6 +2234,7 @@ impl FrameHarness {
         }
         let (w, h) = self.viewport;
         let mut renderer = crate::offscreen::OffscreenRenderer::new(w, h);
+        renderer.set_backdrop(Some(self.backdrop.clone()));
         renderer.render_png(&self.scene, background, out);
     }
 
@@ -2779,6 +2786,10 @@ impl FrameHarness {
 
         let t_draw = self.profiler.as_ref().map(|_| crate::time::now());
         self.scene.reset();
+        // Floating chrome records what lies below it, so a capture blurs it
+        // under the material exactly as the live window's renderer does.
+        let backdrop_recording = crate::backdrop::BackdropRecording::begin();
+        crate::backdrop::layer_scene(&self.scene, 0);
         // Cull against the window exactly as the live host does, so offscreen
         // frames paint (and cost) what a window would.
         let previous_viewport = self.presence.push_viewport(Rect::new(
@@ -2832,6 +2843,7 @@ impl FrameHarness {
                 .map_err(|_| crate::widget::WidgetLayoutError::CompositionDidNotSettle);
             if let Err(error) = drawn {
                 self.presence.pop_viewport(previous_viewport);
+                drop(backdrop_recording.finish());
                 return Err(error);
             }
         }
@@ -2906,6 +2918,9 @@ impl FrameHarness {
         self.draw_caller_palette();
         self.refresh_system_search();
         self.draw_system_search();
+        self.backdrop = std::sync::Arc::new(crate::backdrop::BackdropFrame::from_single_scene(
+            backdrop_recording.finish(),
+        ));
 
         if self
             .action_palette

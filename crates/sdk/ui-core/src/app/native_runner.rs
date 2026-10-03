@@ -946,6 +946,7 @@ impl AppHandler {
                 base_color: self.app.theme.tokens.colors.surfaces.content,
                 damage_regions,
                 full_redraw: true,
+                backdrop: crate::backdrop::BackdropFrame::default(),
             })
             .is_err()
         {
@@ -1368,6 +1369,9 @@ impl AppHandler {
                 base_color: Color::TRANSPARENT,
                 damage_regions,
                 full_redraw: true,
+                // The compositor puts this window over the desktop; nothing
+                // under its surfaces is in this scene to blur.
+                backdrop: crate::backdrop::BackdropFrame::default(),
             })
             .is_err()
         {
@@ -1739,6 +1743,11 @@ impl AppHandler {
 
         let t_draw_start = if perf { Some(crate::time::now()) } else { None };
         crate::webview::frame_trace::begin_scene();
+        // Floating chrome (menus, popovers, sheets, the palette, tooltips)
+        // records what lies below it, and the render worker blurs that
+        // backdrop under the material before the frame renders.
+        let backdrop_recording = crate::backdrop::BackdropRecording::begin();
+        crate::backdrop::layer_scene(&scene, 0);
         let (transform, window_rect, t_draw_us) =
             draw_frame_content(app, &mut scene, width, height, scale_factor, t_draw_start);
         #[cfg(target_os = "linux")]
@@ -1746,6 +1755,8 @@ impl AppHandler {
             self.decorations.draw(app, &mut scene, transform);
             full_redraw_required |= self.decorations.take_repaint();
         }
+        let backdrop =
+            crate::backdrop::BackdropFrame::from_single_scene(backdrop_recording.finish());
 
         let __prof_presence = app.profiler.as_ref().map(|_| crate::time::now());
         draw_legacy_cursors(app, &mut scene, transform);
@@ -1945,6 +1956,7 @@ impl AppHandler {
                 base_color: app.theme.tokens.colors.surfaces.content,
                 damage_regions,
                 full_redraw: full_redraw_required,
+                backdrop,
                 on_present: self.dev_reload_timing.take().map(|timing| {
                     let submitted = crate::time::wall();
                     Box::new(move |presented| timing.record(submitted, presented))
