@@ -178,7 +178,8 @@ impl ActionHost {
             (Some(context), Some(ambient)) => Some(context.enriched_by(ambient)),
             (None, Some(ambient)) => Some(ambient.clone()),
             (context, None) => context,
-        };
+        }
+        .map(|context| context.with_args_from_payload(&encoded.payload));
         let result = match context {
             Some(context) => tilo_actions::dispatch_by_with_context(
                 doc,

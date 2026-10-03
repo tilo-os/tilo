@@ -11,9 +11,10 @@ x86_64 = "v3"
 aarch64 = "aarch64"
 
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
-# Pictures an agent looks at or exports are kept in the app's content store.
+# Pictures an agent looks at or exports are kept in the app's content store;
+# an SVG or reference picture may be named by a path the sandbox lets it read.
 [capabilities]
-optional = ["app-files"]
+optional = ["app-files", "files.paths"]
 
 [publisher]
 identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

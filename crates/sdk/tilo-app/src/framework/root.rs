@@ -54,6 +54,14 @@ pub(crate) struct ResourceRoot<R: Resource> {
     /// Kept across renders; unused on wasm where `render` is cfg'd out.
     #[allow(dead_code, reason = "read only by render, which is native-only")]
     render_text: Option<TextRenderer>,
+    /// Draws the view over a past version, which `render` answers for a
+    /// `version`. `None` in a view that is itself a past version.
+    /// Used by native-only `render` / past-version draw; unused on wasm.
+    #[allow(
+        dead_code,
+        reason = "used by native-only render / past-version draw; unused on wasm"
+    )]
+    past: Option<super::preview::DrawPast>,
 }
 
 /// The operation type of the framework's `render` view.
@@ -76,11 +84,17 @@ fn render_spec() -> tilo_actions::ActionSpec {
                 "Pixels per point, 0.5 to 2 (default 1)",
             )
             .nullable(),
+            tilo_actions::ActionParam::optional(
+                "version",
+                tilo_actions::ParamType::Text,
+                "A past version: change id from history, or checkpoint name",
+            )
+            .nullable(),
         ],
         |args| {
             tilo_actions::EncodedAction::encode_operation(
                 RENDER_TYPE,
-                &serde_json::json!({ "scale": args.number("scale") }),
+                &serde_json::json!({ "scale": args.number("scale"), "version": args.text("version") }),
             )
             .unwrap_or_else(|_| tilo_actions::EncodedAction {
                 type_id: RENDER_TYPE.into(),
@@ -139,7 +153,13 @@ impl<R: Resource> ResourceRoot<R> {
             search: std::cell::RefCell::new(None),
             drawn_theme: None,
             render_text: None,
+            past: None,
         }
+    }
+
+    pub(crate) fn drawing_past(mut self, past: super::preview::DrawPast) -> Self {
+        self.past = Some(past);
+        self
     }
 
     pub(crate) fn with_presentation(mut self, operations: Vec<tilo_actions::ActionSpec>) -> Self {
@@ -194,6 +214,7 @@ impl<R: Resource> ResourceRoot<R> {
         if !(0.5..=2.0).contains(&scale) {
             return Err("scale must be within 0.5..=2".into());
         }
+        let version = args.get("version").and_then(serde_json::Value::as_str);
         let rect = self.content.get_rect();
         let side = |points: f64| {
             #[allow(
@@ -208,16 +229,38 @@ impl<R: Resource> ResourceRoot<R> {
         let theme = self.drawn_theme.clone().unwrap_or_else(Theme::dark);
         let text = self.render_text.get_or_insert_with(TextRenderer::new);
         let mut scene = Scene::new();
-        let transform = Affine::translate((-rect.x0, -rect.y0)).then_scale(scale);
-        scene.fill(
-            ui_core::vello::peniko::Fill::NonZero,
-            transform,
-            theme.bg_app,
-            None,
-            &rect,
-        );
-        self.content
-            .draw(&mut scene, transform, text, &theme, &PresenceCtx::empty());
+        let shown = if let Some(version) = version {
+            let draw = self
+                .past
+                .ok_or_else(|| "this view cannot show another version".to_owned())?;
+            let heads = ui_core::history_source::steps::resolve(doc, version)?;
+            let past = doc
+                .fork_at(&heads)
+                .map_err(|error| format!("version {version} is not in this document: {error}"))?;
+            let bounds = ui_core::vello::kurbo::Rect::new(0.0, 0.0, rect.width(), rect.height());
+            let transform = Affine::scale(scale);
+            scene.fill(
+                ui_core::vello::peniko::Fill::NonZero,
+                transform,
+                theme.bg_app,
+                None,
+                &bounds,
+            );
+            draw(past, bounds, &mut scene, transform, &theme)?;
+            super::history::version_name(&heads)
+        } else {
+            let transform = Affine::translate((-rect.x0, -rect.y0)).then_scale(scale);
+            scene.fill(
+                ui_core::vello::peniko::Fill::NonZero,
+                transform,
+                theme.bg_app,
+                None,
+                &rect,
+            );
+            self.content
+                .draw(&mut scene, transform, text, &theme, &PresenceCtx::empty());
+            revision(doc)
+        };
         let mut offscreen = ui_core::offscreen::OffscreenRenderer::try_new(width, height)
             .map_err(|error| format!("no renderer for a {width}x{height} picture: {error}"))?;
         let rgba = offscreen.render(&scene, theme.bg_app);
@@ -233,7 +276,7 @@ impl<R: Resource> ResourceRoot<R> {
                 "width": width,
                 "height": height,
                 "theme": theme.name,
-                "revision": revision(doc),
+                "revision": shown,
                 "content": address,
             })),
             resources: vec![address],
@@ -413,6 +456,7 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         if cfg!(not(target_family = "wasm")) {
             handlers.insert(RENDER_TYPE.to_owned());
         }
+        handlers.insert(super::history::VIEW_TYPE.to_owned());
         for spec in R::local_operations()
             .into_iter()
             .chain(self.presentation.iter().cloned())
@@ -435,6 +479,14 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
             && request.type_id == RENDER_TYPE
         {
             let output = self.render(request.payload, doc)?;
+            return Ok(Some(ui_core::widget::ResourceOperationStart::Completed(
+                output,
+            )));
+        }
+        if let Some(request) = op.unscoped()
+            && request.type_id == super::history::VIEW_TYPE
+        {
+            let output = super::history::answer(doc, request.payload)?;
             return Ok(Some(ui_core::widget::ResourceOperationStart::Completed(
                 output,
             )));
@@ -522,6 +574,15 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
         {
             resource = resource.with_action(render_spec());
         }
+        for spec in super::history::specs() {
+            if !resource
+                .actions
+                .iter()
+                .any(|existing| existing.id == spec.id)
+            {
+                resource = resource.with_action(spec);
+            }
+        }
         let mut resources = vec![resource];
         resources.extend(ui_core::resources::resources_for(
             self.content.as_ref(),
@@ -536,6 +597,11 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
         address: &tilo_actions::ActionAddress,
         changes: &[ui_core::automerge::Patch],
     ) -> Option<serde_json::Value> {
+        if address.resource == self.dispatch.resource_id()
+            && super::history::is_edit(&address.action)
+        {
+            return super::history::result(&address.action, doc, changes);
+        }
         ui_core::resources::document_action_result(self.content.as_ref(), doc, address, changes)
     }
 }

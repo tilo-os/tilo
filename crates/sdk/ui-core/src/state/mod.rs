@@ -1538,6 +1538,49 @@ pub fn write_revert_patches(
     write_selected_patches(doc, patches, to_heads, from_heads);
 }
 
+/// [`write_revert_patches`] for only the patches `keep` accepts: a restore
+/// of some items of a past version, or of everything but bookkeeping. The
+/// rest stay in the patch stream unwritten, so the indices of later
+/// sequence patches still line up. Returns how many patches were written.
+pub fn write_revert_patches_where(
+    doc: &mut AutoCommit,
+    from_heads: &[ChangeHash],
+    to_heads: &[ChangeHash],
+    keep: &dyn Fn(&automerge::Patch) -> bool,
+) -> usize {
+    let patches = doc.diff(from_heads, to_heads);
+    let patches: Vec<(automerge::Patch, bool)> =
+        built_on::hold_back_built_on(doc, patches, from_heads)
+            .into_iter()
+            .map(|(patch, write)| {
+                let write = write && keep(&patch) && !already_holds(doc, &patch);
+                (patch, write)
+            })
+            .collect();
+    let written = patches.iter().filter(|(_, write)| *write).count();
+    if written > 0 {
+        write_selected_patches(doc, patches, to_heads, from_heads);
+    }
+    written
+}
+
+/// Whether `doc` already holds the scalar `patch` would put: a diff is of
+/// operations, so a value restored once differs from the version by its
+/// operation while reading the same.
+fn already_holds(doc: &AutoCommit, patch: &automerge::Patch) -> bool {
+    use automerge::ReadDoc as _;
+    let automerge::PatchAction::PutMap { key, value, .. } = &patch.action else {
+        return false;
+    };
+    let automerge::Value::Scalar(wanted) = &value.0 else {
+        return false;
+    };
+    matches!(
+        doc.get(&patch.obj, key.as_str()),
+        Ok(Some((automerge::Value::Scalar(current), _))) if current == *wanted
+    )
+}
+
 /// Write an already-derived patch set forward into `doc`'s open transaction.
 ///
 /// The half of [`write_revert_patches`] after the diff, split out so a caller

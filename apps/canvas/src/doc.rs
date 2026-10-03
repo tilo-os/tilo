@@ -6,6 +6,7 @@
 //! layers.<id>               { name, order, medium, opacity, visible }
 //! marks.<id>                { layer, order, body: JSON of MarkBody }
 //! media.<id>                JSON of MediumSpec
+//! reference                 JSON of Reference, when there is one
 //! ```
 //!
 //! Keyed maps, so concurrent edits of different layers and marks merge, and
@@ -19,11 +20,12 @@ use ui::automerge::{AutomergeError, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, 
 use ui::tilo_resource::Doc;
 
 use crate::media::MediumSpec;
-use crate::model::{Artwork, Ground, Layer, Mark, MarkBody};
+use crate::model::{Artwork, Ground, Layer, Mark, MarkBody, Reference};
 
 pub const LAYERS: &str = "layers";
 pub const MARKS: &str = "marks";
 pub const MEDIA: &str = "media";
+pub const REFERENCE: &str = "reference";
 
 pub fn child(doc: &Doc, parent: &ObjId, key: &str) -> Option<ObjId> {
     match doc.get(parent, key).ok().flatten()? {
@@ -119,6 +121,8 @@ pub fn read(doc: &Doc) -> Artwork {
                 shape: body.shape,
                 style: body.style,
                 transform: body.transform,
+                group: body.group,
+                clip: body.clip,
                 id,
             })
         })
@@ -149,7 +153,23 @@ pub fn read(doc: &Doc) -> Artwork {
         layers,
         marks,
         media,
+        reference: json(doc, &ROOT, REFERENCE),
     }
+}
+
+/// Set or clear the reference picture.
+///
+/// # Errors
+/// Returns the document's write error.
+pub fn write_reference(doc: &mut Doc, reference: Option<&Reference>) -> Result<(), AutomergeError> {
+    if let Some(reference) = reference {
+        let encoded = serde_json::to_string(reference).unwrap_or_default();
+        return put_text(doc, &ROOT, REFERENCE, &encoded);
+    }
+    if doc.get(&ROOT, REFERENCE)?.is_some() {
+        doc.delete(&ROOT, REFERENCE)?;
+    }
+    Ok(())
 }
 
 /// Write `layer`'s fields, only those that differ.
@@ -185,6 +205,8 @@ pub fn write_mark(doc: &mut Doc, mark: &Mark) -> Result<(), AutomergeError> {
         shape: mark.shape.clone(),
         style: mark.style.clone(),
         transform: mark.transform,
+        group: mark.group.clone(),
+        clip: mark.clip.clone(),
     };
     let encoded = serde_json::to_string(&body).unwrap_or_default();
     put_text(doc, &obj, "body", &encoded)

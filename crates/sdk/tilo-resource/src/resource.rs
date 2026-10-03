@@ -134,10 +134,10 @@ pub trait Resource: Sized + 'static {
     }
 
     /// The JSON Schema of [`Action`](Self::Action)'s serde form, published as
-    /// the schema of the generic [`APPLY`] operation's argument (and of the
-    /// `apply` members of [`GROUP`](crate::GROUP)), so agents and scripts can
-    /// read the edit vocabulary from the descriptor and binding refuses a
-    /// malformed edit by name. Return `Some(<Self::Action as
+    /// the schema of the generic [`APPLY`] operation's argument, so agents
+    /// and scripts can read the edit vocabulary from the descriptor and
+    /// binding refuses a malformed edit by name. A variant that only
+    /// restates a declaration is published as a reference to it. Return `Some(<Self::Action as
     /// JsonSchema>::json_schema())` for an action type deriving
     /// [`JsonSchema`](crate::JsonSchema); `#[resource]` describes its
     /// operations from their declarations. The default publishes no schema.
@@ -342,8 +342,17 @@ fn spec_from<R: Resource>(decl: &ActionDecl<R>) -> ActionSpec {
     spec
 }
 
+/// Each declared action's arguments object, as serde reads it.
+fn declared_args<R: Resource>() -> std::collections::BTreeMap<&'static str, serde_json::Value> {
+    R::declarations()
+        .iter()
+        .map(|decl| (decl.id, crate::schema::args_schema(&decl.params)))
+        .collect()
+}
+
 /// The parameter of [`APPLY`]: one action value, described by
-/// [`Resource::action_schema`] when the resource has one.
+/// [`Resource::action_schema`] when the resource has one, with what only
+/// restates a named action folded into a reference to it.
 fn apply_param<R: Resource>() -> ActionParam {
     let param = ActionParam::required_owned(
         APPLY_PARAM,
@@ -351,48 +360,60 @@ fn apply_param<R: Resource>() -> ActionParam {
         format!("A {} action, as JSON", R::LABEL),
     );
     match R::action_schema() {
-        Some(schema) => param.with_schema(schema),
+        Some(schema) => {
+            param.with_schema(crate::schema::fold_declared(&schema, &declared_args::<R>()))
+        }
         None => param,
     }
 }
 
+/// A JSON action value as [`APPLY`] reads it. A value naming a declared
+/// action is checked against that declaration first, so it is refused with
+/// the reason the named action would give.
+fn read_apply<R: Resource>(value: serde_json::Value) -> Result<R::Action, String> {
+    let declarations = R::declarations();
+    let ids: Vec<&str> = declarations.iter().map(|decl| decl.id).collect();
+    if let Some((id, fields)) = crate::schema::declared_invocation(&value, &ids)
+        && let Some(decl) = declarations.iter().find(|decl| decl.id == id)
+    {
+        ActionArgs::bind_json(&decl.params, &fields).map_err(|error| format!("{id}: {error}"))?;
+    }
+    serde_json::from_value::<R::Action>(value).map_err(|error| error.to_string())
+}
+
 /// The parameter of [`GROUP`](crate::GROUP): invocations of the resource's
-/// declared actions and of [`APPLY`], each checked as it would be alone.
+/// declared actions and of [`APPLY`]. A declared member's arguments are
+/// checked against its own action's schema when the group is built, so this
+/// names those actions rather than repeating their schemas; an `apply`
+/// member carries `apply`'s schema, without its descriptions.
 fn group_param<R: Resource>() -> ActionParam {
     use crate::schema::{
-        Reading, args_schema, array, constant, describe, nullable, object, one_of, undescribed,
+        array, constant, describe, nullable, object, one_of, string_enum, undescribed,
     };
 
-    // A member may leave its arguments out when none is required.
-    let args = |schema: serde_json::Value, required: bool| {
-        let schema = if required { schema } else { nullable(schema) };
-        ("args", schema, required)
-    };
-    let mut members: Vec<serde_json::Value> = R::declarations()
-        .iter()
-        .map(|decl| {
-            let required = decl.params.iter().any(|param| param.required);
-            let member = object(vec![
-                ("action", constant(decl.id), true),
-                args(args_schema(&decl.params, Reading::Bound), required),
-            ]);
-            describe(member, &decl.label)
-        })
-        .collect();
-    // The documented action schema is published on `apply` itself; the copy
-    // here keeps its shape, so a group is checked as strictly without
-    // repeating every description.
-    let action = R::action_schema().map_or_else(
+    let ids: Vec<&str> = R::declarations().iter().map(|decl| decl.id).collect();
+    let mut members = Vec::new();
+    if !ids.is_empty() {
+        members.push(describe(
+            object(vec![
+                ("action", string_enum(&ids), true),
+                (
+                    "args",
+                    nullable(serde_json::json!({"type": "object"})),
+                    false,
+                ),
+            ]),
+            "A named action, args as it takes them",
+        ));
+    }
+    let action = apply_param::<R>().schema.map_or_else(
         || serde_json::json!({"type": "object"}),
         |schema| undescribed(&schema),
     );
-    members.push(describe(
-        object(vec![
-            ("action", constant(APPLY), true),
-            args(object(vec![(APPLY_PARAM, action, true)]), true),
-        ]),
-        &format!("One {} action, as `{APPLY}` takes it", R::LABEL),
-    ));
+    members.push(object(vec![
+        ("action", constant(APPLY), true),
+        ("args", object(vec![(APPLY_PARAM, action, true)]), true),
+    ]));
     ActionParam::required_owned(
         crate::GROUP_PARAM,
         ParamType::Array,
@@ -415,11 +436,11 @@ fn apply_spec<R: Resource>() -> ActionSpec {
             let Some(tilo_actions::ArgValue::Object(value)) = args.get(APPLY_PARAM) else {
                 return refused::<R>("missing action");
             };
-            match serde_json::from_value::<R::Action>(serde_json::Value::Object(value.clone())) {
+            match read_apply::<R>(serde_json::Value::Object(value.clone())) {
                 Ok(action) => {
                     encode::<R>(&action).unwrap_or_else(|error| refused::<R>(&error.to_string()))
                 }
-                Err(error) => refused::<R>(&error.to_string()),
+                Err(reason) => refused::<R>(&reason),
             }
         },
     )
@@ -531,7 +552,7 @@ pub fn build_action<R: Resource>(
             .get(APPLY_PARAM)
             .cloned()
             .ok_or_else(|| "missing action".to_owned())?;
-        return serde_json::from_value(value).map_err(|error| error.to_string());
+        return read_apply::<R>(value);
     }
     let decl = R::declarations()
         .into_iter()
