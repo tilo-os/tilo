@@ -29,7 +29,8 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from acceptance import core, report  # noqa: E402
-from acceptance.checks import apps, basics, provenance, resources, search, ui, window  # noqa: E402,F401
+from acceptance.checks import (apps, basics, daily_apps, provenance, resources, search,  # noqa: E402,F401
+                               ui, window)
 from acceptance.context import Context  # noqa: E402
 from acceptance.vm import TiloVm, VmError, first_json  # noqa: E402
 
@@ -53,6 +54,7 @@ ORDER = ["P01", "P02", "R01", "R02", "R03", "R04",
          "W01", "W02", "W03", "W04", "W05", "W06", "W07", "W08", "W09", "W10", "W11", "W12",
          "W13", "W14", "W15", "W16", "W17",
          "A01", "A02", "A03", "A04", "A05", "A06", "A07",
+         "A08", "A09", "A10", "A11", "A12", "A13",
          "S01", "S02", "S04", "S05", "S06", "S07", "S08", "S09",
          "U01", "U02", "B01", "B02", "B03", "B04", "B05", "B06", "B07", "P03"]
 
@@ -169,7 +171,8 @@ def main() -> int:
     src.add_argument("--vm", help="an existing VM from vms.toml")
     ap.add_argument("--commit", help="the commit the disk must be built from (sha or ref)")
     ap.add_argument("--slot", default="acceptance")
-    ap.add_argument("--outputs", default="1920x1080@1,1280x800@1")
+    # The second output is fractionally scaled, so apps are checked at a fractional scale too.
+    ap.add_argument("--outputs", default="1920x1080@1,1280x800@1.25")
     ap.add_argument("--locales", default="en,de", help="en and optionally de (a second, German slot)")
     ap.add_argument("--only", help="comma-separated check ids or areas")
     ap.add_argument("--idle-seconds", type=int, default=30)
