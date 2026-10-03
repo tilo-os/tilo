@@ -76,10 +76,110 @@ impl ShellNetwork {
             .iter()
             .any(|slot| room_topic_id(slot.room) == ws && tree.requires_native_owner(slot.room))
     }
+    /// Take what the room's governor never admits into its replica: channel
+    /// governance, and in a room whose records are sealed channels, a
+    /// member's sealed write, which only the record's channel members open.
+    /// Returns whether `input` was one of them.
+    fn dispatch_channel_traffic(&self, input: &native_ingress::Input) -> bool {
+        let room = input.room();
+        match input.message() {
+            NeighbourMsg::MlsGovernance {
+                room: named, frame, ..
+            } => {
+                if RoomId::parse(named) == Some(room) {
+                    self.queue_channel_governance(InboundChannelGovernance::Frame {
+                        room,
+                        frame: frame.clone(),
+                    });
+                }
+                true
+            }
+            NeighbourMsg::MlsAccessRequest {
+                room: named,
+                request,
+                ..
+            } => {
+                if RoomId::parse(named) == Some(room) {
+                    self.queue_channel_governance(InboundChannelGovernance::AccessRequest {
+                        room,
+                        request: request.clone(),
+                    });
+                }
+                true
+            }
+            NeighbourMsg::MlsGovernanceAck {
+                room: named, ack, ..
+            } => {
+                if RoomId::parse(named) == Some(room) {
+                    self.queue_channel_governance(InboundChannelGovernance::Ack {
+                        room,
+                        ack: ack.clone(),
+                    });
+                }
+                true
+            }
+            NeighbourMsg::AppDocument {
+                peer,
+                app_id,
+                cluster_id,
+                record_id,
+                envelope,
+            } if envelope.encryption.is_some() && self.native_room_seals_records(room) => {
+                if *peer == self.local_peer_hash || cluster_id != &room.to_string() {
+                    return true;
+                }
+                // The relay authenticated the author; the room's governance
+                // says what it may write. The broker checks the signature,
+                // the role and the channel's gate before any app sees it.
+                match input.role() {
+                    Ok(role) if role != collab_types::Role::Denied => self.handle_document_message(
+                        *peer,
+                        app_id.clone(),
+                        cluster_id.clone(),
+                        record_id.clone(),
+                        role,
+                        input.retained(),
+                        (**envelope).clone(),
+                    ),
+                    Ok(_) | Err(_) => {
+                        tracing::debug!(room = %room, "sealed write from a device without a role");
+                    }
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+    /// Whether `msg` is a sealed record write to an enrolled room whose
+    /// records are sealed channels: the governor never commits it, so it
+    /// goes to the room's relay as written.
+    pub(super) fn sealed_record_write(&self, msg: &NeighbourMsg) -> bool {
+        let NeighbourMsg::AppDocument {
+            cluster_id,
+            envelope,
+            ..
+        } = msg
+        else {
+            return false;
+        };
+        envelope.encryption.is_some()
+            && RoomId::parse(cluster_id).is_some_and(|room| self.native_room_seals_records(room))
+    }
+    /// Whether `room` is an enrolled room whose records are sealed
+    /// channels its members write themselves (its governor stewards them).
+    pub(super) fn native_room_seals_records(&self, room: RoomId) -> bool {
+        self.replica.lock().is_ok_and(|replica| {
+            let tree = replica.tree.read();
+            tree.requires_native_owner(room) && !tree.commits_native_documents(room)
+        })
+    }
     pub(super) fn dispatch_native_input(&self, input: &native_ingress::Input) {
         let Some(identity) = self.host_identity.as_ref() else {
             return;
         };
+        if self.dispatch_channel_traffic(input) {
+            return;
+        }
         let report = match input.admit(identity) {
             Ok(report) => report,
             Err(error) => {
