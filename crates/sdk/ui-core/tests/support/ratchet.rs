@@ -15,10 +15,10 @@
 //!
 //! Regenerate with `UPDATE_RATCHET_BASELINES=1`. `RATCHET_SCOPE=apps/mail`
 //! rewrites only that unit's shard. An update refuses to raise any count
-//! unless `RATCHET_ALLOW_GROWTH=1` is also set. `rcargo` neither forwards
-//! the environment nor brings a test's writes back from the builder, so
-//! there run `rcargo test -p tilo-ui --test it do_not_grow --success-output
-//! immediate`: a passing ratchet with progress prints the text each affected
+//! unless `RATCHET_ALLOW_GROWTH=1` is also set. A cargo drop-in that runs
+//! tests on a remote host forwards no environment and keeps a test's writes
+//! there, so through one run `cargo test -p tilo-ui --test it do_not_grow
+//! --success-output immediate`: a passing ratchet with progress prints the text each affected
 //! shard should now hold ([`note_stale`]).
 
 use regex::{Captures, Regex};
@@ -650,8 +650,8 @@ pub fn note_stale(audit: &str, progress: &Progress) {
     }
     let mut note = format!(
         "{} entr(ies) in crates/sdk/ui-core/tests/baselines/{audit}/ are above the tree; lock \
-         the progress in with {UPDATE_COMMAND}, or write the shards below (rcargo does not \
-         forward the environment and its test writes stay on the builder):\n{}\n",
+         the progress in with {UPDATE_COMMAND}, or write the shards below (a remote cargo \
+         drop-in forwards no environment and keeps its test writes on the remote host):\n{}\n",
         progress.stale.len(),
         progress.stale.join("\n"),
     );
