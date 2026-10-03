@@ -163,6 +163,8 @@ pub enum HostShortcut {
     History,
     Undo,
     Redo,
+    /// Show or hide the window's sidebar (`NavShell`), in every app.
+    Sidebar,
 }
 
 impl HostShortcut {
@@ -177,6 +179,7 @@ impl HostShortcut {
             Self::Undo => Shortcut::command("Z"),
             Self::Redo if conventions.platform() == Platform::Windows => Shortcut::command("Y"),
             Self::Redo => Shortcut::command("Z").shift(),
+            Self::Sidebar => Shortcut::command("L").shift(),
         }
     }
 
@@ -190,6 +193,7 @@ impl HostShortcut {
             ("h", true) if !mac => Some(Self::History),
             ("z", false) => Some(Self::Undo),
             ("z", true) | ("y", false) => Some(Self::Redo),
+            ("l", true) => Some(Self::Sidebar),
             _ => None,
         }
     }
@@ -208,6 +212,7 @@ mod tests {
                 HostShortcut::History,
                 HostShortcut::Undo,
                 HostShortcut::Redo,
+                HostShortcut::Sidebar,
             ] {
                 let shortcut = service.shortcut(conventions);
                 assert_eq!(
@@ -220,6 +225,10 @@ mod tests {
         let mac = PlatformConventions::new(Platform::MacOs);
         let linux = PlatformConventions::new(Platform::Linux);
         assert_eq!(HostShortcut::History.shortcut(mac).label(mac), "⌘Y");
+        assert_eq!(
+            HostShortcut::Sidebar.shortcut(linux).label(linux),
+            "Ctrl+Shift+L"
+        );
         assert_eq!(
             HostShortcut::History.shortcut(linux).label(linux),
             "Ctrl+Shift+H"

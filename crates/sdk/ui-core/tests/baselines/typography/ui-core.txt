@@ -21,6 +21,7 @@ crates/sdk/ui-core/src/widget/floating_window.rs legacy_size_api 1
 crates/sdk/ui-core/src/widget/form_composition.rs legacy_size_api 1
 crates/sdk/ui-core/src/widget/function_plane.rs legacy_size_api 3
 crates/sdk/ui-core/src/widget/layout.rs legacy_size_api 1
+crates/sdk/ui-core/src/widget/modal_dialog.rs legacy_size_api 1
 crates/sdk/ui-core/src/widget/nav_shell.rs legacy_size_api 2
 crates/sdk/ui-core/src/widget/nav_split.rs legacy_size_api 1
 crates/sdk/ui-core/src/widget/number_input.rs font_size_const 1
