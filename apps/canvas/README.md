@@ -39,6 +39,11 @@ scripts/agent-loop/session.py report canvas       # history, inspection and a fi
 scripts/agent-loop/session.py stop canvas
 ```
 
+Besides the actions, the session's agent can use the window like a person:
+`computer` with `app_id: "so.tilo.canvas"` clicks the tools, drags strokes and
+handles, types and Ctrl+scrolls in the window's pixels (a point of `render`
+plus its `window_origin`) and answers with a screenshot of the window.
+
 `tests/agent-surface.json` is what an agent sees of the app; a change to the
 vocabulary shows there as a diff (`tests/agent_surface.rs` explains updating
 it). Screenshots: `TILO_SHOTS_THEME=light ./target/debug/canvas --shots
