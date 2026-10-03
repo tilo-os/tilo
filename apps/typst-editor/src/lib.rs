@@ -6,8 +6,10 @@
 //! background compile worker. The document source lives in an Automerge `Text`
 //! object so editing is collaborative and undoable for free.
 //!
-//! `app_root()` is the single integration point used by both the live event
-//! loop and the `--shots` offscreen renderer.
+//! `app_root()` is the single integration point every host mounts. The framework
+//! app ([`TypstEditorShell`]) wraps it, and `--shots` captures go through that
+//! same app: its scenarios stage the bundled documents and the views each
+//! capture shows.
 //!
 //! The source text is the app's *only* collaborative document state, so there is
 //! nothing structural to migrate onto the resource + action model — see
@@ -43,6 +45,7 @@
 
 pub mod actions;
 pub mod app;
+pub mod chrome;
 pub mod compile;
 pub mod diagnostics;
 pub mod editor;
@@ -64,22 +67,6 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::launch::LaunchSpec::new("so.tilo.typst-editor", app_root)
         .history(&framework_history::HISTORY)
         .as_definition("Typst Editor")
-}
-
-/// Build a hermetic root seeded with the bundled demo documents. Used by the
-/// offscreen `--shots` renderer and tests so captures are deterministic and do
-/// not depend on whatever `.typ` files happen to be on disk.
-pub fn demo_root() -> Box<dyn Widget> {
-    Box::new(app::TypstApp::with_demo_documents())
-}
-
-/// Like [`demo_root`] but pre-configured into a named state so `--shots` can
-/// capture views that would otherwise need interaction (compact preview, the
-/// overflow menu, the Problems panel). Screenshot-only.
-pub fn demo_root_scenario(scenario: &str) -> Box<dyn Widget> {
-    let mut app = app::TypstApp::with_demo_documents();
-    app.apply_demo_scenario(scenario);
-    Box::new(app)
 }
 
 pub use resource::{TypstEditor, TypstEditorShell, launch_spec as framework_launch_spec};

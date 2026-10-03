@@ -1,5 +1,5 @@
-//! Bundled Typst documents shown when the editor first opens and cycled
-//! through by the toolbar's document switcher. Each one is valid Typst 0.14
+//! Bundled Typst documents shown when the editor first opens and listed in
+//! its document picker. Each one is valid Typst 0.14
 //! and is deliberately kept simple so it always compiles cleanly — they double
 //! as the `--shots` fixture and as a feature tour of the highlighter.
 
@@ -103,7 +103,7 @@ fn main() {
 }
 ```
 
-Use the toolbar to open the other example documents.
+Use the document list above to open the other examples.
 "#;
 
 const REPORT: &str = r#"#set page(width: 16cm, height: auto, margin: 1.6cm)
@@ -129,7 +129,7 @@ toolkit. Throughput improved across every measured surface.
   align: (left, right, right),
   table.header([*Area*], [*Before*], [*After*]),
   [Frame time], [12.4 ms], [7.5 ms],
-  [Cold build], [49 G], [24 G],
+  [Cold build], [49 s], [24 s],
   [Sync latency], [180 ms], [60 ms],
 )
 
@@ -144,7 +144,7 @@ $ A union B = B union A $
 = Appendix
 
 The second page exists to demonstrate multi-page rendering and the page
-thumbnail strip on the right-hand side of the editor.
+thumbnails beside the preview.
 
 - Each page is rasterised independently.
 - Click a thumbnail to jump to that page.
