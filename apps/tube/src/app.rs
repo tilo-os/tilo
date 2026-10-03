@@ -3,9 +3,10 @@
 //! Tube keeps a single in-memory [`TubeModel`] as the source of truth for
 //! rendering. Explicit Tube actions persist subscriptions and settings in
 //! Automerge; catalogue data, navigation, playback, notices and history are
-//! device-local presentation state. Navigation rebuilds the whole widget tree from the model in
-//! `build_layout` (the `RebuildHarness` pattern), so the screen functions
-//! in `screens.rs` can stay pure.
+//! device-local presentation state. The window shell (a `NavShell` with the
+//! navigation rail and the header row) lives as long as the app; navigation
+//! rebuilds the current screen from the model in `build_layout` and swaps it
+//! into the shell, so the screen functions in `screens.rs` can stay pure.
 //!
 //! Interaction flows through the [`ActionBus`]: leaf widgets push an
 //! [`Action`]; `handle_event` drains the queue, mutates the model, persists
@@ -343,13 +344,12 @@ impl TubeApp {
                         .push_notice("That playlist is no longer available");
                 }
             }
-            crate::actions::TubeOperation::Download { video_id } => {
+            crate::actions::TubeOperation::Download { .. } => {
                 // The resource action is published as unavailable, so a
                 // conforming host never reaches this arm. Keep the fallback
                 // honest if a stale/non-conforming caller invokes it anyway.
-                self.model.push_notice(format!(
-                    "Downloads are unavailable for {video_id}: no storage capability"
-                ));
+                self.model
+                    .push_notice("Tube can't save videos for offline viewing");
             }
             crate::actions::TubeOperation::RecordHistory { video_id } => {
                 let watched_at_ms = history_now_ms();
@@ -1615,7 +1615,7 @@ impl TubeApp {
             Action::PairDevice => {
                 if !self.queue_device_action("pair", None) {
                     self.model.push_notice(
-                        "Paste a pairing invite first, or unlock the desktop secret broker",
+                        "Paste a pairing invite first, or unlock the desktop's secret store",
                     );
                 }
             }
@@ -3519,6 +3519,44 @@ mod tests {
             assert!(
                 app.model.playhead >= 1570.0,
                 "manual skip advanced the playhead"
+            );
+        }
+        // Case `the_player_offers_skip_inside_a_show_mode_segment_and_toasts_it`.
+        {
+            use crate::model::SkipMode;
+            let (mut app, _doc) = fresh_synth();
+            app.model.route = Route::Watch("vid_rust_async".into());
+            app.load_resolved_stream(
+                "vid_rust_async".into(),
+                "https://inv.example/x?local=true".into(),
+                true,
+                "360p",
+            );
+            app.model
+                .settings
+                .categories
+                .insert(Category::Sponsor.api_key().to_string(), SkipMode::Show);
+            app.model.playhead = 1500.0;
+            let theme = Theme::dark();
+            let _ = app.build_screen(&theme);
+            assert!(
+                app.player.borrow().setting(screens::SKIP_SETTING).is_some(),
+                "inside a Show-mode segment the player offers Skip"
+            );
+            app.apply_player_setting_event(
+                ui::widget::video_player::PlayerSettingEvent::Activated {
+                    id: screens::SKIP_SETTING.into(),
+                },
+            );
+            assert!(app.model.playhead >= 1570.0, "Skip jumps past the segment");
+            app.show_new_notices();
+            assert_eq!(app.toasts.len(), 1, "the skip is confirmed by one toast");
+            app.show_new_notices();
+            assert_eq!(app.toasts.len(), 1, "a notice is toasted once");
+            let _ = app.build_screen(&theme);
+            assert!(
+                app.player.borrow().setting(screens::SKIP_SETTING).is_none(),
+                "past the segment the Skip command is gone"
             );
         }
         // Case `show_mode_segment_drives_the_in_video_skip_overlay`.
