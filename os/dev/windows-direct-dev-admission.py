@@ -31,6 +31,51 @@ HEX = re.compile(r'[0-9a-f]{64}\Z')
 COMPOSEFS = re.compile(r'[0-9a-f]{128}\Z')
 
 
+# Narrow compatibility exception for the reviewed runtime-profile packaging fix.
+# CI authority still supplies each immutable assembly revision and disk hash;
+# this contract cannot admit arbitrary helper edits or refreshed VM media.
+PROFILE_FIX_PAIR = ('917f492b8af11622edf9d08a389cd88697c3f503', '3fa91e4579ac3e28a3dc6eb61e9f22a4b82590bf')
+PROFILE_FIX_BLOBS = {'os/dev/build-custom-installer.sh': {'917f492b8af11622edf9d08a389cd88697c3f503': '3c14b70cd639d19400fb9230defafe25eb1c7dda7ea4c966945337aa2cfe23b0', '3fa91e4579ac3e28a3dc6eb61e9f22a4b82590bf': '7d8c0d1191885dab2f53fdfd717846c64c27e537cf1f4c616d293c8892bf72e5'}, 'os/usr/libexec/tilo-installer-dev-target-uki.py': {'917f492b8af11622edf9d08a389cd88697c3f503': '50ee428a3ded60ea6fdd971b4922af88dcdef95813e64208ab419ceead42f979', '3fa91e4579ac3e28a3dc6eb61e9f22a4b82590bf': '6f4dbc9cd609c1f67d4e42c0af471efde783475a5407b448848456966e1ecfc4'}, 'os/dev/hardware_profile.py': {'917f492b8af11622edf9d08a389cd88697c3f503': 'c0f0a6aa1d073e023e04faa315cda0a2b146959c8be6ff2d02d2bf81d4b02d85', '3fa91e4579ac3e28a3dc6eb61e9f22a4b82590bf': '736eafdc50f894572df009ba124a62dd8fb5a9c53b841e2856ac45f176740ad3'}, 'os/dev/uki-hardware-profile.py': {'917f492b8af11622edf9d08a389cd88697c3f503': '86dde70c2464e62adfe985f2a157c23ec601e489788d606b9b820128840a269a', '3fa91e4579ac3e28a3dc6eb61e9f22a4b82590bf': 'adec487d384194f4a19cfd4c99026d038095b65875cc75339660ea31fe51a0d6'}}
+PROFILE_FIX_CHANGED = {
+    'os/dev/README.md', 'os/dev/copy-windows-direct-final-install.py',
+    'os/tests/test_copy_windows_direct_final_install.py',
+    'os/tests/test_installer_dev_target_uki.py',
+    'apps/imager/src/setup/staging/final_bootnext.rs', *PROFILE_FIX_BLOBS,
+}
+
+
+def assembly_compatibility(generic_revision, board_revision):
+    require(all(type(value) is str and re.fullmatch(r'[0-9a-f]{40}', value)
+                for value in (generic_revision, board_revision)), 'invalid CI assembly identities')
+    if generic_revision == board_revision:
+        return {'schema': 'tilo.installer-assembly-compatibility.v1',
+                'kind': 'identical', 'generic': generic_revision, 'board': board_revision}
+    require((generic_revision, board_revision) == PROFILE_FIX_PAIR,
+            'development installer pair has unreviewed assembly identities')
+    repository = Path(__file__).resolve().parents[2]
+    def git(*arguments):
+        return subprocess.run(['git', '-C', str(repository), *arguments],
+                              capture_output=True, check=True, timeout=60).stdout
+    for revision in PROFILE_FIX_PAIR:
+        require(git('rev-parse', '--verify', revision + '^{commit}').decode().strip() == revision,
+                'reviewed CI assembly object is unavailable')
+    changed = set(git('diff', '--name-only', generic_revision, board_revision, '--').decode().splitlines())
+    require(changed == PROFILE_FIX_CHANGED, 'reviewed installer input closure differs')
+    records = {}
+    for path, pins in PROFILE_FIX_BLOBS.items():
+        records[path] = {}
+        for revision, expected in pins.items():
+            actual = hashlib.sha256(git('show', revision + ':' + path)).hexdigest()
+            require(actual == expected, 'reviewed runtime profile helper bytes differ')
+            records[path][revision] = actual
+    diff_hashes = {path: hashlib.sha256(git('diff', '--binary', generic_revision,
+                    board_revision, '--', path)).hexdigest() for path in sorted(changed)}
+    return {'schema': 'tilo.installer-assembly-compatibility.v1',
+            'kind': 'runtime-profile-packaging-fix', 'generic': generic_revision,
+            'board': board_revision, 'changed_paths': sorted(changed),
+            'file_diff_sha256': diff_hashes, 'runtime_file_sha256': records}
+
+
 def file_hash(path):
     require(path.is_file() and not path.is_symlink(), 'development input is redirected or missing')
     value = hashlib.sha256()
@@ -104,6 +149,18 @@ def checked_proof(path, board_ci=None):
     require(type(doc) is dict and type(doc.get('guest_proof')) is dict
             and type(doc.get('source_check')) is dict, 'incomplete development VM proof')
     guest, source = doc['guest_proof'], doc['source_check']
+    runtime = doc.get('installer_code_runtime')
+    require(type(runtime) is dict and runtime.get('schema') == 'tilo.installer-code-runtime.v1'
+            and type(runtime.get('channel')) is dict
+            and set(runtime['channel']) == {'schema', 'enabled', 'port', 'source'}
+            and runtime['channel'].get('schema') == 'tilo.installer-code-runtime.v1'
+            and runtime['channel'].get('enabled') is False
+            and runtime['channel'].get('port') is None and runtime['channel'].get('source') is None
+            and runtime.get('history') == [],
+            'physical install requires fresh host evidence without a local installer code channel')
+    require(guest.get('installer_code_override_sha256') is None
+            and doc.get('installer_code_override_sha256') is None,
+            'local installer code refresh cannot authorize a physical install')
     require(guest.get('architecture') == 'arm64'
             and ci.SHA.fullmatch(guest.get('booted_image_digest', ''))
             and ci.SHA.fullmatch(guest.get('installed_image_digest', ''))
@@ -195,8 +252,8 @@ def verify(args):
         require(medium['source'].get('base_image') == generic_ci['image']
                 and medium['source'].get('base_source') == generic_ci['source_revision'],
                 'CI installer base differs from the verified development cohort')
-    require(board_medium['assembly_source'] == generic_medium['assembly_source']
-            and board_medium['source'].get('target_image') == board_ci['image']
+    compatibility = assembly_compatibility(generic_medium['assembly_source'], board_medium['assembly_source'])
+    require(board_medium['source'].get('target_image') == board_ci['image']
             and board_medium['source'].get('target_ci_run_id') == board_ci['invocation_id']
             and board_medium['source'].get('target_update_origin') == board_ci['update_origin']
             and not generic_medium['source'].get('target_image'),
@@ -210,6 +267,7 @@ def verify(args):
     evidence = {'schema': 'tilo.windows-direct-ci-dev-admission.v1',
                 'board_ci': board_ci, 'generic_ci': generic_ci,
                 'board_medium': board_medium, 'generic_medium': generic_medium,
+                'assembly_compatibility': compatibility,
                 'board_profile': board_profile, 'generic_profile': generic_profile,
                 'generic_vm_proof_sha256': file_hash(args.generic_vm_proof_checked)}
     provenance = {**board_ci, 'key_sha256': None, 'generation': None,

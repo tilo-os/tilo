@@ -92,7 +92,9 @@ pub struct Inspect {
 pub struct Compare {
     /// `[x, y, width, height]`; the reference's frame when absent.
     pub region: Option<[f64; 4]>,
-    /// `side-by-side` (default), `overlay` or `difference`.
+    /// `side-by-side` (default; the artwork left, the reference right),
+    /// `overlay` (the reference at half strength over the artwork) or
+    /// `difference` (bright where they differ).
     pub mode: Option<String>,
     /// Longest side of each picture, 64 to 1024 (default 640).
     pub size: Option<u32>,
@@ -106,6 +108,15 @@ pub struct Export {
     pub scale: Option<f64>,
 }
 
+/// Export the artwork, or some of its marks, as SVG.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExportSvg {
+    /// Only these marks or groups, cropped to them and without the ground:
+    /// one icon of a set.
+    pub ids: Option<Vec<String>>,
+}
+
 /// A view or effect the canvas answers.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
@@ -115,7 +126,7 @@ pub enum ViewOp {
     Media,
     Export(Export),
     Diff(Diff),
-    ExportSvg,
+    ExportSvg(ExportSvg),
     Compare(Compare),
 }
 
@@ -295,13 +306,13 @@ impl Resource for ArtworkResource {
             decl::<Paint>(
                 "paint",
                 "Paint strokes",
-                "Paint brush strokes on a layer in one step. On an oil or watercolour layer the medium simulates real paint; on a plain layer strokes are ink. Each stroke: points [[x,y] or [x,y,pressure]], size, colour (#rrggbb or pigment:<name>).",
+                "Paint brush strokes on a layer in one step. On an oil or watercolour layer the medium simulates real paint; on a plain layer strokes are ink. Each stroke: points [[x,y] or [x,y,pressure]], size, colour (#rrggbb or pigment:<name>). One stroke can be many: forks grows a branch or bare tree; dabs scatters foliage, flowers or (with dab_length, angle -90) grass. Work like a painter, looking close after each passage: big shapes first, blended while wet on the same layer; then forms in a few values (dark mass, middle, lit side); small lights and accents last.",
                 CanvasAction::Paint,
             ),
             decl::<Draw>(
                 "draw",
                 "Draw shapes",
-                "Draw shapes on a layer in one step: rect, ellipse, polygon, line, path (SVG d), text or stroke, each with fill, gradient, stroke and opacity. Give ids to address marks later. On a painted layer filled shapes are laid in with the brush.",
+                "Draw shapes on a layer in one step: rect, ellipse, polygon, line, path (SVG d), text or stroke, each with fill, gradient, stroke and opacity. Give ids to address marks later. On a painted layer filled shapes are laid in with the brush: paint a building or small figure as filled planes (lit and shadow side) with a small brush, not as many strokes.",
                 CanvasAction::Draw,
             ),
             decl::<EditMarks>(
@@ -319,7 +330,7 @@ impl Resource for ArtworkResource {
             decl::<Arrange>(
                 "arrange",
                 "Arrange marks",
-                "Bring marks to the front or back of their layer, or one step forward or backward.",
+                "Bring marks to the front or back of their layer, one step forward or backward, or directly above or below another mark or group.",
                 CanvasAction::Arrange,
             ),
             ActionDecl::new("add-layer", "Add layer", params_of::<AddLayer>(), |args, _now| {
@@ -509,7 +520,7 @@ fn vector_operations() -> [ActionSpec; 2] {
             ViewOp::Compare(read_args(args).unwrap_or_default())
         })
         .with_description(
-            "See the artwork beside (or over, or minus) the reference picture, with a difference score 0..1 and the regions that differ most, to iterate toward it.",
+            "See the artwork beside (or over, or minus) the reference picture, with a difference score (mean colour distance 0..1 in the reference's frame; lower is closer) and the regions that differ most, to iterate toward it.",
         );
     compare.contract.result = ResultSpec::Json {
         schema: serde_json::json!({"type": "object"}),
@@ -518,8 +529,8 @@ fn vector_operations() -> [ActionSpec; 2] {
         "export-svg",
         "Export SVG",
         OperationKind::Effect,
-        Vec::new(),
-        |_| ViewOp::ExportSvg,
+        params_of::<ExportSvg>(),
+        |args| ViewOp::ExportSvg(read_args(args).unwrap_or_default()),
     )
         .with_description(
             "Export the artwork as SVG: plain layers as exact vector art, painted layers as embedded pictures. Answers with its content address and, when small, the markup.",

@@ -195,7 +195,7 @@
     "action": "arrange",
     "resource_kind": "canvas.artwork",
     "label": "Arrange marks",
-    "description": "Bring marks to the front or back of their layer, or one step forward or backward.",
+    "description": "Bring marks to the front or back of their layer, one step forward or backward, or directly above or below another mark or group.",
     "operation": "Document",
     "params": [
       {
@@ -215,12 +215,26 @@
         "name": "to",
         "ty": "text",
         "required": true,
-        "description": "`front`, `back`, `forward` or `backward`.",
+        "description": "`front`, `back`, `forward`, `backward`, or `above`/`below` the mark or group `of`.",
         "schema": {
           "type": "string",
-          "description": "`front`, `back`, `forward` or `backward`."
+          "description": "`front`, `back`, `forward`, `backward`, or `above`/`below` the mark or group `of`."
         },
         "nullable": false
+      },
+      {
+        "name": "of",
+        "ty": "text",
+        "required": false,
+        "description": "The mark or group `above` and `below` are relative to.",
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The mark or group `above` and `below` are relative to."
+        },
+        "nullable": true
       }
     ]
   },
@@ -246,7 +260,7 @@
     "action": "compare",
     "resource_kind": "canvas.artwork",
     "label": "Compare with reference",
-    "description": "See the artwork beside (or over, or minus) the reference picture, with a difference score 0..1 and the regions that differ most, to iterate toward it.",
+    "description": "See the artwork beside (or over, or minus) the reference picture, with a difference score (mean colour distance 0..1 in the reference's frame; lower is closer) and the regions that differ most, to iterate toward it.",
     "operation": "View",
     "params": [
       {
@@ -272,13 +286,13 @@
         "name": "mode",
         "ty": "text",
         "required": false,
-        "description": "`side-by-side` (default), `overlay` or `difference`.",
+        "description": "`side-by-side` (default; the artwork left, the reference right), `overlay` (the reference at half strength over the artwork) or `difference` (bright where they differ).",
         "schema": {
           "type": [
             "string",
             "null"
           ],
-          "description": "`side-by-side` (default), `overlay` or `difference`."
+          "description": "`side-by-side` (default; the artwork left, the reference right), `overlay` (the reference at half strength over the artwork) or `difference` (bright where they differ)."
         },
         "nullable": true
       },
@@ -354,7 +368,7 @@
     "action": "draw",
     "resource_kind": "canvas.artwork",
     "label": "Draw shapes",
-    "description": "Draw shapes on a layer in one step: rect, ellipse, polygon, line, path (SVG d), text or stroke, each with fill, gradient, stroke and opacity. Give ids to address marks later. On a painted layer filled shapes are laid in with the brush.",
+    "description": "Draw shapes on a layer in one step: rect, ellipse, polygon, line, path (SVG d), text or stroke, each with fill, gradient, stroke and opacity. Give ids to address marks later. On a painted layer filled shapes are laid in with the brush: paint a building or small figure as filled planes (lit and shadow side) with a small brush, not as many strokes.",
     "operation": "Document",
     "params": [
       {
@@ -622,6 +636,45 @@
                       "size": {
                         "type": "number"
                       },
+                      "forks": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "minimum": 0,
+                        "maximum": 4294967295,
+                        "description": "A limb that lifts to a point and forks this many times (1-6) into ever thinner twigs: a branch or bare tree in one stroke."
+                      },
+                      "spread": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "With `forks`: how widely the twigs splay, in degrees (default 35)."
+                      },
+                      "dabs": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "minimum": 0,
+                        "maximum": 4294967295,
+                        "description": "Instead of one line, this many short dabs (1-600) of `size` scattered along the points: foliage, flowers, broken light."
+                      },
+                      "scatter": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "With `dabs`: how far they stray either side of the path, in units (default twice `size`)."
+                      },
+                      "dab_length": {
+                        "type": [
+                          "number",
+                          "null"
+                        ],
+                        "description": "With `dabs`: how long each is, in units (about `size` when absent); much longer than `size`, each is a flick that lifts to a point, as grass is painted."
+                      },
                       "kind": {
                         "type": "string",
                         "const": "stroke"
@@ -763,7 +816,7 @@
                   "string",
                   "null"
                 ],
-                "description": "`multiply`, `screen`, `overlay`, … (see the refusal for all)."
+                "description": "`normal`, `multiply`, `screen`, `overlay`, `darken`, `lighten`, `color-dodge`, `color-burn`, `hard-light`, `soft-light`, `difference`, `exclusion`, `hue`, `saturation`, `color` or `luminosity`."
               },
               "shadow": {
                 "type": [
@@ -807,6 +860,18 @@
                   "null"
                 ],
                 "description": "Cut to this mark's shape (opacity 0 hides that mark)."
+              },
+              "transform": {
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 6,
+                "maxItems": 6,
+                "description": "An affine `[a, b, c, d, e, f]` on the geometry, as `inspect` shows."
               }
             },
             "additionalProperties": false,
@@ -1174,6 +1239,45 @@
                     "size": {
                       "type": "number"
                     },
+                    "forks": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0,
+                      "maximum": 4294967295,
+                      "description": "A limb that lifts to a point and forks this many times (1-6) into ever thinner twigs: a branch or bare tree in one stroke."
+                    },
+                    "spread": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "description": "With `forks`: how widely the twigs splay, in degrees (default 35)."
+                    },
+                    "dabs": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0,
+                      "maximum": 4294967295,
+                      "description": "Instead of one line, this many short dabs (1-600) of `size` scattered along the points: foliage, flowers, broken light."
+                    },
+                    "scatter": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "description": "With `dabs`: how far they stray either side of the path, in units (default twice `size`)."
+                    },
+                    "dab_length": {
+                      "type": [
+                        "number",
+                        "null"
+                      ],
+                      "description": "With `dabs`: how long each is, in units (about `size` when absent); much longer than `size`, each is a flick that lifts to a point, as grass is painted."
+                    },
                     "kind": {
                       "type": "string",
                       "const": "stroke"
@@ -1313,13 +1417,13 @@
         "name": "fill",
         "ty": "text",
         "required": false,
-        "description": "A colour, or `none`.",
+        "description": "A colour (replacing a gradient), or `none`.",
         "schema": {
           "type": [
             "string",
             "null"
           ],
-          "description": "A colour, or `none`."
+          "description": "A colour (replacing a gradient), or `none`."
         },
         "nullable": true
       },
@@ -1527,6 +1631,25 @@
           "description": "Move the marks onto this layer, on top."
         },
         "nullable": true
+      },
+      {
+        "name": "transform",
+        "ty": "array",
+        "required": false,
+        "description": "An affine `[a, b, c, d, e, f]` in artwork units applied after the rest, to all the marks as one: a stretch or turn about any point.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "number"
+          },
+          "minItems": 6,
+          "maxItems": 6,
+          "description": "An affine `[a, b, c, d, e, f]` in artwork units applied after the rest, to all the marks as one: a stretch or turn about any point."
+        },
+        "nullable": true
       }
     ]
   },
@@ -1561,7 +1684,25 @@
     "label": "Export SVG",
     "description": "Export the artwork as SVG: plain layers as exact vector art, painted layers as embedded pictures. Answers with its content address and, when small, the markup.",
     "operation": "Effect",
-    "params": []
+    "params": [
+      {
+        "name": "ids",
+        "ty": "array",
+        "required": false,
+        "description": "Only these marks or groups, cropped to them and without the ground: one icon of a set.",
+        "schema": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Only these marks or groups, cropped to them and without the ground: one icon of a set."
+        },
+        "nullable": true
+      }
+    ]
   },
   {
     "resource": "canvas.artwork",
@@ -1979,7 +2120,7 @@
     "action": "paint",
     "resource_kind": "canvas.artwork",
     "label": "Paint strokes",
-    "description": "Paint brush strokes on a layer in one step. On an oil or watercolour layer the medium simulates real paint; on a plain layer strokes are ink. Each stroke: points [[x,y] or [x,y,pressure]], size, colour (#rrggbb or pigment:<name>).",
+    "description": "Paint brush strokes on a layer in one step. On an oil or watercolour layer the medium simulates real paint; on a plain layer strokes are ink. Each stroke: points [[x,y] or [x,y,pressure]], size, colour (#rrggbb or pigment:<name>). One stroke can be many: forks grows a branch or bare tree; dabs scatters foliage, flowers or (with dab_length, angle -90) grass. Work like a painter, looking close after each passage: big shapes first, blended while wet on the same layer; then forms in a few values (dark mass, middle, lit side); small lights and accents last.",
     "operation": "Document",
     "params": [
       {
@@ -2060,6 +2201,59 @@
                   "null"
                 ],
                 "description": "Medium parameter overrides for this stroke (`{\"load\": 0.2}` for dry brush)."
+              },
+              "forks": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 4294967295,
+                "description": "A limb that lifts to a point and forks this many times (1-6) into ever thinner twigs: a branch or a bare tree in one stroke."
+              },
+              "spread": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "With `forks`: how widely the twigs splay, in degrees (default 35)."
+              },
+              "dabs": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 4294967295,
+                "description": "Instead of one line, this many short dabs (1-600) of `size` scattered along the points: foliage, flowers, broken light."
+              },
+              "scatter": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "With `dabs`: how far they stray either side of the path, in units (default twice `size`)."
+              },
+              "dab_length": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "With `dabs`: how long each is, in units (about `size` when absent); much longer than `size`, each is a flick lifting to a point (grass)."
+              },
+              "angle": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "With `dabs`: the way they point, in degrees (-90 is up); along the path when absent."
+              },
+              "clip": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Keep the paint inside this mark's shape, as a painter cuts in against an edge: texture a rock or a crown within its silhouette."
               }
             },
             "additionalProperties": false,

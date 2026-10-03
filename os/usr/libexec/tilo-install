@@ -249,6 +249,15 @@ if [ -z "${TILO_INSTALL_TRANSIENT:-}" ]; then
   die "systemd-run is required for the enforced installer backend"
 fi
 
+# Only the transient backend owns this lock. The greeter launcher re-execs
+# through systemd first and must neither access root-private state nor hold
+# the lock while waiting for its child unit.
+if [ -d /run/tilo-installer/code-refresh ]; then
+  exec {installer_code_lock}>/run/tilo-installer/code-refresh/lock
+  flock -n "$installer_code_lock" || { echo 'installer code refresh is running' >&2; exit 1; }
+  python3 -c 'import json; from pathlib import Path; p=Path("/run/tilo-installer/code-refresh/active.json"); assert not p.exists() or json.loads(p.read_text())["state"] == "applied", "installer code refresh is incomplete"'
+fi
+
 # --- parse args --------------------------------------------------------------
 DISK=""
 USERNAME=""
@@ -917,6 +926,29 @@ log "  update ref  : $TILO_TARGET_IMGREF"
 promote_target_uki() {
   local esp="$1" TARGET_UKI TARGET_VARIANT
   local -a target_digests installed_digests
+  # CI development targets may use a board UKI or a generic split kernel.
+  # Project the installed target UKI
+  # only inside the already guarded development scenario, without modifying
+  # its OCI image or borrowing boot bytes from the generic live medium.
+  if [ "$OFFLINE_TARGET" -eq 2 ]; then
+    local dev_image_root dev_result
+    dev_image_root="$(podman image mount "$LOCAL_IMG")" \
+      || die "could not mount the selected immutable development target"
+    if [ ! -f "$dev_image_root/boot/tilo-target/tilo-target.efi" ]; then
+      if dev_result="$(REQUIRE_TPM_PREDICTION="${REQUIRE_TPM_PREDICTION:-0}" \
+          python3 /usr/libexec/tilo-installer-dev-target-uki.py promote \
+          --image-root "$dev_image_root" --target-root "$ENC_MNT" --esp "$esp")"; then
+        podman image unmount "$LOCAL_IMG" || die "could not unmount development target"
+        [[ "$dev_result" =~ ^[0-9a-f]{128}$ ]] || die "development UKI returned an invalid digest"
+        TARGET_COMPOSEFS_DIGEST="$dev_result"
+        return
+      else
+        podman image unmount "$LOCAL_IMG" || true
+        die "development target UKI failed verification"
+      fi
+    fi
+    podman image unmount "$LOCAL_IMG" || die "could not unmount development target"
+  fi
   # Promote the deterministic installed-target UKI. It was built over this
   # exact composefs tree and uses boot-ESP/same-disk Tilo root discovery, so no
   # per-machine bytes enter PCR 11.

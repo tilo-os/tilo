@@ -9,7 +9,7 @@
     reason = "test assertions over exact, hand-written fixtures"
 )]
 
-use canvas::actions::{AddLayer, Draw, EditMarks, NewMark, NewStroke, SaveMedium};
+use canvas::actions::{AddLayer, Arrange, Draw, EditMarks, NewMark, NewStroke, SaveMedium};
 use canvas::media::MediumSpec;
 use canvas::model::Shape;
 use canvas::{ArtworkResource, CanvasAction};
@@ -26,6 +26,7 @@ fn stroke(points: &[[f64; 2]], colour: &str) -> NewStroke {
         opacity: None,
         wet: None,
         params: None,
+        ..NewStroke::default()
     }
 }
 
@@ -621,4 +622,158 @@ fn clipped_marks_measure_what_shows() {
         hit.is_none_or(|mark| mark.id != "sheen"),
         "the sheen is cut away there: {hit:?}"
     );
+}
+
+/// A mark slots in directly above or below another, as shading goes over
+/// a shape but under what stands in front of it.
+#[test]
+fn marks_go_directly_above_or_below_another() {
+    let mut art = Replica::<ArtworkResource>::new();
+    art.apply(ArtworkResource::DRAW.with((
+        None,
+        vec![
+            rect("hill", 0.0, "#557755"),
+            rect("tree", 10.0, "#224422"),
+            rect("title", 20.0, "#ffffff"),
+            rect("shade", 30.0, "#000000"),
+        ],
+    )))
+    .unwrap();
+    let order = |art: &Replica<ArtworkResource>| {
+        art.state()
+            .unwrap()
+            .marks
+            .iter()
+            .map(|mark| mark.id.clone())
+            .collect::<Vec<_>>()
+    };
+    let arrange = |to: &str, of: &str| {
+        CanvasAction::Arrange(Arrange {
+            ids: vec!["shade".into()],
+            to: to.into(),
+            of: Some(of.into()),
+        })
+    };
+    apply(&mut art, arrange("above", "hill")).unwrap();
+    assert_eq!(order(&art), ["hill", "shade", "tree", "title"]);
+    apply(&mut art, arrange("below", "title")).unwrap();
+    assert_eq!(order(&art), ["hill", "tree", "shade", "title"]);
+    let refused = apply(&mut art, arrange("above", "shade")).unwrap_err();
+    assert!(refused.contains("`of`"), "{refused}");
+}
+
+/// A gradient travels with its mark, and a flat fill replaces it.
+#[test]
+fn a_gradient_moves_with_its_mark_and_a_fill_replaces_it() {
+    let mut art = Replica::<ArtworkResource>::new();
+    let gradient: canvas::model::Gradient = serde_json::from_value(json!({
+        "kind": "linear", "from": [0, 10], "to": [50, 50],
+        "stops": [[0, "#ff0000"], [1, "#0000ff"]]
+    }))
+    .unwrap();
+    art.apply(ArtworkResource::DRAW.with((
+        None,
+        vec![NewMark {
+            gradient: Some(gradient),
+            ..rect("card", 0.0, "#ffffff")
+        }],
+    )))
+    .unwrap();
+    let edit = |edit: EditMarks| {
+        CanvasAction::edit(EditMarks {
+            ids: vec!["card".into()],
+            ..edit
+        })
+    };
+    apply(
+        &mut art,
+        edit(EditMarks {
+            move_by: Some([100.0, 5.0]),
+            ..EditMarks::default()
+        }),
+    )
+    .unwrap();
+    let state = art.state().unwrap();
+    let moved = state.mark("card").unwrap().style.gradient.clone().unwrap();
+    assert_eq!((moved.from, moved.to), ([100.0, 15.0], [150.0, 55.0]));
+    apply(
+        &mut art,
+        edit(EditMarks {
+            fill: Some("#202020".into()),
+            ..EditMarks::default()
+        }),
+    )
+    .unwrap();
+    let state = art.state().unwrap();
+    let card = state.mark("card").unwrap();
+    assert!(card.style.gradient.is_none(), "{:?}", card.style);
+    assert_eq!(card.style.fill.as_deref(), Some("#202020"));
+}
+
+/// One stroke can be a whole tree or a mass of foliage: it forks into
+/// twigs or breaks into dabs, can be cut to a silhouette, and its reach
+/// counts in its bounds. Nonsense is refused with the valid range.
+#[test]
+fn a_stroke_grows_twigs_or_dabs_and_cuts_in_to_a_shape() {
+    let mut art = Replica::<ArtworkResource>::new();
+    art.apply(ArtworkResource::DRAW.with((None, vec![rect("rock", 0.0, "#5a5650")])))
+        .unwrap();
+    let tree = NewStroke {
+        id: Some("oak".into()),
+        forks: Some(4),
+        spread: Some(40.0),
+        ..stroke(&[[100.0, 300.0], [100.0, 200.0]], "#2a221c")
+    };
+    let moss = NewStroke {
+        id: Some("moss".into()),
+        dabs: Some(80),
+        scatter: Some(10.0),
+        clip: Some("rock".into()),
+        ..stroke(&[[10.0, 30.0], [50.0, 30.0]], "#7d786e")
+    };
+    let grass = NewStroke {
+        id: Some("grass".into()),
+        dabs: Some(200),
+        dab_length: Some(18.0),
+        angle: Some(-90.0),
+        ..stroke(&[[0.0, 400.0], [300.0, 400.0]], "#4a5a2c")
+    };
+    art.apply(ArtworkResource::PAINT.with((None, vec![tree, moss, grass])))
+        .unwrap();
+    let state = art.state().unwrap();
+    let oak = state.mark("oak").unwrap();
+    assert!(oak.bounds().width() > 60.0, "twigs reach beyond the limb");
+    assert_eq!(state.mark("moss").unwrap().clip, "rock");
+    assert_eq!(state.mark("grass").unwrap().style.angle, Some(-90.0));
+
+    for (bad, says) in [
+        (
+            NewStroke {
+                forks: Some(9),
+                ..stroke(&[[0.0, 0.0], [10.0, 0.0]], "#000000")
+            },
+            "forks is 1 to 6",
+        ),
+        (
+            NewStroke {
+                forks: Some(2),
+                dabs: Some(10),
+                ..stroke(&[[0.0, 0.0], [10.0, 0.0]], "#000000")
+            },
+            "not both",
+        ),
+        (
+            NewStroke {
+                dabs: Some(5000),
+                ..stroke(&[[0.0, 0.0], [10.0, 0.0]], "#000000")
+            },
+            "dabs is 1 to 600",
+        ),
+    ] {
+        let error = art
+            .apply(ArtworkResource::PAINT.with((None, vec![bad])))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(says), "{error}");
+    }
 }
