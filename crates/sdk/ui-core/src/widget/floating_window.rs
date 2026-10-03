@@ -28,10 +28,10 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::Metrics;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
@@ -954,7 +954,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                 // Capture PiP is primarily the selected pixels, not a tiny
                 // utility window. Keep the controls compact and legible over
                 // arbitrary light/dark imagery without reserving any layout.
-                let title_size = theme.tokens.typography.scale.sm;
+                let title_size = theme.tokens.typography.size(TextRole::Caption);
                 let glyph_width = f64::from(title_size) * 0.56;
                 let estimated_title_width = (self
                     .title
@@ -1011,14 +1011,11 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                 self.rect,
                 theme.tokens.colors.text_dim,
             );
-            let title_size = renderer_type_size(
-                text_renderer,
-                if self.overlay_chrome {
-                    theme.tokens.typography.scale.sm
-                } else {
-                    theme.tokens.typography.scale.base
-                },
-            );
+            let title_style = theme.text(if self.overlay_chrome {
+                TextRole::Label
+            } else {
+                TextRole::Body
+            });
             let tx = self.rect.x0
                 + if self.overlay_chrome {
                     18.0
@@ -1026,15 +1023,15 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                     f64::from(theme.tokens.spacing.s4)
                 };
             // Centre on the measured line, not the font size.
-            let (_, title_h) = text_renderer.measure(&self.title, title_size, None);
+            let (_, title_h) = text_renderer.measure_style(&self.title, None, &title_style);
             let ty = self.rect.y0 + (self.title_bar_height() - f64::from(title_h)) / 2.0;
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &self.title,
-                title_size,
                 theme.tokens.colors.text_primary,
                 visual.pre_translate(Vec2::new(tx, ty)),
                 None,
+                &title_style,
             );
             if self.closable {
                 crate::icons::draw_icon(

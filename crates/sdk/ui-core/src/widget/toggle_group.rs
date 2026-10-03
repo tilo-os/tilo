@@ -18,6 +18,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
 use crate::widget::{ActionEmitter, ControlBindingMetadata, TaffyTreeExt, Widget};
 
@@ -424,8 +425,6 @@ pub struct SegmentedFace<'a> {
     hovered: Option<usize>,
     style: SegmentedStyle,
     radius: f64,
-    text_size: f32,
-    weight: crate::text_render::TextWeight,
     /// `Some(pad)` left-aligns labels instead of centring.
     label_pad_left: Option<f64>,
 }
@@ -439,8 +438,6 @@ impl<'a> SegmentedFace<'a> {
             hovered: None,
             style: SegmentedStyle::Solid,
             radius: 8.0,
-            text_size: 13.0,
-            weight: crate::text_render::TextWeight::Medium,
             label_pad_left: None,
         }
     }
@@ -462,16 +459,6 @@ impl<'a> SegmentedFace<'a> {
     #[must_use]
     pub fn radius(mut self, r: f64) -> Self {
         self.radius = r;
-        self
-    }
-    #[must_use]
-    pub fn text_size(mut self, s: f32) -> Self {
-        self.text_size = s;
-        self
-    }
-    #[must_use]
-    pub fn weight(mut self, w: crate::text_render::TextWeight) -> Self {
-        self.weight = w;
         self
     }
     #[must_use]
@@ -600,8 +587,10 @@ impl ToggleGroup {
 
         Self::paint_style_layer(scene, transform, theme, face, segs);
 
-        // Selected pills use a slightly heavier weight so the active choice
-        // reads first.
+        // Segment labels are `Label`s; the selected one is set `.strong()` so
+        // the active choice reads first.
+        let label_style = theme.text(TextRole::Label);
+        let selected_style = label_style.clone().strong();
         for (i, seg) in segs.iter().enumerate() {
             let label = face.labels.get(i).copied().unwrap_or("");
             if label.is_empty() {
@@ -613,12 +602,12 @@ impl ToggleGroup {
                 i == face.selected,
                 face.hovered == Some(i),
             );
-            let weight = if i == face.selected {
-                crate::text_render::TextWeight::Semibold
+            let style = if i == face.selected {
+                &selected_style
             } else {
-                face.weight
+                &label_style
             };
-            let (tw, th) = text_renderer.measure_weighted(label, face.text_size, None, weight);
+            let (tw, th) = text_renderer.measure_style(label, None, style);
             let text_x = match face.label_pad_left {
                 Some(pad) => seg.x0 + pad,
                 None => seg.center().x - f64::from(tw) / 2.0,
@@ -630,15 +619,7 @@ impl ToggleGroup {
                           overflow or panic"
             )]
             let label_transform = transform * Affine::translate((text_x, text_y));
-            text_renderer.draw_text_weighted(
-                scene,
-                label,
-                face.text_size,
-                fg,
-                label_transform,
-                None,
-                weight,
-            );
+            text_renderer.draw_style(scene, label, fg, label_transform, None, style);
         }
     }
 
@@ -882,10 +863,6 @@ impl Widget for ToggleGroup {
         let labels: Vec<&str> = self.segments.iter().map(|s| s.label.as_str()).collect();
         let face = SegmentedFace::new(&self.segment_rects, &labels, self.selected)
             .style(self.style)
-            .text_size(crate::text_metrics::renderer_type_size(
-                text_renderer,
-                theme.tokens.typography.scale.sm,
-            ))
             .radius(radius);
         Self::paint(scene, transform, text_renderer, theme, &face);
 
@@ -1233,9 +1210,10 @@ mod tests {
                 assert!(!runs.is_empty());
                 for run in runs {
                     assert!(
-                        (run.font_size - theme.tokens.typography.scale.sm).abs() < 0.001,
+                        (run.font_size - theme.tokens.typography.size(TextRole::Label)).abs()
+                            < 0.001,
                         "{scale}x text must paint once at resolved size {}, got {}",
-                        theme.tokens.typography.scale.sm,
+                        theme.tokens.typography.size(TextRole::Label),
                         run.font_size
                     );
                 }

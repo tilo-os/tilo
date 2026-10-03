@@ -30,6 +30,7 @@ use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::shell::quick_settings::actions::QsActions as _;
+use ui::TextRole;
 
 mod controller;
 mod device_fabric;
@@ -549,7 +550,7 @@ pub struct ShellOverlayHost {
     /// the notification-history geometry — resolved before a frame has a
     /// theme, like the root's — measures the type it actually draws, with
     /// the ui scale and the text scale both included.
-    qs_type_px: (f32, f32),
+    qs_type_lines: (f64, f64),
     /// Offset into the separate clipboard history. Clipboard and notification
     /// panes retain independent positions when the person switches between
     /// them.
@@ -2056,10 +2057,7 @@ impl ShellOverlayHost {
             content_rebuild_owes_scene: false,
             qs_was_open: false,
             notification_center: NotificationCenter::new(),
-            qs_type_px: (
-                ui::tokens::TypeScale::default().xs,
-                ui::tokens::TypeScale::default().sm,
-            ),
+            qs_type_lines: CenterLayout::type_lines(&Theme::dark()),
             qs_clipboard_history_start: 0,
             qs_clipboard_wheel_remainder: 0.0,
             qs_selected_clipboard: None,
@@ -8776,7 +8774,7 @@ impl ShellOverlayHost {
     }
 
     fn overview_header_font_size_for(tokens: &ui::tokens::Tokens) -> f32 {
-        tokens.typography.scale.x3l
+        tokens.typography.size(TextRole::Display)
     }
 
     fn overlay_flags(&self) -> crate::shell::chrome_state::OverlayFlags {
@@ -8890,7 +8888,7 @@ impl ShellOverlayHost {
             }
             QsLevel::Notifications => self
                 .notification_center
-                .preferred_height(state.notification_log(), self.qs_type_px),
+                .preferred_height(state.notification_log(), self.qs_type_lines),
             QsLevel::Clipboard => {
                 let rows = self.filtered_clipboard_history().len().min(7);
                 (70.0 + 70.0 * f64::from(u32::try_from(rows).unwrap_or(u32::MAX)))
@@ -8924,7 +8922,7 @@ impl ShellOverlayHost {
     /// The notification centre's geometry for the current panel and text
     /// scale — the one oracle paint, hit-testing and sizing read.
     fn qs_notification_layout(&self) -> CenterLayout {
-        CenterLayout::new(self.quick_settings_rect(), self.qs_type_px)
+        CenterLayout::new(self.quick_settings_rect(), self.qs_type_lines)
     }
 
     /// Scroll the notification centre from a pointer wheel over the open
@@ -15894,22 +15892,20 @@ impl OverviewMetrics {
     fn for_theme(theme: &Theme) -> Self {
         let tokens = &theme.tokens;
         let spacing = &tokens.spacing;
-        let scale = &tokens.typography.scale;
-        // The single-line height the renderer will measure for this size:
-        // `TextStyle::new` is the style every `measure`/`draw_text` call
-        // in this panel resolves to.
-        let lh = |size: f32| f64::from(ui::TextStyle::new(size).line_height_px());
+        // The single-line height of a role: the resolved style every
+        // `measure_style`/`draw_style` call in this panel paints with.
+        let lh = |role| f64::from(tokens.typography.style(role).line_height_px());
         let s1 = f64::from(spacing.s1);
         let s2 = f64::from(spacing.s2);
         let s3 = f64::from(spacing.s3);
         let s4 = f64::from(spacing.s4);
         let s6 = f64::from(spacing.s6);
-        let name_lh = lh(scale.x3l);
-        let access_lh = lh(scale.base);
-        let caption_lh = lh(scale.sm);
-        let body_lh = lh(scale.base);
-        let row_name_lh = lh(scale.lg);
-        let row_sub_lh = lh(scale.sm);
+        let name_lh = lh(TextRole::Display);
+        let access_lh = lh(TextRole::Body);
+        let caption_lh = lh(TextRole::Caption);
+        let body_lh = lh(TextRole::Body);
+        let row_name_lh = lh(TextRole::Heading);
+        let row_sub_lh = lh(TextRole::Caption);
         Self {
             margin: f64::from(spacing.s12),
             pad: s4,
@@ -15924,10 +15920,10 @@ impl OverviewMetrics {
             room_row_h: row_name_lh + s1 + row_sub_lh + 2.0 * s3,
             room_row_gap: s2,
             row_pad: s4,
-            chip_h: lh(scale.sm) + s2,
+            chip_h: lh(TextRole::Caption) + s2,
             window_gap: s3,
             window_title_gap: s1,
-            window_title_lh: lh(scale.sm),
+            window_title_lh: lh(TextRole::Caption),
             window_radius: f64::from(tokens.radii.control),
             here_air: s6,
         }
@@ -16673,10 +16669,7 @@ impl Widget for ShellOverlayHost {
         // has a default-height card and clips its two-line controls.
         self.refresh_active_tab_presence();
         self.qs_root.set_layout_text_scale(theme.text_scale);
-        self.qs_type_px = (
-            theme.tokens.typography.scale.xs,
-            theme.tokens.typography.scale.sm,
-        );
+        self.qs_type_lines = CenterLayout::type_lines(theme);
         if let Some(chrome) = self.chrome.as_ref() {
             // A live projection holds notification banners back so their
             // contents never reach the room.
@@ -20125,10 +20118,10 @@ impl ShellOverlayHost {
         if self.shortcut_help_button_is_suppressed() {
             return;
         }
-        let size = theme.tokens.typography.scale.sm / text_renderer.text_scale();
+        let style = theme.text(TextRole::Label).strong();
         let label = t("help-pill");
         let label = label.as_str();
-        let (w, h) = text_renderer.measure_weighted(label, size, None, TextWeight::Semibold);
+        let (w, h) = text_renderer.measure_style(label, None, &style);
         // Label padding `s6` across / `s3` down, `s4` off the display
         // corner (the same pixels as before, now the theme's steps). The
         // pill is at least the §9.6 pointer floor plus `s1` tall (36 at
@@ -20163,10 +20156,9 @@ impl ShellOverlayHost {
             None,
             &pill,
         );
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             label,
-            size,
             colors.ink_on(
                 surface,
                 colors.text_primary,
@@ -20180,7 +20172,7 @@ impl ShellOverlayHost {
                     .into(),
             ),
             None,
-            TextWeight::Semibold,
+            &style,
         );
     }
 
@@ -20279,18 +20271,17 @@ impl ShellOverlayHost {
             None,
             &panel_shape,
         );
-        let title_size = theme.tokens.typography.scale.xl;
+        let title_style = theme.text(TextRole::Title);
         let title = t("guide-title");
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &title,
-            title_size,
             colors.text_primary,
             transform.pre_translate((panel.x0 + 24.0, panel.y0 + 20.0).into()),
             Some(f64_to_f32_lossy(panel.width() - 140.0)),
-            TextWeight::Semibold,
+            &title_style,
         );
-        let (title_width, _) = text_renderer.measure(&title, title_size, None);
+        let (title_width, _) = text_renderer.measure_style(&title, None, &title_style);
         let f1_hint = Rect::new(
             panel.x0 + 34.0 + f64::from(title_width),
             panel.y0 + 22.0,
@@ -20304,12 +20295,11 @@ impl ShellOverlayHost {
             None,
             &RoundedRect::from_rect(f1_hint, 7.0),
         );
-        let f1_size = theme.tokens.typography.scale.xs;
-        let (f1_width, f1_height) = text_renderer.measure("F1", f1_size, None);
-        text_renderer.draw_text_weighted(
+        let f1_style = theme.text(TextRole::Caption);
+        let (f1_width, f1_height) = text_renderer.measure_style("F1", None, &f1_style);
+        text_renderer.draw_style(
             scene,
             "F1",
-            f1_size,
             colors.text_primary,
             transform.pre_translate(
                 (
@@ -20319,15 +20309,15 @@ impl ShellOverlayHost {
                     .into(),
             ),
             None,
-            TextWeight::Semibold,
+            &f1_style.clone().with_weight(TextWeight::Semibold),
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("guide-reopen-hint"),
-            theme.tokens.typography.scale.sm,
             colors.text_dim,
             transform.pre_translate((panel.x0 + 24.0, panel.y0 + 54.0).into()),
             Some(f64_to_f32_lossy(panel.width() - 56.0)),
+            &theme.text(TextRole::Caption),
         );
 
         let done = self.shortcut_help_done_rect();
@@ -20347,13 +20337,12 @@ impl ShellOverlayHost {
                 &RoundedRect::from_rect(done.inflate(3.0, 3.0), 12.0),
             );
         }
-        let label_size = theme.tokens.typography.scale.sm;
+        let label_style = theme.text(TextRole::Caption);
         let done_label = t("guide-done");
-        let (done_w, done_h) = text_renderer.measure(&done_label, label_size, None);
-        text_renderer.draw_text_weighted(
+        let (done_w, done_h) = text_renderer.measure_style(&done_label, None, &label_style);
+        text_renderer.draw_style(
             scene,
             &done_label,
-            label_size,
             colors.text_primary,
             transform.pre_translate(
                 (
@@ -20363,7 +20352,7 @@ impl ShellOverlayHost {
                     .into(),
             ),
             None,
-            TextWeight::Semibold,
+            &label_style.clone().with_weight(TextWeight::Semibold),
         );
 
         use crate::compositor::controller_nav::{FaceRole, face_button};
@@ -20403,13 +20392,13 @@ impl ShellOverlayHost {
                 self.shortcut_rebind_message.clone()
             };
             if let Some(feedback) = feedback {
-                text_renderer.draw_text(
+                text_renderer.draw_style(
                     scene,
                     &feedback,
-                    theme.tokens.typography.scale.sm,
                     colors.text_primary,
                     transform.pre_translate((body.x0, panel.y0 + 76.0).into()),
                     Some(f64_to_f32_lossy(body.width())),
+                    &theme.text(TextRole::Caption),
                 );
             }
         }
@@ -20424,13 +20413,13 @@ impl ShellOverlayHost {
                     theme,
                 );
                 let guide = ControllerButton::Guide.label(family);
-                text_renderer.draw_text(
+                text_renderer.draw_style(
                     scene,
                     &t_args("guide-controller-intro", &[("guide", guide.into())]),
-                    theme.tokens.typography.scale.sm,
                     colors.text_primary,
                     transform.pre_translate((body.x0 + 104.0, body.y0 + 8.0).into()),
                     Some(f64_to_f32_lossy(body.width() - 104.0)),
+                    &theme.text(TextRole::Caption),
                 );
                 let one = |button| (vec![button], vec![button]);
                 let chord = |first, second| {
@@ -20498,13 +20487,13 @@ impl ShellOverlayHost {
                     let row = index.checked_rem(per_column).unwrap_or(index);
                     let x = body.x0 + usize_to_f64_lossy(column) * (body.width() / 2.0);
                     let y = body.y0 + 66.0 + usize_to_f64_lossy(row) * row_step;
-                    text_renderer.draw_text(
+                    text_renderer.draw_style(
                         scene,
                         &t(label),
-                        theme.tokens.typography.scale.sm,
                         colors.text_primary,
                         transform.pre_translate((x, y).into()),
                         None,
+                        &theme.text(TextRole::Caption),
                     );
                     InputHint::paint_controller_choice_at(
                         &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
@@ -20520,13 +20509,13 @@ impl ShellOverlayHost {
                 }
             }
             ui::InputModality::Touch => {
-                text_renderer.draw_text(
+                text_renderer.draw_style(
                     scene,
                     &t("guide-touch-intro"),
-                    theme.tokens.typography.scale.sm,
                     colors.text_dim,
                     transform.pre_translate((body.x0, body.y0).into()),
                     None,
+                    &theme.text(TextRole::Caption),
                 );
                 let gestures = [
                     (
@@ -20564,13 +20553,13 @@ impl ShellOverlayHost {
                     let y = body.y0
                         + if narrow { 36.0 } else { 52.0 }
                         + usize_to_f64_lossy(row) * if narrow { 54.0 } else { 82.0 };
-                    text_renderer.draw_text(
+                    text_renderer.draw_style(
                         scene,
                         &t(label),
-                        theme.tokens.typography.scale.sm,
                         colors.text_primary,
                         transform.pre_translate((x, y).into()),
                         None,
+                        &theme.text(TextRole::Caption),
                     );
                     InputHint::paint_at(
                         &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
@@ -20618,14 +20607,15 @@ impl ShellOverlayHost {
                     None,
                     &RoundedRect::from_rect(navigation_surface, 14.0),
                 );
-                text_renderer.draw_text_weighted(
+                text_renderer.draw_style(
                     scene,
                     &t("guide-navigation-heading"),
-                    theme.tokens.typography.scale.xs,
                     colors.text_dim,
                     transform.pre_translate((body.x0 + 14.0, body.y0 + 11.0).into()),
                     None,
-                    TextWeight::Semibold,
+                    &theme
+                        .text(TextRole::Caption)
+                        .with_weight(TextWeight::Semibold),
                 );
                 for (index, (label, previous, next)) in rows.iter().enumerate() {
                     let column = index % 2;
@@ -20636,13 +20626,13 @@ impl ShellOverlayHost {
                         + usize_to_f64_lossy(column) * (column_width + 8.0);
                     let y =
                         navigation_surface.y0 + 31.0 + usize_to_f64_lossy(row) * navigation_step;
-                    text_renderer.draw_text(
+                    text_renderer.draw_style(
                         scene,
                         &t(label),
-                        theme.tokens.typography.scale.sm,
                         colors.text_primary,
                         transform.pre_translate((x, y).into()),
                         None,
+                        &theme.text(TextRole::Caption),
                     );
                     let actions = [*previous, *next];
                     let hit_rects = InputHint::paint_keyboard_choice_at(
@@ -20709,12 +20699,12 @@ impl ShellOverlayHost {
                                 &RoundedRect::from_rect(reset.inflate(2.0, 2.0), 8.0),
                             );
                         }
-                        let reset_size = theme.tokens.typography.scale.base;
-                        let (reset_w, reset_h) = text_renderer.measure("↶", reset_size, None);
-                        text_renderer.draw_text(
+                        let reset_style = theme.text(TextRole::Body);
+                        let (reset_w, reset_h) =
+                            text_renderer.measure_style("↶", None, &reset_style);
+                        text_renderer.draw_style(
                             scene,
                             "↶",
-                            reset_size,
                             colors.text_primary,
                             transform.pre_translate(
                                 (
@@ -20724,19 +20714,21 @@ impl ShellOverlayHost {
                                     .into(),
                             ),
                             None,
+                            &reset_style,
                         );
                         self.shortcut_reset_rects.push((*previous, *next, reset));
                     }
                 }
                 let essentials_y = navigation_surface.y1 + 12.0;
-                text_renderer.draw_text_weighted(
+                text_renderer.draw_style(
                     scene,
                     &t("guide-essentials-heading"),
-                    theme.tokens.typography.scale.xs,
                     colors.text_dim,
                     transform.pre_translate((body.x0, essentials_y).into()),
                     None,
-                    TextWeight::Semibold,
+                    &theme
+                        .text(TextRole::Caption)
+                        .with_weight(TextWeight::Semibold),
                 );
                 let references = shortcut_reference_rows(shortcuts);
                 let reference_columns = shortcut_reference_columns(body.width());
@@ -20775,21 +20767,22 @@ impl ShellOverlayHost {
                         reason = "shortcut_reference_rows yields 18 rows, so chunks(6) gives exactly one group per title (pinned by shortcut_reference_columns_stay_semantically_grouped)"
                     )]
                     let group_title = group_titles[group_index];
-                    text_renderer.draw_text_weighted(
+                    text_renderer.draw_style(
                         scene,
                         &t(group_title),
-                        theme.tokens.typography.scale.xs,
                         colors.text_dim,
                         transform.pre_translate((group.x0 + 12.0, group.y0 + 10.0).into()),
                         Some(f64_to_f32_lossy(group.width() - 24.0)),
-                        TextWeight::Semibold,
+                        &theme
+                            .text(TextRole::Caption)
+                            .with_weight(TextWeight::Semibold),
                     );
                     for (row_index, (label, chord)) in group_rows.iter().enumerate() {
                         let entry_y =
                             group.y0 + 29.0 + usize_to_f64_lossy(row_index) * reference_step;
-                        let chord_size = theme.tokens.typography.scale.xs;
+                        let chord_style = theme.text(TextRole::Caption);
                         let (chord_width, chord_height) =
-                            text_renderer.measure(chord, chord_size, None);
+                            text_renderer.measure_style(chord, None, &chord_style);
                         let pill_height = f64::from(chord_height) + 6.0;
                         let pill = Rect::new(
                             group.x0 + 12.0,
@@ -20797,13 +20790,13 @@ impl ShellOverlayHost {
                             (group.x0 + 28.0 + f64::from(chord_width)).min(group.x1 - 12.0),
                             entry_y + 13.0 + pill_height,
                         );
-                        text_renderer.draw_text(
+                        text_renderer.draw_style(
                             scene,
                             label,
-                            chord_size,
                             colors.text_primary,
                             transform.pre_translate((group.x0 + 12.0, entry_y).into()),
                             Some(f64_to_f32_lossy(group.width() - 24.0)),
+                            &chord_style,
                         );
                         scene.fill(
                             Fill::NonZero,
@@ -20812,14 +20805,13 @@ impl ShellOverlayHost {
                             None,
                             &RoundedRect::from_rect(pill, 5.0),
                         );
-                        text_renderer.draw_text_weighted(
+                        text_renderer.draw_style(
                             scene,
                             chord,
-                            chord_size,
                             colors.text_primary,
                             transform.pre_translate((pill.x0 + 6.0, pill.y0 + 3.0).into()),
                             Some(f64_to_f32_lossy((pill.width() - 12.0).max(0.0))),
-                            TextWeight::Semibold,
+                            &chord_style.clone().with_weight(TextWeight::Semibold),
                         );
                     }
                 }
@@ -20834,34 +20826,34 @@ impl ShellOverlayHost {
                         0.0,
                         ui::chrome::ChromeRole::Panel.surface(theme),
                     );
-                    text_renderer.draw_text(
+                    text_renderer.draw_style(
                         scene,
                         &t("guide-pointer"),
-                        theme.tokens.typography.scale.xs,
                         colors.text_primary,
                         transform.pre_translate((body.x0, pointer_y + 14.0).into()),
                         Some(f64_to_f32_lossy(body.width())),
+                        &theme.text(TextRole::Caption),
                     );
                     if let Some(summary) = shortcut_action_summary(shortcuts)
                         && pointer_y + 40.0 < body.y1
                     {
-                        text_renderer.draw_text(
+                        text_renderer.draw_style(
                             scene,
                             &summary,
-                            theme.tokens.typography.scale.xs,
                             colors.text_primary,
                             transform.pre_translate((body.x0, pointer_y + 32.0).into()),
                             Some(f64_to_f32_lossy(body.width())),
+                            &theme.text(TextRole::Caption),
                         );
                     }
                     if self.desktop_controls.config().vim_mode && pointer_y + 58.0 < body.y1 {
-                        text_renderer.draw_text(
+                        text_renderer.draw_style(
                             scene,
                             &t("guide-vim-mode"),
-                            theme.tokens.typography.scale.xs,
                             colors.text_primary,
                             transform.pre_translate((body.x0, pointer_y + 50.0).into()),
                             None,
+                            &theme.text(TextRole::Caption),
                         );
                     }
                 }
@@ -21091,7 +21083,7 @@ impl ShellOverlayHost {
                 theme,
                 *rect,
                 choice,
-                theme.tokens.typography.scale.base,
+                &theme.text(TextRole::Body),
                 ui::chrome::SelectionState::active(selected),
             );
         }
@@ -21125,7 +21117,7 @@ impl ShellOverlayHost {
                 theme,
                 *rect,
                 &label,
-                theme.tokens.typography.scale.base,
+                &theme.text(TextRole::Body),
                 ui::chrome::SelectionState::active(focused),
             );
         }
@@ -21142,7 +21134,7 @@ impl ShellOverlayHost {
                         .portal_dialogs
                         .field_display()
                         .unwrap_or_else(|| editor.name.to_string()),
-                    theme.tokens.typography.scale.base,
+                    &theme.text(TextRole::Body),
                     ui::chrome::SelectionState::active(focused),
                 );
             }
@@ -21160,7 +21152,7 @@ impl ShellOverlayHost {
                     theme,
                     *rect,
                     label,
-                    theme.tokens.typography.scale.base,
+                    &theme.text(TextRole::Body),
                     ui::chrome::SelectionState::active(selected),
                 );
             }
@@ -21173,7 +21165,7 @@ impl ShellOverlayHost {
                 theme,
                 rect,
                 &secret,
-                theme.tokens.typography.scale.base,
+                &theme.text(TextRole::Body),
                 ui::chrome::SelectionState::active(true),
             );
         }
@@ -21197,7 +21189,7 @@ impl ShellOverlayHost {
                 theme,
                 *rect,
                 &label,
-                theme.tokens.typography.scale.base,
+                &theme.text(TextRole::Body),
                 ui::chrome::SelectionState::active(field.focused),
             );
         }
@@ -21216,7 +21208,7 @@ impl ShellOverlayHost {
                 theme,
                 rect,
                 &label,
-                theme.tokens.typography.scale.base,
+                &theme.text(TextRole::Body),
                 ui::chrome::SelectionState::active(focused),
             );
         }
@@ -21248,7 +21240,7 @@ impl ShellOverlayHost {
                 theme,
                 *rect,
                 &label,
-                theme.tokens.typography.scale.base,
+                &theme.text(TextRole::Body),
                 ui::chrome::SelectionState::active(selected),
             );
             if let Some(status) = &row.status {
@@ -21464,16 +21456,11 @@ impl ShellOverlayHost {
             Self::draw_overview_app_marks(scene, transform, theme, anchor, &card.apps());
         let text_w = (marks_left - s3 - x0).max(40.0);
 
-        let name_size = tokens.typography.scale.lg;
-        let name = text_renderer.elide_to_width_weighted(
-            &card.name,
-            name_size,
-            f64_to_f32_lossy(text_w),
-            TextWeight::Semibold,
-        );
-        let (_, name_h) =
-            text_renderer.measure_weighted(&name, name_size, None, TextWeight::Semibold);
-        let sub_size = tokens.typography.scale.sm;
+        let name_style = tokens.typography.style(TextRole::Heading);
+        let name =
+            text_renderer.elide_to_width_style(&card.name, f64_to_f32_lossy(text_w), &name_style);
+        let (_, name_h) = text_renderer.measure_style(&name, None, &name_style);
+        let sub_style = tokens.typography.style(TextRole::Caption);
         // Who's in the room now outranks who could be; access is what
         // the line says when it's empty.
         let mut sub = tilo_desktop::overview::room_presence_label(card)
@@ -21481,28 +21468,27 @@ impl ShellOverlayHost {
         if let Some(shares) = tilo_desktop::overview::room_shares_label(card) {
             sub = format!("{sub} · {shares}");
         }
-        let sub = text_renderer.elide_to_width(&sub, sub_size, f64_to_f32_lossy(text_w));
-        let (_, sub_h) = text_renderer.measure(&sub, sub_size, None);
+        let sub = text_renderer.elide_to_width_style(&sub, f64_to_f32_lossy(text_w), &sub_style);
+        let (_, sub_h) = text_renderer.measure_style(&sub, None, &sub_style);
         // Name and sub-line are one stack, `s1` apart, centred on the row.
         let line_gap = f64::from(tokens.spacing.s1);
         let stack_h = f64::from(name_h) + line_gap + f64::from(sub_h);
         let top = rect.center().y - stack_h / 2.0;
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &name,
-            name_size,
             colors.text_primary,
             transform.pre_translate((x0, top).into()),
             None,
-            TextWeight::Semibold,
+            &name_style,
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &sub,
-            sub_size,
             colors.text_dim,
             transform.pre_translate((x0, top + f64::from(name_h) + line_gap).into()),
             None,
+            &sub_style,
         );
     }
 
@@ -21587,7 +21573,7 @@ impl ShellOverlayHost {
         let content = self.overview_content_rect();
         let here_idx = self.overview_here_index();
         let here_rect = self.overview_here_rect();
-        let caption_size = tokens.typography.scale.sm;
+        let caption_style = tokens.typography.style(TextRole::Caption);
 
         self.draw_overview_here_section(
             &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
@@ -21608,10 +21594,9 @@ impl ShellOverlayHost {
         );
 
         // -- Where else you can go ----------------------------------------
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("overview-go-to"),
-            caption_size,
             colors.text_tertiary,
             transform.pre_translate(
                 (
@@ -21621,6 +21606,7 @@ impl ShellOverlayHost {
                     .into(),
             ),
             None,
+            &caption_style,
         );
 
         let band = Rect::new(
@@ -21661,7 +21647,7 @@ impl ShellOverlayHost {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let m = self.overview_metrics;
-        let title_size = tokens.typography.scale.sm;
+        let title_style = tokens.typography.style(TextRole::Caption);
         let mark = f64::from(tokens.metrics.icon_lg);
         let s1 = f64::from(tokens.spacing.s1);
         let carried = self
@@ -21720,15 +21706,14 @@ impl ShellOverlayHost {
                 window,
                 &mut self.window_previews,
             );
-            let title = text_renderer.elide_to_width(
+            let title = text_renderer.elide_to_width_style(
                 &window.title,
-                title_size,
                 f64_to_f32_lossy(bounds.width()),
+                &title_style,
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &title,
-                title_size,
                 if state.active {
                     colors.text_primary
                 } else {
@@ -21736,6 +21721,7 @@ impl ShellOverlayHost {
                 },
                 transform.pre_translate((well.x0, well.y1 + m.window_title_gap).into()),
                 None,
+                &title_style,
             );
             if is_carried {
                 scene.pop_layer();
@@ -21918,10 +21904,9 @@ impl ShellOverlayHost {
         );
 
         let access = tilo_desktop::overview::room_access_label(card);
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &access,
-            tokens.typography.scale.base,
             colors.text_dim,
             transform.pre_translate(
                 (
@@ -21931,6 +21916,7 @@ impl ShellOverlayHost {
                     .into(),
             ),
             None,
+            &tokens.typography.style(TextRole::Body),
         );
     }
 
@@ -21987,17 +21973,17 @@ impl ShellOverlayHost {
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let caption_size = tokens.typography.scale.sm;
+        let caption_style = tokens.typography.style(TextRole::Caption);
 
         let m = self.overview_metrics;
         let shares_top = self.overview_shares_top();
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("overview-shared-out"),
-            caption_size,
             colors.text_tertiary,
             transform.pre_translate((content.x0, shares_top + m.caption_text_dy).into()),
             None,
+            &caption_style,
         );
         let row_h = m.share_row_h;
         let sy = shares_top + m.caption_h;
@@ -22046,9 +22032,9 @@ impl ShellOverlayHost {
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let body_size = tokens.typography.scale.base;
+        let body_style = tokens.typography.style(TextRole::Body);
         let glyph = 14.0_f64;
-        let (_, body_h) = text_renderer.measure("Ag", body_size, None);
+        let (_, body_h) = text_renderer.measure_style("Ag", None, &body_style);
         let cy = sy + row_h / 2.0;
         let glyph_rect = Rect::new(
             content.x0,
@@ -22064,10 +22050,9 @@ impl ShellOverlayHost {
             colors.text_tertiary,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("overview-nothing-shared"),
-            body_size,
             colors.text_dim,
             transform.pre_translate(
                 (
@@ -22077,6 +22062,7 @@ impl ShellOverlayHost {
                     .into(),
             ),
             None,
+            &body_style,
         );
     }
 
@@ -22110,11 +22096,14 @@ impl ShellOverlayHost {
         let hidden = here_card.shares.len().saturating_sub(shown);
         if hidden > 0 {
             let more = t_args("overview-more-shares", &[("count", hidden.into())]);
-            let (_, more_h) = text_renderer.measure(&more, tokens.typography.scale.sm, None);
-            text_renderer.draw_text(
+            let (_, more_h) = text_renderer.measure_style(
+                &more,
+                None,
+                &tokens.typography.style(TextRole::Caption),
+            );
+            text_renderer.draw_style(
                 scene,
                 &more,
-                tokens.typography.scale.sm,
                 colors.text_tertiary,
                 transform.pre_translate(
                     (
@@ -22124,6 +22113,7 @@ impl ShellOverlayHost {
                         .into(),
                 ),
                 None,
+                &tokens.typography.style(TextRole::Caption),
             );
         }
     }
@@ -22140,8 +22130,8 @@ impl ShellOverlayHost {
         let (content, sy, row_h) = (row, row.y0, row.height());
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let body_size = tokens.typography.scale.base;
-        let (_, body_h) = text_renderer.measure("Ag", body_size, None);
+        let body_style = tokens.typography.style(TextRole::Body);
+        let (_, body_h) = text_renderer.measure_style("Ag", None, &body_style);
         let body_top = sy + (row_h - f64::from(body_h)) / 2.0;
         let cy = sy + row_h / 2.0;
         let glyph_rect = Rect::new(
@@ -22185,12 +22175,11 @@ impl ShellOverlayHost {
         } else {
             with
         };
-        let with_size = tokens.typography.scale.sm;
-        let (with_w, with_h) = text_renderer.measure(&with, with_size, None);
-        text_renderer.draw_text(
+        let with_style = tokens.typography.style(TextRole::Caption);
+        let (with_w, with_h) = text_renderer.measure_style(&with, None, &with_style);
+        text_renderer.draw_style(
             scene,
             &with,
-            with_size,
             colors.text_dim,
             transform.pre_translate(
                 (
@@ -22200,19 +22189,23 @@ impl ShellOverlayHost {
                     .into(),
             ),
             None,
+            &with_style,
         );
         let what_x = content.x0 + glyph + f64::from(tokens.spacing.s2);
         let what_avail =
             (content.x1 - f64::from(with_w) - f64::from(tokens.spacing.s3) - what_x).max(40.0);
-        let what =
-            text_renderer.elide_to_width(&share.what, body_size, f64_to_f32_lossy(what_avail));
-        text_renderer.draw_text(
+        let what = text_renderer.elide_to_width_style(
+            &share.what,
+            f64_to_f32_lossy(what_avail),
+            &body_style,
+        );
+        text_renderer.draw_style(
             scene,
             &what,
-            body_size,
             colors.text_primary,
             transform.pre_translate((what_x, body_top).into()),
             None,
+            &body_style,
         );
     }
 
@@ -22282,13 +22275,12 @@ impl ShellOverlayHost {
             add_color,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        let add_size = tokens.typography.scale.base;
+        let add_style = tokens.typography.style(TextRole::Body);
         let add_label = t("overview-new-workspace");
-        let (_, add_h) = text_renderer.measure(&add_label, add_size, None);
-        text_renderer.draw_text(
+        let (_, add_h) = text_renderer.measure_style(&add_label, None, &add_style);
+        text_renderer.draw_style(
             scene,
             &add_label,
-            add_size,
             add_color,
             transform.pre_translate(
                 (
@@ -22298,6 +22290,7 @@ impl ShellOverlayHost {
                     .into(),
             ),
             None,
+            &add_style,
         );
         self.add_workspace_rect = add_rect;
     }
@@ -22445,28 +22438,30 @@ impl ShellOverlayHost {
             clippy::cast_possible_truncation,
             reason = "the follow banner is a few hundred logical pixels wide"
         )]
-        let label = text_renderer.elide_to_width_weighted(
+        let label = text_renderer.elide_to_width_style(
             &label,
-            theme.tokens.typography.scale.sm,
             label_budget as f32,
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold),
         );
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &label,
-            theme.tokens.typography.scale.sm,
             theme.tokens.colors.text_primary,
             transform.pre_translate((label_x, y0 + 8.0).into()),
             None,
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold),
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             detail,
-            theme.tokens.typography.scale.xs,
             theme.tokens.colors.text_dim,
             transform.pre_translate((self.follow_chip_rect.x0 + 48.0, y0 + 27.0).into()),
             None,
+            &theme.text(TextRole::Caption),
         );
         if self.followed_peer.is_some() {
             Button::paint(
@@ -23255,13 +23250,13 @@ impl ShellOverlayHost {
             &t_args("a11y-bluetooth-move", &[("accessory", name.into())]),
         );
         let panel = self.quick_settings_rect();
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("qs-bluetooth-move-note"),
-            theme.tokens.typography.scale.xs,
             theme.tokens.colors.text_dim,
             transform.pre_translate((panel.x0 + 12.0, panel.y0 + 56.0).into()),
             Some(f64_to_f32_lossy(panel.width() - 24.0)),
+            &theme.text(TextRole::Caption),
         );
         let Ok(view) = self.device_fabric_call(DeviceFabricUiAction::Snapshot) else {
             self.draw_qs_drill_in_empty(
@@ -23323,27 +23318,26 @@ impl ShellOverlayHost {
                 theme.tokens.colors.text_primary,
                 ui::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &title,
-                theme.tokens.typography.scale.sm,
                 theme.tokens.colors.text_primary,
                 transform.pre_translate((row.x0 + 42.0, row.y0 + 10.0).into()),
                 Some(f64_to_f32_lossy(row.width() - 54.0)),
-                TextWeight::Medium,
+                &theme.text(TextRole::Label),
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &detail,
-                theme.tokens.typography.scale.xs,
                 theme.tokens.colors.text_dim,
                 transform.pre_translate((row.x0 + 42.0, row.y0 + 32.0).into()),
                 Some(f64_to_f32_lossy(row.width() - 54.0)),
+                &theme.text(TextRole::Caption),
             );
         }
         if rows.len() > visible_rows {
             let shown = visible_rows.min(rows.len().saturating_sub(self.qs_device_fabric_start));
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &t_args(
                     "qs-devices-showing",
@@ -23359,10 +23353,10 @@ impl ShellOverlayHost {
                         ("total", rows.len().into()),
                     ],
                 ),
-                theme.tokens.typography.scale.xs,
                 theme.tokens.colors.text_dim,
                 transform.pre_translate((panel.x0 + 12.0, panel.y1 - 14.0).into()),
                 Some(f64_to_f32_lossy(panel.width() - 24.0)),
+                &theme.text(TextRole::Caption),
             );
         }
     }
@@ -23402,13 +23396,13 @@ impl ShellOverlayHost {
                 .iter()
                 .find(|media| &media.session_id == id)
         });
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("qs-devices-note"),
-            theme.tokens.typography.scale.xs,
             theme.tokens.colors.text_dim,
             transform.pre_translate((panel.x0 + 12.0, panel.y0 + 56.0).into()),
             Some(f64_to_f32_lossy(panel.width() - 24.0)),
+            &theme.text(TextRole::Caption),
         );
         let realtime = self
             .realtime_continuity_call(RealtimeContinuityUiAction::Snapshot)
@@ -24112,19 +24106,17 @@ impl ShellOverlayHost {
             } else {
                 theme.tokens.colors.text_primary
             };
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &title,
-                theme.tokens.typography.scale.sm,
                 text_color,
                 transform.pre_translate((row.x0 + 42.0, row.y0 + 10.0).into()),
                 Some(f64_to_f32_lossy(row.width() - 54.0 - trailing)),
-                TextWeight::Medium,
+                &theme.text(TextRole::Label),
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &detail,
-                theme.tokens.typography.scale.xs,
                 if selected_row {
                     theme.tokens.colors.intent.on_inverted
                 } else {
@@ -24132,6 +24124,7 @@ impl ShellOverlayHost {
                 },
                 transform.pre_translate((row.x0 + 42.0, row.y0 + 32.0).into()),
                 Some(f64_to_f32_lossy(row.width() - 54.0 - trailing)),
+                &theme.text(TextRole::Caption),
             );
             if tethering_consent
                 || matches!(
@@ -24304,13 +24297,13 @@ impl ShellOverlayHost {
                     ("total", rows.len().into()),
                 ],
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &position,
-                theme.tokens.typography.scale.xs,
                 theme.tokens.colors.text_dim,
                 transform.pre_translate((panel.x0 + 12.0, panel.y1 - 22.0).into()),
                 Some(f64_to_f32_lossy(panel.width() - 24.0)),
+                &theme.text(TextRole::Caption),
             );
         }
     }
@@ -24345,10 +24338,9 @@ impl ShellOverlayHost {
             None,
             &RoundedRect::from_rect(search, 7.0),
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             label,
-            theme.tokens.typography.scale.xs,
             if self.qs_clipboard_query.is_empty() {
                 theme.tokens.colors.text_dim
             } else {
@@ -24356,6 +24348,7 @@ impl ShellOverlayHost {
             },
             transform.pre_translate((search.x0 + 9.0, search.y0 + 5.0).into()),
             Some(f64_to_f32_lossy(search.width() - 18.0)),
+            &theme.text(TextRole::Caption),
         );
     }
 
@@ -24438,8 +24431,7 @@ impl ShellOverlayHost {
             theme,
             &ButtonFace::new(clear, &t("qs-clipboard-clear"))
                 .hovered(self.last_cursor.is_some_and(|point| clear.contains(point)))
-                .accessible_name(&t("qs-clipboard-clear-a11y"))
-                .text_size(theme.tokens.typography.scale.xs),
+                .accessible_name(&t("qs-clipboard-clear-a11y")),
         );
         for (visible_index, item) in history.iter().skip(start).take(visible_rows).enumerate() {
             let row = self.qs_clipboard_row_rect(visible_index);
@@ -24474,14 +24466,13 @@ impl ShellOverlayHost {
                 },
                 |text| text.split_whitespace().collect::<Vec<_>>().join(" "),
             );
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &preview,
-                theme.tokens.typography.scale.sm,
                 colors.text_primary,
                 transform.pre_translate((body.x0 + 12.0, body.y0 + 14.0).into()),
                 Some(f64_to_f32_lossy(body.width() - 24.0)),
-                TextWeight::Medium,
+                &theme.text(TextRole::Label),
             );
             let source = clipboard_history_source_label(item, fabric.as_ref());
             let age = clipboard_history_relative_time(item.created_unix_ms, now_unix_ms);
@@ -24493,13 +24484,13 @@ impl ShellOverlayHost {
                     ("bytes", item.byte_len.to_string().into()),
                 ],
             );
-            text_renderer.draw_text(
+            text_renderer.draw_style(
                 scene,
                 &detail,
-                theme.tokens.typography.scale.xs,
                 colors.text_dim,
                 transform.pre_translate((body.x0 + 12.0, body.y0 + 40.0).into()),
                 Some(f64_to_f32_lossy(body.width() - 24.0)),
+                &theme.text(TextRole::Caption),
             );
             Button::paint(
                 scene,
@@ -24714,14 +24705,16 @@ impl ShellOverlayHost {
             colors.text_dim,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &t("qs-wifi-protected"),
-            tokens.typography.scale.xs,
             colors.text_dim,
             transform.pre_translate((lock_box.x1 + 8.0, sub_y + 1.0).into()),
             None,
-            TextWeight::Medium,
+            &tokens
+                .typography
+                .style(TextRole::Caption)
+                .with_weight(TextWeight::Medium),
         );
 
         let field =
@@ -24773,31 +24766,32 @@ impl ShellOverlayHost {
             &field_shape,
         );
 
-        let text_size = tokens.typography.scale.sm;
+        let text_style = tokens.typography.style(TextRole::Caption);
         let masked = tilo_desktop::text_entry::masked(&prompt.password);
         let text_x = field.x0 + 12.0;
-        let (mask_w, mask_h) =
-            text_renderer.measure_weighted(&masked, text_size, None, TextWeight::Medium);
+        let (mask_w, mask_h) = text_renderer.measure_style(
+            &masked,
+            None,
+            &text_style.clone().with_weight(TextWeight::Medium),
+        );
         let text_y = field.y0 + (field.height() - f64::from(mask_h)) / 2.0;
         if masked.is_empty() {
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &t("portal-network-password"),
-                text_size,
                 colors.text_dim.with_alpha_factor(0.6),
                 transform.pre_translate((text_x, text_y).into()),
                 None,
-                TextWeight::Medium,
+                &text_style.with_weight(TextWeight::Medium),
             );
         } else {
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &masked,
-                text_size,
                 colors.text_primary,
                 transform.pre_translate((text_x, text_y).into()),
                 None,
-                TextWeight::Medium,
+                &text_style.with_weight(TextWeight::Medium),
             );
         }
         // Caret. Masked text is uniform-width bullets, so the caret's x
@@ -24842,24 +24836,28 @@ impl ShellOverlayHost {
         // A failed attempt says so where the eye already is, rather than
         // as a toast that would outlive the prompt.
         if let Some(err) = prompt.error.as_ref() {
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 err,
-                tokens.typography.scale.xs,
                 colors.semantic.danger,
                 transform.pre_translate((field.x0 + 2.0, field.y1 + 8.0).into()),
                 None,
-                TextWeight::Medium,
+                &tokens
+                    .typography
+                    .style(TextRole::Caption)
+                    .with_weight(TextWeight::Medium),
             );
         } else if prompt.connecting {
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &t("qs-connecting"),
-                tokens.typography.scale.xs,
                 colors.text_dim,
                 transform.pre_translate((field.x0 + 2.0, field.y1 + 8.0).into()),
                 None,
-                TextWeight::Medium,
+                &tokens
+                    .typography
+                    .style(TextRole::Caption)
+                    .with_weight(TextWeight::Medium),
             );
         }
     }

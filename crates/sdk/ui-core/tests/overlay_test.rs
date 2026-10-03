@@ -14,6 +14,7 @@ use std::collections::HashMap;
 
 use taffy::{AvailableSpace, Dimension, Style};
 use taffy::{NodeId, Size, TaffyTree};
+use tilo_ui::TextRole;
 use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::overlay::{FocusTrap, Modal, OverlayStack, Popover};
 use tilo_ui::presence::PresenceCtx;
@@ -170,16 +171,16 @@ impl Widget for FixedContent {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let size = theme.tokens.typography.scale.sm;
-        let (_, h) = text_renderer.measure(self.label, size, None);
+        let style = theme.text(TextRole::Caption);
+        let (_, h) = text_renderer.measure_style(self.label, None, &style);
         let y = self.rect.y0 + (self.rect.height() - f64::from(h)) / 2.0;
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             self.label,
-            size,
             theme.tokens.colors.text_primary,
             transform.pre_translate(Vec2::new(self.rect.x0, y)),
             None,
+            &style,
         );
     }
 

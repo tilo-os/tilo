@@ -22,9 +22,9 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::{Button, ButtonFace, Widget};
 
@@ -323,7 +323,7 @@ pub struct ToastCard<'a> {
     /// Optional secondary line (dim). Empty = single-line card.
     pub body: &'a str,
     /// Optional attribution caption above the title (e.g. the sending app's
-    /// name), rendered dim + uppercase + semibold. Empty = no caption.
+    /// name), a dim `Caption` in sentence case. Empty = no caption.
     pub caption: &'a str,
     /// Severity — drives the left accent stripe colour.
     pub kind: ToastKind,
@@ -587,17 +587,15 @@ fn paint_card_actions(
             &RoundedRect::from_rect(Rect::new(left, y0, right, y1), 8.0),
         );
     }
-    let mut secondary_face = ButtonFace::new(secondary, card.secondary_action)
-        .hovered(card.secondary_action_hovered)
-        .text_size(12.0);
+    let mut secondary_face =
+        ButtonFace::new(secondary, card.secondary_action).hovered(card.secondary_action_hovered);
     if let Some(icon) = card.secondary_action_icon {
         secondary_face = secondary_face.icon(icon);
     }
     Button::paint(scene, transform, text_renderer, theme, &secondary_face);
     let mut primary_face = ButtonFace::new(primary, card.primary_action)
         .primary()
-        .hovered(card.primary_action_hovered)
-        .text_size(12.0);
+        .hovered(card.primary_action_hovered);
     if let Some(icon) = card.primary_action_icon {
         primary_face = primary_face.icon(icon);
     }
@@ -632,10 +630,14 @@ pub fn paint_transient(
         return ToastCardHit::default();
     }
 
-    let title_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
+    let title_style = theme.text(TextRole::Caption);
     let title_width = f64::from(
         text_renderer
-            .measure_weighted(card.title, title_size, None, TextWeight::Semibold)
+            .measure_style(
+                card.title,
+                None,
+                &title_style.clone().with_weight(TextWeight::Semibold),
+            )
             .0,
     );
     let natural_width = title_width + 2.0 * CARD_PAD_X + CARD_ACCENT_BAR_W + 2.0;
@@ -714,9 +716,9 @@ fn paint_card_text(ctx: &mut PaintCtx<'_>, column: Rect, card: &ToastCard<'_>, a
     let text_renderer = &mut *ctx.text;
     let text_x = column.x0 + CARD_PAD_X;
     let width_avail = to_f32((column.x1 - text_x).max(0.0));
-    let caption_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
-    let title_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
-    let body_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
+    let caption_style = theme.text(TextRole::Caption);
+    let title_style = theme.text(TextRole::Label).strong();
+    let body_style = theme.text(TextRole::Caption);
 
     // A desktop notification may carry arbitrary localized or application
     // text. Keep every field one-line before deriving heights and widths;
@@ -728,27 +730,22 @@ fn paint_card_text(ctx: &mut PaintCtx<'_>, column: Rect, card: &ToastCard<'_>, a
     let has_caption = !caption_text.is_empty();
     let has_body = !body_text.is_empty();
     // Stack the measured line boxes, not the font sizes: a face's line
-    // height is ~1.2–1.3× its size, so size-derived heights under-reserved
-    // every line and the block sat high in the card. `spacing.s1` between
-    // lines.
-    let line_gap = f64::from(theme.tokens.spacing.s1);
-    let line_h = |text_renderer: &mut TextRenderer, text: &str, size: f32, weight: TextWeight| {
-        f64::from(text_renderer.measure_weighted(text, size, None, weight).1)
+    // height is ~1.3× its size, so size-derived heights under-reserved
+    // every line and the block sat high in the card. The roles' own
+    // leading is the space between lines.
+    let line_gap = 0.0;
+    let line_h = |text_renderer: &mut TextRenderer, text: &str, style: &TextStyle| {
+        f64::from(text_renderer.measure_style(text, None, style).1)
     };
     let cap_h = if has_caption {
-        line_h(
-            text_renderer,
-            &caption_text,
-            caption_size,
-            TextWeight::Semibold,
-        ) + line_gap
+        line_h(text_renderer, &caption_text, &caption_style) + line_gap
     } else {
         0.0
     };
-    let title_h = line_h(text_renderer, &title_text, title_size, TextWeight::Semibold)
-        + if has_body { line_gap } else { 0.0 };
+    let title_h =
+        line_h(text_renderer, &title_text, &title_style) + if has_body { line_gap } else { 0.0 };
     let body_h = if has_body {
-        line_h(text_renderer, &body_text, body_size, TextWeight::Regular)
+        line_h(text_renderer, &body_text, &body_style)
     } else {
         0.0
     };
@@ -761,21 +758,11 @@ fn paint_card_text(ctx: &mut PaintCtx<'_>, column: Rect, card: &ToastCard<'_>, a
     // paint over the body (and can push the close affordance into the text).
     // Elide each line against the *actual* width left by the close button;
     // long diagnostics belong in the structured log, not in chrome.
-    let caption = has_caption.then(|| {
-        text_renderer.elide_to_width_weighted(
-            &caption_text.to_uppercase(),
-            caption_size,
-            width_avail,
-            TextWeight::Semibold,
-        )
-    });
-    let title = text_renderer.elide_to_width_weighted(
-        &title_text,
-        title_size,
-        width_avail,
-        TextWeight::Semibold,
-    );
-    let body = has_body.then(|| text_renderer.elide_to_width(&body_text, body_size, width_avail));
+    let caption = has_caption
+        .then(|| text_renderer.elide_to_width_style(&caption_text, width_avail, &caption_style));
+    let title = text_renderer.elide_to_width_style(&title_text, width_avail, &title_style);
+    let body =
+        has_body.then(|| text_renderer.elide_to_width_style(&body_text, width_avail, &body_style));
 
     let dim = theme.tokens.colors.text_dim.with_alpha(alpha);
     let primary = theme.tokens.colors.text_primary.with_alpha(alpha);
@@ -783,7 +770,7 @@ fn paint_card_text(ctx: &mut PaintCtx<'_>, column: Rect, card: &ToastCard<'_>, a
     if has_caption {
         ctx.text(
             caption.as_deref().unwrap_or_default(),
-            &TextStyle::new(caption_size).with_weight(TextWeight::Semibold),
+            &caption_style,
             dim,
             Point::new(text_x, ty),
             Some(width_avail),
@@ -792,7 +779,7 @@ fn paint_card_text(ctx: &mut PaintCtx<'_>, column: Rect, card: &ToastCard<'_>, a
     }
     ctx.text(
         &title,
-        &TextStyle::new(title_size).with_weight(TextWeight::Semibold),
+        &title_style,
         primary,
         Point::new(text_x, ty),
         Some(width_avail),
@@ -801,7 +788,7 @@ fn paint_card_text(ctx: &mut PaintCtx<'_>, column: Rect, card: &ToastCard<'_>, a
     if has_body {
         ctx.text(
             body.as_deref().unwrap_or_default(),
-            &TextStyle::new(body_size),
+            &body_style,
             dim,
             Point::new(text_x, ty),
             Some(width_avail),
@@ -1017,7 +1004,7 @@ mod tests {
             assert_eq!(tops.len(), 3, "three distinct baselines: {tops:?}");
             for pair in tops.windows(2) {
                 assert!(
-                    pair[1] - pair[0] >= f64::from(theme.tokens.typography.scale.xs),
+                    pair[1] - pair[0] >= f64::from(theme.tokens.typography.size(TextRole::Caption)),
                     "lines do not overlap: {tops:?}"
                 );
             }

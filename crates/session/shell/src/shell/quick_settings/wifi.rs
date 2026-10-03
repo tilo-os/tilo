@@ -24,8 +24,9 @@ use crate::shell::quick_settings::actions::{QsActions, log_qs_result};
 use tilo_desktop::drill_in::{
     CONTROL_INSET, DrillInList, DrillInOutcome, GLYPH, LIST_TOP, PANEL_PAD, RELATED_GAP,
     ROW_HEIGHT, STATUS_DOT, TOGGLE_H, TOGGLE_W, centred_text_top, leading_glyph, paint_control,
-    trailing_dot_center, trailing_status_glyph, trailing_toggle, type_size,
+    trailing_dot_center, trailing_status_glyph, trailing_toggle,
 };
+use ui::TextRole;
 
 fn f32v(value: f64) -> f32 {
     #[allow(
@@ -580,39 +581,39 @@ impl QuickSettingsWifiPane {
             colors.text_primary,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        let label_size = type_size(text, theme.tokens.typography.scale.sm);
-        let detail_size = type_size(text, theme.tokens.typography.scale.xs);
+        let label_style = theme.text(TextRole::Caption);
+        let detail_style = theme.text(TextRole::Caption);
         let detail = t(if state.radios.hotspot_active {
             "qs-wifi-hotspot-sharing"
         } else {
             "qs-off"
         });
         let hotspot_label = t("qs-wifi-hotspot");
-        let (_, label_h) = text.measure_weighted(
+        let (_, label_h) = text.measure_style(
             &hotspot_label,
-            label_size,
             None,
-            ui::text_render::TextWeight::Medium,
+            &label_style
+                .clone()
+                .with_weight(ui::text_render::TextWeight::Medium),
         );
-        let (_, detail_h) = text.measure(&detail, detail_size, None);
+        let (_, detail_h) = text.measure_style(&detail, None, &detail_style);
         let block_top = centred_text_top(row, f64::from(label_h) + f64::from(detail_h));
         let text_x = glyph.x1 + CONTROL_INSET;
-        text.draw_text_weighted(
+        text.draw_style(
             scene,
             &hotspot_label,
-            label_size,
             colors.text_primary,
             transform.pre_translate((text_x, block_top).into()),
             None,
-            ui::text_render::TextWeight::Medium,
+            &label_style.with_weight(ui::text_render::TextWeight::Medium),
         );
-        text.draw_text(
+        text.draw_style(
             scene,
             &detail,
-            detail_size,
             colors.text_dim,
             transform.pre_translate((text_x, block_top + f64::from(label_h)).into()),
             None,
+            &detail_style,
         );
         Toggle::paint(
             scene,
@@ -668,22 +669,22 @@ impl QuickSettingsWifiPane {
                 );
             }
             if state.wifi_joining.as_deref() == Some(network.ssid.as_str()) {
-                text.draw_text(
+                text.draw_style(
                     scene,
                     &t("qs-connecting"),
-                    theme.tokens.typography.scale.xs,
                     colors.intent.inverted,
                     transform.pre_translate((row.x0 + 44.0, row.y0 + 38.0).into()),
                     Some(f32v((row.width() - 120.0).max(1.0))),
+                    &theme.text(TextRole::Caption),
                 );
             } else if network.connected {
-                text.draw_text(
+                text.draw_style(
                     scene,
                     &t("qs-connected"),
-                    theme.tokens.typography.scale.xs,
                     colors.intent.inverted,
                     transform.pre_translate((row.x0 + 44.0, row.y0 + 38.0).into()),
                     Some(f32v((row.width() - 120.0).max(1.0))),
+                    &theme.text(TextRole::Caption),
                 );
             }
             ui::icons::draw_icon(

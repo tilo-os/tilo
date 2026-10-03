@@ -2,6 +2,7 @@
 use automerge::{AutoCommit, ObjId, ROOT, ReadDoc, transaction::Transactable};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use tilo_ui::TextRole;
 use tilo_ui::application::{
     AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
 };
@@ -58,7 +59,7 @@ pub fn configure_presentation(
     theme_scale: f32,
 ) -> tilo_ui::application::ComponentRunnerInputs {
     inputs.theme.name = "explicit presentation".into();
-    inputs.theme.tokens.font_size_base = 19.0;
+    inputs.theme.tokens.typography = inputs.theme.tokens.typography.clone().with_base_size(19.0);
     inputs.theme.tokens.colors.intent.inverted = inputs.theme.status_success;
     inputs.theme = inputs
         .theme
@@ -77,17 +78,21 @@ pub fn assert_presentation(theme: &tilo_ui::Theme, scale: f32, ui_scale: f32) {
     assert_eq!(theme.name, "explicit presentation");
     assert!(theme.reduce_motion);
     assert_eq!(theme.tokens.colors.intent.inverted, theme.status_success);
-    assert!((theme.tokens.font_size_base - 19.0 * ui_scale * scale).abs() < 0.0001);
+    assert!(
+        (theme.tokens.typography.size(TextRole::Body) - 19.0 * ui_scale * scale).abs() < 0.0001
+    );
     let base = tilo_ui::Theme::dark();
     assert!(
-        (theme.tokens.typography.scale.sm - base.tokens.typography.scale.sm * ui_scale * scale)
+        (theme.tokens.typography.size(TextRole::Caption)
+            - base.tokens.typography.size(TextRole::Caption) * 19.0 / 14.0 * ui_scale * scale)
             .abs()
             < 0.0001
     );
     assert!(
-        (theme.tokens.typography.scale.x4l - base.tokens.typography.scale.x4l * ui_scale * scale)
+        (theme.tokens.typography.size(TextRole::Display)
+            - base.tokens.typography.size(TextRole::Display) * 19.0 / 14.0 * ui_scale * scale)
             .abs()
-            < 0.0001
+            < 0.001
     );
     assert!((theme.tokens.spacing.s3 - base.tokens.spacing.s3 * ui_scale).abs() < 0.0001);
     assert!((theme.tokens.radii.control - base.tokens.radii.control * ui_scale).abs() < 0.0001);

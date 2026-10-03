@@ -20,9 +20,9 @@ use crate::input::{InputBinding, KeyLegend, KeyboardBinding, KeyboardModifier};
 use crate::interaction::InteractionEnvironment;
 use crate::platform::PlatformConventions;
 use crate::presence::PresenceCtx;
-use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::{InputHint, LegendConventions, TaffyTreeExt, Widget};
 
 const HEIGHT: f64 = 34.0;
@@ -166,15 +166,10 @@ impl Widget for ShortcutRecorder {
         }
         if self.capturing {
             let label = "…";
-            let (w, h) = text.measure(
-                label,
-                renderer_type_size(text, theme.tokens.typography.scale.sm),
-                None,
-            );
-            text.draw_text_weighted(
+            let (w, h) = text.measure_style(label, None, &theme.text(TextRole::Caption));
+            text.draw_style(
                 scene,
                 label,
-                renderer_type_size(text, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.text_primary,
                 transform.pre_translate(
                     (
@@ -184,7 +179,9 @@ impl Widget for ShortcutRecorder {
                         .into(),
                 ),
                 None,
-                TextWeight::Semibold,
+                &theme
+                    .text(TextRole::Label)
+                    .with_weight(TextWeight::Semibold),
             );
         } else {
             InputHint::paint_at(
@@ -197,14 +194,15 @@ impl Widget for ShortcutRecorder {
                 LegendConventions::new(self.platform, &self.interaction),
             );
             if self.invalid {
-                text.draw_text_weighted(
+                text.draw_style(
                     scene,
                     "!",
-                    renderer_type_size(text, theme.tokens.typography.scale.sm),
                     theme.tokens.colors.semantic.danger,
                     transform.pre_translate((chord.x1 - 14.0, chord.y0 + 7.0).into()),
                     None,
-                    TextWeight::Semibold,
+                    &theme
+                        .text(TextRole::Label)
+                        .with_weight(TextWeight::Semibold),
                 );
             }
         }
@@ -219,15 +217,10 @@ impl Widget for ShortcutRecorder {
                     &RoundedRect::from_rect(reset, 6.0),
                 );
             }
-            let (w, h) = text.measure(
-                "↶",
-                renderer_type_size(text, theme.tokens.typography.scale.base),
-                None,
-            );
-            text.draw_text(
+            let (w, h) = text.measure_style("↶", None, &theme.text(TextRole::Body));
+            text.draw_style(
                 scene,
                 "↶",
-                renderer_type_size(text, theme.tokens.typography.scale.base),
                 theme.tokens.colors.text_primary,
                 transform.pre_translate(
                     (
@@ -237,6 +230,7 @@ impl Widget for ShortcutRecorder {
                         .into(),
                 ),
                 None,
+                &theme.text(TextRole::Body),
             );
         }
     }

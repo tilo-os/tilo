@@ -18,7 +18,7 @@ use crate::presence::{PathSegment, PresenceKey};
 use crate::richtext::{RichSpan, RichTextLayout, TextAlign};
 use crate::text_break::line_break_opportunities;
 use crate::text_break::{grapheme_indices, graphemes};
-use crate::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
+use crate::text_render::{FontChoice, TextRenderer, TextScaling, TextStyle, TextWeight};
 use crate::text_selection::{
     TextAffinity, TextPosition, clipboard_copy, clipboard_copy_primary, clipboard_paste,
     clipboard_paste_primary, extend_span_drag, grapheme_boundary_at_or_before, line_boundaries,
@@ -26,6 +26,7 @@ use crate::text_selection::{
     word_boundaries,
 };
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::code_editor::{Highlighter, Span};
@@ -120,8 +121,7 @@ fn is_autocorrect_boundary(character: char) -> bool {
     character.is_whitespace() || (character.is_ascii_punctuation() && character != '\'')
 }
 
-pub(super) const FONT_SIZE: f32 = 16.0;
-/// Caret centres against this band, not `FONT_SIZE`, to line up with where
+/// Caret centres against this band, not the font size, to line up with where
 /// cosmic-text draws the glyphs.
 const LINE_HEIGHT_RATIO: f32 = 1.25;
 /// Spellcheck runs immediately, but the word containing the caret stays
@@ -242,6 +242,10 @@ pub struct TextInput {
     /// A wrapped row inside a compound code fence shares its parent's spacing.
     compact_multiline: bool,
     last_edit_time: Option<Instant>,
+    /// What the field's text is; its 1× size is the role's.
+    text_role: TextRole,
+    /// A document editor built on this field (a heading block, a code view)
+    /// sets its own 1× base size instead of a role's.
     font_size_override: Option<f32>,
     /// Theme scale captured during `build_layout`; direct measurement falls
     /// back to the renderer when no themed layout pass has occurred.
@@ -443,6 +447,7 @@ impl TextInput {
             direct_crdt_writes: true,
             path_was_present: false,
             external_buffer: None,
+            text_role: TextRole::Body,
             font_size_override: None,
             layout_text_scale: None,
             gutter_text_scale: 1.0,
@@ -627,9 +632,10 @@ impl TextInput {
         }
     }
 
+    /// Set the field's text in `role` (default [`TextRole::Body`]).
     #[must_use]
-    pub fn with_font_size(mut self, size: f32) -> Self {
-        self.font_size_override = Some(size);
+    pub fn with_text_role(mut self, role: TextRole) -> Self {
+        self.set_text_role(role);
         self
     }
 
@@ -639,7 +645,24 @@ impl TextInput {
         self
     }
 
-    pub fn set_font_size(&mut self, size: f32) {
+    /// Change the field's text role; see [`Self::with_text_role`].
+    pub fn set_text_role(&mut self, role: TextRole) {
+        if self.text_role != role || self.font_size_override.is_some() {
+            self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
+            self.text_role = role;
+            self.font_size_override = None;
+        }
+    }
+
+    /// The field's text role.
+    #[must_use]
+    pub fn text_role(&self) -> TextRole {
+        self.text_role
+    }
+
+    /// A document editor built on this field (a heading block, a code view)
+    /// sets its own 1× base size; chrome fields take a role.
+    pub(crate) fn set_base_size(&mut self, size: f32) {
         if self.font_size_override != Some(size) {
             self.model_layout_dirty |= self.multiline || self.single_attributes.is_some();
             self.font_size_override = Some(size);
@@ -1303,7 +1326,7 @@ impl TextInput {
                 f64::from(layout.buffer.metrics().line_height),
             );
         }
-        let text_size = self.font_size_override.unwrap_or(FONT_SIZE);
+        let text_size = self.effective_font_size();
         let line_height = f64::from(text_size * LINE_HEIGHT_RATIO);
         let text_y = self.rect.y0 + (self.rect.height() - line_height) / 2.0;
         (text_y, line_height)
@@ -1455,7 +1478,8 @@ impl TextInput {
     }
 
     fn effective_font_size(&self) -> f32 {
-        self.font_size_override.unwrap_or(FONT_SIZE)
+        self.font_size_override
+            .unwrap_or_else(|| crate::tokens::typography::stock().size(self.text_role))
     }
 
     fn line_height(&self) -> f64 {
@@ -1905,17 +1929,16 @@ impl TextInput {
         } else {
             FontChoice::SansSerif
         });
-        TextStyle::new(self.effective_font_size() * scale)
+        // Already grown by the text scale here, so the renderer paints it as
+        // given.
+        let mut style = TextStyle::new(self.effective_font_size() * scale)
             .with_line_height(LINE_HEIGHT_RATIO)
-            .with_family(family)
+            .with_family(family);
+        style.scaling = TextScaling::Resolved;
+        style
     }
 
-    fn update_gutter_metrics(
-        &mut self,
-        tr: &mut TextRenderer,
-        renderer_style: &TextStyle,
-        scale: f32,
-    ) {
+    fn update_gutter_metrics(&mut self, tr: &mut TextRenderer, style: &TextStyle, scale: f32) {
         if !self.gutter || !self.multiline {
             self.measured_gutter_width = 0.0;
             return;
@@ -1927,7 +1950,7 @@ impl TextInput {
             .count()
             .saturating_add(1);
         let label = lines.max(10).to_string();
-        let (number_width, _) = tr.measure_style(&label, None, renderer_style);
+        let (number_width, _) = tr.measure_style(&label, None, style);
         self.measured_gutter_width =
             f64::from(number_width) + (GUTTER_PAD_L + GUTTER_PAD_R) * f64::from(scale);
     }
@@ -2158,8 +2181,7 @@ impl TextInput {
     ) {
         let size = self.effective_font_size();
         let style = self.multiline_style(theme.text_scale);
-        let renderer_style = tr.renderer_input_style(&style);
-        self.update_gutter_metrics(tr, &renderer_style, theme.text_scale);
+        self.update_gutter_metrics(tr, &style, theme.text_scale);
         let left = self.ml_left();
         #[allow(
             clippy::cast_possible_truncation,
@@ -2242,7 +2264,7 @@ impl TextInput {
             transform,
             tr,
             theme,
-            &renderer_style,
+            &style,
             caret_byte,
             gutter_width,
         );
@@ -3602,8 +3624,8 @@ impl TextInput {
             return;
         };
         let label = format!("Space → {}", preview.replacement);
-        let size = theme.tokens.typography.scale.sm;
-        let (text_width, text_height) = text_renderer.measure(&label, size, None);
+        let style = theme.text(TextRole::Caption);
+        let (text_width, text_height) = text_renderer.measure_style(&label, None, &style);
         let pad_x = 8.0_f64;
         let pad_y = 4.0_f64;
         let width = f64::from(text_width) + pad_x * 2.0;
@@ -3633,13 +3655,13 @@ impl TextInput {
             None,
             &shape,
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &label,
-            size,
             theme.tokens.colors.text_primary,
             transform.pre_translate(Vec2::new(rect.x0 + pad_x, rect.y0 + pad_y)),
             None,
+            &style,
         );
     }
 
@@ -4044,8 +4066,7 @@ impl Widget for TextInput {
                 .layout_text_scale
                 .unwrap_or_else(|| text_renderer.text_scale());
             let style = self.multiline_style(scale);
-            let renderer_style = text_renderer.renderer_input_style(&style);
-            self.update_gutter_metrics(text_renderer, &renderer_style, scale);
+            self.update_gutter_metrics(text_renderer, &style, scale);
             #[allow(
                 clippy::cast_possible_truncation,
                 reason = "layout width originates as f32; nonnegative insets only reduce it before shaping at f32 precision"
@@ -4132,7 +4153,7 @@ impl Widget for TextInput {
         }
         self.multiline_shaped = false;
 
-        let text_size = self.font_size_override.unwrap_or(FONT_SIZE);
+        let text_size = self.effective_font_size();
         let line_height = f64::from(text_size * theme.text_scale * LINE_HEIGHT_RATIO);
         let padding_x = if self.plain {
             // The parent already adds whatever gutter the document layout wants.

@@ -17,10 +17,11 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::platform::{DialogActionOrder, PlatformConventions};
 use crate::presence::PresenceCtx;
-use crate::text_metrics::{centered_text_top, renderer_type_size};
-use crate::text_render::{TextRenderer, TextStyle, TextWeight};
+use crate::text_metrics::centered_text_top;
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::{Metrics, Spacing, TypeScale};
+use crate::tokens::TextRole;
+use crate::tokens::{Metrics, Spacing};
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::button::{Button, ButtonFace, ButtonStyle};
@@ -55,7 +56,7 @@ impl DialogChrome {
     fn from_theme(theme: &Theme) -> Self {
         let t = &theme.tokens;
         Self::from_parts(
-            t.typography.scale.lg,
+            t.typography.size(TextRole::Heading),
             t.spacing.s4,
             t.metrics.bar_height,
             t.spacing.s2,
@@ -78,7 +79,7 @@ impl Default for DialogChrome {
     /// seen a theme (builder methods, immediate-mode hosts).
     fn default() -> Self {
         Self::from_parts(
-            TypeScale::default().lg,
+            crate::tokens::typography::stock().size(TextRole::Heading),
             Spacing::BASE.s4,
             Metrics::BASE.bar_height,
             Spacing::BASE.s2,
@@ -600,18 +601,18 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
             &crate::surface::edge_outline(self.rect, radius),
         );
 
-        let title_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.lg);
+        let title_style = theme.text(TextRole::Heading);
         let title_x = self.rect.x0 + f64::from(theme.tokens.spacing.s4);
         // Centre the title on its measured line box, not the font size.
-        let (_, title_h) = text_renderer.measure(&self.title, title_size, None);
+        let (_, title_h) = text_renderer.measure_style(&self.title, None, &title_style);
         let title_y = centered_text_top(self.rect.y0, self.chrome.title_bar, f64::from(title_h));
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &self.title,
-            title_size,
             theme.tokens.colors.text_primary,
             transform * Affine::translate((title_x, title_y)),
             None,
+            &title_style,
         );
 
         self.content
@@ -622,13 +623,6 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         // `Button`: the shared face brings the hover state, the disabled
         // and focus treatment and the contrast-checked ink that a local
         // painter had to re-derive (HIG §8: never hand-roll a control).
-        // `ButtonFace::text_size` is renderer-relative, so hand it the
-        // theme's control-label size with the renderer's own multiplier
-        // taken back out — it then carries `ui_scale` and a custom type
-        // scale like every other `Button` label, and is painted once.
-        let label_size = text_renderer
-            .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm))
-            .size;
         let hovered = |rect: Rect| self.pointer_inside && rect.contains(self.last_cursor);
         if let Some(action) = &self.primary_action {
             let style = if self.destructive {
@@ -638,16 +632,12 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
             };
             let face = ButtonFace::new(self.primary_rect, &action.label)
                 .style(style)
-                .text_size(label_size)
-                .weight(TextWeight::Medium)
                 .hovered(hovered(self.primary_rect));
             Button::paint(scene, transform, text_renderer, theme, &face);
         }
         if let Some(action) = &self.secondary_action {
             let face = ButtonFace::new(self.secondary_rect, &action.label)
                 .style(ButtonStyle::Neutral)
-                .text_size(label_size)
-                .weight(TextWeight::Medium)
                 .hovered(hovered(self.secondary_rect));
             Button::paint(scene, transform, text_renderer, theme, &face);
         }
@@ -1311,7 +1301,7 @@ mod tests {
         fn retained_layout_preserves_large_text_before_the_first_draw() {
             let mut dialog = ModalDialog::new(
                 "Large text",
-                Text::new("Scaled dialog content").with_scaled_size(20.0),
+                Text::new("Scaled dialog content").with_role(crate::tokens::TextRole::Title),
             )
             .open(true);
             let theme = Theme::dark().with_text_scale(2.0);
@@ -1366,7 +1356,10 @@ mod tests {
 
             let large = DialogChrome::from_theme(&Theme::dark().with_text_scale(2.0));
             assert!(
-                large.title_bar >= base.title_bar + f64::from(TypeScale::default().lg) - 1e-6,
+                large.title_bar
+                    >= base.title_bar
+                        + f64::from(crate::tokens::typography::stock().size(TextRole::Heading))
+                        - 1e-6,
                 "a 2× heading gets a taller bar: {large:?}"
             );
             assert!(

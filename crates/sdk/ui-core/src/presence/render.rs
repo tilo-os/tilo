@@ -2,9 +2,9 @@ use super::PresenceCtx;
 use crate::color_compat::ColorCompat;
 use crate::paint::PaintCtx;
 use crate::permissions::UserId;
-use crate::text_metrics::renderer_type_size;
-use crate::text_render::{TextRenderer, TextStyle};
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use vello::{
     Scene,
     kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke},
@@ -397,21 +397,20 @@ const AGENT_GLYPH_W: f64 = 14.0;
 /// and a theme with a larger base — and the renderer factor covers the
 /// host-palette convention that scales the renderer instead.
 pub(crate) fn label_magnification(theme: &Theme, _text_renderer: &TextRenderer) -> f64 {
-    // The theme's resolved type step already carries the text (and UI)
-    // scale, and every label here is drawn at `renderer_type_size`, so the
-    // glyphs land at exactly that resolved size whether or not the renderer
-    // is scaled to match. The magnification is therefore the type step's
-    // ratio alone; multiplying by the renderer's scale as well doubled the
-    // pads at 2x (X1).
-    let default_sm = crate::tokens::typography::TypeScale::default().sm;
-    let type_ratio = theme.tokens.typography.scale.sm / default_sm;
+    // The theme's resolved role already carries the text (and UI) scale, and
+    // every label here is drawn in that resolved style, so the glyphs land
+    // at exactly that size whether or not the renderer is scaled to match.
+    // The magnification is therefore the role's ratio alone; multiplying by
+    // the renderer's scale as well doubled the pads at 2x (X1).
+    let stock = crate::tokens::Typography::default().size(TextRole::Caption);
+    let type_ratio = theme.tokens.typography.size(TextRole::Caption) / stock;
     f64::from(type_ratio).max(0.5)
 }
 
-/// Peer name type size: `scale.sm`, not `scale.xs` — xs measured ~34x15px
-/// with ~8px of glyph, present but not readable for a whole-session label.
-pub(crate) fn pill_label_size(theme: &Theme) -> f32 {
-    theme.tokens.typography.scale.sm
+/// Peer name type: a caption, the smallest role, still readable for a
+/// whole-session label.
+pub(crate) fn pill_label_style(theme: &Theme) -> crate::text_render::TextStyle {
+    theme.text(TextRole::Caption)
 }
 
 /// Pill size for `label`, padding included — shared so callers size their
@@ -431,13 +430,13 @@ fn peer_pill_size_for(
     label: &str,
     is_agent: bool,
 ) -> (f64, f64) {
-    let size = renderer_type_size(text_renderer, pill_label_size(theme));
+    let style = pill_label_style(theme);
     // Both axes come from the same measurement the painter draws with, so
     // the pill fits its label at every renderer text scale; the horizontal
     // insets grow with the label's magnification so a 2× name is not pinned
     // into 1× pads.
     let k = label_magnification(theme, text_renderer);
-    let (tw, th) = text_renderer.measure(label, size, None);
+    let (tw, th) = text_renderer.measure_style(label, None, &style);
     (
         f64::from(tw) + (PILL_PAD_X * 2.0 + if is_agent { AGENT_GLYPH_W } else { 0.0 }) * k,
         f64::from(th) + PILL_PAD_Y * 2.0,
@@ -771,7 +770,7 @@ fn draw_peer_pill_kind(
     peer: Color,
     is_agent: bool,
 ) {
-    let label_size = renderer_type_size(text_renderer, pill_label_size(theme));
+    let label_style = pill_label_style(theme);
     let radius = f64::from(theme.tokens.radii.detail);
     let shadow = RoundedRect::from_rect(
         rect.inflate(0.5, 0.5) + vello::kurbo::Vec2::new(0.0, 1.0),
@@ -821,15 +820,15 @@ fn draw_peer_pill_kind(
     // Centre the measured line box in whatever rect the placer handed us,
     // rather than pinning it to the top pad: a caller-supplied rect may be
     // taller than the pill asked for.
-    let (_, th) = text_renderer.measure(label, label_size, None);
+    let (_, th) = text_renderer.measure_style(label, None, &label_style);
     let text_y = rect.y0 + (rect.height() - f64::from(th)) / 2.0;
-    text_renderer.draw_text(
+    text_renderer.draw_style(
         scene,
         label,
-        label_size,
         contrast_ink(peer),
         transform * Affine::translate((text_x, text_y)),
         None,
+        &label_style,
     );
 }
 
@@ -910,14 +909,14 @@ const CHIP_GAP: f64 = 2.0;
 /// lane area that clips its contents, a viewport edge — needs this before it
 /// can decide where the chip goes.
 fn chip_size(theme: &Theme, text_renderer: &mut TextRenderer, name: &str) -> (f64, f64) {
-    let label_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
+    let label_style = theme.text(TextRole::Caption);
     // Height from the measured line box, not the font size: the box is a
     // quarter taller than the size and carries the renderer's text scale,
-    // so sizing from `label_size` clipped descenders at 1× and lost the
+    // so sizing from `label_style` clipped descenders at 1× and lost the
     // whole label below the chip at 2×. The side pads scale with the label
     // for the same reason (`label_magnification`).
     let k = label_magnification(theme, text_renderer);
-    let (tw, th) = text_renderer.measure(name, label_size, None);
+    let (tw, th) = text_renderer.measure_style(name, None, &label_style);
     (
         f64::from(tw) + CHIP_PAD_X * 2.0 * k,
         f64::from(th) + CHIP_PAD_Y * 2.0,
@@ -944,7 +943,8 @@ fn chip_fitting(
         clippy::cast_possible_truncation,
         reason = "a pixel budget well inside f32 range"
     )]
-    let label = text_renderer.elide_to_width(name, theme.tokens.typography.scale.xs, budget as f32);
+    let label =
+        text_renderer.elide_to_width_style(name, budget as f32, &theme.text(TextRole::Caption));
     let (w, h) = chip_size(theme, text_renderer, &label);
     (label, w.min(max_w), h)
 }
@@ -960,13 +960,13 @@ fn draw_name_chip_in(ctx: &mut PaintCtx<'_>, color: Color, name: &str, chip_rect
     ctx.fill_round(chip_rect, f64::from(theme.tokens.radii.detail), color);
     // Label ink: white or near-black for contrast against the colour; the
     // measured line box is centred in the chip.
-    let label_size = renderer_type_size(ctx.text, theme.tokens.typography.scale.xs);
+    let label_style = theme.text(TextRole::Caption);
     let pad_x = CHIP_PAD_X * label_magnification(theme, ctx.text);
-    let (_, th) = ctx.text.measure(name, label_size, None);
+    let (_, th) = ctx.text.measure_style(name, None, &label_style);
     let text_y = chip_rect.y0 + (chip_rect.height() - f64::from(th)) / 2.0;
     ctx.text(
         name,
-        &TextStyle::new(label_size),
+        &label_style.clone(),
         contrast_ink(color),
         Point::new(chip_rect.x0 + pad_x, text_y),
         None,
@@ -1106,13 +1106,13 @@ fn draw_edge_mist(
     };
     let tag = RoundedRect::from_rect(tag_rect, f64::from(theme.tokens.radii.detail));
     scene.fill(Fill::NonZero, Affine::IDENTITY, peer, None, &tag);
-    text_renderer.draw_text(
+    text_renderer.draw_style(
         scene,
         &label,
-        theme.tokens.typography.scale.xs,
         contrast_ink(peer),
         Affine::translate((tag_rect.x0 + pad, tag_rect.y0 + pad / 2.0)),
         None,
+        &theme.text(TextRole::Caption),
     );
 }
 
@@ -1137,7 +1137,7 @@ fn mist_tag(
     name: &str,
 ) -> Option<(Rect, String, f64)> {
     use super::geom::MistEdge;
-    let label_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
+    let label_style = theme.text(TextRole::Caption);
     // The band is fixed chrome, so — unlike a pill's — the tag's pad does
     // not grow with the type: in a 44 px band a scaled pad would leave the
     // label no room at all.
@@ -1151,7 +1151,7 @@ fn mist_tag(
         clippy::cast_possible_truncation,
         reason = "a pixel budget well inside f32 range"
     )]
-    let label = text_renderer.elide_to_width(name, label_size, budget as f32);
+    let label = text_renderer.elide_to_width_style(name, budget as f32, &label_style);
     // A tag that keeps no letter of the name says nothing the mist's colour
     // does not already say; leave it out rather than paint a lone ellipsis.
     if label.trim_end_matches('…').is_empty() {
@@ -1159,7 +1159,7 @@ fn mist_tag(
     }
     // Sized from the measured line box so the tag holds its label at every
     // text scale (see `chip_size`).
-    let (tw, th) = text_renderer.measure(&label, label_size, None);
+    let (tw, th) = text_renderer.measure_style(&label, None, &label_style);
     let tag_w = (f64::from(tw) + pad * 2.0).min(max_tag_w);
     let tag_h = f64::from(th) + pad;
     // A top/bottom band is only as deep as a side band is wide; a line box
@@ -2137,9 +2137,9 @@ mod tests {
             // Control step, not caption — names are on screen for a whole
             // session.
             assert_eq!(
-                pill_label_size(&theme),
-                theme.tokens.typography.scale.sm,
-                "a peer's name is a control label, not a caption",
+                pill_label_style(&theme),
+                theme.text(TextRole::Caption),
+                "a peer's name is a caption in the theme's face",
             );
 
             let (w, h) = peer_pill_size(&mut tr, &theme, "quinten");
@@ -2361,38 +2361,29 @@ mod tests {
                 let mut tr = TextRenderer::new();
                 tr.set_text_scale(scale);
                 let (_, pill_h) = peer_pill_size_for(&mut tr, &theme, "Alice", false);
-                let (_, label_h) = tr.measure(
-                    "Alice",
-                    renderer_type_size(&tr, pill_label_size(&theme)),
-                    None,
-                );
+                let (_, label_h) = tr.measure_style("Alice", None, &pill_label_style(&theme));
                 assert!(
                     (pill_h - (f64::from(label_h) + PILL_PAD_Y * 2.0)).abs() < 1e-6,
                     "at {scale}x the pill is {pill_h} tall around a {label_h} label"
                 );
                 let (_, chip_h) = chip_size(&theme, &mut tr, "Alice");
-                let (_, chip_label_h) = tr.measure(
-                    "Alice",
-                    renderer_type_size(&tr, theme.tokens.typography.scale.xs),
-                    None,
-                );
+                let (_, chip_label_h) =
+                    tr.measure_style("Alice", None, &theme.text(TextRole::Caption));
                 assert!(
                     (chip_h - (f64::from(chip_label_h) + CHIP_PAD_Y * 2.0)).abs() < 1e-6,
                     "at {scale}x the chip is {chip_h} tall around a {chip_label_h} label"
                 );
             }
         }
-        // phase: the_default_pill_height_is_unchanged_at_one_x
-        // Re-deriving the pad from the line box must not have changed the pill
-        // every consumer already lays out around: `scale.sm` at 1× is still an
-        // 18 px pill.
+        // phase: the_default_pill_is_one_caption_line_plus_its_pads
         {
             let theme = Theme::dark();
             let mut tr = TextRenderer::new();
             let (_, pill_h) = peer_pill_size_for(&mut tr, &theme, "Alice", false);
+            let line = f64::from(theme.text(TextRole::Caption).line_height_px());
             assert!(
-                (pill_h - 18.0).abs() < 1e-6,
-                "pill height {pill_h}; the 1x default is 18px"
+                (pill_h - (line + PILL_PAD_Y * 2.0)).abs() < 1e-3,
+                "pill height {pill_h}; one caption line is {line}"
             );
         }
         // phase: pill_and_chip_side_insets_scale_with_the_label
@@ -2402,7 +2393,7 @@ mod tests {
         {
             let theme = Theme::dark();
             let mut tr = TextRenderer::new();
-            let (tw, _) = tr.measure("Alice", pill_label_size(&theme), None);
+            let (tw, _) = tr.measure_style("Alice", None, &pill_label_style(&theme));
             let (pw, _) = peer_pill_size_for(&mut tr, &theme, "Alice", false);
             assert!(
                 (pw - (f64::from(tw) + PILL_PAD_X * 2.0)).abs() < 1e-6,
@@ -2413,7 +2404,7 @@ mod tests {
                 (aw - pw - AGENT_GLYPH_W).abs() < 1e-6,
                 "1x agent pill adds exactly the glyph room"
             );
-            let (ctw, _) = tr.measure("Alice", theme.tokens.typography.scale.xs, None);
+            let (ctw, _) = tr.measure_style("Alice", None, &theme.text(TextRole::Caption));
             let (cw, _) = chip_size(&theme, &mut tr, "Alice");
             assert!((cw - (f64::from(ctw) + CHIP_PAD_X * 2.0)).abs() < 1e-6);
 
@@ -2422,11 +2413,7 @@ mod tests {
             // renderer-relative size the painter uses (X1) and paints at 2x.
             let theme = Theme::dark().with_text_scale(2.0);
             tr.set_text_scale(2.0);
-            let (tw2, _) = tr.measure(
-                "Alice",
-                renderer_type_size(&tr, pill_label_size(&theme)),
-                None,
-            );
+            let (tw2, _) = tr.measure_style("Alice", None, &pill_label_style(&theme));
             assert!(
                 tw2 > tw * 1.5,
                 "the 2x label ({tw2}) must be about twice the 1x label ({tw})"
@@ -2438,11 +2425,7 @@ mod tests {
             );
             let (aw2, _) = peer_pill_size_for(&mut tr, &theme, "Alice", true);
             assert!((aw2 - pw2 - AGENT_GLYPH_W * 2.0).abs() < 1e-6);
-            let (ctw2, _) = tr.measure(
-                "Alice",
-                renderer_type_size(&tr, theme.tokens.typography.scale.xs),
-                None,
-            );
+            let (ctw2, _) = tr.measure_style("Alice", None, &theme.text(TextRole::Caption));
             let (cw2, _) = chip_size(&theme, &mut tr, "Alice");
             assert!((cw2 - (f64::from(ctw2) + CHIP_PAD_X * 4.0)).abs() < 1e-6);
         }
@@ -2504,7 +2487,7 @@ mod tests {
         {
             let theme = Theme::dark().with_ui_scale(2.0);
             let mut tr = TextRenderer::new();
-            let (tw, _) = tr.measure("Alice", pill_label_size(&theme), None);
+            let (tw, _) = tr.measure_style("Alice", None, &pill_label_style(&theme));
             let (pw, _) = peer_pill_size_for(&mut tr, &theme, "Alice", false);
             assert!(
                 (pw - (f64::from(tw) + PILL_PAD_X * 4.0)).abs() < 1e-6,

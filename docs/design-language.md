@@ -128,8 +128,10 @@ shadow plus, on dark themes, a 1 px light inner edge.
 
 ## Type
 
-The UI face is chosen once for the whole system (see the evaluation in
-`fw-type-core`). Noto remains the fallback for scripts the UI face lacks.
+The UI face is Instrument Sans, one face for the whole system (why, and its
+provenance: `crates/sdk/ui-core/assets/fonts/PROVENANCE.md`). Noto remains the
+fallback for scripts the UI face lacks (Greek, Cyrillic, Vietnamese and every
+non-Latin script).
 Reading text is serif and code is mono, both from the font catalog.
 
 | Role | Size / weight / leading | Use |

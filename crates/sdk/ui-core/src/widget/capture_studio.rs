@@ -10,14 +10,13 @@
 )]
 //! Pixel readback stays in the compositor; this widget emits semantic intents.
 
-use crate::text_metrics::renderer_type_size;
 use crate::{
     ColorCompat,
     icons::{self, Icon},
     paint::PaintCtx,
     presence::PresenceCtx,
     surface,
-    text_render::{TextRenderer, TextWeight},
+    text_render::{TextRenderer, TextStyle, TextWeight},
     theme::Theme,
     widget::{Button, ButtonFace, Chip, ChipLead, ChipStyle, TaffyTreeExt, Widget},
 };
@@ -25,6 +24,7 @@ use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 
 use crate::time::{Duration, Instant};
+use crate::tokens::TextRole;
 use taffy::{Dimension, NodeId, Size as TaffySize, Style, TaffyTree};
 use vello::{
     Scene,
@@ -71,13 +71,13 @@ const MIN_REGION: f64 = crate::tokens::Spacing::BASE.s3 as f64;
 /// renderer's accessibility scale, so centring on this — never on the font
 /// size, and never on a hand-tuned fraction of it — keeps a label centred
 /// in its pill at every type scale.
-fn line_height(tr: &mut TextRenderer, size: f32, weight: TextWeight) -> f64 {
-    f64::from(tr.measure_weighted("Ag", size, None, weight).1)
+fn line_height(tr: &mut TextRenderer, style: &TextStyle) -> f64 {
+    f64::from(tr.measure_style("Ag", None, style).1)
 }
 
 /// Top edge that centres one line of `size`-px text on `center_y`.
-fn centered_text_top(tr: &mut TextRenderer, size: f32, weight: TextWeight, center_y: f64) -> f64 {
-    center_y - line_height(tr, size, weight) / 2.0
+fn centered_text_top(tr: &mut TextRenderer, style: &TextStyle, center_y: f64) -> f64 {
+    center_y - line_height(tr, style) / 2.0
 }
 
 /// `text`, or as much of it as fits `max_width` with a trailing ellipsis,
@@ -86,18 +86,12 @@ fn centered_text_top(tr: &mut TextRenderer, size: f32, weight: TextWeight, cente
 /// the legacy `max_width` argument wraps, and a wrapped label is a second
 /// line below the pill — which is exactly what showed at 2× type. The
 /// ellipsis policy is the renderer's, shared with every other widget.
-fn fit_label(
-    tr: &mut TextRenderer,
-    text: &str,
-    size: f32,
-    weight: TextWeight,
-    max_width: f64,
-) -> String {
+fn fit_label(tr: &mut TextRenderer, text: &str, style: &TextStyle, max_width: f64) -> String {
     #[allow(
         clippy::cast_possible_truncation,
         reason = "a logical-pixel budget well inside f32's exact range"
     )]
-    tr.elide_to_width_weighted(text, size, max_width.max(0.0) as f32, weight)
+    tr.elide_to_width_style(text, max_width.max(0.0) as f32, style)
 }
 
 #[derive(Clone, Debug)]
@@ -1990,11 +1984,12 @@ impl CaptureStudio {
         detail: &str,
     ) {
         let colors = &theme.tokens.colors;
-        let (detail_width, _) = text_renderer.measure_weighted(
+        let (detail_width, _) = text_renderer.measure_style(
             detail,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
             None,
-            TextWeight::Medium,
+            &theme
+                .text(TextRole::Caption)
+                .with_weight(TextWeight::Medium),
         );
         let bounds = self.status_rect();
         let tooltip_width =
@@ -2030,25 +2025,24 @@ impl CaptureStudio {
         );
         let detail_top = centered_text_top(
             text_renderer,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
-            TextWeight::Medium,
+            &theme.text(TextRole::Label),
             tooltip.center().y,
         );
         let shown = fit_label(
             text_renderer,
             detail,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
-            TextWeight::Medium,
+            &theme.text(TextRole::Label),
             tooltip.width() - 24.0,
         );
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &shown,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
             colors.text_dim,
             transform.pre_translate((tooltip.x0 + 12.0, detail_top).into()),
             None,
-            TextWeight::Medium,
+            &theme
+                .text(TextRole::Caption)
+                .with_weight(TextWeight::Medium),
         );
     }
 
@@ -2742,11 +2736,12 @@ impl CaptureStudio {
             String::new()
         };
         let label = format!("{prefix}{}{}", target.title, suffix);
-        let (tw, _) = tr.measure_weighted(
+        let (tw, _) = tr.measure_style(
             &label,
-            renderer_type_size(tr, theme.tokens.typography.scale.xs),
             None,
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Caption)
+                .with_weight(TextWeight::Semibold),
         );
         let width = (f64::from(tw) + 48.0).min((rect.width() - 20.0).max(80.0));
         let badge_y = (rect.y0 + 10.0)
@@ -2784,25 +2779,28 @@ impl CaptureStudio {
         );
         let label_top = centered_text_top(
             tr,
-            renderer_type_size(tr, theme.tokens.typography.scale.xs),
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold),
             badge.center().y,
         );
         let shown = fit_label(
             tr,
             &label,
-            renderer_type_size(tr, theme.tokens.typography.scale.xs),
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold),
             badge.width() - 42.0,
         );
-        tr.draw_text_weighted(
+        tr.draw_style(
             scene,
             &shown,
-            renderer_type_size(tr, theme.tokens.typography.scale.xs),
             if selected { c.text_primary } else { c.text_dim },
             t.pre_translate((badge.x0 + 34.0, label_top).into()),
             None,
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Caption)
+                .with_weight(TextWeight::Semibold),
         );
     }
 
@@ -2945,14 +2943,13 @@ impl CaptureStudio {
             accent,
             1.7,
         );
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &target.title,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.lg),
             colors.text_primary,
             transform.pre_translate((card.x0 + 78.0, card.y0 + 22.0).into()),
             Some((card.width() - 100.0) as f32),
-            TextWeight::Semibold,
+            &theme.text(TextRole::Heading),
         );
         let scope = match (mode, extent) {
             (CaptureMode::Screenshot, CaptureExtent::FullApp) => "Full app · off-screen",
@@ -2965,27 +2962,28 @@ impl CaptureStudio {
         } else {
             target.virtual_rect
         };
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &format!(
                 "{scope} · {} × {}",
                 full.width().round() as i64,
                 full.height().round() as i64
             ),
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
             accent,
             transform.pre_translate((card.x0 + 78.0, card.y0 + 51.0).into()),
             None,
-            TextWeight::Medium,
+            &theme
+                .text(TextRole::Caption)
+                .with_weight(TextWeight::Medium),
         );
         let guidance = Self::offscreen_guidance(mode, extent);
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             guidance,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.sm),
             colors.text_dim,
             transform.pre_translate((card.x0 + 22.0, card.y0 + 94.0).into()),
             Some((card.width() - 44.0) as f32),
+            &theme.text(TextRole::Caption),
         );
     }
 
@@ -3046,27 +3044,24 @@ impl CaptureStudio {
             // 2× type the two meet — the bar's scaling is the shell's
             // decision (see the F5 round-two report, R7).
             let label = seconds.to_string();
-            let size = theme.tokens.typography.scale.xs;
-            let (lw, _) = text_renderer.measure_weighted(&label, size, None, TextWeight::Semibold);
-            text_renderer.draw_text_weighted(
+            let style = theme.text(TextRole::Caption);
+            let (lw, _) = text_renderer.measure_style(
+                &label,
+                None,
+                &style.clone().with_weight(TextWeight::Semibold),
+            );
+            text_renderer.draw_style(
                 scene,
                 &label,
-                size,
                 colors.text_primary,
                 t.pre_translate((rect.x1 - 3.0 - f64::from(lw), rect.y0 + 2.0).into()),
                 None,
-                TextWeight::Semibold,
+                &style.clone().with_weight(TextWeight::Semibold),
             );
         }
     }
 
-    fn option_face<'a>(
-        theme: &Theme,
-        rect: Rect,
-        label: &'a str,
-        icon: Icon,
-        active: bool,
-    ) -> ButtonFace<'a> {
+    fn option_face(rect: Rect, label: &str, icon: Icon, active: bool) -> ButtonFace<'_> {
         if active {
             ButtonFace::new(rect, label).primary()
         } else {
@@ -3074,8 +3069,6 @@ impl CaptureStudio {
         }
         .icon(icon)
         .radius(9.0)
-        .text_size(theme.tokens.typography.scale.sm)
-        .weight(TextWeight::Medium)
     }
 
     fn scrim_path(&self, regions: &[Rect]) -> BezPath {
@@ -3187,18 +3180,16 @@ impl CaptureStudio {
         );
         let count_top = centered_text_top(
             text_renderer,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.lg),
-            TextWeight::Semibold,
+            &theme.text(TextRole::Heading),
             pill.center().y,
         );
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &count.to_string(),
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.lg),
             colors.text_primary,
             transform.pre_translate((pill.x0 + 48.0, count_top).into()),
             None,
-            TextWeight::Semibold,
+            &theme.text(TextRole::Heading),
         );
         let track = Rect::new(pill.x0 + 11.0, pill.y1 - 6.0, pill.x1 - 11.0, pill.y1 - 4.0);
         scene.fill(
@@ -3418,25 +3409,28 @@ impl CaptureStudio {
         };
         let starting_top = centered_text_top(
             text_renderer,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.sm),
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold),
             pill.center().y,
         );
         let shown = fit_label(
             text_renderer,
             &format!("Starting · {scope}"),
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.sm),
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold),
             (pill.width() - 98.0).max(40.0),
         );
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &shown,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.sm),
             colors.text_primary,
             transform.pre_translate((pill.x0 + 45.0, starting_top).into()),
             None,
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold),
         );
 
         // A restrained travelling emphasis across three dots communicates
@@ -3568,19 +3562,31 @@ impl CaptureStudio {
             // Measured at the size the captions are painted with (the theme
             // step handed to the renderer once), so the widths remembered
             // below are the widths the painter lays down.
-            let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
+            let style = theme.text(TextRole::Caption);
             let mut label_w = text_renderer
-                .measure_weighted(&settled_label, size, None, TextWeight::Semibold)
+                .measure_style(
+                    &settled_label,
+                    None,
+                    &style.clone().with_weight(TextWeight::Semibold),
+                )
                 .0;
             if let Some(previous) = &previous_label {
                 label_w = label_w.max(
                     text_renderer
-                        .measure_weighted(previous, size, None, TextWeight::Semibold)
+                        .measure_style(
+                            previous,
+                            None,
+                            &style.clone().with_weight(TextWeight::Semibold),
+                        )
                         .0,
                 );
             }
             let stop_label_w = text_renderer
-                .measure_weighted("Stop", size, None, TextWeight::Semibold)
+                .measure_style(
+                    "Stop",
+                    None,
+                    &style.clone().with_weight(TextWeight::Semibold),
+                )
                 .0;
             self.remember_docked_content_widths(
                 text_renderer,
@@ -3712,14 +3718,16 @@ impl CaptureStudio {
         // measured line box, so neither needs a per-size offset.
         let intro_y = centered_text_top(
             text_renderer,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.sm),
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold),
             pill.center().y,
         );
         let settled_y = centered_text_top(
             text_renderer,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold),
             pill.center().y,
         );
         if intro_alpha > 0.01 {
@@ -3737,19 +3745,21 @@ impl CaptureStudio {
             let shown = fit_label(
                 text_renderer,
                 &intro_label,
-                renderer_type_size(text_renderer, theme.tokens.typography.scale.sm),
-                TextWeight::Semibold,
+                &theme
+                    .text(TextRole::Label)
+                    .with_weight(TextWeight::Semibold),
                 (pause.x0 - intro_x - 8.0).max(40.0),
             );
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &shown,
-                renderer_type_size(text_renderer, theme.tokens.typography.scale.sm),
                 colors.text_primary.with_alpha_factor(intro_alpha),
                 transform
                     .pre_translate((intro_x, intro_y - 12.0 * f64::from(settled_alpha)).into()),
                 None,
-                TextWeight::Semibold,
+                &theme
+                    .text(TextRole::Label)
+                    .with_weight(TextWeight::Semibold),
             );
         }
         if settled_alpha > 0.01 {
@@ -3776,34 +3786,36 @@ impl CaptureStudio {
                 let shown = fit_label(
                     text_renderer,
                     &previous_label,
-                    renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
-                    TextWeight::Semibold,
+                    &theme
+                        .text(TextRole::Label)
+                        .with_weight(TextWeight::Semibold),
                     (pause.x0 - pill.x0 - 51.0).max(20.0),
                 );
-                text_renderer.draw_text_weighted(
+                text_renderer.draw_style(
                     scene,
                     &shown,
-                    renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
                     colors
                         .text_primary
                         .with_alpha_factor(settled_alpha * state_out_alpha as f32),
                     transform
                         .pre_translate((pill.x0 + 43.0, settled_y - 3.0 * state_out_eased).into()),
                     None,
-                    TextWeight::Semibold,
+                    &theme
+                        .text(TextRole::Caption)
+                        .with_weight(TextWeight::Semibold),
                 );
             }
             let shown = fit_label(
                 text_renderer,
                 &docking_label,
-                renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
-                TextWeight::Semibold,
+                &theme
+                    .text(TextRole::Label)
+                    .with_weight(TextWeight::Semibold),
                 (pause.x0 - pill.x0 - 51.0).max(20.0),
             );
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &shown,
-                renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
                 colors
                     .text_primary
                     .with_alpha_factor(settled_alpha * state_in_alpha as f32),
@@ -3817,7 +3829,9 @@ impl CaptureStudio {
                         .into(),
                 ),
                 None,
-                TextWeight::Semibold,
+                &theme
+                    .text(TextRole::Caption)
+                    .with_weight(TextWeight::Semibold),
             );
         }
 
@@ -3904,18 +3918,20 @@ impl CaptureStudio {
             );
             let stop_top = centered_text_top(
                 text_renderer,
-                renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
-                TextWeight::Semibold,
+                &theme
+                    .text(TextRole::Label)
+                    .with_weight(TextWeight::Semibold),
                 stop.center().y,
             );
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 "Stop",
-                renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
                 colors.semantic.danger,
                 transform.pre_translate((stop.x0 + 22.0, stop_top).into()),
                 None,
-                TextWeight::Semibold,
+                &theme
+                    .text(TextRole::Caption)
+                    .with_weight(TextWeight::Semibold),
             );
         }
     }
@@ -4023,25 +4039,28 @@ impl CaptureStudio {
         let duration = crate::format::timecode(self.recording_finished_duration.as_secs());
         let saved_top = centered_text_top(
             text_renderer,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold),
             pill.center().y,
         );
         let shown = fit_label(
             text_renderer,
             &format!("Saved · {duration}"),
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold),
             (pill.width() - 126.0).max(50.0),
         );
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &shown,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
             colors.text_primary.with_alpha_factor(alpha),
             transform.pre_translate((pill.x0 + 32.0, saved_top).into()),
             None,
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Caption)
+                .with_weight(TextWeight::Semibold),
         );
 
         let (open, reveal, dismiss) = Self::recording_receipt_action_rects(pill, compact);
@@ -4235,35 +4254,35 @@ impl CaptureStudio {
         };
         let status = if receipt.copied { "Copied" } else { "Saved" };
         let dimensions = format!("{} × {}", receipt.width, receipt.height);
-        let (status_width, status_height) = text_renderer.measure_weighted(
+        let (status_width, status_height) = text_renderer.measure_style(
             status,
-            theme.tokens.typography.scale.xs,
             None,
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Caption)
+                .with_weight(TextWeight::Semibold),
         );
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             status,
-            theme.tokens.typography.scale.xs,
             colors.text_primary.with_alpha_factor(content_alpha),
             transform
                 .pre_translate((label_x, pill.center().y - f64::from(status_height) / 2.0).into()),
             None,
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Caption)
+                .with_weight(TextWeight::Semibold),
         );
         let dimensions_x = label_x + f64::from(status_width) + 8.0;
         let dimensions_width = (action_limit - dimensions_x - 5.0).max(0.0);
         if dimensions_width >= 24.0 {
-            let (_, dimensions_height) = text_renderer.measure_weighted(
+            let (_, dimensions_height) = text_renderer.measure_style(
                 &dimensions,
-                theme.tokens.typography.scale.xs,
                 Some(dimensions_width as f32),
-                TextWeight::Regular,
+                &theme.text(TextRole::Caption),
             );
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 &dimensions,
-                theme.tokens.typography.scale.xs,
                 colors.text_dim.with_alpha_factor(content_alpha),
                 transform.pre_translate(
                     (
@@ -4273,7 +4292,7 @@ impl CaptureStudio {
                         .into(),
                 ),
                 Some(dimensions_width as f32),
-                TextWeight::Regular,
+                &theme.text(TextRole::Caption),
             );
         }
 
@@ -4499,25 +4518,28 @@ impl CaptureStudio {
         }
         let replay_top = centered_text_top(
             text_renderer,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold),
             pill.center().y,
         );
         let shown = fit_label(
             text_renderer,
             &label,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Label)
+                .with_weight(TextWeight::Semibold),
             (audio_x - pill.x0 - 38.0).max(24.0),
         );
-        text_renderer.draw_text_weighted(
+        text_renderer.draw_style(
             scene,
             &shown,
-            renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
             colors.text_primary,
             transform.pre_translate((pill.x0 + 32.0, replay_top).into()),
             None,
-            TextWeight::Semibold,
+            &theme
+                .text(TextRole::Caption)
+                .with_weight(TextWeight::Semibold),
         );
 
         let status_hovered = p > 0.98
@@ -4587,14 +4609,14 @@ impl CaptureStudio {
             );
             let save_top = centered_text_top(
                 text_renderer,
-                renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
-                TextWeight::Semibold,
+                &theme
+                    .text(TextRole::Label)
+                    .with_weight(TextWeight::Semibold),
                 save.center().y,
             );
-            text_renderer.draw_text_weighted(
+            text_renderer.draw_style(
                 scene,
                 "Save",
-                renderer_type_size(text_renderer, theme.tokens.typography.scale.xs),
                 if save_ready {
                     colors.text_primary
                 } else {
@@ -4602,7 +4624,9 @@ impl CaptureStudio {
                 },
                 transform.pre_translate((save.x0 + 25.0, save_top).into()),
                 None,
-                TextWeight::Semibold,
+                &theme
+                    .text(TextRole::Caption)
+                    .with_weight(TextWeight::Semibold),
             );
         }
 
@@ -5061,23 +5085,17 @@ impl Widget for CaptureStudio {
                 } else {
                     ""
                 };
-                let title_top = centered_text_top(
-                    tr,
-                    renderer_type_size(tr, theme.tokens.typography.scale.xs),
-                    TextWeight::Medium,
-                    rect.center().y,
-                );
+                let title_top =
+                    centered_text_top(tr, &theme.text(TextRole::Label), rect.center().y);
                 let shown = fit_label(
                     tr,
                     &format!("{}{suffix}", target.title),
-                    renderer_type_size(tr, theme.tokens.typography.scale.xs),
-                    TextWeight::Medium,
+                    &theme.text(TextRole::Label),
                     rect.width() - 40.0,
                 );
-                tr.draw_text_weighted(
+                tr.draw_style(
                     s,
                     &shown,
-                    renderer_type_size(tr, theme.tokens.typography.scale.xs),
                     if selected || hovered {
                         c.text_primary
                     } else {
@@ -5085,15 +5103,18 @@ impl Widget for CaptureStudio {
                     },
                     top_t.pre_translate((rect.x0 + 32.0, title_top).into()),
                     None,
-                    TextWeight::Medium,
+                    &theme
+                        .text(TextRole::Caption)
+                        .with_weight(TextWeight::Medium),
                 );
             }
         } else {
-            let (context_w, _) = tr.measure_weighted(
+            let (context_w, _) = tr.measure_style(
                 &context,
-                renderer_type_size(tr, theme.tokens.typography.scale.xs),
                 None,
-                TextWeight::Medium,
+                &theme
+                    .text(TextRole::Caption)
+                    .with_weight(TextWeight::Medium),
             );
             let bottom = self.bottom_bar();
             let context_rect = Rect::new(
@@ -5109,20 +5130,17 @@ impl Widget for CaptureStudio {
                 None,
                 &RoundedRect::from_rect(context_rect, 14.0),
             );
-            let context_top = centered_text_top(
-                tr,
-                renderer_type_size(tr, theme.tokens.typography.scale.xs),
-                TextWeight::Medium,
-                context_rect.center().y,
-            );
-            tr.draw_text_weighted(
+            let context_top =
+                centered_text_top(tr, &theme.text(TextRole::Label), context_rect.center().y);
+            tr.draw_style(
                 s,
                 &context,
-                renderer_type_size(tr, theme.tokens.typography.scale.xs),
                 c.text_dim,
                 top_t.pre_translate((context_rect.x0 + 14.0, context_top).into()),
                 None,
-                TextWeight::Medium,
+                &theme
+                    .text(TextRole::Caption)
+                    .with_weight(TextWeight::Medium),
             );
         }
         let bottom = self.bottom_bar();
@@ -5157,8 +5175,8 @@ impl Widget for CaptureStudio {
                             CaptureExtent::WholeStrip,
                         ][i]
                 };
-                let face = Self::option_face(theme, r, label, icon, active)
-                    .hovered(r.contains(self.cursor));
+                let face =
+                    Self::option_face(r, label, icon, active).hovered(r.contains(self.cursor));
                 Button::paint(s, bottom_t, tr, theme, &face);
             }
         }
@@ -5253,8 +5271,6 @@ impl Widget for CaptureStudio {
             }
             .icon(icon)
             .radius(10.0)
-            .text_size(theme.tokens.typography.scale.xs)
-            .weight(TextWeight::Semibold)
             .hovered(hovered)
             .disabled(!active);
             Button::paint(s, bottom_t, tr, theme, &face);
@@ -6892,11 +6908,12 @@ mod tests {
                     pause.x0 >= pill.x0 && stop.x1 <= pill.x1 && pause.x1 + 3.9 <= stop.x0,
                     "at {scale}x the controls left the pill: {pill:?} {pause:?} {stop:?}"
                 );
-                let (stop_w, _) = tr.measure_weighted(
+                let (stop_w, _) = tr.measure_style(
                     "Stop",
-                    renderer_type_size(&tr, theme.tokens.typography.scale.xs),
                     None,
-                    TextWeight::Semibold,
+                    &theme
+                        .text(TextRole::Caption)
+                        .with_weight(TextWeight::Semibold),
                 );
                 assert!(
                     stop.width() >= 22.0 + f64::from(stop_w) + 8.0 - 1e-6,
@@ -6935,10 +6952,10 @@ mod tests {
                 assert!(!runs.is_empty(), "the count {seconds} was not painted");
                 for run in runs {
                     assert!(
-                        run.font_size >= theme.tokens.typography.scale.xs - 1e-6,
+                        run.font_size >= theme.tokens.typography.size(TextRole::Caption) - 1e-6,
                         "count {seconds} painted at {}px, under the {}px floor",
                         run.font_size,
-                        theme.tokens.typography.scale.xs
+                        theme.tokens.typography.size(TextRole::Caption)
                     );
                 }
             }
@@ -6949,22 +6966,20 @@ mod tests {
             for scale in [1.0_f32, 2.0] {
                 let mut tr = TextRenderer::new();
                 tr.set_text_scale(scale);
-                for size in [
-                    theme.tokens.typography.scale.xs,
-                    theme.tokens.typography.scale.sm,
-                    theme.tokens.typography.scale.lg,
-                ] {
+                for role in [TextRole::Caption, TextRole::Label, TextRole::Heading] {
+                    let style = theme.text(role).with_weight(TextWeight::Semibold);
                     let center = 100.0;
-                    let top = centered_text_top(&mut tr, size, TextWeight::Semibold, center);
-                    let (_, h) = tr.measure_weighted("Ag", size, None, TextWeight::Semibold);
+                    let top = centered_text_top(&mut tr, &style, center);
+                    let (_, h) = tr.measure_style("Ag", None, &style);
                     assert!(
                         (top + f64::from(h) / 2.0 - center).abs() < 1e-6,
-                        "size {size} at {scale}x: top {top} + half of {h} misses centre {center}"
+                        "{role:?} at {scale}x: top {top} + half of {h} misses centre {center}"
                     );
                     // And it is genuinely the line box, not the font size.
                     assert!(
-                        f64::from(h) > f64::from(size) * f64::from(scale),
-                        "measured height {h} should exceed the bare size {size} × {scale}"
+                        f64::from(h) > f64::from(style.size),
+                        "measured height {h} should exceed the bare size {}",
+                        style.size
                     );
                 }
             }

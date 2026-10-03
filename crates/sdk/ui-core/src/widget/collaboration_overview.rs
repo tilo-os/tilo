@@ -7,8 +7,9 @@ use crate::live_collaboration::{
     CollaborationExperience, PersonPresence, StatusOrigin, StatusSharing,
 };
 use crate::presence::{PresenceCtx, user_color};
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::avatar::Avatar;
 use crate::widget::{TaffyTreeExt, Widget};
 use std::collections::{HashMap, HashSet};
@@ -26,11 +27,10 @@ pub enum CollaborationOverviewAction {
     EditStatus,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct OverviewTextStyle {
-    size: f32,
+    style: TextStyle,
     color: Color,
-    weight: TextWeight,
 }
 
 #[derive(Clone, Copy)]
@@ -104,14 +104,13 @@ impl CollaborationOverview {
         x: f64,
         y: f64,
     ) {
-        tr.draw_text_weighted(
+        tr.draw_style(
             scene,
             text,
-            style.size,
             style.color,
             transform.pre_translate(Vec2::new(x, y)),
             None,
-            style.weight,
+            &style.style,
         );
     }
     fn initials(name: &str) -> String {
@@ -177,9 +176,8 @@ impl CollaborationOverview {
             transform,
             "TOGETHER",
             OverviewTextStyle {
-                size: 11.0,
+                style: theme.text(TextRole::Subheading),
                 color: theme.text_tertiary,
-                weight: TextWeight::Semibold,
             },
             self.rect.x0 + PAD,
             self.rect.y0 + 12.0,
@@ -190,9 +188,8 @@ impl CollaborationOverview {
             transform,
             &format!("{} here now", people.len()),
             OverviewTextStyle {
-                size: 18.0,
+                style: theme.text(TextRole::Title),
                 color: theme.text_primary,
-                weight: TextWeight::Semibold,
             },
             self.rect.x0 + PAD,
             self.rect.y0 + 31.0,
@@ -236,9 +233,8 @@ impl CollaborationOverview {
             transform,
             "MY STATUS",
             OverviewTextStyle {
-                size: 11.0,
+                style: theme.text(TextRole::Subheading),
                 color: theme.text_tertiary,
-                weight: TextWeight::Semibold,
             },
             self.rect.x0 + PAD,
             top,
@@ -276,9 +272,8 @@ impl CollaborationOverview {
             transform,
             mark,
             OverviewTextStyle {
-                size: 15.0,
+                style: theme.text(TextRole::Subheading),
                 color: theme.tokens.colors.intent.inverted,
-                weight: TextWeight::Semibold,
             },
             r.x0 + 12.0,
             r.y0 + 10.0,
@@ -289,9 +284,8 @@ impl CollaborationOverview {
             transform,
             label,
             OverviewTextStyle {
-                size: 13.0,
+                style: theme.text(TextRole::Body),
                 color: ink,
-                weight: TextWeight::Regular,
             },
             r.x0 + 34.0,
             r.y0 + 11.0,
@@ -344,13 +338,12 @@ impl CollaborationOverview {
                 transform,
                 label,
                 OverviewTextStyle {
-                    size: 11.0,
+                    style: theme.text(TextRole::Subheading),
                     color: if active {
                         theme.tokens.colors.intent.on_inverted
                     } else {
                         theme.text_dim
                     },
-                    weight: TextWeight::Semibold,
                 },
                 chip.x0 + 8.0,
                 chip.y0 + 5.0,
@@ -373,9 +366,8 @@ impl CollaborationOverview {
             transform,
             "LIVE",
             OverviewTextStyle {
-                size: 11.0,
+                style: theme.text(TextRole::Subheading),
                 color: theme.text_tertiary,
-                weight: TextWeight::Semibold,
             },
             self.rect.x0 + PAD,
             top,
@@ -441,9 +433,8 @@ impl CollaborationOverview {
             transform,
             &name,
             OverviewTextStyle {
-                size: 13.0,
+                style: theme.text(TextRole::Label),
                 color: theme.text_primary,
-                weight: TextWeight::Semibold,
             },
             rect.x0 + 56.0,
             rect.y0 + 8.0,
@@ -460,9 +451,8 @@ impl CollaborationOverview {
             transform,
             doing,
             OverviewTextStyle {
-                size: 11.0,
+                style: theme.text(TextRole::Caption),
                 color: theme.text_dim,
-                weight: TextWeight::Regular,
             },
             rect.x0 + 56.0,
             rect.y0 + 27.0,
@@ -479,9 +469,8 @@ impl CollaborationOverview {
                 transform,
                 &format!("{mark}{}", status.text),
                 OverviewTextStyle {
-                    size: 11.0,
+                    style: theme.text(TextRole::Caption),
                     color: theme.tokens.colors.intent.inverted,
-                    weight: TextWeight::Regular,
                 },
                 rect.x0 + 56.0,
                 rect.y0 + 45.0,
@@ -507,9 +496,8 @@ impl CollaborationOverview {
             transform,
             if open { "⌄" } else { "›" },
             OverviewTextStyle {
-                size: 18.0,
+                style: theme.text(TextRole::Title).with_weight(TextWeight::Regular),
                 color: theme.text_dim,
-                weight: TextWeight::Regular,
             },
             r.x0 + 10.0,
             r.y0 + 10.0,
@@ -536,9 +524,8 @@ impl CollaborationOverview {
             transform,
             &brief.glance(),
             OverviewTextStyle {
-                size: 13.0,
+                style: theme.text(TextRole::Label),
                 color: theme.text_primary,
-                weight: TextWeight::Semibold,
             },
             r.x0 + 32.0,
             r.y0 + 38.0,
@@ -549,9 +536,8 @@ impl CollaborationOverview {
             transform,
             &brief.detail,
             OverviewTextStyle {
-                size: 11.0,
+                style: theme.text(TextRole::Caption),
                 color: theme.text_dim,
-                weight: TextWeight::Regular,
             },
             r.x0 + 32.0,
             r.y0 + 57.0,
@@ -565,9 +551,8 @@ impl CollaborationOverview {
                     transform,
                     &format!("·  {}  {}", a.author.name, a.summary),
                     OverviewTextStyle {
-                        size: 11.0,
+                        style: theme.text(TextRole::Caption),
                         color: theme.text_dim,
-                        weight: TextWeight::Regular,
                     },
                     r.x0 + 34.0,
                     y,
@@ -594,9 +579,8 @@ impl CollaborationOverview {
             transform,
             "WHILE YOU WERE AWAY",
             OverviewTextStyle {
-                size: 11.0,
+                style: theme.text(TextRole::Subheading),
                 color: theme.text_tertiary,
-                weight: TextWeight::Semibold,
             },
             self.rect.x0 + PAD,
             top,
@@ -610,9 +594,8 @@ impl CollaborationOverview {
                 self.digest.total_changes, self.digest.people
             ),
             OverviewTextStyle {
-                size: 11.0,
+                style: theme.text(TextRole::Caption),
                 color: theme.text_dim,
-                weight: TextWeight::Regular,
             },
             self.rect.x1 - PAD - 116.0,
             top,

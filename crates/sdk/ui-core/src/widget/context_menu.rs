@@ -16,8 +16,9 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::icons::{Icon, draw_icon};
 use crate::presence::PresenceCtx;
-use crate::text_render::{TextRenderer, TextStyle};
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
@@ -361,7 +362,7 @@ impl ContextMenu {
 
     pub fn layout_within(&mut self, text: &mut TextRenderer, theme: &Theme) {
         self.set_text_scale(theme.text_scale);
-        let style = text.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm));
+        let style = theme.text(TextRole::Body);
         let mut width: f64 = 0.0;
         let mut height: f64 = 0.0;
         let has_leading_gutter = self.has_leading_gutter();
@@ -369,7 +370,9 @@ impl ContextMenu {
             if let Some(label) = item.label() {
                 let (w, h) = text.measure_style(label, None, &style);
                 let check_width = if has_leading_gutter {
-                    f64::from(theme.tokens.typography.scale.sm + theme.tokens.spacing.s2)
+                    f64::from(
+                        theme.tokens.typography.size(TextRole::Caption) + theme.tokens.spacing.s2,
+                    )
                 } else {
                     0.0
                 };
@@ -804,8 +807,7 @@ impl Widget for ContextMenu {
         // text-scaled size through the renderer's own multiplier, so its
         // glyphs came out at 4× on a 200 % setting while its rows were
         // measured at 2×.
-        let style =
-            text_renderer.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm));
+        let style = theme.text(TextRole::Body);
         let label_x = self.rect.x0 + label_inset(theme);
         // HIG §9.5: a separator inside a Panel is inset `spacing.s3` from
         // the panel edge, never running into the corner radius.
@@ -875,7 +877,7 @@ impl Widget for ContextMenu {
                         theme.tokens.colors.text_primary
                     };
                     let label_x = if has_leading_gutter {
-                        let icon_size = f64::from(theme.tokens.typography.scale.sm);
+                        let icon_size = f64::from(theme.tokens.typography.size(TextRole::Caption));
                         if let Some(icon) =
                             (*icon).or_else(|| (*checked == Some(true)).then_some(Icon::Check))
                         {
@@ -1718,10 +1720,10 @@ mod tests {
             let mut probe = TextRenderer::new();
             for run in runs {
                 assert!(
-                    (run.font_size - theme.tokens.typography.scale.sm).abs() < 0.01,
+                    (run.font_size - theme.tokens.typography.size(TextRole::Body)).abs() < 0.01,
                     "glyphs painted at {} px; the theme's scaled size is {}",
                     run.font_size,
-                    theme.tokens.typography.scale.sm,
+                    theme.tokens.typography.size(TextRole::Body),
                 );
                 let top = f64::from(run.transform.translation[1]);
                 let (_, h) = probe.measure("Ag", run.font_size, None);

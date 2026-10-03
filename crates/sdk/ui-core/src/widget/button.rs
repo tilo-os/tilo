@@ -4,9 +4,9 @@ use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
-use crate::tokens::TypeScale;
 use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
 use crate::widget::ActionEmitter;
+use crate::widget::ControlSize;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::{AppModel, ModelPath};
@@ -68,12 +68,12 @@ pub struct Button {
     default_footprint: Option<(f32, f32)>,
     content_sized: bool,
     content_padding: f32,
-    /// The theme's resolved label size (its base type step, text scale
-    /// included), captured in `build_layout` for `measure`, which has no
-    /// theme of its own; `draw` reads the theme it is handed. Converted to
-    /// the renderer's input size at the point of use; see
-    /// [`renderer_label_size`].
-    label_size: f32,
+    /// Sets the label role (see [`ControlSize::text_role`]).
+    control_size: ControlSize,
+    /// The label role resolved against the theme seen in `build_layout`,
+    /// for `measure`, which has no theme of its own; `draw` reads the theme
+    /// it is handed.
+    label_style: TextStyle,
     /// Fires on release-while-hovered *in addition to* any
     /// `on_click_path` CRDT mutation, for app code that isn't modelling
     /// its control flow in the CRDT (e.g. the file explorer's command sink).
@@ -155,7 +155,8 @@ impl Button {
             default_footprint: None,
             content_sized: false,
             content_padding: 16.0,
-            label_size: TypeScale::default().base,
+            control_size: ControlSize::Regular,
+            label_style: crate::tokens::typography::stock().style(ControlSize::Regular.text_role()),
             on_click: None,
             action: None,
             native_resource: None,
@@ -363,6 +364,16 @@ impl Button {
         } else {
             self
         }
+    }
+
+    /// How big this button is: its label role. Small and Regular set the
+    /// label in `Label`, Large in `Body`.
+    #[must_use]
+    pub fn control_size(mut self, size: ControlSize) -> Self {
+        self.control_size = size;
+        self.dirty = true;
+        self.default_footprint = None;
+        self
     }
 
     /// Write `value` to the click path on activation instead of pulsing it as a
@@ -695,16 +706,14 @@ pub fn face_colors(
 }
 
 /// Built fluently: `ButtonFace::new(rect, "Save").primary().hovered(hit)`.
-/// Defaults to a neutral, medium-weight, 14 px label and the theme's
-/// `radii.control` corner (8 px at 1×, read from the [`Theme`] handed to
+/// Defaults to a neutral [`ControlSize::Regular`] face — a `Label` — and the
+/// theme's `radii.control` corner (8 px at 1×, read from the [`Theme`] handed to
 /// [`Button::paint`]).
 ///
-/// The label size is *renderer-relative*, like every legacy `measure` /
-/// `draw_text` size: a canvas host measures its rect with
-/// `text_renderer.measure(label, 14.0, ..)` and this face paints with the
-/// same 14, so rect and glyphs scale together under the renderer's
-/// accessibility factor. (The retained [`Button`] instead follows the theme's
-/// type step, because it measures its own rect.)
+/// The label is the size's role resolved in the theme handed to
+/// [`Button::paint`]; a canvas host sizes its rect with
+/// [`ControlSize::height`] and measures the label with
+/// [`ControlSize::label_style`], so rect and glyphs agree at every scale.
 pub struct ButtonFace<'a> {
     rect: Rect,
     label: &'a str,
@@ -713,9 +722,7 @@ pub struct ButtonFace<'a> {
     interact: ButtonInteract,
     /// `None` resolves to `theme.tokens.radii.control` at paint time.
     radius: Option<f64>,
-    weight: crate::text_render::TextWeight,
-    /// Renderer-relative label size.
-    text_size: f32,
+    control_size: ControlSize,
     accessible_name: Option<&'a str>,
     wrap_label: bool,
 }
@@ -729,8 +736,7 @@ impl<'a> ButtonFace<'a> {
             style: ButtonStyle::Neutral,
             interact: ButtonInteract::default(),
             radius: None,
-            weight: crate::text_render::TextWeight::Medium,
-            text_size: TypeScale::default().base,
+            control_size: ControlSize::Regular,
             accessible_name: None,
             wrap_label: false,
         }
@@ -778,17 +784,10 @@ impl<'a> ButtonFace<'a> {
         self.radius = Some(radius);
         self
     }
+    /// How big this face is: its label role. The host sizes the rect.
     #[must_use]
-    pub fn weight(mut self, weight: crate::text_render::TextWeight) -> Self {
-        self.weight = weight;
-        self
-    }
-    /// Override the 14 px default. Renderer-relative like every legacy
-    /// `measure`/`draw_text` size: the renderer applies the accessibility
-    /// text scale on top, so measure the host rect with the same value.
-    #[must_use]
-    pub fn text_size(mut self, size: f32) -> Self {
-        self.text_size = size;
+    pub fn control_size(mut self, size: ControlSize) -> Self {
+        self.control_size = size;
         self
     }
     #[must_use]
@@ -887,19 +886,6 @@ fn icon_edge(face_height: f64) -> f64 {
 )]
 fn px_f32(value: f64) -> f32 {
     value as f32
-}
-
-/// Convert the theme's resolved label size into the renderer-relative size
-/// `measure`/`draw_text` consume. The theme folds the accessibility text
-/// scale into its type steps and the renderer applies the same factor again
-/// while shaping, so a theme size handed over unconverted would be scaled
-/// twice under a scaled host — and a bare `14.0` is not scaled at all under
-/// a host that scales its theme but not its renderer. At 1× both paths
-/// produce the same 14 px line.
-fn renderer_label_size(theme_size: f32, renderer: &TextRenderer) -> f32 {
-    renderer
-        .renderer_input_style(&TextStyle::new(theme_size))
-        .size
 }
 
 /// Resolve a label key for painting, measuring or speaking. An empty key is
@@ -1064,7 +1050,7 @@ impl Button {
         ButtonLabel {
             icon: face.icon,
             text: &label,
-            style: TextStyle::new(face.text_size).with_weight(face.weight),
+            style: face.control_size.label_style(theme),
             wrap_width: face
                 .wrap_label
                 .then(|| label_width(face.rect, face.icon, theme.padding_standard)),
@@ -1102,8 +1088,7 @@ impl Button {
     /// of painting outside it.
     fn measured_default_footprint(&self, text: &mut TextRenderer) -> (f32, f32) {
         let label = localized_label(&self.label);
-        let (label_width, line_height) =
-            text.measure(&label, renderer_label_size(self.label_size, text), None);
+        let (label_width, line_height) = text.measure_style(&label, None, &self.label_style);
         let minimum_target = self.interaction.minimum_target();
         let height = DEFAULT_SIZE
             .1
@@ -1187,8 +1172,8 @@ impl Widget for Button {
     ) -> NodeId {
         self.observe_i18n_revision();
         self.measured_fit_width = None;
-        let label_size = theme.tokens.typography.scale.base;
-        if label_size.to_bits() != self.label_size.to_bits()
+        let label_style = self.control_size.label_style(theme);
+        if label_style != self.label_style
             || theme.padding_standard.to_bits() != self.content_padding.to_bits()
         {
             // A theme scale change re-shapes or re-wraps the label; the
@@ -1198,7 +1183,7 @@ impl Widget for Button {
             self.dirty = true;
             self.default_footprint = None;
         }
-        self.label_size = label_size;
+        self.label_style = label_style;
         self.content_padding = theme.padding_standard;
         // A default-sized button starts from its last settled footprint so
         // the solver's first pass already agrees with the measurement
@@ -1290,11 +1275,7 @@ impl Widget for Button {
         } else {
             None
         };
-        let (width, height) = text.measure(
-            &label,
-            renderer_label_size(self.label_size, text),
-            max_width,
-        );
+        let (width, height) = text.measure_style(&label, max_width, &self.label_style);
         let intrinsic_width = (width + extra_width)
             .ceil()
             .max(if self.content_sized {
@@ -1483,21 +1464,15 @@ impl Widget for Button {
             );
         }
 
-        // Regular weight at the theme's base label size — read from the
-        // theme handed in, so a host that positions the button without a
-        // `build_layout` pass still gets the theme's size; `measure` uses
-        // the copy captured in `build_layout`, which is the same value on
-        // every taffy-driven path. Spelled out here since this goes through
-        // the `_weighted` entry points shared with `ButtonFace`'s
-        // (independently weighted/sized) immediate-mode path.
+        // The size's label role, read from the theme handed in, so a host
+        // that positions the button without a `build_layout` pass still gets
+        // the theme's type; `measure` uses the copy captured in
+        // `build_layout`, the same value on every taffy-driven path.
         let label = localized_label(&self.label);
         ButtonLabel {
             icon: self.icon,
             text: &label,
-            style: TextStyle::new(renderer_label_size(
-                theme.tokens.typography.scale.base,
-                text_renderer,
-            )),
+            style: self.control_size.label_style(theme),
             wrap_width: self
                 .content_sized
                 .then(|| label_width(self.rect, self.icon, self.content_padding)),
@@ -1874,6 +1849,7 @@ impl Button {
 mod tests {
     use super::*;
     use crate::ColorCompat;
+    use crate::tokens::TextRole;
     use crate::widget::Widget;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -2181,7 +2157,8 @@ mod tests {
                 reason = "bounded logical test viewport"
             )]
             let available = rect[2] as f32 - theme.padding_standard * 2.0 - 28.0;
-            let (_, label_height) = text.measure(label, 14.0, Some(available));
+            let (_, label_height) =
+                text.measure_style(label, Some(available), &theme.text(TextRole::Label));
             assert!(label_height > 60.0, "the real scaled label must wrap");
             assert!(rect[2] <= 220.0 && rect[3] > 44.0);
             assert!(
@@ -2235,7 +2212,8 @@ mod tests {
             for label in ["Install workspace", "Refresh connections", "View details"] {
                 let rect =
                     measured_button_rect(Button::new("action", label, None).content_sized(), 1.0);
-                let (width, _) = text.measure(label, 14.0, None);
+                let (width, _) =
+                    text.measure_style(label, None, &Theme::dark().text(TextRole::Label));
                 assert!(
                     rect.width() >= f64::from(width + Theme::dark().padding_standard * 2.0),
                     "rounded width clips or wraps {label}: {rect:?}, text {width}"
@@ -2326,8 +2304,7 @@ mod tests {
                 &theme,
                 &ButtonFace::new(rect, label)
                     .icon(crate::icons::Icon::Refresh)
-                    .wrap_label()
-                    .weight(crate::text_render::TextWeight::Regular),
+                    .wrap_label(),
             );
             let a = &retained.encoding().resources.glyph_runs;
             let b = &immediate.encoding().resources.glyph_runs;
@@ -2339,9 +2316,9 @@ mod tests {
             }
         }
 
-        /// A default `ButtonFace` reads its corner and label size from the theme
-        /// and paints byte-for-byte what the former hard-coded 8 px / 14 px did.
-        fn default_face_matches_the_legacy_explicit_metrics_at_one_x() {
+        /// A default `ButtonFace` reads its corner from the theme and sets its
+        /// label in the Regular size's role; Large sets it in Body.
+        fn default_face_reads_its_corner_and_label_role_from_the_theme() {
             let theme = Theme::dark();
             let mut text = TextRenderer::new();
             let rect = Rect::new(10.0, 10.0, 130.0, 50.0);
@@ -2355,7 +2332,7 @@ mod tests {
                 ButtonFace::new(rect, "Save")
                     .icon(crate::icons::Icon::Refresh)
                     .radius(8.0)
-                    .text_size(14.0),
+                    .control_size(ControlSize::Regular),
             );
             assert_eq!(themed.encoding().path_data, explicit.encoding().path_data);
             let a = &themed.encoding().resources.glyph_runs;
@@ -2363,18 +2340,24 @@ mod tests {
             assert_eq!(a.len(), 1);
             assert_eq!(a[0].transform, b[0].transform);
             assert_eq!(a[0].font_size, b[0].font_size);
-            assert!((a[0].font_size - 14.0).abs() < 1e-6);
+            assert!((a[0].font_size - theme.text(TextRole::Label).size).abs() < 1e-6);
+            let large = paint(ButtonFace::new(rect, "Save").control_size(ControlSize::Large));
+            assert!(
+                (large.encoding().resources.glyph_runs[0].font_size
+                    - theme.text(TextRole::Body).size)
+                    .abs()
+                    < 1e-6
+            );
         }
 
-        /// The retained label follows the theme's type scale — 28 px under a 2×
-        /// theme — whether the shared renderer is matched (2×, the live App and
-        /// `FrameHarness`) or left at 1× (the apps' raw `--shots` loop), and
-        /// whether or not a `build_layout` pass preceded the draw. The
-        /// immediate-mode `ButtonFace` default deliberately stays
-        /// renderer-relative (14 × renderer scale) because canvas hosts size its
-        /// rect with the same renderer-relative measure.
+        /// The retained and immediate labels follow the theme's type scale —
+        /// 2× the Label role under a 2× theme — whether the shared renderer is
+        /// matched (2×, the live App and `FrameHarness`) or left at 1× (the
+        /// apps' raw `--shots` loop), and whether or not a `build_layout` pass
+        /// preceded the draw.
         fn retained_label_follows_the_theme_scale_in_matched_and_unmatched_hosts() {
             let theme = Theme::dark().with_text_scale(2.0);
+            let label = theme.text(TextRole::Label).size;
             let rect = Rect::new(0.0, 0.0, 160.0, 40.0);
             let presence = crate::presence::PresenceCtx::default();
             let font_size = |scene: &Scene| scene.encoding().resources.glyph_runs[0].font_size;
@@ -2398,7 +2381,7 @@ mod tests {
                     &presence,
                 );
                 assert!(
-                    (font_size(&retained) - 28.0).abs() < 1e-3,
+                    (font_size(&retained) - label).abs() < 1e-3,
                     "retained label at renderer {renderer_scale}×: {}",
                     font_size(&retained)
                 );
@@ -2415,7 +2398,7 @@ mod tests {
                     &presence,
                 );
                 assert!(
-                    (font_size(&external_scene) - 28.0).abs() < 1e-3,
+                    (font_size(&external_scene) - label).abs() < 1e-3,
                     "externally laid-out label at renderer {renderer_scale}×: {}",
                     font_size(&external_scene)
                 );
@@ -2428,10 +2411,9 @@ mod tests {
                     &theme,
                     &ButtonFace::new(rect, "Save"),
                 );
-                let expected_face = 14.0 * renderer_scale;
                 assert!(
-                    (font_size(&immediate) - expected_face).abs() < 1e-3,
-                    "ButtonFace default at renderer {renderer_scale}×: {} (expected {expected_face})",
+                    (font_size(&immediate) - label).abs() < 1e-3,
+                    "ButtonFace default at renderer {renderer_scale}×: {} (expected {label})",
                     font_size(&immediate)
                 );
             }
@@ -2470,13 +2452,13 @@ mod tests {
             button.draw(&mut second, Affine::IDENTITY, &mut text, &larger, &presence);
             let before = first.encoding().resources.glyph_runs[0].font_size;
             let after = second.encoding().resources.glyph_runs[0].font_size;
-            assert!((before - 14.0).abs() < 1e-3, "{before}");
-            assert!((after - 21.0).abs() < 1e-3, "{after}");
+            assert!((before - 13.0).abs() < 1e-3, "{before}");
+            assert!((after - 19.5).abs() < 1e-3, "{after}");
         }
 
         label_line_box_is_centered_at_scaled_size();
         wrapped_retained_and_immediate_labels_share_geometry();
-        default_face_matches_the_legacy_explicit_metrics_at_one_x();
+        default_face_reads_its_corner_and_label_role_from_the_theme();
         retained_label_follows_the_theme_scale_in_matched_and_unmatched_hosts();
         theme_text_scale_change_invalidates_the_cached_face();
     }
@@ -3030,8 +3012,7 @@ mod tests {
             let f = ButtonFace::new(Rect::new(0.0, 0.0, 80.0, 32.0), "Send")
                 .primary()
                 .hovered(true)
-                .weight(crate::text_render::TextWeight::Bold)
-                .text_size(13.0);
+                .control_size(ControlSize::Small);
             let theme = Theme::dark();
             let (bg, border, fg) = f.colors(&theme);
             assert_eq!(bg, theme.tokens.colors.intent.inverted_hover);
@@ -3152,7 +3133,7 @@ mod tests {
             let mut text = TextRenderer::new();
             let rect = Rect::new(100.0, 0.0, 220.0, 40.0);
             let label = "Standard wiederherstellen";
-            let (natural, _) = text.measure(label, 14.0, None);
+            let (natural, _) = text.measure_style(label, None, &theme.text(TextRole::Body));
             assert!(
                 f64::from(natural) > rect.width(),
                 "the fixture must overflow"
@@ -3163,7 +3144,7 @@ mod tests {
                 Affine::IDENTITY,
                 &mut text,
                 &theme,
-                &ButtonFace::new(rect, label).text_size(14.0),
+                &ButtonFace::new(rect, label).control_size(ControlSize::Large),
             );
             let origins = glyph_origins(&scene);
             assert!(!origins.is_empty(), "the elided label still paints");
@@ -3217,12 +3198,8 @@ mod tests {
             let theme = Theme::dark().with_text_scale(2.0);
             let mut text = TextRenderer::new();
             text.set_text_scale(2.0);
-            let (label_w, line_h) = text.measure(
-                "Save",
-                renderer_label_size(theme.tokens.typography.scale.base, &text),
-                None,
-            );
-            assert!((line_h - 35.0).abs() < 1e-3, "2× base line: {line_h}");
+            let (label_w, line_h) = text.measure_style("Save", None, &theme.text(TextRole::Label));
+            assert!((line_h - 33.8).abs() < 1e-3, "2× label line: {line_h}");
             let expected_height = (line_h + theme.padding_standard).ceil();
             assert!(expected_height > 40.0);
             assert!(
@@ -3233,7 +3210,7 @@ mod tests {
             let rect = measured_button_rect(Button::new("save", "Save", None), 2.0);
             assert!(
                 (rect.height() - f64::from(expected_height)).abs() < 1e-6,
-                "2× default height {} should be the 35 px line + padding = {expected_height}",
+                "2× default height {} should be the label line + padding = {expected_height}",
                 rect.height()
             );
             assert!(
@@ -3249,11 +3226,8 @@ mod tests {
         fn a_wide_label_widens_the_default_button_instead_of_overflowing_it() {
             let label = "Remove every remote connection";
             let mut text = TextRenderer::new();
-            let (label_w, _) = text.measure(
-                label,
-                renderer_label_size(Theme::dark().tokens.typography.scale.base, &text),
-                None,
-            );
+            let (label_w, _) =
+                text.measure_style(label, None, &Theme::dark().text(TextRole::Label));
             let expected = (label_w + FIT_SIDE_PADDING * 2.0).ceil();
             assert!(
                 expected > 120.0,
