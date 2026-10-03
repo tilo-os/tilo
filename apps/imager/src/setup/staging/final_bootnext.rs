@@ -61,6 +61,8 @@ pub struct FinalPartition {
 pub struct ReviewedDisk {
     pub number: u32,
     pub unique_id: String,
+    /// GPT header GUID, independently read by the physical copier.
+    pub disk_guid: String,
     pub size_bytes: u64,
 }
 
@@ -98,7 +100,7 @@ fn checked_esp<'a>(
     disk: &'a Disk,
     receipt: &FinalReadback,
 ) -> IoResult<&'a super::platform::Partition> {
-    if receipt.schema != "tilo.windows-direct-final-readback.v1"
+    if receipt.schema != "tilo.windows-direct-final-readback.v2"
         || !receipt.physical_readback_verified
         || !valid_hash(&receipt.loader_sha256)
         || !valid_hash(&receipt.installed_uki_sha256)
@@ -118,7 +120,9 @@ fn checked_esp<'a>(
         return Err("loader path is not the reviewed ARM64 systemd-boot path".into());
     }
     if disk.id != receipt.disk.number.to_string()
-        || !same_guid(&disk.guid, receipt.disk.unique_id.trim_matches(['{', '}']))
+        || receipt.disk.unique_id.trim().is_empty()
+        || efi::guid_bytes(&receipt.disk.disk_guid).is_err()
+        || !same_guid(&disk.guid, &receipt.disk.disk_guid)
         || disk.size_bytes != receipt.disk.size_bytes
     {
         return Err("Windows disk no longer matches the final readback".into());
@@ -451,10 +455,11 @@ mod tests {
                 ],
             };
             let receipt = FinalReadback {
-                schema: "tilo.windows-direct-final-readback.v1".into(),
+                schema: "tilo.windows-direct-final-readback.v2".into(),
                 disk: ReviewedDisk {
                     number: 3,
-                    unique_id: format!("{{{DISK_GUID}}}"),
+                    unique_id: "eui.002538A441BE8A46".into(),
+                    disk_guid: DISK_GUID.into(),
                     size_bytes: disk.size_bytes,
                 },
                 physical_readback_verified: true,
@@ -580,6 +585,25 @@ mod tests {
             assert_eq!(decoded.partition_guid, ESP_GUID);
             assert_eq!(decoded.file_path, PRIMARY);
             assert_eq!(decoded.partition_number, 4);
+        }
+
+        // Hardware UniqueId is not the GPT GUID. Missing, invalid or mismatched
+        // GPT identity must refuse firmware writes, even with the hardware ID.
+        for guid in [
+            "",
+            "eui.002538A441BE8A46",
+            "99999999-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        ] {
+            let (mut platform, mut receipt) = FilePlatform::new(true);
+            receipt.disk.disk_guid = guid.into();
+            assert!(arm(&mut platform, &receipt).unwrap_err().contains("disk"));
+            assert!(platform.writes.is_empty());
+        }
+        {
+            let (mut platform, mut receipt) = FilePlatform::new(true);
+            receipt.schema = "tilo.windows-direct-final-readback.v1".into();
+            assert!(arm(&mut platform, &receipt).is_err());
+            assert!(platform.writes.is_empty());
         }
 
         // Phase `refuses_occupied_bootnext_and_identity_or_loader_mismatch`.
