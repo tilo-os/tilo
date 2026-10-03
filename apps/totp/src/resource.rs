@@ -3,9 +3,11 @@
 
 use automerge::AutoCommit;
 use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::icons::Icon;
+use ui::search::SearchRequest;
 use ui::tilo_actions::ActionSpec;
 use ui::tilo_resource::{Doc, ModelError, Resource, SearchEntry};
-use ui::widget::Element;
+use ui::widget::{Button, ButtonRole, Element, NavShell, history_button};
 
 use crate::actions::{
     TOTP_ACTION_TYPE, TotpAction, account_resource_id, add_account_view, register,
@@ -68,7 +70,19 @@ impl Resource for Totp {
     }
 }
 
-/// Framework app: the authenticator widget over [`Totp`].
+/// The capture scenarios: the list, and each state the app has a screen for.
+const SCENARIOS: &[&str] = &[
+    "list",
+    "empty",
+    "add",
+    "add-advanced",
+    "provision",
+    "missing-secret",
+    "persistence-error",
+];
+
+/// Framework app: the navigation shell, whose header row carries the search
+/// and add buttons, around the authenticator widget over [`Totp`].
 pub struct TotpShell;
 
 impl ResourceApp for TotpShell {
@@ -79,7 +93,27 @@ impl ResourceApp for TotpShell {
     const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
 
     fn view(cx: &mut ViewCx<Totp>) -> Element {
-        cx.surface(AuthenticatorApp::new())
+        // The header's add button counts its presses; the content opens the
+        // add sheet whenever the count moves.
+        let add_requests = cx.local(0_u64);
+        let presses = add_requests.clone();
+        let add = Button::new("totp-add", "Add account", None)
+            .with_icon(Icon::Plus)
+            .role(ButtonRole::Primary)
+            .on_click(move || presses.update(|count| *count += 1));
+        let search = cx.search_button(SearchRequest::this_app());
+        Box::new(
+            NavShell::new()
+                .content(cx.surface(AuthenticatorApp::new().with_add_requests(add_requests)))
+                .content_header(
+                    "Accounts",
+                    vec![Box::new(history_button()), Box::new(search), Box::new(add)],
+                ),
+        )
+    }
+
+    fn scenarios() -> &'static [&'static str] {
+        SCENARIOS
     }
 }
 
@@ -90,6 +124,10 @@ impl ResourceSurface<Totp> for AuthenticatorApp {
 
     fn attach(&mut self, cx: SurfaceCx<Totp>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario);
     }
 }
 
@@ -154,9 +192,8 @@ impl ActionSink {
     }
 }
 
-/// Live launch with capture protection for one-time codes.
+/// The launch specification of the framework app: live window, `--shots` and
+/// the other standard modes.
 pub fn launch_spec() -> ui::launch::LaunchSpec {
-    // Window title / capture protection live in main.rs via configure_app
-    // (native App only). The browser mounts the definition without that path.
     ui::framework::launch_spec::<TotpShell>()
 }
