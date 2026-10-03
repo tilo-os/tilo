@@ -8,7 +8,7 @@ fallback Tilo would otherwise use, so a reader of the script can decide.
     uv run vendor/fonts/tilo-sans/scripts/review_sheet.py --script greek
     uv run vendor/fonts/tilo-sans/scripts/review_sheet.py --script cyrillic
 
-Writes proofs/final/<script>-review/ (tracked):
+Writes proofs/final/<script>-review/ (generated, not tracked):
 
   glyphs-Regular.png, glyphs-Bold.png
       every letter large: Tilo Sans on top, the fallback under it, in cells

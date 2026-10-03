@@ -67,6 +67,71 @@ impl ControlSize {
 mod tests {
     use super::*;
 
+    /// Controls of one size share one height when they sit side by side,
+    /// whatever kind they are: buttons, a dropdown, a number field and a
+    /// segmented control line up in a toolbar or a form row.
+    #[test]
+    fn every_control_of_a_size_is_that_tall() {
+        use crate::headless::{FrameHarness, InspectionNode};
+        use crate::widget::toggle_group::Segment;
+        use crate::widget::{
+            Button, ButtonRole, Dropdown, NumberInput, Row, SearchField, ToggleGroup,
+        };
+        fn collect(node: &InspectionNode, out: &mut Vec<(String, f64)>) {
+            if [
+                "Button",
+                "Dropdown",
+                "NumberInput",
+                "ToggleGroup",
+                "SearchField",
+            ]
+            .contains(&node.widget.as_str())
+            {
+                out.push((node.widget.clone(), node.rect[3]));
+            }
+            for child in &node.children {
+                collect(child, out);
+            }
+        }
+        let theme = Theme::dark();
+        for size in [ControlSize::Small, ControlSize::Regular, ControlSize::Large] {
+            let row = Row::new()
+                .push(Box::new(
+                    Button::new("p", "Save", None)
+                        .role(ButtonRole::Primary)
+                        .control_size(size),
+                ))
+                .push(Box::new(
+                    Button::new("s", "Discard", None).control_size(size),
+                ))
+                .push(Box::new(
+                    Dropdown::new(vec!["Medium".into()], "d").control_size(size),
+                ))
+                .push(Box::new(NumberInput::new(1.0).control_size(size)))
+                .push(Box::new(
+                    ToggleGroup::new(vec![Segment::new("List"), Segment::new("Grid")], 0)
+                        .control_size(size),
+                ))
+                .push(Box::new(SearchField::new().control_size(size)));
+            let harness = FrameHarness::new_with_theme(
+                crate::State::new(),
+                Box::new(row),
+                (1200, 200),
+                theme.clone(),
+            );
+            let mut heights = Vec::new();
+            collect(&harness.inspection().root, &mut heights);
+            assert_eq!(heights.len(), 6, "{size:?}: {heights:?}");
+            let want = size.height(&theme);
+            for (widget, height) in &heights {
+                assert!(
+                    (height - want).abs() < 0.5,
+                    "{size:?}: {widget} is {height} tall, not {want}: {heights:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn sizes_order_heights_and_pick_label_roles() {
         let theme = Theme::dark();
