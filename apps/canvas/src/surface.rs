@@ -45,18 +45,12 @@ use crate::view_ops;
 
 /// The largest SVG `export-svg` also answers inline, in bytes.
 const MAX_INLINE_SVG: usize = 48 * 1024;
-/// How far the pointer may travel, in screen pixels, and still click.
-const CLICK_SLOP: f64 = 3.0;
-/// How near, in screen pixels, a dragged edge snaps to another.
-const SNAP_REACH: f64 = 6.0;
 /// The longest gap between the clicks of a double click.
 const DOUBLE_CLICK: ui::time::Duration = ui::time::Duration::from_millis(450);
-/// How far a duplicate or paste lands from its original, in screen pixels.
-const COPY_OFFSET: f64 = 16.0;
 /// How big a shape made by a click without a drag is, in screen pixels.
-const CLICKED_SHAPE: f64 = 100.0;
+const CLICKED_SHAPE: f64 = 100.0; // the size of a mark in the artwork, not on-screen spacing
 /// The text size a new text starts at, in screen pixels.
-const TEXT_SIZE: f64 = 32.0;
+const TEXT_SIZE: f64 = 32.0; // a size of lettering in the artwork, not on-screen spacing
 /// How much one wheel notch of a pinch or a zoom key zooms.
 const ZOOM_STEP: f64 = 1.25;
 
@@ -266,6 +260,9 @@ pub struct CanvasSurface {
     /// The theme's sizes as of the last layout, for handles hit-tested
     /// between frames.
     metrics: ui::tokens::Metrics,
+    /// The theme's spacing: how far a click may wander, how near an edge
+    /// snaps, how far a copy lands from its original.
+    spacing: ui::tokens::Spacing,
 }
 
 impl CanvasSurface {
@@ -302,6 +299,7 @@ impl CanvasSurface {
             modifiers: ModifiersState::empty(),
             results: HashMap::new(),
             metrics: ui::tokens::Metrics::BASE,
+            spacing: ui::tokens::Spacing::BASE,
         }
     }
 
@@ -339,6 +337,22 @@ impl CanvasSurface {
     /// `pixels` on screen in artwork units.
     fn units(&self, pixels: f64) -> f64 {
         pixels / self.zoom()
+    }
+
+    /// How far the pointer may travel, in screen pixels, and still click.
+    fn click_slop(&self) -> f64 {
+        f64::from(self.spacing.s1)
+    }
+
+    /// How near, in screen pixels, a dragged edge snaps to another.
+    fn snap_reach(&self) -> f64 {
+        f64::from(self.spacing.s2)
+    }
+
+    /// How far a duplicate or paste lands from its original, in screen
+    /// pixels.
+    fn copy_offset(&self) -> f64 {
+        f64::from(self.spacing.s4)
     }
 
     fn current_tool(&self) -> Tool {
@@ -515,7 +529,8 @@ impl CanvasSurface {
     fn double_click(&mut self, screen: Point) -> bool {
         let now = ui::time::now();
         let double = self.last_press.is_some_and(|(at, then)| {
-            at.distance(screen) <= CLICK_SLOP * 2.0 && now.duration_since(then) <= DOUBLE_CLICK
+            at.distance(screen) <= self.click_slop() * 2.0
+                && now.duration_since(then) <= DOUBLE_CLICK
         });
         self.last_press = if double { None } else { Some((screen, now)) };
         double
@@ -722,11 +737,12 @@ impl CanvasSurface {
         } else {
             targets
         };
-        let Snap { offset, guides } = snap_point(at, targets, self.units(SNAP_REACH));
+        let Snap { offset, guides } = snap_point(at, targets, self.units(self.snap_reach()));
         (at + offset, guides)
     }
 
     fn drag_to(&mut self, screen: Point) {
+        let slop = self.click_slop();
         let at = self.content_point(screen);
         let zoom = self.zoom();
         let seconds = ui::time::now().duration_since(self.epoch).as_secs_f64();
@@ -756,7 +772,7 @@ impl CanvasSurface {
                 if let Some(points) = &mut self.points {
                     let local = points.affine.inverse() * at;
                     let stretch = points.affine.determinant().abs().sqrt().max(1e-6);
-                    if *moved || local.distance(*start) * zoom * stretch > CLICK_SLOP {
+                    if *moved || local.distance(*start) * zoom * stretch > slop {
                         *moved = true;
                         points.outline.set(*point, local);
                     }
@@ -773,7 +789,7 @@ impl CanvasSurface {
         let shift = self.modifiers.shift_key();
         let alt = self.modifiers.alt_key();
         let free = self.modifiers.control_key();
-        let reach = self.units(SNAP_REACH);
+        let reach = self.units(self.snap_reach());
         let mut guides = Vec::new();
         match &mut self.drag {
             Some(Drag::Move {
@@ -881,7 +897,7 @@ impl CanvasSurface {
             }
             Drag::Marquee { start, now, base } => {
                 let area = Rect::from_points(start, now);
-                if area.width().max(area.height()) * zoom < CLICK_SLOP {
+                if area.width().max(area.height()) * zoom < self.click_slop() {
                     return;
                 }
                 let mut picked = base;
@@ -899,7 +915,7 @@ impl CanvasSurface {
                 affine,
                 ..
             } => {
-                if start.distance(now) * zoom < CLICK_SLOP {
+                if start.distance(now) * zoom < self.click_slop() {
                     return;
                 }
                 if self.modifiers.alt_key() {
@@ -960,7 +976,7 @@ impl CanvasSurface {
     fn finish_shape(&mut self, start: Point, now: Point) {
         let tool = self.current_tool();
         let ink = self.ink();
-        let clicked = start.distance(now) * self.zoom() < CLICK_SLOP;
+        let clicked = start.distance(now) * self.zoom() < self.click_slop();
         let shape = if tool == Tool::Line {
             let end = if clicked {
                 start + Vec2::new(self.units(CLICKED_SHAPE), 0.0)
@@ -1149,7 +1165,10 @@ impl CanvasSurface {
 
     /// Ctrl/Cmd with a letter: the clipboard, select all, duplicate, group.
     fn command_key(&mut self, ch: &str, shift: bool) -> bool {
-        let offset = Vec2::new(self.units(COPY_OFFSET), self.units(COPY_OFFSET));
+        let offset = Vec2::new(
+            self.units(self.copy_offset()),
+            self.units(self.copy_offset()),
+        );
         match (ch, shift) {
             ("a", _) => {
                 self.select(edit::everything(&self.art));
@@ -1923,6 +1942,7 @@ impl Widget for CanvasSurface {
     ) -> NodeId {
         use ui::widget::TaffyTreeExt as _;
         self.metrics = theme.tokens.metrics;
+        self.spacing = theme.tokens.spacing;
         // Room for a selection frame's handles and the rotation handle.
         let least = taffy::Dimension::length(self.metrics.min_pointer_target * 4.0);
         let node = taffy.leaf_node(Style {

@@ -9,7 +9,7 @@ use ui::vello::kurbo::Point;
 /// How much of the way to the pointer the steadied point moves per sample.
 const STEADY: f64 = 0.55;
 /// Screen pixels per second at which the line is at its thinnest.
-const FAST: f64 = 2400.0;
+const FAST: f64 = 2400.0; // a speed of the hand, not on-screen spacing
 /// How quickly pressure follows the hand's speed, per sample.
 const EASE: f64 = 0.25;
 /// The pressure a brush lands and lifts with.
