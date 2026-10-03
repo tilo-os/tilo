@@ -531,7 +531,22 @@ same origin.
 
 Browsers accept a device as a room's governor when its certificate owns
 workspaces (`can_own_workspaces`), so such a node governs and stewards the
-person's rooms; a plain host certificate never does.
+person's rooms; a plain host certificate never does. A page whose host is
+such a node takes it as the governor of every room it joins there, also a
+room of another person it was invited to, unless a genesis frame from a
+device of its own person names another governor.
+
+The node governs the rooms created on it through `/rooms` (the company
+workspace) and stewards their channels (`tilo-relay` `rooms/stewardship.rs`):
+it admits to a channel exactly the room's governed member devices that ask
+for it, removes those governance removed, and retains the channel's
+governance frames as its own writes. Members' records reach the relay only
+sealed; it keeps no copy of a sealed record. Channel state is sealed on disk
+under a key derived from the node's device key. `tests/node_workspace.rs`
+(`tilo-browser-peer`) runs the whole path: a passkey root in Chrome
+certifies and installs a waiting node, the page writes a document the node
+retains only as ciphertext, and a person invited by name joins and reads its
+whole history.
 
 ### Live layer interface
 

@@ -166,6 +166,9 @@ tilo-files = { path = "../../platform/tilo-files" }
 # its workspace tickets rather than asking the operator to duplicate ids.
 tilo-fs = { path = "../../system/fs" }
 collab-types = { path = "../../collab/collab-types" }
+# A node stewards the encrypted channels of the rooms it governs.
+channel-crypto = { path = "../../collab/channel-crypto" }
+neighbour-wire = { path = "../../collab/neighbour-wire" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 runtime-identity = { path = "../../runtime/runtime-identity" }
 socket2 = "0.6"
