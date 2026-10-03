@@ -22,6 +22,16 @@ pub(super) enum ShelfControlAction {
     ToggleHideRead,
 }
 
+/// How a sort order reads in the dropdown, which shows it alone.
+fn sort_choice(sort: LibrarySort) -> &'static str {
+    match sort {
+        LibrarySort::Title => "By title",
+        LibrarySort::Author => "By author",
+        LibrarySort::Recent => "Recently opened",
+        LibrarySort::Progress => "By progress",
+    }
+}
+
 pub(super) struct ShelfControls {
     sort: HostedDropdown,
     hits: Vec<(Rect, ShelfControlAction)>,
@@ -146,12 +156,12 @@ impl ShelfControls {
         self.sort.set(
             LibrarySort::ALL
                 .iter()
-                .map(|sort| (sort.as_str().to_string(), sort.label().to_string()))
+                .map(|sort| (sort.as_str().to_string(), sort_choice(*sort).to_string()))
                 .collect(),
             prefs.sort.as_str(),
         );
         let width = HostedDropdown::width(
-            LibrarySort::ALL.iter().map(|sort| sort.label()),
+            LibrarySort::ALL.iter().map(|sort| sort_choice(*sort)),
             size,
             ctx.text,
             theme,

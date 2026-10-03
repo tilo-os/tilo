@@ -7981,9 +7981,11 @@ impl BooksApp {
 
         // ---- chrome: header row, floating page bubble, selection HUD, drawers
         self.draw_reader_header(ctx, &lib);
+        // The bubble floats over the foot of the reading column, above the
+        // progress slider.
         self.reader_bubble.draw(
             ctx,
-            Rect::new(geom.center_x0, geom.body_y0, geom.center_x1, geom.body_y1),
+            self.toast_area,
             self.cursor,
             ReaderPosition {
                 chapter: self.chapter,
@@ -9476,19 +9478,17 @@ impl BooksApp {
             ctx.text,
             theme,
         );
-        let locator_x = layout.chip.x1 + f64::from(theme.tokens.spacing.rhythm.related);
         let caption = theme.text(TextRole::Caption);
         let locator = ctx.text.elide_to_width_style(
             &note.locator,
-            ui::num::f32_of_f64((layout.delete.x0 - locator_x).max(1.0)),
+            ui::num::f32_of_f64(body.width().max(1.0)),
             &caption,
         );
-        ctx.text_role_in_band(
+        ctx.text_role(
             &locator,
             TextRole::Caption,
             theme.text_dim,
-            locator_x,
-            layout.chip,
+            Point::new(body.x0, layout.locator_y),
             None,
         );
         let wrap = Some(ui::num::f32_of_f64(body.width().max(1.0)));
@@ -9544,6 +9544,8 @@ struct NoteCard {
 struct NoteCardLayout {
     chip: Rect,
     delete: Rect,
+    /// Where it is, on the line under the chip.
+    locator_y: f64,
     excerpt_y: f64,
     note_y: f64,
 }
@@ -9602,7 +9604,8 @@ impl NoteCard {
         );
         let gap = f64::from(theme.tokens.spacing.rhythm.related);
         let wrap = Some(ui::num::f32_of_f64(body.width().max(1.0)));
-        let excerpt_y = body.y0 + line + gap;
+        let locator_y = body.y0 + line + f64::from(theme.tokens.spacing.rhythm.tight);
+        let excerpt_y = locator_y + ctx.line_box(TextRole::Caption) + gap;
         let excerpt_h = f64::from(
             ctx.text
                 .measure_style(&self.excerpt, wrap, &Self::excerpt_style(theme))
@@ -9611,6 +9614,7 @@ impl NoteCard {
         NoteCardLayout {
             chip,
             delete,
+            locator_y,
             excerpt_y,
             note_y: excerpt_y + excerpt_h + gap,
         }
@@ -9698,6 +9702,8 @@ struct SettingsRow<'a> {
     /// Another row follows: a separator under this one.
     separator: bool,
     selected: bool,
+    /// The rename field takes the row's text: paint none.
+    renaming: bool,
 }
 
 /// The settings tabs, in order.
@@ -9902,6 +9908,7 @@ impl BooksApp {
             trailing,
             separator,
             selected,
+            renaming,
         } = row;
         let theme = ctx.theme;
         let mut face = ListRowFace::new(title).selected(selected);
@@ -9920,8 +9927,10 @@ impl BooksApp {
                 theme,
             );
         }
-        face.selected(false)
-            .paint(ctx, Rect::new(x0, y, (x1 - trailing).max(x0), y + h));
+        if !renaming {
+            face.selected(false)
+                .paint(ctx, Rect::new(x0, y, (x1 - trailing).max(x0), y + h));
+        }
         if separator {
             ui::surface::separator(
                 ctx.scene,
@@ -9996,6 +10005,7 @@ impl BooksApp {
                     trailing,
                     separator: i + 1 < ReaderShortcut::ALL.len(),
                     selected: capturing,
+                    renaming: false,
                 },
             );
             let x1 = Self::row_trailing_x1(theme, col);
@@ -10138,6 +10148,7 @@ impl BooksApp {
                     trailing,
                     separator: i + 1 < folders.len(),
                     selected: false,
+                    renaming: false,
                 },
             );
             let x1 = Self::row_trailing_x1(theme, col);
@@ -10178,6 +10189,7 @@ impl BooksApp {
                 trailing: control_w + 2.0 * f64::from(theme.tokens.spacing.s3),
                 separator: false,
                 selected: false,
+                renaming: false,
             },
         );
         let x1 = Self::row_trailing_x1(theme, col);
@@ -10234,7 +10246,7 @@ impl BooksApp {
             FontKind::Default => "Default face".to_string(),
             FontKind::Serif => "Serif book face".to_string(),
             FontKind::Mono => "Monospace".to_string(),
-            FontKind::Named(n) => format!("System font {n}"),
+            FontKind::Named(_) => "System font".to_string(),
         };
         let field = NumberField::FontMult(f.id.clone());
         let stepper_w =
@@ -10246,23 +10258,23 @@ impl BooksApp {
         let controls_w = small + gap + stepper_w + gap + switch_w;
         let renaming_this =
             matches!(&self.renaming, Some(rn) if rn.target == RenameTarget::Font(f.id.clone()));
-        let title = if renaming_this { "" } else { f.name.as_str() };
         let row = Self::draw_settings_row(
             ctx,
             (col.x, col.x1()),
             y,
             &SettingsRow {
-                title,
+                title: &f.name,
                 secondary: Some(&kind),
                 trailing: controls_w + 2.0 * f64::from(spacing.s3),
                 separator,
                 selected: false,
+                renaming: renaming_this,
             },
         );
         let controls_x0 = Self::row_trailing_x1(theme, col) - controls_w;
         self.draw_row_name_slot(
             ctx,
-            Rect::new(row.x0, row.y0, controls_x0 - gap, row.center().y),
+            Rect::new(row.x0, row.y0, controls_x0 - gap, row.y1),
             renaming_this,
             &f.name,
             Action::BeginRenameFont(f.id.clone()),
@@ -10317,11 +10329,12 @@ impl BooksApp {
         let pad = f64::from(theme.tokens.spacing.s3);
         if renaming {
             let height = ControlSize::Small.height(theme);
+            let cy = slot.center().y;
             let field = Rect::new(
                 slot.x0 + pad - f64::from(theme.padding_standard),
-                slot.y1 - height,
+                cy - height / 2.0,
                 slot.x1,
-                slot.y1,
+                cy + height / 2.0,
             );
             if let Some(rn) = self.renaming.as_mut() {
                 rn.field.apply_layout_external(field);
@@ -10339,7 +10352,7 @@ impl BooksApp {
                 slot.x0 + pad,
                 slot.y0,
                 (slot.x0 + pad + width).min(slot.x1),
-                slot.y1,
+                slot.center().y,
             );
             self.push_hit(hit, begin);
         }
@@ -10420,7 +10433,7 @@ impl BooksApp {
         let swatches_w = 3.0 * swatch + 2.0 * gap;
         let renaming_this = self.renaming_scheme(&s.id);
         let x0 = col.x + swatches_w + f64::from(spacing.s3);
-        let title = if renaming_this { "" } else { s.name.as_str() };
+        let title = s.name.as_str();
         if selected {
             // The scheme in use is the selected row: one lift across the
             // whole row, swatches included.
@@ -10446,6 +10459,7 @@ impl BooksApp {
                 trailing: controls_w + 2.0 * f64::from(spacing.s3),
                 separator: false,
                 selected: false,
+                renaming: renaming_this,
             },
         );
         if separator {
@@ -10466,7 +10480,7 @@ impl BooksApp {
         );
 
         let controls_x0 = Self::row_trailing_x1(theme, col) - controls_w;
-        let name_slot = Rect::new(row.x0, row.y0, controls_x0 - gap, row.center().y);
+        let name_slot = Rect::new(row.x0, row.y0, controls_x0 - gap, row.y1);
         if s.builtin {
             self.push_hit(
                 Rect::new(col.x, row.y0, controls_x0 - gap, row.y1),
