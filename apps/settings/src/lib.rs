@@ -17,8 +17,10 @@
 //!   [`categories::Category`]s.
 //! - [`sidebar`] — the sidebar's navigation list of categories.
 //! - [`panes`] — one module per category content pane.
-//! - [`widgets`] — small composition helpers (card, setting row, caption)
-//!   shared across panels.
+//! - [`widgets`] — small composition helpers (section, setting row, item row,
+//!   caption) shared across panels.
+//! - `facts` — where the live device facts behind the published resources
+//!   come from: the machine, or the fixed hardware a capture shows.
 //! - [`accounts`] — the **shared external-accounts store** Settings owns
 //!   and Mail / Calendar / file apps consume.
 //! - [`region`] — the **shared region & formats store** (global user
