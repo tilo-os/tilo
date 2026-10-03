@@ -27,7 +27,7 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::binding::{BoxedBinding, Pulled};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -42,9 +42,10 @@ use crate::tokens::TextRole;
 use crate::widget::Widget;
 use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
 
-/// Height of the closed control (matches `TextInput` / `SegChoice`).
-const CONTROL_HEIGHT: f64 = 40.0;
-const ITEM_HEIGHT: f64 = 32.0;
+/// Height of the closed control before the first layout: a Regular control.
+const CONTROL_HEIGHT: f64 = crate::tokens::Metrics::BASE.min_pointer_target as f64;
+/// One row of the open list: a menu row.
+const ITEM_HEIGHT: f64 = crate::tokens::Metrics::BASE.menu_row_height as f64;
 const MAX_LIST_HEIGHT: f64 = 240.0;
 const LIST_GAP: f64 = 4.0;
 const PAD_X: f64 = 10.0;
@@ -116,7 +117,16 @@ pub struct Dropdown {
     /// until `sync` reads the document.
     align_highlight_on_sync: bool,
 
+    /// The field: the closed control, below its caption when it has one.
     rect: Rect,
+    /// The whole widget: the caption (if any) above the field.
+    outer: Rect,
+    /// A short label stacked above the field ("Level", "Source").
+    caption: Option<String>,
+    /// Height the caption takes above the field in the current theme.
+    caption_height: f64,
+    /// The field's height and label role.
+    control_size: crate::widget::ControlSize,
     is_focused: bool,
     is_hovered: bool,
     last_cursor: Point,
@@ -155,6 +165,10 @@ impl Dropdown {
             scroll: 0.0,
             align_highlight_on_sync: false,
             rect: Rect::ZERO,
+            outer: Rect::ZERO,
+            caption: None,
+            caption_height: 0.0,
+            control_size: crate::widget::ControlSize::Regular,
             is_focused: false,
             is_hovered: false,
             last_cursor: Point::ZERO,
@@ -325,7 +339,30 @@ impl Dropdown {
     /// list still paints in the overlay pass, so only the closed control's
     /// box is caller-driven; focus / a11y / CRDT-bound selection are unaffected.
     pub fn apply_layout_external(&mut self, rect: Rect) {
-        self.rect = rect;
+        self.place(rect);
+    }
+
+    /// Stack a short caption above the field ("Level", "Source") in the
+    /// `Caption` role and secondary ink. It also names the control to
+    /// assistive technology unless an accessible name was given.
+    #[must_use]
+    pub fn caption(mut self, caption: impl Into<String>) -> Self {
+        self.caption = Some(caption.into());
+        self
+    }
+
+    /// The field's height and label role.
+    #[must_use]
+    pub fn control_size(mut self, size: crate::widget::ControlSize) -> Self {
+        self.control_size = size;
+        self
+    }
+
+    /// Lay the widget out in `outer`: the caption on top, the field below.
+    fn place(&mut self, outer: Rect) {
+        self.outer = outer;
+        let field_y0 = (outer.y0 + self.caption_height).min(outer.y1);
+        self.rect = Rect::new(outer.x0, field_y0, outer.x1, outer.y1);
     }
     /// Position (0-based) of the highlighted row in the filtered list.
     pub fn highlight_index(&self) -> usize {
@@ -673,10 +710,17 @@ impl Widget for Dropdown {
         // `flex_shrink: 0` a dropdown claimed the whole row and pushed every
         // later sibling past the edge to zero width. The floor keeps the
         // chevron slot and padding so a squeezed control is still a control.
+        self.caption_height = if self.caption.is_some() {
+            f64::from(theme.text(TextRole::Caption).line_height_px())
+                + f64::from(theme.tokens.spacing.s1)
+        } else {
+            0.0
+        };
+        let field = self.control_size.height(theme);
         let node = taffy.leaf_node(Style {
             size: Size {
                 width: Dimension::percent(1.0),
-                height: Dimension::length(px(f64::from(theme.tokens.metrics.bar_height))),
+                height: Dimension::length(px(field + self.caption_height)),
             },
             min_size: Size {
                 width: Dimension::length(px(PAD_X + CHEVRON_W)),
@@ -691,12 +735,12 @@ impl Widget for Dropdown {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
+        self.place(Rect::new(
             origin.x + f64::from(l.location.x),
             origin.y + f64::from(l.location.y),
             origin.x + f64::from(l.location.x) + f64::from(l.size.width),
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
+        ));
     }
 
     fn draw(
@@ -709,6 +753,22 @@ impl Widget for Dropdown {
     ) {
         if let Some(viewport) = presence.viewport.get() {
             self.viewport = Some(viewport);
+        }
+        if let Some(caption) = &self.caption {
+            let style = theme.text(TextRole::Caption);
+            let shown = text_renderer.elide_to_width_style(
+                caption,
+                px(self.outer.width().max(1.0)),
+                &style,
+            );
+            text_renderer.draw_style(
+                scene,
+                &shown,
+                theme.tokens.colors.text_dim,
+                translated(transform, self.outer.x0, self.outer.y0),
+                None,
+                &style,
+            );
         }
         let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.control));
         // Disabled widgets paint their (forced-idle) look under a reduced
@@ -723,30 +783,20 @@ impl Widget for Dropdown {
                 &shape,
             );
         }
+        // The field is a Secondary control: the raised face, its lift under
+        // the pointer and while open (HIG §9.2), the derived rest edge, and
+        // your colour as the focus ring.
         let raised = theme.tokens.colors.surfaces.raised;
         let bg = if self.open || self.is_focused {
             theme.tokens.colors.lift_on(raised, 1.0)
+        } else if self.is_hovered && !disabled {
+            theme.tokens.colors.lift_on(raised, 0.5)
         } else {
-            theme.tokens.colors.surfaces.raised
+            raised
         };
         scene.fill(Fill::NonZero, transform, bg, None, &shape);
-        // Resting hover: the quiet veneer over the raised fill. `is_hovered`
-        // was tracked but never painted, so a pointer over the control gave
-        // no feedback at all until it was clicked (HIG §7: hover, press,
-        // focus and disabled must each be visible).
-        if self.is_hovered && !self.open && !self.is_focused && !disabled {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.overlay_subtle,
-                None,
-                &shape,
-            );
-        }
-        // Rest edge derived from the field's raised fill, as a Neutral
-        // button (HIG §9.5); open / focus keep `border_focus`.
         let (bw, bc) = if self.open || self.is_focused {
-            (2.0, theme.border_focus)
+            (2.0, theme.tokens.colors.intent.you)
         } else {
             (
                 1.0,
@@ -777,7 +827,7 @@ impl Widget for Dropdown {
                     self.rect.x1 - CHEVRON_W,
                     self.rect.y1,
                 ),
-                &theme.text(TextRole::Body),
+                &self.control_size.label_style(theme),
                 QueryInk::of(&theme.tokens.colors),
             );
         } else {
@@ -791,11 +841,10 @@ impl Widget for Dropdown {
                 // One line, elided to the room left of the chevron: a max
                 // width handed to `draw_text` wraps instead, and a wrapped
                 // second line lands under the control's bottom edge.
+                let style = self.control_size.label_style(theme);
                 let room = px((self.rect.width() - PAD_X - CHEVRON_W).max(0.0));
-                let shown =
-                    text_renderer.elide_to_width_style(label, room, &theme.text(TextRole::Body));
-                let (_, th) =
-                    text_renderer.measure_style(&shown, None, &theme.text(TextRole::Body));
+                let shown = text_renderer.elide_to_width_style(label, room, &style);
+                let (_, th) = text_renderer.measure_style(&shown, None, &style);
                 let ty = self.rect.y0 + (self.rect.height() - f64::from(th)) / 2.0;
                 text_renderer.draw_style(
                     scene,
@@ -803,25 +852,27 @@ impl Widget for Dropdown {
                     color,
                     translated(transform, self.rect.x0 + PAD_X, ty),
                     None,
-                    &theme.text(TextRole::Body),
+                    &style,
                 );
                 scene.pop_layer();
             }
         }
 
-        let cx = self.rect.x1 - 18.0;
-        let cy = self.rect.center().y;
-        let mut chev = BezPath::new();
-        if self.open {
-            chev.move_to((cx - 5.0, cy + 3.0));
-            chev.line_to((cx, cy - 3.0));
-            chev.line_to((cx + 5.0, cy + 3.0));
-        } else {
-            chev.move_to((cx - 5.0, cy - 3.0));
-            chev.line_to((cx, cy + 3.0));
-            chev.line_to((cx + 5.0, cy - 3.0));
-        }
-        scene.stroke(&Stroke::new(2.0), transform, theme.text_dim, None, &chev);
+        // The trailing chevron, centred in its slot, from the one icon set.
+        let edge = f64::from(theme.tokens.metrics.icon_sm);
+        let slot_center = Point::new(self.rect.x1 - CHEVRON_W / 2.0, self.rect.center().y);
+        crate::icons::draw_icon(
+            scene,
+            transform,
+            Rect::from_center_size(slot_center, (edge, edge)),
+            if self.open {
+                crate::icons::Icon::ChevronUp
+            } else {
+                crate::icons::Icon::ChevronDown
+            },
+            theme.text_dim,
+            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
 
         if disabled {
             scene.pop_layer();
@@ -846,24 +897,19 @@ impl Widget for Dropdown {
         }
         let filtered = self.filtered();
         let list = self.list_rect(filtered.len());
-        let shape = RoundedRect::from_rect(list, f64::from(theme.tokens.radii.control));
-
-        // The open list is a Panel (HIG §9.1 / §9.5): panel ground and
-        // panel edge, so it separates from the raised field it drops from.
-        scene.fill(
-            Fill::NonZero,
+        // The open list is a floating Panel (HIG §9.1 / §9.5): the panel
+        // radius, the floating shadow, and the floating material with its
+        // derived edge, so it separates from the field it drops from.
+        let radius = f64::from(theme.tokens.radii.panel);
+        let shape = RoundedRect::from_rect(list, radius);
+        crate::surface::shadow(
+            scene,
             transform,
-            crate::chrome::panel_ground(theme),
-            None,
-            &shape,
+            list,
+            radius,
+            &theme.tokens.elevation.floating,
         );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            crate::chrome::panel_border(theme),
-            None,
-            &crate::surface::edge_outline(list, f64::from(theme.tokens.radii.control)),
-        );
+        crate::surface::panel(scene, transform, list, radius, theme);
 
         // Clip rows to the rounded list box.
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &shape);
@@ -913,7 +959,7 @@ impl Widget for Dropdown {
                         theme
                             .tokens
                             .colors
-                            .lift_on(theme.tokens.colors.surfaces.overlay, 0.5),
+                            .lift_on(crate::chrome::panel_ground(theme), 0.5),
                         None,
                         &row,
                     );
@@ -1022,7 +1068,7 @@ impl Widget for Dropdown {
     }
 
     fn get_rect(&self) -> Rect {
-        self.rect
+        self.outer
     }
 
     fn is_focusable(&self) -> bool {
@@ -1056,6 +1102,8 @@ impl Widget for Dropdown {
         // fallback for unlabeled standalone dropdowns.
         let name = if let Some(name) = &self.accessible_name {
             Some(crate::i18n!(name))
+        } else if let Some(caption) = &self.caption {
+            Some(caption.clone())
         } else if !self.selected.is_empty() {
             Some(self.selected_label().to_string())
         } else if !self.placeholder.is_empty() {
@@ -1715,9 +1763,33 @@ mod tests {
                 "row order without overlap: {left:?} {dd:?} {right:?}"
             );
             assert!(
-                (dd.height() - f64::from(theme.tokens.metrics.bar_height)).abs() < 0.5,
-                "the control is one bar tall: {dd:?}"
+                (dd.height() - crate::widget::ControlSize::Regular.height(&theme)).abs() < 0.5,
+                "the control is a Regular control: {dd:?}"
             );
+        }
+
+        fn a_caption_stacks_above_the_field_and_names_it() {
+            let theme = Theme::dark();
+            let mut dd = Dropdown::new(opts(), "level").caption("Level");
+            let mut taffy = TaffyTree::new();
+            let mut node_map = HashMap::new();
+            let node = dd.build_layout(&mut taffy, &theme, &mut node_map);
+            taffy
+                .compute_layout(
+                    node,
+                    Size {
+                        width: taffy::AvailableSpace::Definite(300.0),
+                        height: taffy::AvailableSpace::Definite(200.0),
+                    },
+                )
+                .unwrap();
+            dd.apply_layout(&taffy, node, Point::ZERO);
+            let field = crate::widget::ControlSize::Regular.height(&theme);
+            assert!((dd.rect.height() - field).abs() < 0.5, "{:?}", dd.rect);
+            assert!(dd.rect.y0 > dd.outer.y0, "the caption sits above the field");
+            assert_eq!(Widget::get_rect(&dd), dd.outer);
+            let node = Widget::accessibility(&dd).expect("dropdown semantics");
+            assert_eq!(node.name.as_deref(), Some("Level"));
         }
 
         fn external_overlay_height_hugs_short_lists_and_caps_long_ones() {
@@ -1739,6 +1811,7 @@ mod tests {
         hover_changes_do_not_consume_the_move_and_cursor_left_clears_hover();
         open_list_flips_above_when_it_would_leave_the_viewport();
         dropdown_in_a_row_yields_width_to_fixed_siblings();
+        a_caption_stacks_above_the_field_and_names_it();
         external_overlay_height_hugs_short_lists_and_caps_long_ones();
     }
 
