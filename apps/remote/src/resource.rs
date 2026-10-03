@@ -5,7 +5,7 @@ use automerge::AutoCommit;
 use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_actions::EncodedAction;
 use ui::tilo_actions::{ActionSpec, OperationKind};
-use ui::tilo_resource::{Doc, ModelError, Resource, SearchEntry};
+use ui::tilo_resource::{Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
 use crate::actions::{REMOTE_ACTION_TYPE, RemoteAction, register};
@@ -50,9 +50,14 @@ impl Resource for Remote {
         state
             .iter()
             .map(|connection| SearchEntry {
-                anchor: Some(format!("remote.session:{}", connection.id)),
+                anchor: Some(format!("remote.connection:{}", connection.id)),
                 title: connection.name.clone(),
-                text: connection.host.clone(),
+                text: format!(
+                    "{} {} {}",
+                    connection.kind.label(),
+                    connection.address(),
+                    connection.group
+                ),
             })
             .collect()
     }
@@ -66,10 +71,68 @@ impl ResourceApp for RemoteShell {
     const ID: &'static str = "so.tilo.remote";
     const TITLE: &'static str = "Remote Desktop";
     const ICON: Option<&'static str> = Some("remote");
-    const SHOT_VIEWPORT: (u32, u32) = (1100, 720);
+    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
 
     fn view(cx: &mut ViewCx<Remote>) -> Element {
-        cx.surface(RemoteApp::new())
+        let app = RemoteApp::new();
+        // A picked search hit shows its connection in the list.
+        let opened = app.open_requests();
+        cx.on_open(move |anchor| opened.borrow_mut().push(anchor.to_owned()));
+        cx.surface(app)
+    }
+
+    fn scenarios() -> &'static [&'static str] {
+        &[
+            "empty",
+            "pinned",
+            "narrow",
+            "form",
+            "form-tilo",
+            "form-invalid",
+            "edit",
+            "session-ssh",
+            "session-vnc",
+            "session-rdp",
+            "session-tilo",
+            "session-connecting",
+            "session-failed",
+            "session-closed",
+            "confirm-connect",
+            "confirm-delete",
+            "confirm-ssh-trust",
+        ]
+    }
+
+    fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
+        (name == "narrow").then_some((800, 600))
+    }
+
+    /// Every scenario but `empty` shows a lived-in list of saved machines,
+    /// written through the same actions the form, the favourite control and
+    /// a finished session use.
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Remote>> {
+        if name == Some("empty") {
+            return Vec::new();
+        }
+        let now = ui::clock::local_now().timestamp();
+        crate::app::sample_connections(now)
+            .iter()
+            .flat_map(|connection| {
+                let mut actions = vec![crate::actions::upsert_action(connection)];
+                if connection.favorite {
+                    actions.push(crate::actions::set_favorite_action(connection.id, true));
+                }
+                if let Some(at) = connection.last_used {
+                    actions.push(crate::actions::record_session_action(
+                        connection.id,
+                        at,
+                        connection.presence,
+                    ));
+                }
+                actions
+            })
+            .filter_map(|action| Invoke::apply(&action).ok())
+            .collect()
     }
 }
 
@@ -80,6 +143,10 @@ impl ResourceSurface<Remote> for RemoteApp {
 
     fn attach(&mut self, cx: SurfaceCx<Remote>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        RemoteApp::stage(self, scenario);
     }
 }
 

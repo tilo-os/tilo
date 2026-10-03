@@ -18,7 +18,7 @@
 //!         ├── "user"      (Str)
 //!         ├── "kind"      (Str)    # SSH / VNC / RDP / Tilo
 //!         ├── "auth"      (Str)    # auth method label
-//!         ├── "last_used" (Str)
+//!         ├── "last_used" (Int)    # Unix seconds of the last session; absent = never
 //!         ├── "presence"  (Str)    # online / offline / unknown
 //!         ├── "group"     (Str)
 //!         └── "favorite"  (Bool)
@@ -106,7 +106,16 @@ impl RemoteDoc {
         ui::doc::put_if_changed(doc, &conn, "user", c.user.as_str());
         ui::doc::put_if_changed(doc, &conn, "kind", c.kind.tag());
         ui::doc::put_if_changed(doc, &conn, "auth", c.auth.label());
-        ui::doc::put_if_changed(doc, &conn, "last_used", c.last_used.as_str());
+        match c.last_used {
+            Some(at) => {
+                ui::doc::put_if_changed(doc, &conn, "last_used", at);
+            }
+            None => {
+                if matches!(doc.get(&conn, "last_used"), Ok(Some(_))) {
+                    let _ = doc.delete(&conn, "last_used");
+                }
+            }
+        }
         ui::doc::put_if_changed(doc, &conn, "presence", presence_tag(c.presence));
         ui::doc::put_if_changed(doc, &conn, "group", c.group.as_str());
         ui::doc::put_if_changed(doc, &conn, "favorite", c.favorite);
@@ -160,6 +169,19 @@ impl RemoteDoc {
         ui::doc::put_if_changed(doc, &conn, "favorite", favorite);
     }
 
+    /// Record when a session to an existing connection was opened and whether
+    /// the machine answered. No-op if the connection isn't present.
+    pub fn record_session(doc: &mut AutoCommit, id: ConnectionId, at: i64, presence: Presence) {
+        let conns = Self::connections_map(doc);
+        let Ok(Some((Value::Object(ObjType::Map), conn))) =
+            doc.get(&conns, id.to_string().as_str())
+        else {
+            return;
+        };
+        ui::doc::put_if_changed(doc, &conn, "last_used", at);
+        ui::doc::put_if_changed(doc, &conn, "presence", presence_tag(presence));
+    }
+
     /// Read every connection out of the document.
     pub fn list(doc: &AutoCommit) -> Vec<Connection> {
         let Ok(Some((Value::Object(ObjType::Map), conns))) = doc.get(&ROOT, "connections") else {
@@ -184,7 +206,7 @@ impl RemoteDoc {
             let host = read_str(doc, &conn, "host").unwrap_or_default();
             let user = read_str(doc, &conn, "user").unwrap_or_default();
             let group = read_str(doc, &conn, "group").unwrap_or_default();
-            let last_used = read_str(doc, &conn, "last_used").unwrap_or_default();
+            let last_used = read_i64_coerced(doc, &conn, "last_used");
             let kind = ConnectionKind::from_tag(&read_str(doc, &conn, "kind").unwrap_or_default());
             let auth = AuthMethod::from_label(&read_str(doc, &conn, "auth").unwrap_or_default());
             let presence = presence_from_tag(&read_str(doc, &conn, "presence").unwrap_or_default());
@@ -240,7 +262,7 @@ mod tests {
             user: "admin".into(),
             kind,
             auth: AuthMethod::PublicKey,
-            last_used: "2h ago".into(),
+            last_used: Some(1_782_800_000),
             presence: Presence::Online,
             group: "lab".into(),
             favorite: true,
