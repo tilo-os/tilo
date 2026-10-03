@@ -369,7 +369,6 @@ pub use widget::command_palette::{
     ArgumentSpec, CommandEntry, CommandOutcome, CommandPalette, PaletteMode, SearchScope,
 };
 pub use widget::{AppCommand, AppKind, AppWidget, IconDescriptor};
-pub use widget::{AppShell, NarrowScreen, ShellLayout};
 pub use widget::{Card, CardGrid, Section, card_column_width, card_columns};
 pub use widget::{EditOutcome, EditableLabel};
 pub use widget::{Element, Widget};
@@ -377,6 +376,7 @@ pub use widget::{
     NativeView, NativeViewAccessibility, NativeViewBackend, NativeViewGeometry, NativeViewHost,
     NativeViewInput,
 };
+pub use widget::{NavItem, NavList, NavMode, NavPane, NavSection, NavShell};
 pub use widget::{RichBlockStyle, RichTextEditor};
 pub use widget::{RouteError, RouteHandle, Router};
 // Audit-timeline widgets + their shared types. The `collab_types::OpClass` /
