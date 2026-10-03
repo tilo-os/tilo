@@ -42,11 +42,21 @@ def projection_commands(source):
         elif commands:
             commands[-1] += " " + line
     start = f"{INSTALLED_HELPER} remove systemd.show_status"
-    stop = ("systemctl enable tilo-firstboot-user.service "
-            "tilo-firstboot-autologin-cleanup.service "
-            "tilo-installer-setup.service tilo-live-recovery.service")
-    if commands.count(start) != 1 or commands.count(stop) != 1:
+    required_services = {
+        "tilo-firstboot-user.service", "tilo-firstboot-autologin-cleanup.service",
+        "tilo-installer-setup.service", "tilo-live-recovery.service",
+    }
+    allowed_services = required_services | {"tilo-installer-code-refresh.service"}
+    stops = []
+    for command in commands:
+        words = shlex.split(command)
+        if words[:2] == ["systemctl", "enable"] and required_services <= set(words[2:]):
+            if set(words[2:]) != allowed_services or len(words[2:]) != len(allowed_services):
+                raise ValueError("unexpected services at UKI projection boundary")
+            stops.append(command)
+    if commands.count(start) != 1 or len(stops) != 1:
         raise ValueError("cannot observe exactly one UKI projection span")
+    stop = stops[0]
     begin, end = commands.index(start), commands.index(stop)
     if begin >= end:
         raise ValueError("invalid UKI projection span")
@@ -235,7 +245,9 @@ class TargetCmdlineTests(unittest.TestCase):
             marker = f"&& {INSTALLED_HELPER} remove tilo.install {TARGET}"
             self.assertEqual(source.count(marker), 1)
             for changed in ("", source.replace(marker, marker + " && true"),
-                            source.replace(marker, "&& unexpected_command\n    " + marker)):
+                            source.replace(marker, "&& unexpected_command\n    " + marker),
+                            source.replace("enable tilo-installer-code-refresh.service", "enable unknown.service tilo-installer-code-refresh.service"),
+                            source.replace("enable tilo-installer-code-refresh.service", "enable")):
                 with self.subTest(source=changed[-100:]):
                     with self.assertRaises(ValueError):
                         projection_commands(changed)
