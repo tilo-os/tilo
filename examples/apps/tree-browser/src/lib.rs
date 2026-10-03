@@ -1,7 +1,7 @@
 //! Tree browser: master-detail navigation that adapts to the window.
 //!
 //! A `TreeView` on the left picks a notebook section; the detail pane on the
-//! right edits that section's notes. `AppShell` shows both panes side by
+//! right edits that section's notes. `NavShell` shows both panes side by
 //! side in a wide window and one full-width pane at a time in a compact one,
 //! with an accessible Back between them.
 //!
@@ -174,7 +174,7 @@ impl ResourceApp for App {
     fn view(cx: &mut ViewCx<Notebook>) -> Element {
         install_catalog();
         let selected = cx.local(3_u64);
-        let narrow_screen = cx.local(NarrowScreen::Content);
+        let narrow_screen = cx.local(NavPane::Content);
         let selected_from_tree = selected.clone();
         let screen_from_tree = narrow_screen.clone();
         let tree = TreeView::new(TreeNode::branch(
@@ -206,7 +206,7 @@ impl ResourceApp for App {
             if SECTIONS.contains(&id) {
                 selected_from_tree.set(id);
             }
-            screen_from_tree.set(NarrowScreen::Content);
+            screen_from_tree.set(NavPane::Content);
         })
         .with_viewport(560.0, 36.0)
         .with_accessible_name("tree-accessible-name");
@@ -218,10 +218,12 @@ impl ResourceApp for App {
         let detail = cx.switch(&selected, |cx, id| detail_pane(cx, *id));
 
         Box::new(
-            AppShell::new(Box::new(master), detail)
+            NavShell::new()
+                .mode(NavMode::Push)
+                .sidebar(Box::new(master))
+                .content(detail)
                 .with_id("notebook-shell")
-                .with_back_accessible_name("tree-back")
-                .with_narrow_screen_state(&narrow_screen),
+                .with_pane_state(&narrow_screen),
         )
     }
 }
