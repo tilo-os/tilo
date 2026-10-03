@@ -193,6 +193,8 @@ pub struct Tools {
     pub recents: LocalState<Vec<crate::document::Recent>>,
     /// The welcome over a blank artwork was put away.
     pub welcomed: LocalState<bool>,
+    /// What was chosen from the artwork's menu, until it is carried out.
+    pub menu: LocalState<String>,
     /// What the export dialog is set to.
     pub export: crate::panels::export::Choices,
     /// What the new-artwork dialog is set to.
@@ -314,6 +316,7 @@ impl Default for Tools {
             notice: LocalState::new(None),
             recents: LocalState::new(Vec::new()),
             welcomed: LocalState::new(false),
+            menu: LocalState::new(String::new()),
             export: crate::panels::export::Choices::default(),
             new: crate::panels::start::Choices::default(),
             visible: LocalState::new(None),

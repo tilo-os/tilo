@@ -236,14 +236,6 @@ pub struct ArtworkFile {
     pub media: BTreeMap<String, MediumSpec>,
 }
 
-impl ui::tilo_resource::JsonSchema for ArtworkFile {
-    /// The file's schema is the file format, read by `open-artwork`; the
-    /// action carries it whole.
-    fn json_schema() -> serde_json::Value {
-        serde_json::json!({"type": "object", "description": "a saved .artwork file"})
-    }
-}
-
 impl ArtworkFile {
     /// `art` as its file keeps it. The reference picture stays behind: it
     /// is something to work from, not part of the work.

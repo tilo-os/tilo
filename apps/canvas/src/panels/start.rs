@@ -588,7 +588,9 @@ fn card(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
     let card = Container::new()
         .with_no_padding()
         .with_width(WELCOME)
-        .with_child(Box::new(ui::widget::Card::new(Box::new(body))));
+        .with_child(Box::new(Welcome(Box::new(ui::widget::Card::new(
+            Box::new(body),
+        )))));
     Box::new(card)
 }
 
@@ -679,4 +681,31 @@ fn recent_list(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
         }
         Box::new(list)
     })
+}
+
+/// The welcome card as one group: its buttons are a person's way to the
+/// artwork's own actions, which an agent already has by name.
+struct Welcome(Element);
+
+impl ui::widget::Decorator for Welcome {
+    type Inner = dyn Widget;
+
+    fn inner(&self) -> &(dyn Widget + 'static) {
+        self.0.as_ref()
+    }
+
+    fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
+        self.0.as_mut()
+    }
+
+    fn concrete_type_name(&self) -> &'static str {
+        "Welcome"
+    }
+
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        Some(
+            ui::a11y::AccessNode::new(ui::a11y::Role::Group)
+                .with_name(ui::i18n::I18nManager::lookup_plain("canvas-welcome-title")),
+        )
+    }
 }

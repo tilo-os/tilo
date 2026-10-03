@@ -1324,7 +1324,7 @@ impl CanvasSurface {
             }
         }
         if let Key::Character(ch) = key
-            && ch.as_str() == "?"
+            && (ch.as_str() == "?" || (ch.as_str() == "/" && modifiers.shift_key()))
         {
             return crate::panels::files::window_key(&self.tools, "?", modifiers);
         }

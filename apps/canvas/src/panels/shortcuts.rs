@@ -121,7 +121,7 @@ fn keycaps(keys: &str) -> Element {
 }
 
 /// The width of the keys' column, so what they do lines up.
-const KEYS: f32 = 168.0; // the longest chord's caps: a layout width, not spacing
+const KEYS: f32 = 132.0; // the longest chord's caps: a layout width, not spacing
 
 fn line(keys: &str, does: &str) -> Element {
     Box::new(
@@ -130,7 +130,7 @@ fn line(keys: &str, does: &str) -> Element {
             .with_gap(12.0)
             .with_align_items(ui::taffy::AlignItems::Center)
             .push(keycaps(keys))
-            .push(Box::new(Text::new(does))),
+            .push(Box::new(Text::new(does).with_role(TextRole::Label))),
     )
 }
 
@@ -139,7 +139,7 @@ fn group(heading: &str, lines: Vec<Element>) -> Element {
     let mut column = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_gap(6.0)
+        .with_gap(4.0)
         .push(super::heading(heading));
     for line in lines {
         column = column.push(line);
@@ -147,53 +147,64 @@ fn group(heading: &str, lines: Vec<Element>) -> Element {
     Box::new(column)
 }
 
-/// The overview: the artwork, view and marks keys in one column, the tools
-/// in the other.
+/// The overview: the artwork and view keys in one column, the marks' in
+/// the other, and under them the tools' letters in a row.
 pub fn overview() -> Element {
-    let groups: Vec<Element> = GROUPS
-        .iter()
-        .map(|g| {
-            let lines = if g.shortcuts.is_empty() {
-                tools()
-                    .into_iter()
-                    .map(|(keys, does)| line(&keys, does))
-                    .collect()
-            } else {
-                g.shortcuts
-                    .iter()
-                    .map(|shortcut| line(shortcut.keys, shortcut.does))
-                    .collect()
-            };
-            group(g.heading, lines)
-        })
-        .collect();
-    let mut groups = groups.into_iter();
-    let mut left = Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .with_gap(18.0);
-    let mut right = Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .with_gap(18.0);
-    // Artwork and view on the left; marks, then tools, on the right.
-    for _ in 0..2 {
-        if let Some(group) = groups.next() {
-            left = left.push(group);
+    let column = || {
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(14.0)
+    };
+    let (mut left, mut right) = (column(), column());
+    let mut tools_heading = "";
+    for (index, g) in GROUPS.iter().enumerate() {
+        if g.shortcuts.is_empty() {
+            tools_heading = g.heading;
+            continue;
+        }
+        let lines = g
+            .shortcuts
+            .iter()
+            .map(|shortcut| line(shortcut.keys, shortcut.does))
+            .collect();
+        if index < 2 {
+            left = left.push(group(g.heading, lines));
+        } else {
+            right = right.push(group(g.heading, lines));
         }
     }
-    for group in groups {
-        right = right.push(group);
+    let mut letters = Row::new().with_gap(14.0);
+    for (keys, does) in tools() {
+        letters = letters.push(Box::new(
+            Row::new()
+                .no_wrap()
+                .with_gap(6.0)
+                .with_align_items(ui::taffy::AlignItems::Center)
+                .push(Box::new(ui::widget::Badge::semantic_pill(
+                    keys,
+                    ui::widget::BadgeTone::Neutral,
+                )))
+                .push(Box::new(Text::new(does).with_role(TextRole::Label))),
+        ));
     }
-    left = left.push(caption(&ui::i18n::I18nManager::lookup_plain(
-        "canvas-keys-focus",
-    )));
     Box::new(
-        Row::new()
-            .no_wrap()
-            .with_gap(32.0)
-            .with_align_items(ui::taffy::AlignItems::Start)
-            .push(Box::new(left))
-            .push(Box::new(right)),
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .with_gap(14.0)
+            .push(Box::new(
+                Row::new()
+                    .no_wrap()
+                    .with_gap(28.0)
+                    .with_align_items(ui::taffy::AlignItems::Start)
+                    .push(Box::new(left))
+                    .push(Box::new(right)),
+            ))
+            .push(super::heading(tools_heading))
+            .push(Box::new(letters))
+            .push(caption(&ui::i18n::I18nManager::lookup_plain(
+                "canvas-keys-focus",
+            ))),
     )
 }
