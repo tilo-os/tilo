@@ -152,6 +152,44 @@ If an app hand-rolls text editing, it will get these wrong — use the shared co
 - Never present fabricated content as live data (no synthesized "video feed"
   gradients, no invented data on an empty state).
 
+### 4a. Search, filter and find
+
+Search belongs to the platform. An app never draws a search field, a result
+list or its own palette. There are three different jobs, and each has one
+answer:
+
+| The person wants to… | The app provides | The person sees |
+|---|---|---|
+| **find something the app holds** (a message, a video, a note) | a `SearchProvider` per findable kind, rows that say what a hit is (`SearchRow`), scopes (`ScopeDecl`), facets (`Facet`) | the one platform palette, opened by Ctrl+K, `/`, or the app's magnifier button (`search::search_button`) |
+| **narrow the list already on screen** | `Filterable` on the list | `SearchField::filter()` in the navigation shell's filter slot (or `Filtered`), with a "3 of 120" count; Enter or "Search everywhere" escalates to the platform search |
+| **find in the document on screen** | `Findable` on the document view | the `FindBar` band at the top of the content region (`FindScope`), opened by Ctrl+F |
+
+- **The launcher is a button, not a field.** The toolbar's magnifier is
+  `search::search_button(SearchRequest::this_app())`; a part of the app gets
+  its own (`SearchRequest::within(ScopeDecl::new(anchor, "Inbox"))`, the scope
+  pill reading "Only Inbox"). A pill that looks like a field but opens the
+  palette is gone.
+- **Opening search is an action.** Every opener — the button, `/`, Ctrl+K,
+  Enter in a filter, an agent — invokes the host's `tilo.host:search` `open`
+  action. A standalone window opens its palette; inside the shell the shell
+  opens the system palette scoped to the app's tab. The app does the same
+  thing either way.
+- **A hit opens the app at that item.** A framework app shows the item in
+  `ViewCx::on_open`; the same handler answers the resource's `open` action,
+  so an agent opens the app where a person's search hit would.
+- **Slow sources do not block.** A provider answering from a server returns
+  what it has with `SearchPage::pending` and the rest from `poll_page`; the
+  palette appends it under a "Searching…" row.
+- **A filter field is a control.** Regular control height, `radii.control`,
+  the raised field fill, the person's own colour as the focus ring, the
+  placeholder visible while the field is focused and empty and elided when it
+  does not fit, and a reserved slot for the count so text never runs under it.
+  Narrow, it is the magnifier icon button until it is used.
+- **Find marks spans, not blocks.** Every match is painted with
+  `paint_find_match` over the matched glyphs; the current one is stronger and
+  outlined. The bar shows "n of m", Match case and Whole word, previous/next,
+  and replace or a text/hex mode when the view supports them.
+
 ---
 
 ## 5. System integration (file access, host services)
@@ -402,9 +440,12 @@ widget already gets right:
 
 This generalises §3 (text editing) to **all** interactive primitives. Concretely:
 
-- Editable field → `TextInput` (or `SearchField` / `NumberInput` /
-  `EditableLabel`). Never keep a per-app cursor index and splice characters into
-  a `String` on `Key::Character` / `Backspace`.
+- Editable field → `TextInput` (or `NumberInput` / `EditableLabel`). Never keep
+  a per-app cursor index and splice characters into a `String` on
+  `Key::Character` / `Backspace`.
+- Narrowing a list → `SearchField::filter()` bound to `Filterable`; find in a
+  document → `FindBar` over `Findable`; searching the app → the platform
+  palette (§4a). Never a hand-drawn search box.
 - Clickable → `Button`. Never `draw_*_button` + a `contains()` hit-test.
 - Confirm / prompt / sheet → `ModalDialog` (scrim, focus capture, Esc, a11y are
   built in). Never paint your own overlay + scrim rect.
@@ -418,8 +459,8 @@ the accessible / themed / clipboard-correct version stays the default. Forking a
 private copy re-earns every bug above and guarantees drift. The only sanctioned
 "hand-rolled" text surfaces are genuine document engines whose buffer *is* the
 app (the terminal grid, a code/rich-text/cell editor) — and even those must route
-their **side** fields (find bar, rename box, cell entry, command line) through the
-shared widgets, and are themselves candidates for a shared editor primitive
+their **side** fields (find bar → `FindBar`, rename box, cell entry, command
+line) through the shared widgets, and are themselves candidates for a shared editor primitive
 (§ toolkit gaps) rather than N private forks.
 
 > Enforcement: a new painted control is a toolkit gap, not an app feature. Grep
