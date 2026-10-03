@@ -4,7 +4,7 @@ The manifest records each file's source (an installed Fedora 44 binary path
 and package NEVR, an immutable upstream URL, or a path in this repository and
 the commit it was built from), complete SHA-256 values, metadata, and exact
 license mappings. Every file was copied without modification except Tilo
-Sans, built from the sources in this repository, and the Cyrillic fallback
+Sans, built from its own source repository at a recorded tag, and the Cyrillic fallback
 subset, which `tools/font-fallback-subsets.py` derives reproducibly from a
 pinned upstream file (below). Product and fixture scope are independent of
 whether a font happens to be installed on a host. The 20 product fonts total
@@ -13,9 +13,9 @@ whether a font happens to be installed on a host. The 20 product fonts total
 ## Tilo Sans (UI face)
 
 Tilo Sans is the system UI face: Instrument Sans (Rodrigo Fuenzalida and
-Jordan Egstad, OFL 1.1, no Reserved Font Name) extended in this repository
-with Vietnamese, Greek, Cyrillic and distinct I and l
-(`vendor/fonts/tilo-sans/README.md`). The catalog ships its default build:
+Jordan Egstad, OFL 1.1, no Reserved Font Name) extended with Vietnamese,
+Greek, Cyrillic and distinct I and l. Its sources, build and proof tools live
+in https://code.tilo.so/tilo/tilo-sans. The catalog ships its default build:
 Latin, Vietnamese and Greek. Cyrillic and the distinct I/l and slashed zero
 features are held back until review approves them; Cyrillic falls back to
 Onest (below), and the toolkit applies the I/l and zero features by
@@ -25,21 +25,22 @@ capability, so they take effect when a build that has them is copied in.
 |---|---:|---|
 | `TiloSans[wdth,wght].ttf` | 296124 | `140edddcc0ee4953e5120ac208757e88f48c786788bfdd092d2dba1bb49abef4` |
 | `TiloSans-Italic[wdth,wght].ttf` | 306512 | `a4ca118abf92d41fa93f46a6833436bea98869eada3f07634a3594104dfad09c` |
-| `LICENSES/Tilo-Sans-OFL.txt` (`vendor/fonts/tilo-sans/OFL.txt`) | 4448 | `63a4ce1628d9c43e728a77e40d27529f036a7bca9f50c65be96f4cf0a9aa5f98` |
+| `LICENSES/Tilo-Sans-OFL.txt` (tilo/tilo-sans `OFL.txt`) | 4448 | `63a4ce1628d9c43e728a77e40d27529f036a7bca9f50c65be96f4cf0a9aa5f98` |
 
-Both fonts are `vendor/fonts/tilo-sans/fonts/default/` as built from commit
-`c29493874c0874e530ed6bc6398b96bac7bf8df6` (the last commit touching
-`vendor/fonts/tilo-sans`) with
+Both fonts are tilo/tilo-sans' `fonts/default/` at tag `v1.001` (commit
+`a30688acf80960aac72dd91f7e42f53b37b110c4`), built with
 
 ```sh
-SOURCE_DATE_EPOCH=1791039400 uv run vendor/fonts/tilo-sans/build.py
+git clone https://code.tilo.so/tilo/tilo-sans && cd tilo-sans && git checkout v1.001
+SOURCE_DATE_EPOCH=1791039400 uv run build.py
 ```
 
 `SOURCE_DATE_EPOCH` is that commit's time; it sets `head.modified`, the only
-part of the output that otherwise follows the clock, so a rebuild with the
-same tools reproduces these bytes. The build resolved fonttools 4.66.1,
-ufo2ft 3.9.1, ufoLib2 0.18.1, glyphsLib 6.15.0, skia-pathops 0.9.2 and
-uharfbuzz 0.56.2. `scripts/shaping_tests.py` passed on the build.
+part of the output that otherwise follows the clock. The repository pins its
+build dependencies (fonttools 4.66.1, ufo2ft 3.9.1, ufoLib2 0.18.1, glyphsLib
+6.15.0, skia-pathops 0.9.2, uharfbuzz 0.56.2; `build.py.lock` the rest), so
+the rebuild reproduces these bytes; the same files are attached to the
+`v1.001` release there. `scripts/shaping_tests.py` passed on the build.
 
 Both fonts embed `Copyright 2022 The Instrument Sans Project Authors
 (https://github.com/Instrument/instrument-sans). Copyright 2026 The Tilo Sans
@@ -55,9 +56,13 @@ clear at 12-14 px, has tabular figures and a 400-700 weight axis covering
 every role weight, and carries no Reserved Font Name. Tilo Sans keeps its
 Latin outline for outline.
 
-To ship a newer build (a script or feature review has approved): rebuild as
-above at the new commit, copy `fonts/default/*.ttf` here, and update the
-manifest (both copies), this file and `LICENSES/FONT-COPYRIGHT-NOTICES.txt`.
+To ship a newer build (a script or feature review has approved): take the
+new tilo/tilo-sans release, rebuild it as above to confirm its bytes, copy
+`fonts/default/*.ttf` here, and update the manifest (both copies), this file
+and `LICENSES/FONT-COPYRIGHT-NOTICES.txt` with the tag, commit and hashes. The
+toolkit's held-back-feature test face
+(`crates/sdk/ui-core/tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf`)
+comes from the same repository's `scripts/toolkit_fixture.py`.
 
 ## Matched script fallback (Onest)
 
