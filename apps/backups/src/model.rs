@@ -315,18 +315,18 @@ pub struct Destination {
     pub name: String,
     pub kind: DestKind,
     pub used_bytes: u64,
-    pub total_bytes: u64,
+    /// The destination's capacity, when its provider reports one.
+    pub total_bytes: Option<u64>,
     pub encrypted: bool,
     pub health: Health,
 }
 
 impl Destination {
-    /// The share of the destination in use, `0..=1`.
-    pub fn used_fraction(&self) -> f64 {
-        if self.total_bytes == 0 {
-            return 0.0;
-        }
-        (self.used_bytes as f64 / self.total_bytes as f64).clamp(0.0, 1.0)
+    /// The share of the destination in use, `0..=1`, when its capacity is
+    /// known.
+    pub fn used_fraction(&self) -> Option<f64> {
+        let total = self.total_bytes.filter(|total| *total > 0)?;
+        Some((self.used_bytes as f64 / total as f64).clamp(0.0, 1.0))
     }
 }
 
@@ -442,7 +442,8 @@ impl Catalog {
                 name: destination_label,
                 kind: DestKind::LocalFolder,
                 used_bytes: used,
-                total_bytes: used.saturating_mul(2).max(1),
+                // A local folder reports no capacity of its own.
+                total_bytes: None,
                 encrypted: false,
                 health: Health::Ok,
             }],
@@ -507,7 +508,7 @@ impl Catalog {
                 name: "Internal pool".into(),
                 kind: DestKind::LocalBtrfs,
                 used_bytes: 312 * GB,
-                total_bytes: 500 * GB,
+                total_bytes: Some(500 * GB),
                 encrypted: true,
                 health: Health::Ok,
             },
@@ -516,7 +517,7 @@ impl Catalog {
                 name: "Seagate 2 TB".into(),
                 kind: DestKind::External,
                 used_bytes: 1_740 * GB,
-                total_bytes: 2 * TB,
+                total_bytes: Some(2 * TB),
                 encrypted: true,
                 health: Health::Ok,
             },
@@ -525,7 +526,7 @@ impl Catalog {
                 name: "Backblaze B2".into(),
                 kind: DestKind::RemoteRestic,
                 used_bytes: 88 * GB,
-                total_bytes: 200 * GB,
+                total_bytes: Some(200 * GB),
                 encrypted: true,
                 health: Health::Warning,
             },
