@@ -9,12 +9,11 @@
 //! does), so whatever it runs has no capability over the network namespace
 //! it sits in — not even one it could regain.
 //!
-//! Both namespaces are made by a forked child, because `unshare` of a user
-//! namespace needs a single-threaded caller. The child does only raw
-//! system calls between `fork` and `_exit`, with everything it writes
-//! prepared before the fork.
+//! The namespaces are made by util-linux `unshare`, which then becomes
+//! `cat` holding them. The sockets kept inside are opened by a forked child
+//! that joins them; it does only raw system calls between `fork` and
+//! `_exit`, on memory prepared before the fork.
 
-use std::ffi::CStr;
 use std::io::{self, Read};
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::process::CommandExt;
@@ -31,7 +30,7 @@ pub struct Netns {
     _holder: Option<Holder>,
 }
 
-/// The child that made the namespaces, kept alive (blocked reading a pipe)
+/// The child that made the namespaces, kept alive (as `cat` reading a pipe)
 /// so `/proc/<pid>/ns/…` keeps naming them. It exits when the pipe closes:
 /// when the [`Netns`] drops, or the supervisor dies.
 #[derive(Debug)]
@@ -91,6 +90,17 @@ fn step_error(step: u32, errno: u32) -> io::Error {
     io::Error::new(os.kind(), format!("{what}: {os}"))
 }
 
+/// How long `unshare` may take to make the namespaces.
+const HOLDER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// util-linux `unshare`.
+fn unshare_binary() -> &'static str {
+    ["/usr/bin/unshare", "/bin/unshare"]
+        .into_iter()
+        .find(|p| std::path::Path::new(p).is_file())
+        .unwrap_or("unshare")
+}
+
 impl Netns {
     /// A new network namespace in a new user namespace mapping exactly this
     /// process's uid and gid. Only `lo` exists in it, down until
@@ -100,43 +110,54 @@ impl Netns {
     /// Returns the step that failed — typically `unshare`, where unprivileged
     /// user namespaces are disabled.
     pub fn create() -> io::Result<Self> {
-        // SAFETY: neither call can fail.
-        let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
-        let uid_map = format!("{uid} {uid} 1\n");
-        let gid_map = format!("{gid} {gid} 1\n");
-        let (ready_r, ready_w) = pipe()?;
+        // util-linux `unshare` makes the namespaces and becomes `cat`, which
+        // reads the release pipe until it closes. A fresh image rather than
+        // a fork of this process: a supervisor that loaded key material is
+        // not dumpable, and a fork of it could neither write its own
+        // `uid_map` nor have `/proc/<pid>/ns` opened by pasta.
         let (release_r, release_w) = pipe()?;
-        // SAFETY: the child runs only async-signal-safe system calls on
-        // memory prepared above, and leaves through `_exit`.
-        let pid = unsafe { libc::fork() };
-        if pid < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if pid == 0 {
-            // SAFETY: as above; this is the child.
-            unsafe {
-                holder_child(
-                    ready_w.as_raw_fd(),
-                    release_r.as_raw_fd(),
-                    uid_map.as_bytes(),
-                    gid_map.as_bytes(),
-                )
-            }
-        }
-        drop(ready_w);
-        drop(release_r);
+        let mut child = Command::new(unshare_binary())
+            .args(["--user", "--map-current-user", "--net", "--", "cat"])
+            .stdin(std::process::Stdio::from(release_r))
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .spawn()
+            .map_err(|e| io::Error::new(e.kind(), format!("starting unshare: {e}")))?;
+        let pid =
+            libc::pid_t::try_from(child.id()).map_err(|_| io::Error::other("pid out of range"))?;
         let holder = Holder {
             pid,
             release: Some(release_w),
         };
-        let mut word = [0_u8; 8];
-        std::fs::File::from(ready_r)
-            .read_exact(&mut word)
-            .map_err(|e| io::Error::new(e.kind(), format!("the namespace child died: {e}")))?;
-        let (step, errno) = split_status(u64::from_ne_bytes(word));
-        if step != 0 {
-            return Err(step_error(step, errno));
+        let deadline = std::time::Instant::now().checked_add(HOLDER_TIMEOUT);
+        // `cat` is running once `unshare` has made and mapped the namespaces.
+        loop {
+            if std::fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|c| c.trim() == "cat")
+            {
+                break;
+            }
+            if let Ok(Some(status)) = child.try_wait() {
+                let mut said = String::new();
+                if let Some(mut err) = child.stderr.take() {
+                    let _ = err.read_to_string(&mut said);
+                }
+                return Err(io::Error::other(format!(
+                    "unshare --user --net failed ({status}): {}",
+                    said.trim()
+                )));
+            }
+            if deadline.is_none_or(|d| std::time::Instant::now() > d) {
+                let _ = child.kill();
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "unshare --user --net did not finish",
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
         }
+        drop(child.stderr.take());
         let user = open_ns(pid, "user")?;
         let net = open_ns(pid, "net")?;
         Ok(Self {
@@ -291,42 +312,12 @@ fn socketpair() -> io::Result<(OwnedFd, OwnedFd)> {
     Ok(unsafe { (OwnedFd::from_raw_fd(a), OwnedFd::from_raw_fd(b)) })
 }
 
-fn split_status(word: u64) -> (u32, u32) {
-    let step = u32::try_from(word.wrapping_shr(32)).unwrap_or(u32::MAX);
-    let errno = u32::try_from(word & 0xffff_ffff).unwrap_or(u32::MAX);
-    (step, errno)
-}
-
 // --- the forked children: raw system calls only ---------------------------
 
 /// The current `errno`, as reported to the parent.
 unsafe fn errno() -> u32 {
     // SAFETY: `__errno_location` returns this thread's errno slot.
     unsafe { (*libc::__errno_location()).unsigned_abs() }
-}
-
-/// Report `(step, errno)` on `fd` and exit.
-unsafe fn fail(fd: RawFd, step: u32) -> ! {
-    // SAFETY: async-signal-safe calls on a local buffer.
-    unsafe {
-        let word = u64::from(step).wrapping_shl(32) | u64::from(errno());
-        let bytes = word.to_ne_bytes();
-        libc::write(fd, bytes.as_ptr().cast(), bytes.len());
-        libc::_exit(1)
-    }
-}
-
-unsafe fn write_file(path: &CStr, data: &[u8]) -> bool {
-    // SAFETY: `path` is NUL-terminated, `data` valid for its length.
-    unsafe {
-        let fd = libc::open(path.as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC);
-        if fd < 0 {
-            return false;
-        }
-        let written = libc::write(fd, data.as_ptr().cast(), data.len());
-        libc::close(fd);
-        usize::try_from(written).is_ok_and(|n| n == data.len())
-    }
 }
 
 /// Close every descriptor but `keep` (ascending).
@@ -353,33 +344,6 @@ pub(crate) unsafe fn close_others(keep: [RawFd; 2]) {
                 );
             }
         }
-    }
-}
-
-unsafe fn holder_child(ready: RawFd, release: RawFd, uid_map: &[u8], gid_map: &[u8]) -> ! {
-    // SAFETY: raw system calls on prepared memory; see `Netns::create`.
-    unsafe {
-        close_others([ready, release]);
-        if libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNET) != 0 {
-            fail(ready, 1);
-        }
-        if !write_file(c"/proc/self/setgroups", b"deny") {
-            fail(ready, 2);
-        }
-        if !write_file(c"/proc/self/uid_map", uid_map) {
-            fail(ready, 3);
-        }
-        if !write_file(c"/proc/self/gid_map", gid_map) {
-            fail(ready, 4);
-        }
-        let ok = 0_u64.to_ne_bytes();
-        libc::write(ready, ok.as_ptr().cast(), ok.len());
-        libc::close(ready);
-        let mut byte = 0_u8;
-        while libc::read(release, (&raw mut byte).cast(), 1) < 0
-            && (*libc::__errno_location()) == libc::EINTR
-        {}
-        libc::_exit(0)
     }
 }
 
@@ -564,10 +528,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn status_words_split_into_step_and_errno() {
-        let word = 7_u64.wrapping_shl(32) | 0xd;
-        assert_eq!(split_status(word), (7, 13));
-        assert_eq!(split_status(0), (0, 0));
+    fn a_failed_step_is_named_in_the_error() {
         let e = step_error(11, u32::try_from(libc::EACCES).unwrap());
         assert!(e.to_string().contains("binding 127.0.0.1:53 (UDP)"), "{e}");
         assert_eq!(e.kind(), io::ErrorKind::PermissionDenied);
