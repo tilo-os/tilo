@@ -9,7 +9,9 @@ use tilo_font_catalog::{Asset, Face, Manifest, Scope};
 
 #[cfg(all(target_os = "android", feature = "native"))]
 mod android;
+mod faces;
 mod fallback;
+pub(crate) mod matched;
 #[cfg(test)]
 mod tests;
 #[cfg(windows)]

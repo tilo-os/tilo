@@ -25,7 +25,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, Wind
 
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextKind, TextRenderer};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::tokens::colors::Colors;
@@ -121,6 +121,12 @@ pub struct ColumnDef<Row> {
     pub widget: Option<CellWidgetBuilder<Row>>,
     /// Value exposed for ready rows; set directly or by [`ColumnDef::with_text`].
     pub accessible_value: Option<CellAccessibleValue<Row>>,
+    /// What the column's text is ([`TextKind`]); [`ColumnDef::with_text`]
+    /// sets cells with it, so a numeric column's figures line up.
+    pub kind: TextKind,
+    /// The value [`ColumnDef::with_text`] renders, kept so a later
+    /// [`ColumnDef::with_kind`] restyles it.
+    plain_text: Option<CellAccessibleValue<Row>>,
     pub(crate) resize_handle_px: f32,
 }
 
@@ -135,8 +141,25 @@ impl<Row> ColumnDef<Row> {
             render_cell: Box::new(|_, _, _, _, _| {}),
             widget: None,
             accessible_value: None,
+            kind: TextKind::Prose,
+            plain_text: None,
             resize_handle_px: 6.0,
         }
+    }
+
+    /// Say what the column's values are: [`TextKind::Numeric`] for counts,
+    /// sizes, prices and times, [`TextKind::Identifier`] for names people
+    /// must not confuse, [`TextKind::Secret`] for keys and hashes.
+    #[must_use]
+    pub fn with_kind(mut self, kind: TextKind) -> Self
+    where
+        Row: 'static,
+    {
+        self.kind = kind;
+        if let Some(value) = self.plain_text.clone() {
+            self.text_render = Some(Self::plain_text_render(value, kind));
+        }
+        self
     }
 
     #[must_use]
@@ -162,11 +185,20 @@ impl<Row> ColumnDef<Row> {
     {
         let value: CellAccessibleValue<Row> = Arc::new(value);
         self.accessible_value = Some(Arc::clone(&value));
-        self.text_render = Some(Box::new(move |row, scene, text, rect, theme, _selected| {
+        self.plain_text = Some(Arc::clone(&value));
+        self.text_render = Some(Self::plain_text_render(value, self.kind));
+        self
+    }
+
+    fn plain_text_render(value: CellAccessibleValue<Row>, kind: TextKind) -> CellTextRender<Row>
+    where
+        Row: 'static,
+    {
+        Box::new(move |row, scene, text, rect, theme, _selected| {
             // A selected row is a lift (HIG §9.3), so its ink stays the
             // ordinary text colour on every theme.
             let color = theme.text_primary;
-            let style = theme.text(TextRole::Caption);
+            let style = theme.text(TextRole::Caption).with_kind(kind);
             let label = value(row);
             let (_, text_h) = text.measure_style(&label, None, &style);
             // `rect` is the whole row's cell (the body clip layer trims what
@@ -183,8 +215,7 @@ impl<Row> ColumnDef<Row> {
                 None,
                 &style,
             );
-        }));
-        self
+        })
     }
 
     /// Expose a value for a custom-painted cell. The column header remains
@@ -2632,6 +2663,21 @@ mod tests {
     #[derive(Clone)]
     struct R {
         name: String,
+    }
+
+    #[test]
+    fn a_column_kind_styles_its_text_whenever_it_is_declared() {
+        for column in [
+            ColumnDef::<R>::new("size", "Size", ColumnWidth::Fixed(80.0))
+                .with_kind(TextKind::Numeric)
+                .with_text(|r: &R| r.name.clone()),
+            ColumnDef::<R>::new("size", "Size", ColumnWidth::Fixed(80.0))
+                .with_text(|r: &R| r.name.clone())
+                .with_kind(TextKind::Numeric),
+        ] {
+            assert_eq!(column.kind, TextKind::Numeric);
+            assert!(column.plain_text.is_some() && column.text_render.is_some());
+        }
     }
 
     fn sample_cols() -> Vec<ColumnDef<R>> {

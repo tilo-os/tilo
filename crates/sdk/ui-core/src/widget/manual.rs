@@ -44,12 +44,18 @@ impl ManualInvalidation {
     pub fn invalidate(&self) {
         self.0.requested.set(self.0.requested.get().wrapping_add(1));
     }
-    fn is_pending(&self) -> bool {
+    pub(crate) fn is_pending(&self) -> bool {
         self.0.applied.get() != Some(self.0.requested.get())
+    }
+    /// Acknowledge the solved revision once its geometry has been applied
+    /// (what [`Manual`] does in `apply_layout`), for another widget that
+    /// places its children through a [`ManualPolicy`].
+    pub(crate) fn acknowledge_applied(&self) {
+        self.0.applied.set(self.0.solved.get());
     }
 }
 
-type Policy = dyn Fn(&mut ManualContext<'_>) -> Result<Size<f32>, WidgetLayoutError>;
+pub(crate) type Policy = dyn Fn(&mut ManualContext<'_>) -> Result<Size<f32>, WidgetLayoutError>;
 /// An owned descriptor. Hosts consume this through admitted Widget dispatch.
 #[doc(hidden)]
 #[derive(Clone)]
@@ -58,6 +64,24 @@ pub struct ManualPolicy {
     children: Vec<(NodeId, Style)>,
     info: Rc<Cell<Option<ManualLayout>>>,
     invalidation: ManualInvalidation,
+}
+
+impl ManualPolicy {
+    /// A policy for a toolkit widget that places its own retained children
+    /// exactly (`NavShell`): `children` are the child nodes it built, in
+    /// placement-index order, with the styles they were built with.
+    pub(crate) fn for_children(
+        policy: Rc<Policy>,
+        children: Vec<(NodeId, Style)>,
+        invalidation: ManualInvalidation,
+    ) -> Self {
+        Self {
+            policy,
+            children,
+            info: Rc::new(Cell::new(None)),
+            invalidation,
+        }
+    }
 }
 
 /// A manual region whose children keep their standard rendering and interaction.
