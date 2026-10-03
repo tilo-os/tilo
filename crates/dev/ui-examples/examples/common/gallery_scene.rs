@@ -5,7 +5,7 @@
 //!
 //! The single entry point, [`build_showcase`], seeds the CRDT document with the
 //! state the interactive controls read (toggles, checkbox, slider, text field,
-//! dropdown, table) and returns the root widget: a vertical column of titled
+//! dropdown, data table) and returns the root widget: a vertical column of titled
 //! cards, one per component family.
 
 #![allow(dead_code)]
@@ -15,14 +15,13 @@ use automerge::transaction::Transactable;
 use tilo_ui::icons::Icon;
 use tilo_ui::theme::Theme;
 use tilo_ui::tokens::TextRole;
-use tilo_ui::widget::table;
 use tilo_ui::widget::toggle_group::Segment;
 use tilo_ui::widget::toolbar::Orientation;
 use tilo_ui::widget::{
-    Avatar, Badge, Banner, BarGauge, Breadcrumb, Button, Chart, Checkbox, Chip, Column, Container,
-    Divider, Dropdown, EmptyState, NumberInput, ProgressBar, RingGauge, Row, SearchField, Series,
-    Slider, Spacer, Sparkline, StatTile, TabBar, TabDescriptor, Table, Text, TextInput, Toggle,
-    ToggleGroup, Toolbar, Trend, Widget,
+    Avatar, AvatarSize, Badge, Banner, BarGauge, Breadcrumb, Button, Chart, Checkbox, Chip, Column,
+    Container, Divider, Dropdown, EmptyState, GaugeThresholds, NumberInput, ProgressBar,
+    ProgressRing, Row, SearchField, Series, Slider, Spacer, Sparkline, StatGroup, StatTile, TabBar,
+    TabDescriptor, Text, TextInput, Toggle, ToggleGroup, Tone, Toolbar, Trend, Widget,
 };
 use tilo_ui::{
     FontChoice, HangingPunctuation, NumericStyle, OpenTypeTag, OpticalSizing, ParagraphAlign, State,
@@ -304,8 +303,8 @@ pub fn build_typography_showcase(theme: &Theme) -> Box<dyn Widget> {
 }
 
 /// Seeds `state.doc` with the toggle/checkbox/slider/text/dropdown values
-/// the interactive controls read, plus a small editable table. Split out
-/// of `build_showcase` to keep that under the line cap.
+/// the interactive controls read. Split out of `build_showcase` to keep
+/// that under the line cap.
 fn seed_gallery_state(state: &mut State) {
     let root = state.root.clone();
     let _ = state.doc.put(&root, "sw_wifi", true);
@@ -318,25 +317,6 @@ fn seed_gallery_state(state: &mut State) {
         .put_object(&root, "ti_name", automerge::ObjType::Text)
     {
         let _ = state.doc.splice_text(&ti, 0, 0, "Ada Lovelace");
-    }
-
-    for _ in 0..3 {
-        table::insert_column(&mut state.doc, &root, usize::MAX);
-    }
-    for _ in 0..4 {
-        table::insert_row(&mut state.doc, &root, usize::MAX);
-    }
-    table::set_header(&mut state.doc, &root, true);
-    let rows = [
-        ["Task", "Owner", "Status"],
-        ["Design", "Ada", "Done"],
-        ["Build", "Grace", "Active"],
-        ["Ship", "Linus", "Queued"],
-    ];
-    for (r, row) in rows.iter().enumerate() {
-        for (c, cell) in row.iter().enumerate() {
-            table::set_cell_text(&mut state.doc, &root, r, c, cell);
-        }
     }
 }
 
@@ -453,10 +433,19 @@ fn build_tags_card(theme: &Theme) -> Box<dyn Widget> {
                 .push(dim("Avatars", theme))
                 .push(Box::new(
                     Row::new()
-                        .push(Box::new(Avatar::from_initials("AL", 34.0)))
-                        .push(Box::new(Avatar::from_initials("GR", 34.0)))
-                        .push(Box::new(Avatar::from_initials("LT", 34.0)))
-                        .push(Box::new(Avatar::from_initials("DB", 34.0))),
+                        .push(Box::new(
+                            Avatar::person("Ada Lovelace", "ada.lovelace")
+                                .size(AvatarSize::Regular),
+                        ))
+                        .push(Box::new(
+                            Avatar::person("Gwen Rhodes", "gwen.rhodes").size(AvatarSize::Regular),
+                        ))
+                        .push(Box::new(
+                            Avatar::person("Lena Torres", "lena.torres").size(AvatarSize::Regular),
+                        ))
+                        .push(Box::new(
+                            Avatar::person("Dana Brooks", "dana.brooks").size(AvatarSize::Regular),
+                        )),
                 )),
         ),
     )
@@ -488,35 +477,28 @@ fn build_feedback_card(theme: &Theme) -> Box<dyn Widget> {
 
 /// The full-width stat-tile row. Split out of `build_showcase` to keep
 /// that under the line cap.
-fn build_metrics_card(theme: &Theme) -> Box<dyn Widget> {
+fn build_metrics_card() -> Box<dyn Widget> {
     card(
         None,
         "Metrics",
-        Box::new(
-            Row::new()
-                .no_wrap()
-                .push(Box::new(
-                    StatTile::new("Requests", "1,284")
-                        .with_icon(Icon::BarChart)
-                        .with_delta("12%", Trend::Up),
-                ))
-                .push(Box::new(
-                    StatTile::new("Errors", "3")
-                        .with_icon(Icon::Ban)
-                        .with_value_color(theme.tokens.colors.semantic.danger)
-                        .with_delta("2", Trend::Down),
-                ))
-                .push(Box::new(
-                    StatTile::new("Latency", "48 ms")
-                        .with_icon(Icon::Refresh)
-                        .with_delta("0%", Trend::Flat),
-                ))
-                .push(Box::new(
-                    StatTile::new("Uptime", "99.9%")
-                        .with_icon(Icon::Check)
-                        .with_value_color(theme.tokens.colors.semantic.success),
-                )),
-        ),
+        Box::new(StatGroup::new(vec![
+            Box::new(StatTile::new("Requests", "1,284").change("12% this hour", Trend::Up)),
+            Box::new(
+                StatTile::new("Errors", "3")
+                    .tone(Tone::Danger)
+                    .change("2 fewer", Trend::Down),
+            ),
+            Box::new(
+                StatTile::new("Latency", "48")
+                    .unit("ms")
+                    .change("No change", Trend::Flat),
+            ),
+            Box::new(
+                StatTile::new("Uptime", "99.9")
+                    .unit("%")
+                    .tone(Tone::Success),
+            ),
+        ])),
     )
 }
 
@@ -532,9 +514,10 @@ fn build_charts_card(theme: &Theme) -> Box<dyn Widget> {
                 .push(Box::new(
                     Row::new()
                         .push(Box::new(
-                            RingGauge::new(0.72)
-                                .with_label("72%", "CPU")
-                                .with_size(110.0),
+                            ProgressRing::new(0.72)
+                                .value("72%")
+                                .caption("CPU")
+                                .level(GaugeThresholds::default()),
                         ))
                         .push(Box::new(
                             col(8.0).push(dim("Throughput", theme)).push(Box::new(
@@ -617,7 +600,14 @@ fn build_banners_card() -> Box<dyn Widget> {
     )
 }
 
-/// The empty-state and editable-table cards. Split out of `build_showcase`
+/// One row of the gallery's data table.
+struct Task {
+    name: &'static str,
+    owner: &'static str,
+    hours: Option<u32>,
+}
+
+/// The empty-state and data-table cards. Split out of `build_showcase`
 /// to keep that under the line cap.
 fn build_empty_and_table_cards() -> (Box<dyn Widget>, Box<dyn Widget>) {
     let empty = card(
@@ -635,11 +625,45 @@ fn build_empty_and_table_cards() -> (Box<dyn Widget>, Box<dyn Widget>) {
                 )),
         ),
     );
-    let table_card = card(
-        None,
-        "Editable Table",
-        Box::new(Table::new("gallery_table")),
-    );
+    let mut tasks = tilo_ui::widget::data_table::DataTable::new(vec![
+        tilo_ui::widget::data_table::ColumnDef::new(
+            "task",
+            "Task",
+            tilo_ui::widget::data_table::ColumnWidth::Flex(2.0),
+        )
+        .with_text(|t: &Task| t.name.to_owned()),
+        tilo_ui::widget::data_table::ColumnDef::new(
+            "owner",
+            "Owner",
+            tilo_ui::widget::data_table::ColumnWidth::Auto,
+        )
+        .with_text(|t: &Task| t.owner.to_owned()),
+        tilo_ui::widget::data_table::ColumnDef::new(
+            "hours",
+            "Hours",
+            tilo_ui::widget::data_table::ColumnWidth::Flex(1.0),
+        )
+        .numeric()
+        .with_optional_text(|t: &Task| t.hours.map(|h| h.to_string()), "Not estimated"),
+    ]);
+    tasks.set_rows(vec![
+        Task {
+            name: "Design the review flow",
+            owner: "Ada Lovelace",
+            hours: Some(12),
+        },
+        Task {
+            name: "Build the sync engine",
+            owner: "Grace Hopper",
+            hours: Some(140),
+        },
+        Task {
+            name: "Ship the beta",
+            owner: "Linus Pauling",
+            hours: None,
+        },
+    ]);
+    let table_card = card(None, "Table", Box::new(tasks));
     (empty, table_card)
 }
 
@@ -663,7 +687,7 @@ pub fn build_showcase(state: &mut State, theme: &Theme) -> Box<dyn Widget> {
     let feedback = build_feedback_card(theme);
 
     // ---- Metrics (full width) ---------------------------------------------
-    let metrics = build_metrics_card(theme);
+    let metrics = build_metrics_card();
 
     // ---- Row 3: charts | navigation -----------------------------------------
     let charts = build_charts_card(theme);

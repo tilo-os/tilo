@@ -5,8 +5,7 @@ crates/sdk/ui-core/src/chrome/shell.rs literal_color 1
 crates/sdk/ui-core/src/native/warmup.rs literal_color 1
 crates/sdk/ui-core/src/overlay/scrim.rs literal_color 2
 crates/sdk/ui-core/src/profiling.rs literal_color 4
-crates/sdk/ui-core/src/widget/avatar.rs literal_color 1
-crates/sdk/ui-core/src/widget/avatar.rs white_or_black 1
+crates/sdk/ui-core/src/widget/block_editor_table.rs white_or_black 1
 crates/sdk/ui-core/src/widget/button.rs literal_color 1
 crates/sdk/ui-core/src/widget/button.rs white_or_black 2
 crates/sdk/ui-core/src/widget/checkbox.rs white_or_black 1
@@ -21,5 +20,4 @@ crates/sdk/ui-core/src/widget/permission_prompt.rs white_or_black 1
 crates/sdk/ui-core/src/widget/qr.rs literal_color 2
 crates/sdk/ui-core/src/widget/segmented.rs white_or_black 1
 crates/sdk/ui-core/src/widget/sidebar.rs literal_color 2
-crates/sdk/ui-core/src/widget/table.rs white_or_black 1
 crates/sdk/ui-core/src/widget/tabs.rs literal_color 1

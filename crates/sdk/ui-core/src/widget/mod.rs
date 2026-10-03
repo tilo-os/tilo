@@ -2317,8 +2317,7 @@ pub use virtual_table_semantics::{
 };
 mod virtual_list_semantics;
 pub use virtual_list_semantics::{ListSemanticRow, VirtualListSemantics};
-pub mod table;
-pub use table::Table;
+pub(crate) mod block_editor_table;
 pub mod icon_grid;
 pub use icon_grid::{IconGrid, IconGridItem};
 mod window_group;
@@ -2384,7 +2383,7 @@ pub use undo_button::UndoButton;
 pub mod breadcrumb;
 pub use breadcrumb::Breadcrumb;
 pub mod avatar;
-pub use avatar::{Avatar, AvatarRing};
+pub use avatar::{Avatar, AvatarFace, AvatarSize, initials_for_name};
 pub mod badge;
 pub use badge::{Badge, BadgeTone};
 pub mod icon;
@@ -2441,7 +2440,10 @@ pub use sunburst::{SunburstChart, SunburstNode, SunburstStyle};
 pub mod funnel_chart;
 pub use funnel_chart::{FunnelChart, FunnelDirection, FunnelStage, FunnelStyle};
 pub mod gauge;
-pub use gauge::{BarGauge, GaugeReading, GaugeStyle, GaugeThresholds, RingGauge};
+pub use gauge::{
+    BarGauge, GaugeReading, GaugeStyle, GaugeThresholds, ProgressRing, ProgressRingFace,
+    ProgressRingSize,
+};
 pub mod function_plane;
 pub use function_plane::FunctionPlane;
 pub mod resizable_split;
@@ -2460,10 +2462,26 @@ pub use tree_view::{
 };
 pub mod virtual_list;
 pub use virtual_list::{DuplicateListKey, ListModel, ListRowState, VecListModel, VirtualList};
-pub mod action_row;
-pub use action_row::ActionRowFace;
-pub mod choice_card;
-pub use choice_card::ChoiceCardFace;
+mod activation;
+pub use activation::{Interaction, paint_focus_ring};
+pub mod media_card;
+pub use media_card::{
+    MediaArt, MediaAspect, MediaBadge, MediaCard, MediaCardFace, MediaGrid, MediaSize, MediaSource,
+    OwnedBadge, justified_rows,
+};
+pub mod drop_zone;
+pub use drop_zone::{DropZone, DropZoneFace};
+pub mod skeleton;
+pub use skeleton::{Skeleton, SkeletonFace, SkeletonShape, skeleton_tone};
+pub mod stepper;
+pub use stepper::{Stepper, StepperFace};
+pub mod property_list;
+pub use property_list::{Property, PropertyList, PropertyListFace, PropertyRow};
+pub mod list_row;
+pub use list_row::{
+    ListRow, ListRowFace, RowAction, RowLeading, RowStatus, SwipeAction, badge_column_width,
+    paint_row_fill,
+};
 pub mod keyframe;
 pub use keyframe::{KeyframeFace, KeyframeState};
 pub mod disclosure_header;
@@ -2486,18 +2504,18 @@ pub use search_field::SearchField;
 pub mod search_results;
 pub use search_results::SearchResultsView;
 pub mod stat_tile;
-pub use stat_tile::{StatTile, StatTileContent, Trend};
+pub use stat_tile::{StatGroup, StatTile, StatTileFace, Trend};
 pub mod banner;
 pub use banner::{Banner, BannerContent, BannerKind};
 pub mod chip;
 pub use chip::{Chip, ChipLead, ChipStyle};
-mod card_composition;
-pub use card_composition::{Actions, ContentCard};
 pub mod card;
+mod tone;
+pub use tone::Tone;
 pub mod collaboration_overview;
-pub use card::{Card, CardGrid, card_column_width, card_columns};
+pub use card::{Actions, Card, CardFace, CardGrid, CardWidth, card_column_width, card_columns};
 mod section;
-pub use section::{DEFAULT_SECTION_GAP, Section};
+pub use section::{Section, SectionHeader};
 pub mod capture_studio;
 pub use capture_studio::{
     AudioCaptureMode, CaptureDestination, CaptureExtent, CaptureIntent, CaptureMode,

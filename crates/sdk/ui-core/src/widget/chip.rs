@@ -350,7 +350,7 @@ impl Chip {
 
     /// No layout node, caching, or widget instance — for a list that lays
     /// out its own rows (the sibling of
-    /// [`Avatar::draw_at`](super::Avatar::draw_at)): on a curve, in a rail,
+    /// [`AvatarFace::paint`](super::AvatarFace::paint)): on a curve, in a rail,
     /// or at any position taffy won't hand back.
     ///
     /// The label is **truncated with an ellipsis** to whatever width `rect`

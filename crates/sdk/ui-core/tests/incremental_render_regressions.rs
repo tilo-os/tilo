@@ -40,8 +40,8 @@ use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::toggle_group::Segment;
 use tilo_ui::widget::{
-    Avatar, Badge, Button, Column, ProgressBar, Row, ScrollAxis, Scrollable, Spinner, Text,
-    ToggleGroup,
+    Avatar, AvatarSize, Badge, Button, Column, ProgressBar, Row, ScrollAxis, Scrollable, Spinner,
+    Text, ToggleGroup,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
@@ -85,7 +85,10 @@ fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
                 col = col.push(Box::new(
                     Row::new()
                         .push(Box::new(Text::new(label_key)))
-                        .push(Box::new(Avatar::from_initials(&format!("U{i}"), 24.0))),
+                        .push(Box::new(
+                            Avatar::person(format!("Teammate {i}"), format!("teammate-{i}"))
+                                .size(AvatarSize::Small),
+                        )),
                 ));
             }
         }
@@ -128,10 +131,18 @@ fn build_dashboard_root() -> Box<Scrollable> {
 
     let footer = Row::new()
         .push(Box::new(Text::new("dash_title")))
-        .push(Box::new(Avatar::from_initials("DB", 28.0)))
-        .push(Box::new(Avatar::from_initials("QD", 28.0)))
-        .push(Box::new(Avatar::from_initials("AL", 28.0)))
-        .push(Box::new(Avatar::from_initials("PB", 28.0)))
+        .push(Box::new(
+            Avatar::person("Dana Brooks", "dana.brooks").size(AvatarSize::Regular),
+        ))
+        .push(Box::new(
+            Avatar::person("Quinn Daley", "quinn.daley").size(AvatarSize::Regular),
+        ))
+        .push(Box::new(
+            Avatar::person("Ada Lovelace", "ada.lovelace").size(AvatarSize::Regular),
+        ))
+        .push(Box::new(
+            Avatar::person("Priya Bose", "priya.bose").size(AvatarSize::Regular),
+        ))
         .push(Box::new(Badge::count(42)))
         .push(Box::new(Badge::count(7)))
         .push(Box::new(Badge::count(120)));
