@@ -325,15 +325,17 @@ its minimum from `spacing.s8` shrinks with a dense gutter preference.
 `Spacing::BASE` and `Metrics::BASE` are the unscaled reference values for the
 few chrome constants that must be compile-time.
 
-Rhythm inside a group versus between groups:
+Rhythm inside a group versus between groups. Each relationship is a named
+token, `theme.tokens.spacing.rhythm.*`, scaled with the spacing scale; a
+painted layout reads the rhythm by relationship instead of picking a step:
 
-| Relationship | Step | Typical use |
+| Relationship | Token (step) | Typical use |
 |---|---|---|
-| Label ↔ its control, icon ↔ its label | `s1` / `metrics.icon_label_gap` | stacked field label, button icon |
-| Related rows that read as one group | `s2` | title + explanation, help copy under a field |
-| Siblings of equal weight | `s3` (`gap_standard`, the `Row`/`Column` default) | toolbar buttons, list rows |
-| Section padding, gap between Panel sections | `s4` | panel body, card gutter |
-| Before the next group; page gutter | `s6` (the `Column` default inset) | form sections, page edge |
+| Label ↔ its control, icon ↔ its label; a control's face inset | `rhythm.tight` (`s1`) / `metrics.icon_label_gap` | stacked field label, button icon |
+| Controls inside one cluster; related rows that read as one group | `rhythm.related` (`s2`) | a bar's tool buttons, help copy under a field |
+| Siblings of equal weight | `rhythm.sibling` (`s3`, `gap_standard`, the `Row`/`Column` default) | clusters on a bar, list rows, cards |
+| Section padding, gap between Panel sections | `rhythm.section` (`s4`) | panel body, card gutter |
+| Before the next group; the content gutter | `rhythm.group` (`s6`, the `Column` default inset) | form sections, page edge |
 | Between major regions | `s8`+ | header block ↔ content |
 
 One rhythm per panel or screen: the same relationship always gets the same
@@ -484,6 +486,9 @@ surfaces of the same role are automatically consistent. The values come from
 | **Selector** | one of a set you choose between (tab pill, tray pill, workspace chip, strip segment, scope chip) | half its height | selection tiers (§9.3) | per tier | none |
 | **Object** | a window tile | `radii.tile` (14) | `surfaces.content` | `Colors::window_edge()` | none; `elevation.floating` only while dragged |
 
+Inside an Object, the window's regions (§9.2) are the only grounds, and the
+framework paints them.
+
 The radius scale is semantic (`tokens::Radii`):
 
 | Field | Value | For |
@@ -528,6 +533,45 @@ The ink tiers `text_primary` / `text_dim` / `text_tertiary` are defined on
 `surfaces.content` (dark L 0.96 / 0.76 / 0.62, light 0.18 / 0.43 / 0.56).
 `tokens::contrast::FLOORS` holds every pairing to WCAG AA for its role (AAA on
 the high-contrast material) and is swept at every hue in tests.
+
+#### One ground per region, painted by the framework
+
+An app never picks or paints a ground. A window is made of regions,
+`ui::surface::Region::{Content, Sidebar, Inspector}`, and each has exactly
+one ground:
+
+- **Content** is `surfaces.content`, the Object's surface. The framework
+  paints it in every path an app can be seen through: the native runner
+  clears to it, `ResourceRoot` fills it under the view, `TileHost` fills it
+  under a hosted tile, and `--shots` captures land on it
+  (`FrameHarness::render_window_png`). An app that paints nothing (a clock, a
+  print queue) stands on it; floating surfaces stay transparent around their
+  material.
+- **Sidebar** (navigation, leading edge) and **Inspector** (detail,
+  trailing edge) are their own tiers. `NavShell` paints its sidebar slot;
+  a painted app calls
+  `ui::surface::region(scene, transform, rect, Region::Sidebar, theme)`,
+  which paints the tier and returns the ground. `Theme::region(region)`
+  reads it without painting.
+- A region is told from content by **tone**, not by a line: the tiers sit at
+  least `tokens::colors::REGION_MIN_STEP` (OKLCH ΔL 0.015) from content in
+  every material and at every temperature. Where a material gives them the
+  same ground (high contrast) `surface::region` draws the hairline on the
+  edge the region shares with content, and nowhere else.
+- What sits in a region is drawn with that region's theme:
+  `theme.in_region(region)` (or `theme.on_ground(ground)` for any other
+  ground) re-points `surfaces.content` to the ground, re-measures the ink
+  tiers against it and steps `intent.selection` / `selection_hover` from it,
+  so the same widget is right on content, sidebar and inspector. `NavShell`
+  hands its sidebar child that theme.
+- An app's header or toolbar band sits on its region with an `edge_on`
+  hairline of that region's ground under it; it is never a raised band.
+- `surfaces.raised` is for fields, wells, cards and controls *on* a region;
+  `surfaces.base` is the desktop only; `neutral[n]` is never a ground.
+- A control's hover and pressed fills are lifts of what it stands on: of its
+  own rest face for a filled control (`colors.lift_on(face, 0.5)` /
+  `lift_on(face, 1.0)`), of the region ground for a transparent one
+  (`intent.selection_hover` / `intent.selection`).
 
 A Bar is opaque: it is docked and nothing meaningful is behind it.
 
@@ -952,7 +996,9 @@ and must not match):
   strength never measured against its ground (§9.5).
 - `literal_color_new`: `Color::new([<literal>, …])`.
 - `ramp_slot`: `.neutral[…]` or `accent[<digit>]`; use the semantic tier.
-- `legacy_alias`: `.bg_app`, `.bg_primary`, `.bg_hover`, `.bg_active`.
+- `legacy_alias`: `.bg_app`, `.bg_primary`, `.bg_hover`, `.bg_active`, the
+  removed theme aliases (they no longer compile; the key names them for
+  migration).
 - `desktop_ground`: `surfaces.base` / `surfaces.window_card` outside the
   desktop. The framework paints the window ground; apps declare regions.
 - `literal_radius`: a numeric literal as a corner radius
