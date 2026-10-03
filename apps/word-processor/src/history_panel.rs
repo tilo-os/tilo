@@ -24,22 +24,18 @@ use crate::num;
 use automerge::{AutoCommit, ChangeHash};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
+use ui::tokens::TextRole;
 use ui::widget::history_scrubber::{ScrubberGroup, VersionAction};
 use ui::widget::{HistoryEntryId, HistoryScrubber};
 use ui::{AuthorDirectory, GroupNameRequest, GroupingConfig, HistorySource, Theme};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::Fill;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{Modifiers, WindowEvent};
 
 /// Height of the history strip when open (with the version band showing). The
 /// strip asks the widget rather than hard-coding this, since a host that
 /// reserved the old (bandless) height would clip the button row.
 pub const HISTORY_BAND_H: f64 = 168.0;
-
-/// Height of the preview card drawn above the strip while a past version is
-/// selected.
-const PREVIEW_CARD_H: f64 = 108.0;
 
 /// Longest preview excerpt rendered. A historical document can be arbitrarily
 /// long; the card is a glance, not a second editor.
@@ -473,6 +469,9 @@ fn build_preview(
     })
 }
 
+/// The preview of a past version, floating above the strip: "Version N" in
+/// `Subheading`, who made it and what it was as a `Caption` line, then the
+/// version's text in `Body`, clipped to the panel.
 fn draw_preview_card(
     scene: &mut Scene,
     transform: Affine,
@@ -481,57 +480,75 @@ fn draw_preview_card(
     band: Rect,
     p: &PreviewCard,
 ) {
+    let sp = &theme.tokens.spacing;
+    let (gap, pad) = (f64::from(sp.s2), f64::from(sp.s4));
+    let height = f64::from(theme.tokens.metrics.inspector_width) / 2.5;
     let card = Rect::new(
-        band.x0 + 12.0,
-        (band.y0 - PREVIEW_CARD_H - 8.0).max(0.0),
-        band.x1 - 12.0,
-        (band.y0 - 8.0).max(PREVIEW_CARD_H),
+        band.x0 + f64::from(sp.s3),
+        (band.y0 - height - gap).max(0.0),
+        band.x1 - f64::from(sp.s3),
+        band.y0 - gap,
     );
-    if card.height() < 24.0 {
+    if card.height() < 2.0 * pad {
         return;
     }
-    let shape = RoundedRect::from_rect(card, 8.0);
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        theme.tokens.colors.lift(0.72),
-        None,
-        &shape,
-    );
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        ui::tokens::colors::Colors::hairline_on(theme.tokens.colors.surfaces.raised, 51),
-        None,
-        &shape,
-    );
-    let head = format!(
-        "Version {} \u{00b7} {} \u{00b7} {}",
-        p.version.saturating_add(1),
-        p.author,
-        p.summary
-    );
-    tr.draw_text(
+    ui::widget::floating_surface::paint(scene, transform, card, theme);
+    let ink = theme.on_ground(ui::chrome::panel_ground(theme));
+    let width = num::f32_of_f64((card.width() - 2.0 * pad).max(1.0));
+    let title = format!("Version {}", p.version.saturating_add(1));
+    let title_style = theme.text(TextRole::Subheading);
+    let caption = theme.text(TextRole::Caption);
+    let body_style = theme.text(TextRole::Body);
+    let mut y = card.y0 + pad;
+    tr.draw_style(
         scene,
-        &head,
-        11.0,
-        theme.tokens.colors.text_dim,
-        transform * Affine::translate((card.x0 + 12.0, card.y0 + 8.0)),
-        None,
+        &title,
+        ink.tokens.colors.text_primary,
+        transform * Affine::translate((card.x0 + pad, y)),
+        Some(width),
+        &title_style,
     );
+    y += f64::from(tr.measure_style(&title, Some(width), &title_style).1);
+    let byline = match (p.author.is_empty(), p.summary.is_empty()) {
+        (false, false) => format!("{}, {}", p.author, p.summary),
+        (false, true) => p.author.clone(),
+        (true, _) => p.summary.clone(),
+    };
+    if !byline.is_empty() {
+        let line = tr.elide_to_width_style(&byline, width, &caption);
+        tr.draw_style(
+            scene,
+            &line,
+            ink.tokens.colors.text_dim,
+            transform * Affine::translate((card.x0 + pad, y)),
+            None,
+            &caption,
+        );
+        y += f64::from(tr.measure_style(&line, None, &caption).1);
+    }
+    y += gap;
     let body = if p.text.trim().is_empty() {
-        "(the document was empty at this version)"
+        "This version had no text."
     } else {
         p.text.as_str()
     };
-    tr.draw_text(
+    let clip = Rect::new(card.x0, y, card.x1, card.y1 - pad);
+    scene.push_layer(
+        vello::peniko::Fill::NonZero,
+        vello::peniko::BlendMode::default(),
+        1.0,
+        transform,
+        &clip,
+    );
+    tr.draw_style(
         scene,
         body,
-        13.0,
-        theme.tokens.colors.text_primary,
-        transform * Affine::translate((card.x0 + 12.0, card.y0 + 28.0)),
-        Some(num::f32_of_f64(card.width() - 24.0)),
+        ink.tokens.colors.text_primary,
+        transform * Affine::translate((card.x0 + pad, y)),
+        Some(width),
+        &body_style,
     );
+    scene.pop_layer();
     let _ = Point::ZERO;
 }
 

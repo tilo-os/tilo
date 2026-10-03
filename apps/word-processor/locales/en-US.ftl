@@ -5,29 +5,20 @@
 # Fluent placeables ({ $name }); see editor/src/i18n.rs (t_args).
 
 ## Toolbar button faces (the terse, visible labels)
-toolbar-new = New ▾
-toolbar-body = Body
-toolbar-list = • List
-toolbar-table = ⊞ Table
-toolbar-image = 🖼 Image
+toolbar-new = New
+toolbar-table = Table
 toolbar-link = Link
 toolbar-styles = Styles
 toolbar-ruler = Ruler
 toolbar-outline = Outline
-toolbar-toc = TOC
-toolbar-row-add = +Row
-toolbar-row-del = −Row
-toolbar-col-add = +Col
-toolbar-col-del = −Col
+toolbar-toc = Contents
+toolbar-row-add = Add row
+toolbar-row-del = Delete row
+toolbar-col-add = Add column
+toolbar-col-del = Delete column
 
 ## Toolbar accessibility names / tooltips (spelled-out for screen readers)
 a11y-group-formatting = Formatting
-a11y-zoom-out = Zoom out
-a11y-zoom-out-description = Reduce the page scale by 10 percent
-a11y-zoom-reset = Reset zoom
-a11y-zoom-reset-description = Return the page scale to 100 percent
-a11y-zoom-in = Zoom in
-a11y-zoom-in-description = Increase the page scale by 10 percent
 a11y-bold = Bold
 a11y-italic = Italic
 a11y-underline = Underline
@@ -60,8 +51,8 @@ a11y-ruler = Ruler
 a11y-document-outline = Document outline
 a11y-insert-toc = Insert table of contents
 a11y-new-from-template = New from template
-a11y-text-color = Text color #{ $hex }
-a11y-text-color-default = Default text color
+a11y-text-color = Text colour #{ $hex }
+a11y-text-color-default = Default text colour
 a11y-highlight = Highlight #{ $hex }
 a11y-highlight-clear = Clear highlight
 
@@ -71,13 +62,6 @@ recovery-restore = Restore
 recovery-discard = Discard
 
 ## Status bar
-status-count = { $words } { $words ->
-        [one] word
-       *[other] words
-    }    { $chars } { $chars ->
-        [one] character
-       *[other] characters
-    }
 status-untitled = Untitled
 format-odt = ODF Text
 format-docx = Word Document
@@ -91,15 +75,6 @@ format-epub = EPUB
 band-header = Header
 band-footer = Footer
 
-## Find / find-and-replace bar
-find-find = Find
-find-replace-with = Replace with
-find-bad-pattern = Bad pattern
-find-no-results = No results
-find-count = { $cur } / { $total }
-find-replace = Replace
-find-replace-all = All
-
 ## Review — context-menu rows
 review-accept-insertion = Accept insertion
 review-reject-insertion = Reject insertion
@@ -109,7 +84,7 @@ review-resolve-comment = Resolve comment
 review-reply = Reply
 review-thread = Comment thread
 review-thread-unavailable = That comment is no longer available
-review-reply-placeholder = Write a reply…
+review-reply-placeholder = Write a reply
 review-send-reply = Send
 review-cancel-reply = Cancel
 review-you = You
@@ -118,7 +93,7 @@ review-reject-all = Reject all changes
 
 ## Review / comment margin cards
 review-comment = Comment
-review-resolve = ✓ Resolve
+review-resolve = Resolve
 review-insertion = Insertion
 review-deletion = Deletion
 
@@ -127,14 +102,14 @@ menu-add-to-dictionary = Add to dictionary
 menu-cut = Cut
 menu-copy = Copy
 menu-paste = Paste
-menu-select-all = Select All
+menu-select-all = Select all
 
 ## Templates (New ▾ menu)
 template-blank = Blank
 template-letter = Letter
 template-report = Report
 template-resume = Resume
-template-meeting-notes = Meeting Notes
+template-meeting-notes = Meeting notes
 
 ## Built-in style display names (localized). Blocks store a stable English name
 ## for export interop; these are what the picker + style header actually show.
@@ -142,37 +117,37 @@ style-body = Body
 style-heading1 = Heading 1
 style-heading2 = Heading 2
 style-heading3 = Heading 3
-style-list = List Item
+style-list = List item
 style-quote = Quote
 
 ## Paragraph panel
-panel-this-paragraph = THIS PARAGRAPH
+panel-this-paragraph = This paragraph
 panel-line-spacing = Line spacing
-panel-style = PARAGRAPH STYLE
+panel-style = Paragraph style
 # Caption under the style name — makes the preset-vs-direct distinction explicit:
 # the toolbar formats the selection; this section edits the shared style.
 panel-style-hint = Changes every "{ $name }" paragraph
 panel-caret-hint = Place the caret in a paragraph
-panel-paragraph-styles = PARAGRAPH STYLES
-panel-style-properties = STYLE PROPERTIES
+panel-paragraph-styles = Paragraph styles
+panel-style-properties = Style properties
 panel-font = Font
 panel-font-serif = Serif
 panel-font-mono = Mono
 panel-font-sans = Sans
-panel-weight = Weight
+panel-weight = Emphasis
 panel-bold = Bold
 panel-italic = Italic
 panel-colour = Colour
-panel-colour-custom = Custom…
-panel-align = Align
-panel-new-style = + New style from this
+panel-colour-custom = Custom colour
+panel-align = Alignment
+panel-new-style = New style from this paragraph
 panel-num-size = Size
 panel-num-space-before = Space before
 panel-num-space-after = Space after
 panel-num-indent = Indent
 
 ## Image inspector (styles panel, when an image is selected)
-panel-image = IMAGE
+panel-image = Image
 panel-image-size = Size
 panel-image-width = Width
 panel-image-flip = Flip
@@ -181,7 +156,7 @@ panel-image-flip-v = Vertical
 panel-image-smaller = Smaller
 panel-image-larger = Larger
 panel-image-crop = Crop
-panel-image-crop-inset = Crop 5%
+panel-image-crop-inset = Crop edges
 panel-image-crop-reset = Reset
 panel-image-position = Position
 panel-image-free = Free
@@ -213,16 +188,15 @@ unsaved-close = Close
 toast-file-dialog-failed = Could not open the file chooser
 
 ## Outline / navigation pane
-outline-header = OUTLINE
+outline-header = Outline
 outline-empty = No headings yet
-outline-untitled = (untitled)
+outline-untitled = Untitled heading
 
 ## Page layout (ruler) bottom bar
 layout-margins = Margins
 layout-spacing = Spacing
-layout-none-hint = Page layout — pick Margins or Spacing, then drag on the page
-layout-margins-readout = margins  L { $l }  T { $t }  R { $r }  B { $b }   ·   drag = opposite pair · Shift = one side · Ctrl = all proportional
-layout-spacing-readout = { $name } spacing  { $px } px   ·   drag the handle — every "{ $name }" block follows
+layout-margins-readout = Left { $l }   Top { $t }   Right { $r }   Bottom { $b }
+layout-spacing-readout = { $name } paragraphs: { $px } px after
 
 ## Canvas
 a11y-document-editor = Document editor
@@ -238,13 +212,12 @@ page-indicator = Page { $n }
 # On-page placeholders (a missing/undecodable image; an embedded object we render
 # as a fidelity box rather than its content).
 canvas-image-missing = image
-canvas-embedded-content = ⟦ embedded content ⟧
+canvas-embedded-content = Embedded content
 canvas-empty-placeholder = Start writing…
 toolbar-history = History
-toolbar-more = More ▾
-toolbar-text-color = Text color…
-toolbar-highlight = Highlight…
-picker-text-color = Text color
+toolbar-text-color = Colour
+toolbar-highlight = Highlight
+picker-text-color = Text colour
 picker-highlight = Highlight
 a11y-text-colour-name = { $colour } text
 a11y-highlight-name = { $colour } highlight
@@ -259,7 +232,6 @@ color-yellow = yellow
 color-cyan = cyan
 color-pink = pink
 color-orange = orange
-a11y-more-tools = More formatting and document tools
 a11y-version-history = Version history
 panel-close = Close
 
@@ -268,3 +240,20 @@ file-choice-title = Choose the document to open
 file-choice-body = This file differs from the workspace document. Keep the workspace version, or import the selected file into its history.
 file-choice-keep = Keep workspace version
 file-choice-use = Use selected file
+
+## Inspector and status band
+status-words = { $words } { $words ->
+        [one] word
+       *[other] words
+    }
+status-chars = { $chars } { $chars ->
+        [one] character
+       *[other] characters
+    }
+a11y-zoom = Zoom
+line-spacing-single = Single
+line-spacing-double = Double
+panel-align-left = Left
+panel-align-center = Centre
+panel-align-right = Right
+panel-align-justify = Justify

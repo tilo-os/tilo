@@ -1,9 +1,6 @@
-//! Toolbar action vocabulary, palettes, and responsive row packing.
+//! Toolbar action vocabulary and the document's colour palettes.
 
-use ui::chrome::{LabelCue, ToolbarItem};
-
-use super::TOOLBAR_MODEL;
-use crate::num;
+use ui::icons::Icon;
 
 pub(super) const STYLE_PALETTE: [[u8; 3]; 7] = [
     [0x1c, 0x1c, 0x20],
@@ -23,8 +20,6 @@ pub(super) const HIGHLIGHT_PALETTE: [[u8; 3]; 5] = [
     [0xff, 0xb1, 0x4d],
 ];
 
-pub(super) const COMPACT_TOOLBAR_BREAKPOINT: f64 = 720.0;
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum ToolAction {
     Bold,
@@ -36,6 +31,10 @@ pub(super) enum ToolAction {
     FontSizeInc,
     TextColor(Option<[u8; 3]>),
     Highlight(Option<[u8; 3]>),
+    /// Open the text-colour swatch grid.
+    TextColorPalette,
+    /// Open the highlight swatch grid.
+    HighlightPalette,
     Super,
     Sub,
     Hyperlink,
@@ -52,74 +51,91 @@ pub(super) enum ToolAction {
     ToggleHistory,
     InsertToc,
     NewMenu,
-    More,
 }
 
-pub(super) fn item(
-    action: ToolAction,
-    label: impl Into<String>,
-    width: f64,
-    active: bool,
-) -> (ToolAction, ToolbarItem) {
-    let cue = match action {
-        ToolAction::Bold => LabelCue::Bold,
-        ToolAction::Underline => LabelCue::Underline,
-        ToolAction::Strike => LabelCue::Strike,
-        _ => LabelCue::None,
-    };
-    let group_start = matches!(
-        action,
-        ToolAction::NewMenu
-            | ToolAction::Bold
-            | ToolAction::FontCycle
-            | ToolAction::InsertTable
-            | ToolAction::InsertImage
-            | ToolAction::TableRowAdd
-            | ToolAction::ToggleStyles
-            | ToolAction::ToggleOutline
-            | ToolAction::More
-    );
-    (
-        action,
-        ToolbarItem::new(label, width)
-            .active(active)
-            .cue(cue)
-            .group_start(group_start),
-    )
-}
-
-pub(super) fn swatch_reserve_width() -> f64 {
-    let sw = 20.0;
-    let gap = 5.0;
-    let n_color = num::f64_of_usize(STYLE_PALETTE.len() + 1); // +1 neutral/default swatch
-    let n_hl = num::f64_of_usize(HIGHLIGHT_PALETTE.len() + 1); // +1 "no highlight" swatch
-    let color = n_color * sw + (n_color - 1.0) * gap;
-    let hl = n_hl * sw + (n_hl - 1.0) * gap;
-    // right edge margin + colour strip + inter-strip gap + highlight strip
-    14.0 + color + 10.0 + hl
-}
-
-pub(super) fn pack_rows(
-    widths: &[f64],
-    group_starts: &[bool],
-    avail_w: f64,
-    text_scale: f64,
-) -> Vec<(usize, usize)> {
-    let mut rows = Vec::new();
-    let metrics = ui::chrome::toolbar::metrics(num::f32_of_f64(text_scale));
-    let usable = (avail_w - metrics.leading_pad - TOOLBAR_MODEL.right_pad * text_scale).max(1.0);
-    let mut row_start = 0usize;
-    let mut x = 0.0f64; // running width consumed within the current row (post-pad)
-    for (i, (&w, &group_start)) in widths.iter().zip(group_starts.iter()).enumerate() {
-        let item_w = metrics.item_advance(w, group_start);
-        // If this isn't the first item on the row and it would overflow, wrap.
-        if i > row_start && x + item_w > usable {
-            rows.push((row_start, i));
-            row_start = i;
-            x = 0.0;
-        }
-        x += item_w;
+impl ToolAction {
+    /// Whether the command changes the document (and so ends an undo step).
+    /// View toggles and commands that only open a menu or a picker do not.
+    pub(super) fn edits_document(self) -> bool {
+        !matches!(
+            self,
+            ToolAction::ToggleStyles
+                | ToolAction::ToggleRuler
+                | ToolAction::ToggleOutline
+                | ToolAction::ToggleHistory
+                | ToolAction::NewMenu
+                | ToolAction::TextColorPalette
+                | ToolAction::HighlightPalette
+                | ToolAction::Hyperlink
+                | ToolAction::InsertImage
+        )
     }
-    rows.push((row_start, widths.len()));
-    rows
+}
+
+/// One entry of the toolbar this frame: a command (with its face, and
+/// whether it is a toggle that is on), a group separator or the flexible
+/// space that pushes the view toggles to the trailing edge.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum ToolEntry {
+    Command {
+        action: ToolAction,
+        label: String,
+        icon: Option<Icon>,
+        active: Option<bool>,
+    },
+    Separator,
+    Spacer,
+}
+
+impl ToolEntry {
+    pub(super) fn command(action: ToolAction, label: impl Into<String>) -> Self {
+        ToolEntry::Command {
+            action,
+            label: label.into(),
+            icon: None,
+            active: None,
+        }
+    }
+
+    pub(super) fn toggle(action: ToolAction, label: impl Into<String>, on: bool) -> Self {
+        ToolEntry::Command {
+            action,
+            label: label.into(),
+            icon: None,
+            active: Some(on),
+        }
+    }
+
+    pub(super) fn icon(action: ToolAction, icon: Icon, name: impl Into<String>) -> Self {
+        ToolEntry::Command {
+            action,
+            label: name.into(),
+            icon: Some(icon),
+            active: None,
+        }
+    }
+
+    /// Two entries with the same shape differ at most in a toggle's state,
+    /// which the toolbar can take without being rebuilt.
+    pub(super) fn same_shape(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                ToolEntry::Command {
+                    action: a,
+                    label: la,
+                    icon: ia,
+                    active: aa,
+                },
+                ToolEntry::Command {
+                    action: b,
+                    label: lb,
+                    icon: ib,
+                    active: ab,
+                },
+            ) => a == b && la == lb && ia == ib && aa.is_some() == ab.is_some(),
+            (ToolEntry::Separator, ToolEntry::Separator)
+            | (ToolEntry::Spacer, ToolEntry::Spacer) => true,
+            _ => false,
+        }
+    }
 }

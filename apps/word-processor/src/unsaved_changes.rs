@@ -9,7 +9,8 @@ use crate::num;
 use ui::a11y::{AccessNode, AccessState, Action, Role};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::modal_frame::{ModalAction, ModalFrame, ModalHit, ModalLayout, ModalSpec};
+use ui::tokens::TextRole;
+use ui::widget::modal_dialog::{self, ModalAction, ModalHit, ModalLayout, ModalSpec};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
@@ -185,36 +186,31 @@ impl UnsavedChanges {
         let labels = LABELS.map(t);
         let mut actions = [
             ModalAction::secondary(&labels[0]),
-            ModalAction::secondary(&labels[1]),
+            ModalAction::danger(&labels[1]),
             ModalAction::primary(&labels[2]),
         ];
-        let scale = f64::from(theme.text_scale);
-        let size = (theme.tokens.typography.scale.sm / theme.text_scale).max(12.0);
+        let style = theme.text(TextRole::Body);
         let spec = ModalSpec::new(&title).actions(&actions);
-        let preliminary = ModalFrame::layout(viewport, &spec, tr, theme);
+        let preliminary = modal_dialog::layout(viewport, &spec, tr, theme);
         let width = num::f32_of_f64(preliminary.body.width().max(1.0));
-        let (_, measured_height) = tr.measure(&body, size, Some(width));
-        let body_height = f64::from(measured_height) / scale + 8.0;
+        let (_, measured_height) = tr.measure_style(&body, Some(width), &style);
+        let body_height = f64::from(measured_height);
         let spec = spec.body_height(body_height);
-        let mut layout = ModalFrame::layout(viewport, &spec, tr, theme);
+        let mut layout = modal_dialog::layout(viewport, &spec, tr, theme);
         // The shared frame leaves multi-action wrapping to its owner. Preserve
         // its measured button height, but stack actions when their row is wider
         // than the card. Painting and hit testing still use the same frame data.
         if layout.actions.iter().any(|r| r.x0 < layout.body.x0) {
-            let gap = 8.0 * scale;
-            let height = layout.actions.first().map_or(34.0 * scale, Rect::height);
+            let gap = f64::from(theme.tokens.spacing.s2);
+            let height = modal_dialog::action_height(theme);
             let extra = (height + gap) * 2.0;
-            layout = ModalFrame::layout(
-                viewport,
-                &spec.body_height(body_height + extra / scale),
-                tr,
-                theme,
-            );
+            layout =
+                modal_dialog::layout(viewport, &spec.body_height(body_height + extra), tr, theme);
             let bottom = layout.actions.first().map_or(layout.card.y1, |r| r.y1);
             let available = (bottom - layout.body.y0 - gap * 2.0).max(0.0);
             let height = height.min(available / 3.0);
             let top = bottom - height * 3.0 - gap * 2.0;
-            layout.body.y1 = (top - 12.0 * scale).max(layout.body.y0);
+            layout.body.y1 = (top - f64::from(theme.tokens.spacing.s3)).max(layout.body.y0);
             // A vertical row uses authoring order, with Save last.
             for (index, rect) in layout.actions.iter_mut().enumerate() {
                 let y = top + num::f64_of_usize(index) * (height + gap);
@@ -230,7 +226,7 @@ impl UnsavedChanges {
             .actions(&actions)
             .close_focused(self.focus == 3)
             .close_hovered(hovered == Some(ModalHit::Close));
-        ModalFrame::paint_backdrop(scene, transform, tr, theme, &layout, &spec);
+        modal_dialog::paint_backdrop(scene, transform, tr, theme, &layout, &spec);
         self.max_scroll = (f64::from(measured_height) - layout.body.height()).max(0.0);
         self.scroll = self.scroll.clamp(0.0, self.max_scroll);
         if layout.body.area() > 0.0 {
@@ -241,17 +237,17 @@ impl UnsavedChanges {
                 transform,
                 &layout.body,
             );
-            tr.draw_text(
+            tr.draw_style(
                 scene,
                 &body,
-                size,
-                ModalFrame::ink(theme).0,
+                modal_dialog::ink(theme).0,
                 transform * Affine::translate((layout.body.x0, layout.body.y0 - self.scroll)),
                 Some(width),
+                &style,
             );
             scene.pop_layer();
         }
-        ModalFrame::paint_actions(scene, transform, tr, theme, &layout, &spec);
+        modal_dialog::paint_actions(scene, transform, tr, theme, &layout, &spec);
         self.layout = Some(layout);
     }
 
