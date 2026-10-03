@@ -151,6 +151,17 @@ fn desired_legacy_shares(
     }
     desired
 }
+/// Whether the active workspace shows a legacy window.
+fn has_legacy_windows(tree: &crate::shell::state::WorkspaceTree) -> bool {
+    tree.desktop.active_workspace().is_some_and(|workspace| {
+        workspace
+            .strips
+            .iter()
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .any(|tab| matches!(tab.tile, crate::shell::state::TileContent::Foreign { .. }))
+    })
+}
 use crate::compositor::switch_control::{SwitchAction, SwitchControlRuntime};
 
 use crate::compositor::state::{ClientState, State};
@@ -7863,6 +7874,9 @@ pub fn run() {
         HashMap::new();
     let legacy_share_config = crate::config::load_config().flatpak_share;
     let mut hosted_legacy_checked = Instant::now();
+    // Whether this loop, not a viewer's watch request, made the headless
+    // backend watched: for legacy windows its room's host relays.
+    let mut watched_for_host = false;
     // Optional paint-rate diagnostics (`TILO_PAINT_STATS=1`).
     let paint_stats = std::env::var("TILO_PAINT_STATS").is_ok();
     // Slow iterations are exceptional and always worth preserving in the
@@ -9346,6 +9360,26 @@ pub fn run() {
                         let _ = crate::shell::window_actions::close_tab(chrome, tab);
                     }
                 }
+                // Windows a remote viewer closed: through the same tab close.
+                for surface in state.take_remote_closes() {
+                    let tabs: Vec<_> = chrome
+                        .tree()
+                        .desktop
+                        .workspaces
+                        .iter()
+                        .flat_map(|workspace| workspace.strips.iter())
+                        .flat_map(|strip| strip.window_groups.iter())
+                        .flat_map(|group| group.tabs.iter())
+                        .filter(|tab| {
+                            matches!(&tab.tile, crate::shell::state::TileContent::Foreign { surface_id, .. }
+                                if *surface_id == surface)
+                        })
+                        .map(|tab| tab.id)
+                        .collect();
+                    for tab in tabs {
+                        let _ = crate::shell::window_actions::close_tab(chrome, tab);
+                    }
+                }
                 close_requests = chrome.take_surface_close_requests();
             });
             for surface_id in close_requests {
@@ -9648,7 +9682,10 @@ pub fn run() {
                                 }),
                                 InputEvent::PointerEnter { .. }
                                 | InputEvent::PointerLeave { .. }
-                                | InputEvent::KeyboardFocus { .. } => None,
+                                | InputEvent::KeyboardFocus { .. }
+                                | InputEvent::PointerAxis { .. }
+                                | InputEvent::ClipboardText { .. }
+                                | InputEvent::Close => None,
                             };
                                     if let Some(mapped) = mapped {
                                         let _ =
@@ -9755,6 +9792,19 @@ pub fn run() {
                 };
                 let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
                 let tree = tree_handle.read();
+                // A headless session whose active room has a host shows its
+                // legacy windows to the host's viewers (browsers that opened
+                // them): it paints and encodes while it has one, and stops
+                // with the last.
+                let for_host = !viewer_hosts.is_empty() && has_legacy_windows(&tree);
+                if for_host != watched_for_host
+                    && (for_host != backend.watched() || watched_for_host)
+                {
+                    if backend.set_watched(for_host) {
+                        injected_redraw_pending = true;
+                    }
+                    watched_for_host = for_host;
+                }
                 desired_legacy_shares(&tree, backend.watched(), &viewer_hosts)
             };
             // This session's legacy windows, as its own tabs in the rooms
@@ -10902,10 +10952,12 @@ pub fn run() {
                 }
             }
         }
-        if let Some(watching) = test_control_ctx.watch_request.take()
-            && backend.set_watched(watching)
-        {
-            injected_redraw_pending = true;
+        if let Some(watching) = test_control_ctx.watch_request.take() {
+            // A viewer's own lease governs from here on.
+            watched_for_host = false;
+            if backend.set_watched(watching) {
+                injected_redraw_pending = true;
+            }
         }
         // An agent driving the screen answers the shell's choosers; a viewer
         // only watching cannot click one.
