@@ -452,6 +452,18 @@ impl Backend for HeadlessBackend {
         self.last_frame = self.renderer.render(scene, bg);
     }
 
+    fn submit_frame_with_damage(
+        &mut self,
+        frame: &crate::compositor::frame::FramePaint,
+        output: OutputId,
+    ) {
+        // Dense like `submit_frame`, with the floating surfaces over their
+        // blurred backdrop like the DRM presenter draws them.
+        self.renderer.set_backdrop(frame.backdrop.clone());
+        self.submit_frame(&frame.scene, output);
+        self.renderer.set_backdrop(None);
+    }
+
     fn needs_idle_poll(&self) -> bool {
         false
     }
