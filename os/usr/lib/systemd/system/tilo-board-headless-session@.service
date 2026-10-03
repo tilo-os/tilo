@@ -1,0 +1,32 @@
+# The board image's session for account %i: an always-on Tilo session that
+# runs headless while no display is connected and on the display once one is
+# (tilo-seat-session). The board image masks greetd, so this unit is the
+# only session. os/dev/disk-image.sh enables the instance for the account it
+# creates.
+[Unit]
+Description=Tilo board session for %i
+ConditionPathExists=/usr/share/tilo/board-headless-session
+After=systemd-user-sessions.service systemd-logind.service tilo-firstboot-user.service
+After=tilo-network-start.target NetworkManager.service chronyd.service
+# The network otherwise starts from a timer meant to keep it off a desktop
+# login's critical path; a board's session is that path.
+Wants=systemd-logind.service tilo-network-start.target chronyd.service
+# A user manager that is not ready yet fails the start, and the default
+# start limit would give up on the board after five of those.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# The network and clock waits can take minutes on a cold board; the default
+# start timeout would kill and restart them before they ever finish.
+TimeoutStartSec=infinity
+ExecStartPre=/usr/bin/loginctl enable-linger %i
+ExecStartPre=/usr/libexec/tilo-board-session-prepare user-manager %i
+ExecStartPre=/usr/libexec/tilo-board-session-prepare network
+ExecStartPre=/usr/libexec/tilo-board-session-prepare clock
+ExecStart=/usr/libexec/tilo-seat-session %i /usr/libexec/tilo-session
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
