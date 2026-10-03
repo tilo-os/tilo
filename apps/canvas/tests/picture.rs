@@ -403,3 +403,22 @@ fn the_canvas_decodes_a_picture_in_the_background_and_a_look_waits_for_it() {
     let mut look = Renderer::default();
     assert_eq!(look.pictures.size(src), Some((200, 100)), "a look waits");
 }
+
+#[test]
+fn svg_export_lays_a_layers_vignette_over_its_marks() {
+    let mut app = TestApp::<App>::new().unwrap();
+    placed(&mut app);
+    app.call(
+        "edit-layer",
+        json!({"id": "layer-1", "adjust": {"vignette": 0.5}}),
+    )
+    .unwrap();
+    let svg = view(&mut app, "export-svg", json!({}));
+    let markup = svg["svg"].as_str().unwrap();
+    assert!(markup.contains(r#"<g id="lc-layer-1">"#), "{markup}");
+    assert!(markup.contains(r#"mask="url(#vm-layer-1)""#), "{markup}");
+    assert!(
+        markup.contains(r#"<radialGradient id="vg-layer-1""#),
+        "{markup}"
+    );
+}
