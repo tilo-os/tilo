@@ -49,7 +49,6 @@ pub mod actions;
 pub mod api;
 pub mod app;
 pub mod backend;
-pub mod contrast;
 pub mod history_store;
 pub mod images;
 pub mod model;
@@ -95,19 +94,10 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
         .as_definition("Tube")
 }
 
-/// `--shots` variant for a narrow viewport: the nav rail is forced open as an
-/// overlay flap with its dimming scrim, and starts from [`TubeApp::new`] (the
-/// sample catalogue) since a shot of an empty grid says nothing about the
-/// rail. Pair with a sub-breakpoint `--viewport` width.
-pub fn app_root_narrow_shot() -> Box<dyn Widget> {
-    Box::new(TubeApp::new().with_open_sidebar_shot())
-}
-
 /// `--shots` variant that starts on a named [`model::Route`], so each screen
-/// (home / trending / search / settings / …) can be captured for visual
-/// self-inspection — in particular the selected-nav-item and selected-chip
-/// contrast. Shots-only; the live app derives its route from sample/persisted
-/// state.
+/// (home / trending / settings / …) can be captured for visual
+/// self-inspection. Shots-only; the live app derives its route from
+/// sample/persisted state.
 pub fn app_root_route_shot(route: model::Route) -> Box<dyn Widget> {
     Box::new(TubeApp::new().with_route_shot(route))
 }
