@@ -14,11 +14,13 @@ use rayon::prelude::*;
 
 use crate::brush::{Sample, length, smooth, taper};
 use crate::colour::{Rgb, encode8, from_linear};
-use crate::engine::{Blend, Canvas, Fill, LayerSim, Mark, MediumEngine, ParamSpec, Settings};
+use crate::engine::{
+    Blend, Canvas, Erase, Fill, LayerSim, Mark, MediumEngine, ParamSpec, Settings,
+};
 use crate::field::ColourField;
 use crate::grid::{Area, at, box_blur, cell, float, key, read, smoothstep};
 use crate::ground::{fbm, hash01, mix, value_noise};
-use crate::mask::{Coverage, fill};
+use crate::mask::{Coverage, erase_coverage, fill, lift};
 
 /// The oil engine.
 pub struct Oil {
@@ -1275,12 +1277,32 @@ impl OilLayer {
                 let reach = (size * 0.75).max(2.0);
                 self.soften(&coverage, &directions, reach, strength, seed);
             }
+            Mark::Erase(erase) => self.erase(erase),
         }
+    }
+
+    /// Lift paint off along an eraser: cover, body and wetness all thin
+    /// under it, and the colour stays for whatever cover is left. Wet paint
+    /// is not dried first, so what the eraser leaves can still be worked
+    /// wet-in-wet.
+    fn erase(&mut self, erase: &Erase) {
+        let width = self.width();
+        let coverage = erase_coverage(erase, (width, self.canvas.height));
+        if coverage.is_empty() {
+            return;
+        }
+        lift(&mut self.cover, width, &coverage);
+        lift(&mut self.thickness, width, &coverage);
+        lift(&mut self.wet, width, &coverage);
     }
 }
 
 impl LayerSim for OilLayer {
     fn apply(&mut self, mark: &Mark, seed: u64) {
+        if let Mark::Erase(erase) = mark {
+            self.erase(erase);
+            return;
+        }
         let settings = self.settings.with(mark.params());
         // A blender only works paint that is still wet.
         if settings.get("blender") > 0.0 {
@@ -1334,6 +1356,7 @@ impl LayerSim for OilLayer {
                 );
             }
             Mark::Fill(region) => self.lay_in(&settings, region, seed),
+            Mark::Erase(erase) => self.erase(erase),
         }
     }
 

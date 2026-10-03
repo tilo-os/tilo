@@ -137,6 +137,7 @@ fn named_marks_are_edited_arranged_and_removed_by_id() {
             CanvasAction::RemoveMarks(canvas::actions::RemoveMarks {
                 ids: Vec::new(),
                 layer: Some("layer-1".into()),
+                along: None,
             }),
         )
     };

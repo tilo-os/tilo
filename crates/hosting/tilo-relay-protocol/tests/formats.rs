@@ -302,6 +302,7 @@ fn toml_encodings_are_pinned() {
             label: "west".to_string(),
             priority: 100,
         }],
+        environments: None,
     };
     let encoded = r#"identity_root = "/var/lib/tilo"
 state_root = "/var/lib/tilo-relay"

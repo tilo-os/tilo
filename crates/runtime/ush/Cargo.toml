@@ -21,12 +21,17 @@ runtime-portal = { path = "../runtime-portal" }
 collab-types = { path = "../../collab/collab-types" }
 # The environment record a guest is built from, and the tool builder seam.
 tilo-environment = { path = "../environment" }
+# Builds the tool images `pkg install` adds.
+env-tools = { path = "../env-tools" }
 tilo-resource = { path = "../../sdk/tilo-resource" }
 # The record is stored as Terminal stores its own records.
 tilo-app-state = { path = "../../system/app-state" }
 durable-store = { path = "../../system/durable-store" }
 # Images are tapp packages the package store materialises read-only.
 package-store = { path = "../../packaging/package-store", features = ["store"] }
+# Images a node did not ship (a relay's), from the OCI registry CI
+# publishes them to.
+tilo-oci-images = { path = "../../packaging/oci-images" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 semver.workspace = true
 # This device's key signs the tool images its builder makes.
