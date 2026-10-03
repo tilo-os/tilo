@@ -57,17 +57,24 @@ impl PdfApp {
             self.search_active = true;
             self.reflow();
         }
-        self.search_input.set_focus(true);
+        ui::widget::Widget::set_focus(&mut self.find_bar, true);
+        self.find_bar.focus_query();
         if !self.query().is_empty() {
             self.recompute_matches();
         }
         self.dirty = true;
     }
 
+    /// Close the find band. The query is kept, so opening find again offers
+    /// it, selected.
     fn close_search(&mut self) {
-        self.search_input.set_focus(false);
         if self.search_active {
             self.search_active = false;
+            let query = self.query().to_owned();
+            self.find_bar = ui::widget::FindBar::new();
+            if !query.is_empty() {
+                self.find_bar.set_query(&query);
+            }
             self.matches.clear();
             self.raster_matches.clear();
             self.reflow();
@@ -119,14 +126,20 @@ impl PdfApp {
             return None;
         }
         let lay = self.toolbar_layout();
+        let has_doc = self.has_document;
         if lay.open.contains(p) {
             // A pending open owns the document slot; starting a second picker
-            // would only create a competing request.  Consume the press while
-            // the chrome is visibly disabled.
+            // would only create a competing request. Consume the press while
+            // the button is visibly disabled.
             if self.pending_open.is_none() {
                 return Some(ToolbarHit::Open);
             }
-            return Some(ToolbarHit::Tool(self.tool));
+            return Some(ToolbarHit::Inert);
+        }
+        // Everything else acts on an open document; without one the
+        // controls are disabled and a press on them does nothing.
+        if !has_doc {
+            return Some(ToolbarHit::Inert);
         }
         if lay.save.contains(p) {
             return Some(ToolbarHit::Save);
@@ -149,9 +162,8 @@ impl PdfApp {
         if lay.zoom_in.contains(p) {
             return Some(ToolbarHit::ZoomIn);
         }
-        if lay.zoom_label.contains(p) {
-            // Clicking the percentage resets to fit.
-            return Some(ToolbarHit::Fit);
+        if lay.zoom.contains(p) {
+            return Some(ToolbarHit::ZoomValue);
         }
         if lay.fit.contains(p) {
             return Some(ToolbarHit::Fit);
@@ -167,7 +179,7 @@ impl PdfApp {
         }
         // A click anywhere else on the toolbar is still "consumed" so it
         // doesn't fall through to the canvas behind it.
-        Some(ToolbarHit::Tool(self.tool))
+        Some(ToolbarHit::Inert)
     }
 
     fn apply_toolbar(&mut self, hit: &ToolbarHit, state: &mut AutoCommit) {
@@ -187,7 +199,7 @@ impl PdfApp {
             ToolbarHit::ZoomIn => self.zoom_by(1.15),
             ToolbarHit::ZoomOut => self.zoom_by(1.0 / 1.15),
             ToolbarHit::Fit => {
-                // Cycle Fit-page → Fit-width → Fit-page.
+                // Fit page → fit width; fit width or a custom zoom → fit page.
                 match self.fit {
                     FitMode::Page => self.fit_width(),
                     _ => self.fit_page(),
@@ -204,24 +216,95 @@ impl PdfApp {
             ToolbarHit::ToggleSidebar => self.toggle_sidebar(),
             ToolbarHit::Open => self.request_open_via_portal(),
             ToolbarHit::Save => self.request_save_via_portal(),
+            // The stepper's value is edited in place by the stepper itself.
+            ToolbarHit::ZoomValue | ToolbarHit::Inert => {}
         }
     }
 
-    fn apply_search_strip(&mut self, p: Point) -> bool {
-        for (hit, r) in &self.search_hits {
-            if r.contains(p) {
-                match hit {
-                    SearchHit::ToggleWholeWord => self.search_whole_word = !self.search_whole_word,
-                    SearchHit::ToggleCaseSensitive => {
-                        self.search_case_sensitive = !self.search_case_sensitive;
-                    }
-                }
-                self.recompute_matches();
-                self.dirty = true;
-                return true;
-            }
+    /// Run `f` with an event context for a control the reader positions
+    /// itself (the find bar, the zoom stepper, an inline field). A throwaway
+    /// leaf satisfies the context's layout node; local controls never write
+    /// the passed document.
+    fn with_local_ctx<R>(
+        scale: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+        f: impl FnOnce(&mut ui::widget::EventCtx<'_>) -> R,
+    ) -> Option<R> {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).ok()?;
+        let mut handled = false;
+        let mut focus_target = None;
+        Some(f(&mut ui::widget::EventCtx {
+            scale_factor: scale,
+            modifiers: &modifiers,
+            state,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: node,
+            taffy: &taffy,
+        }))
+    }
+
+    /// Feed one event to the find bar, then carry what it asked for (a new
+    /// query, an option, a step, closing) to the document.
+    fn route_find_bar(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+    ) -> bool {
+        let bar = &mut self.find_bar;
+        let took = Self::with_local_ctx(scale, modifiers, state, |ctx| bar.route(event, ctx))
+            .unwrap_or(false);
+        self.drive_find_bar();
+        took
+    }
+
+    /// Carry the find bar's pending requests to the document; close the band
+    /// when the bar asked to close.
+    fn drive_find_bar(&mut self) {
+        let mut bar = std::mem::take(&mut self.find_bar);
+        bar.drive(self);
+        let close = bar.close_requested();
+        self.find_bar = bar;
+        if close {
+            self.close_search();
         }
-        false
+        self.dirty = true;
+    }
+
+    /// Feed one event to the zoom stepper and apply a value the person
+    /// committed (typed and confirmed, or stepped).
+    fn route_zoom_input(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: winit::event::Modifiers,
+        state: &mut AutoCommit,
+    ) {
+        let input = &mut self.zoom_input;
+        let _ = Self::with_local_ctx(scale, modifiers, state, |ctx| {
+            input.handle_event(event, ctx)
+        });
+        if let Some(percent) = self.zoom_input.take_changed() {
+            self.set_custom_zoom(percent / 100.0);
+        }
+        self.dirty = true;
+    }
+
+    /// Whether `p` is over the toolbar's zoom stepper.
+    fn zoom_rect_contains(&self, p: Point) -> bool {
+        self.has_document && self.toolbar_layout().zoom.contains(p)
+    }
+
+    /// Whether `p` is over the page rail's resize grip: its trailing edge.
+    fn on_rail_grip(&self, p: Point) -> bool {
+        let rail = self.rail_rect;
+        let grip = f64::from(self.layout_theme.tokens.spacing.s1);
+        self.show_rail && (p.x - rail.x1).abs() <= grip && p.y >= rail.y0 && p.y <= rail.y1
     }
 
     /// Resolve the most specific captured sidebar hit (smallest rect wins,
@@ -479,7 +562,10 @@ impl PdfApp {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.on_cursor_moved(event, p, scale_factor, modifiers, state);
                 if self.search_active {
-                    self.drive_search_input(event, scale_factor, modifiers, state);
+                    self.route_find_bar(event, scale_factor, modifiers, state);
+                }
+                if self.has_document {
+                    self.route_zoom_input(event, scale_factor, modifiers, state);
                 }
             }
 
@@ -497,7 +583,10 @@ impl PdfApp {
                 ..
             } => {
                 if self.search_active {
-                    self.drive_search_input(event, scale_factor, modifiers, state);
+                    self.route_find_bar(event, scale_factor, modifiers, state);
+                }
+                if self.zoom_input.is_editing() {
+                    self.route_zoom_input(event, scale_factor, modifiers, state);
                 }
                 self.on_left_release(event, scale_factor, modifiers, state, handled);
             }
@@ -536,11 +625,13 @@ impl PdfApp {
                 self.on_key(event, key_event, modifiers, scale_factor, state, handled);
             }
 
+            WindowEvent::Ime(_) if self.zoom_input.is_editing() => {
+                self.route_zoom_input(event, scale_factor, modifiers, state);
+                *handled = true;
+            }
+
             WindowEvent::Ime(_) if self.search_active => {
-                self.drive_search_input(event, scale_factor, modifiers, state);
-                if self.search_input.take_dirty().is_some() {
-                    self.recompute_matches();
-                }
+                self.route_find_bar(event, scale_factor, modifiers, state);
                 *handled = true;
             }
 
@@ -621,7 +712,8 @@ impl PdfApp {
         // Rail resize drag takes priority over everything else.
         if let Some(grip_x) = self.rail_drag {
             let _ = grip_x;
-            let new_w = (p.x - self.rect.x0).clamp(RAIL_W_MIN, RAIL_W_MAX);
+            let (lo, hi) = self.rail_width_range();
+            let new_w = (p.x - self.rect.x0).clamp(lo, hi);
             self.rail_w = new_w;
             self.reflow();
             self.dirty = true;
@@ -745,19 +837,34 @@ impl PdfApp {
             }
             self.commit_edit(state);
         }
+        // A press anywhere else ends typing a zoom value (committing it).
+        let on_zoom = self.zoom_rect_contains(p);
+        if self.zoom_input.is_editing() && !on_zoom {
+            let input = &mut self.zoom_input;
+            let _ = Self::with_local_ctx(scale_factor, modifiers, state, |_| {
+                ui::widget::Widget::set_focus(input, false);
+            });
+            if let Some(percent) = self.zoom_input.take_changed() {
+                self.set_custom_zoom(percent / 100.0);
+            }
+        }
         if let Some(hit) = self.toolbar_hit(p) {
+            if matches!(hit, ToolbarHit::ZoomValue) {
+                ui::widget::Widget::set_focus(&mut self.zoom_input, true);
+                self.route_zoom_input(event, scale_factor, modifiers, state);
+            }
             self.apply_toolbar(&hit, state);
             *handled = true;
             return true;
         }
-        if self.search_active && self.search_rect.contains(p) {
-            if self.search_input.get_rect().contains(p) {
-                self.drive_search_input(event, scale_factor, modifiers, state);
-            } else {
-                self.apply_search_strip(p);
+        if self.search_active {
+            let inside = self.search_rect.contains(p);
+            ui::widget::Widget::set_focus(&mut self.find_bar, inside);
+            if inside {
+                self.route_find_bar(event, scale_factor, modifiers, state);
+                *handled = true;
+                return true;
             }
-            *handled = true;
-            return true;
         }
         if self.apply_page_bubble(p) {
             *handled = true;
@@ -786,7 +893,7 @@ impl PdfApp {
         // an open menu).
         if self.show_rail {
             let rail = self.rail_rect;
-            if (p.x - rail.x1).abs() <= RAIL_GRIP && p.y >= rail.y0 && p.y <= rail.y1 {
+            if self.on_rail_grip(p) {
                 self.rail_drag = Some(p.x);
                 self.dirty = true;
                 *handled = true;
@@ -1166,18 +1273,10 @@ impl PdfApp {
         true
     }
 
-    /// While the search strip is open it owns the keyboard. Returns whether
-    /// it consumed this key.
-    fn drive_search_input(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-    ) {
-        Self::drive_local_input(&mut self.search_input, event, scale, modifiers, state);
-    }
-
+    /// While the find bar has focus it owns the keyboard (typing, Enter /
+    /// Shift+Enter, F3, Escape); Ctrl+F refocuses its query. While a zoom
+    /// value is being typed the stepper owns it. Returns whether either
+    /// consumed this key.
     fn on_key_search(
         &mut self,
         event: &WindowEvent,
@@ -1187,6 +1286,11 @@ impl PdfApp {
         state: &mut AutoCommit,
         handled: &mut bool,
     ) -> bool {
+        if self.zoom_input.is_editing() {
+            self.route_zoom_input(event, scale, modifiers, state);
+            *handled = true;
+            return true;
+        }
         if !self.search_active {
             return false;
         }
@@ -1196,24 +1300,20 @@ impl PdfApp {
         else {
             return false;
         };
-        let mods = modifiers.state();
-        match &key_event.logical_key {
-            Key::Named(NamedKey::Escape) => self.close_search(),
-            Key::Named(NamedKey::Enter) => {
-                self.step_match(if mods.shift_key() { -1 } else { 1 });
-            }
-            Key::Character(c) => {
-                if ctrl && c.as_str().eq_ignore_ascii_case("f") {
-                    self.close_search();
-                } else {
-                    self.drive_search_input(event, scale, modifiers, state);
-                }
-            }
-            _ => self.drive_search_input(event, scale, modifiers, state),
+        if ctrl
+            && let Key::Character(c) = &key_event.logical_key
+            && c.as_str().eq_ignore_ascii_case("f")
+        {
+            ui::widget::Widget::set_focus(&mut self.find_bar, true);
+            self.find_bar.focus_query();
+            self.dirty = true;
+            *handled = true;
+            return true;
         }
-        if self.search_input.take_dirty().is_some() {
-            self.recompute_matches();
+        if !ui::widget::Widget::is_focused(&self.find_bar) {
+            return false;
         }
+        self.route_find_bar(event, scale, modifiers, state);
         *handled = true;
         true
     }
@@ -1418,6 +1518,10 @@ mod event_tests {
         let mut st = ui::State::new();
         app.sync(&mut st.doc, &st.root);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.measure_toolbar(
+            &mut ui::text_render::TextRenderer::new(),
+            &ui::theme::Theme::dark(),
+        );
         app.recompute_regions();
         app.sync_viewport_frame();
         (app, st)
@@ -1623,9 +1727,7 @@ mod event_tests {
         let mut out = vec![
             ("open".to_string(), lay.open),
             ("save".to_string(), lay.save),
-            ("zoom_out".to_string(), lay.zoom_out),
-            ("zoom_label".to_string(), lay.zoom_label),
-            ("zoom_in".to_string(), lay.zoom_in),
+            ("zoom".to_string(), lay.zoom),
             ("fit".to_string(), lay.fit),
             ("search".to_string(), lay.search),
             ("toggle_rail".to_string(), lay.toggle_rail),
@@ -1693,7 +1795,10 @@ mod event_tests {
             assert_eq!(lay.rows, rows, "rows at {width}px");
             let tb = app.toolbar_rect;
             assert!(
-                (tb.height() - TOOLBAR_H * rows as f64).abs() < 1e-9,
+                (tb.height()
+                    - f64::from(app.layout_theme.tokens.metrics.header_height) * rows as f64)
+                    .abs()
+                    < 1e-9,
                 "toolbar height {} follows its rows at {width}px",
                 tb.height()
             );
@@ -1993,13 +2098,13 @@ mod event_tests {
             assert!(!rig.app.signatures.iter().any(|s| s.id == id));
         }
 
-        // Every sidebar tab and the search strip draw without panicking, and
-        // the strip exposes both option toggles.
+        // Every sidebar tab and the find bar draw without panicking, and the
+        // bar exposes both option toggles.
         let (mut app, _st) = sample_app();
         let theme = ui::theme::Theme::dark();
-        app.search_active = true;
-        app.search_input.set_text("the");
-        app.recompute_matches();
+        app.open_search();
+        app.find_bar.set_query("the");
+        app.drive_find_bar();
         app.recompute_regions();
         for tab in [
             SidebarTab::Comments,
@@ -2011,15 +2116,16 @@ mod event_tests {
             app.prepare_sidebar_scroll(&mut tr);
             let mut er = Rect::ZERO;
             let _ = app.draw_sidebar(&mut scene, Affine::IDENTITY, &mut tr, &theme, &mut er);
-            let shits = app.draw_search(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+            app.draw_find_bar(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+            let node = ui::widget::Widget::accessibility(&app.find_bar).unwrap();
+            let names: Vec<String> = node
+                .children
+                .iter()
+                .filter_map(|child| child.name.clone())
+                .collect();
             assert!(
-                shits
-                    .iter()
-                    .any(|(h, _)| matches!(h, SearchHit::ToggleWholeWord))
-                    && shits
-                        .iter()
-                        .any(|(h, _)| matches!(h, SearchHit::ToggleCaseSensitive)),
-                "search strip exposes both option toggles ({tab:?})"
+                names.iter().any(|n| n == "Whole word") && names.iter().any(|n| n == "Match case"),
+                "the find bar exposes both option toggles ({tab:?}): {names:?}"
             );
         }
     }
@@ -2030,11 +2136,17 @@ mod event_tests {
         let none = Modifiers::default();
         let mut rig = Rig::new();
         rig.key(ctrl_mods(), character("f"));
-        assert!(rig.app.search_active, "Ctrl+F opens the find strip");
-        assert!(rig.app.search_input.is_focused(), "the query takes focus");
+        assert!(rig.app.search_active, "Ctrl+F opens the find bar");
+        assert!(
+            ui::widget::Widget::is_focused(&rig.app.find_bar),
+            "the query takes focus"
+        );
         rig.key(none, Key::Named(NamedKey::Escape));
-        assert!(!rig.app.search_active, "Escape closes the find strip");
-        assert!(!rig.app.search_input.is_focused(), "closing releases focus");
+        assert!(!rig.app.search_active, "Escape closes the find bar");
+        assert!(
+            !ui::widget::Widget::is_focused(&rig.app.find_bar),
+            "closing releases focus"
+        );
 
         let mut rig = Rig::new();
         rig.app.open_search();
@@ -2043,11 +2155,6 @@ mod event_tests {
         }
         assert_eq!(rig.app.query(), "sand");
         rig.key(ctrl_mods(), character("a"));
-        assert_eq!(
-            rig.app.search_input.selection_range_public(),
-            Some((0, 4)),
-            "Ctrl+A selects the query rather than typing into it"
-        );
         rig.key(ctrl_mods(), character("x"));
         assert_eq!(rig.app.query(), "", "Ctrl+X cuts the selected query");
         assert_eq!(
