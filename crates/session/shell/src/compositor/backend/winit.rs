@@ -114,6 +114,9 @@ struct RenderState {
     render_cx: RenderContext,
     surface: RenderSurface<'static>,
     renderer: Renderer,
+    /// Blurs floating surfaces' backdrops; built with the first frame that
+    /// has any.
+    backdrop_blur: Option<ui::backdrop::BackdropBlur>,
 }
 
 impl WinitBackend {
@@ -199,7 +202,11 @@ impl WinitPresenter {
     /// `device.poll` at the end paces this thread to the surface's
     /// `AutoVsync` present mode; off the input thread, that costs a frame
     /// of throughput rather than a keystroke of latency.
-    fn render_and_present(&mut self, scene: &Scene) {
+    fn render_and_present(
+        &mut self,
+        scene: &Scene,
+        backdrop: Option<&ui::backdrop::BackdropFrame>,
+    ) {
         let base_color = self.base_color;
         let render = &mut self.render;
         let width = render.surface.config.width;
@@ -215,6 +222,19 @@ impl WinitPresenter {
             return;
         };
 
+        if let Some(backdrop) = backdrop.filter(|frame| !frame.is_empty()) {
+            render
+                .backdrop_blur
+                .get_or_insert_with(|| ui::backdrop::BackdropBlur::new(&device_handle.device))
+                .prepare(
+                    &device_handle.device,
+                    &device_handle.queue,
+                    &mut render.renderer,
+                    backdrop,
+                    (width, height),
+                    base_color,
+                );
+        }
         // vello 0.5 removed `render_to_surface`; render into the surface's
         // target_view, blit via `TextureBlitter`, then present.
         let result = render.renderer.render_to_texture(
@@ -229,6 +249,9 @@ impl WinitPresenter {
                 antialiasing_method: AaConfig::Area,
             },
         );
+        if let Some(blur) = render.backdrop_blur.as_mut() {
+            blur.release(&mut render.renderer);
+        }
         if let Err(e) = result {
             eprintln!("tilo compositor: render_to_texture: {e:?}");
             return;
@@ -288,7 +311,11 @@ impl WinitPresenter {
 
 impl Presenter for WinitPresenter {
     fn present(&mut self, scene: &Scene, _output: OutputId) {
-        self.render_and_present(scene);
+        self.render_and_present(scene, None);
+    }
+
+    fn present_frame(&mut self, frame: &crate::compositor::frame::FramePaint, _output: OutputId) {
+        self.render_and_present(&frame.scene, frame.backdrop.as_deref());
     }
 
     /// Reconfigure the swap chain for a new window size. Arrives through
@@ -362,6 +389,20 @@ impl Backend for WinitBackend {
         };
         let mut presenter = WinitPresenter { render, base_color };
         presenter.present(scene, output);
+        self.inner.render = Some(presenter.render);
+    }
+
+    fn submit_frame_with_damage(
+        &mut self,
+        frame: &crate::compositor::frame::FramePaint,
+        output: OutputId,
+    ) {
+        let base_color = self.inner.base_color;
+        let Some(render) = self.inner.render.take() else {
+            return;
+        };
+        let mut presenter = WinitPresenter { render, base_color };
+        presenter.present_frame(frame, output);
         self.inner.render = Some(presenter.render);
     }
 
@@ -515,6 +556,7 @@ impl ApplicationHandler for Inner {
             render_cx,
             surface,
             renderer,
+            backdrop_blur: None,
         });
     }
 

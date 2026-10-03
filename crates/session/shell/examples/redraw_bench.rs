@@ -1932,6 +1932,7 @@ fn run() -> Result<(), String> {
         let scene_started = diagnostic.then(Instant::now);
         let frame_paint = frame.paint_with_damage();
         let scene_us = scene_started.map_or(0, |started| started.elapsed().as_micros());
+        bridge.set_backdrop(frame_paint.backdrop.clone());
         let damage = SceneDamage {
             revision: frame_paint.revision,
             previous_revision: frame_paint.previous_revision,
@@ -2111,6 +2112,7 @@ fn paint_initial_desktop(
     destination_pitch: usize,
 ) -> Result<(), String> {
     let initial = frame.paint_with_damage();
+    bridge.set_backdrop(initial.backdrop.clone());
     bridge
         .paint_damage_into_xrgb8888(
             &initial.scene,
@@ -3233,6 +3235,7 @@ mod tests {
                     cpu_copy_swizzle_us: 8,
                     readback_bytes: 9,
                     cpu_output_bytes: 10,
+                    backdrop_us: 0,
                 },
             });
             totals.add_sample(BenchmarkPhaseTiming {
@@ -3247,6 +3250,7 @@ mod tests {
                     cpu_copy_swizzle_us: 80,
                     readback_bytes: 90,
                     cpu_output_bytes: 100,
+                    backdrop_us: 0,
                 },
             });
             assert_eq!(totals.input_us, 11);
@@ -3473,6 +3477,7 @@ mod tests {
                     cpu_copy_swizzle_us: 8,
                     readback_bytes: 9,
                     cpu_output_bytes: 10,
+                    backdrop_us: 0,
                 },
             },
             attempts: 1,
