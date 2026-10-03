@@ -390,6 +390,8 @@ impl ImagerApp {
     /// its overlay placement is part of visual review.
     pub fn shot_open_customize_timezone(&mut self) {
         self.shot_timezone_open = true;
+        // The open chooser's field is scrolled into view with it.
+        self.shot_focus = Some("imager.profile.timezone");
     }
 
     /// Prime local-only state for deterministic offscreen review. None of this

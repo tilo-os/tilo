@@ -132,8 +132,6 @@ pub(crate) mod rhythm {
         const R: ui::tokens::Rhythm = Spacing::BASE.rhythm;
         /// A title and its explanation.
         pub const RELATED: f32 = R.related;
-        /// Siblings: the cards of one section, the page's own bands.
-        pub const SIBLING: f32 = R.sibling;
         /// Before the next group of the page.
         pub const GROUP: f32 = R.group;
         /// The page gutter, all four sides.
