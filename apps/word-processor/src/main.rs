@@ -152,6 +152,8 @@ fn main() {
                 "--blank",
                 "--outline",
                 "--margins",
+                "--recovery",
+                "--unsaved",
             ])
             .shot_handler(run_shot)
             .prepare_legacy_with_args(prepare_launch),
@@ -225,6 +227,12 @@ fn render_requested_shot(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
     if args.has("--margins") {
         wp.set_margins_mode();
     }
+    if args.has("--recovery") {
+        stage_recovery(&mut wp)?;
+    }
+    if args.has("--unsaved") {
+        wp.stage_unsaved_changes_for_shot();
+    }
     if args.has("--error") {
         wp.stage_error_for_shot();
     }
@@ -241,6 +249,26 @@ fn render_requested_shot(args: &LaunchArgs) -> Result<(), Box<dyn Error>> {
         &ui::launch::shot_theme(args),
         out,
     )?;
+    Ok(())
+}
+
+/// Offer the recovery banner the way a crash leaves it: a recovery copy of
+/// unsaved changes waiting beside the document, in a scratch directory the
+/// shot owns.
+fn stage_recovery(wp: &mut WordProcessorWidget) -> Result<(), Box<dyn Error>> {
+    let dir = std::env::temp_dir().join(format!(
+        "word-processor-shot-recovery-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(
+        dir.join(word_processor::recovery::slot_name(None)),
+        include_str!("../tests/fixtures/shot-document.md"),
+    )?;
+    wp.set_recovery_dir(dir.clone());
+    wp.check_for_recovery();
+    // The offer holds the copy in memory; the scratch directory can go.
+    let _ = std::fs::remove_dir_all(dir);
     Ok(())
 }
 
@@ -468,8 +496,12 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
     state
         .doc
         .set_actor(automerge::ActorId::from("Ana Duarte".as_bytes()));
+    // The clock a person reads, which a capture pins; every session below is
+    // stamped against it.
+    let now = ui::clock::local_now().timestamp();
+    let base = now - 5 * 3600;
     wp.sync(&mut state.doc, &state.root);
-    state.commit_action(None, None);
+    ui::tilo_resource::history::commit_stamped_at(&mut state.doc, base - 120);
 
     wp.model_mut()
         .insert_str(&mut state.doc, "Irrigation trial update");
@@ -482,11 +514,7 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
         &mut state.doc,
         "All twelve farms reported through the season.",
     );
-    state.commit_action(None, None);
-
-    // The clock a person reads, which a capture pins.
-    let now = ui::clock::local_now().timestamp();
-    let base = now - 5 * 3600;
+    ui::tilo_resource::history::commit_stamped_at(&mut state.doc, base - 60);
 
     // Session one: five more sentences, half a minute apart.
     let session_one = [
