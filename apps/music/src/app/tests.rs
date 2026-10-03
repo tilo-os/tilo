@@ -2723,6 +2723,7 @@ fn stream_operations_settle_exactly_once_for_their_request() {
             &crate::actions::CatalogTrackResource {
                 id: "tk_g1".into(),
                 label: "Track one".into(),
+                artist: String::new(),
                 album_id: String::new(),
                 artist_id: String::new(),
                 offline: false,
@@ -3270,43 +3271,35 @@ fn lyrics_load_bundled_sync_and_balance_the_wide_layout() {
         );
     }
 
-    // Phase `lyrics_wide_layout_is_balanced_with_left_art`.
+    // Phase `lyrics_are_one_readable_column_on_the_gutter`.
     {
-        // Wide: cover art fills the left column and the lyric band shifts right
-        // to balance it — not a centred column with an empty left half.
-        let body = Rect::new(232.0, 72.0, 1280.0, 708.0);
-        let band_top = body.y0 + 92.0;
-        let band_bot = body.y1 - 24.0;
-        let layout = render::lyrics_layout(body, band_top, band_bot, 220.0, 24.0);
-        let art = layout.art.expect("wide layout shows cover art on the left");
-        let body_mid = f64::midpoint(body.x0, body.x1);
-        assert!(art.center().x < body_mid, "cover art sits in the left half");
+        // Wide: one column on the content gutter, bounded to a readable
+        // width, not a centred island beside a repeat of the now-playing art.
+        let body = Rect::new(280.0, 57.0, 1280.0, 716.0);
+        let column = render::lyrics_column(body, 640.0, 24.0);
         assert!(
-            art.width() >= 180.0,
-            "the cover art is a substantial square"
+            (column.x0 - body.x0 - 24.0).abs() < 0.5,
+            "lyrics start on the gutter"
         );
         assert!(
-            layout.lyrics.center().x > body_mid,
-            "the lyrics column shifts right to balance the art"
+            column.width() <= 640.0 + 0.5,
+            "lyrics keep a readable measure"
         );
+        assert!(column.y0 >= body.y0 && column.y1 <= body.y1);
+        // Narrow: the column takes the width inside the gutters.
+        let narrow = Rect::new(0.0, 57.0, 500.0, 500.0);
+        let nc = render::lyrics_column(narrow, 640.0, 24.0);
+        assert!((nc.x1 - (narrow.x1 - 24.0)).abs() < 0.5);
+        // Synced lyrics hold the current line a third of the way down;
+        // plain lyrics read from the top.
+        assert!(render::lyrics_scroll(None, 36.0, 600.0).abs() < 1e-9);
+        let first = render::lyrics_scroll(Some(0), 36.0, 600.0);
         assert!(
-            layout.lyrics.x1 <= body.x1,
-            "the lyrics column stays within the body"
+            (-first - 200.0).abs() < 0.5,
+            "the first line sits a third down"
         );
-        assert!(
-            art.x1 < layout.lyrics.x0,
-            "art and lyrics columns don't overlap"
-        );
-
-        // Narrow: a single full-width centred column, no side art.
-        let narrow = Rect::new(0.0, 72.0, 700.0, 708.0);
-        let nl = render::lyrics_layout(narrow, 164.0, 684.0, 240.0, 24.0);
-        assert!(nl.art.is_none(), "narrow layout has no side art");
-        assert!(
-            (nl.lyrics.x0 - narrow.x0 - 24.0).abs() < 1.0
-                && (narrow.x1 - 24.0 - nl.lyrics.x1).abs() < 1.0,
-            "narrow lyrics span the width inside the gutter"
-        );
+        let tenth = render::lyrics_scroll(Some(10), 36.0, 600.0);
+        assert!((10.0 * 36.0 - tenth - 200.0).abs() < 0.5);
     }
 }
 
@@ -3837,10 +3830,40 @@ fn queue_view_and_volume_controls_are_responsive() {
             app.volume_btn_rect.width() > 0.0,
             "mid bar shows a volume button"
         );
-        // Very small (compact bar): volume hidden entirely.
+        // Very small (compact bar): volume stays a button with its popover.
         draw_at(&mut app, &mut doc, 520.0, 800.0);
         assert_eq!(app.volume_rect, Rect::ZERO);
-        assert_eq!(app.volume_btn_rect, Rect::ZERO, "compact bar hides volume");
+        assert!(
+            app.volume_btn_rect.width() > 0.0,
+            "the compact bar keeps the volume button"
+        );
+        // The rest of the wide bar's controls live in its More menu.
+        let more = app
+            .hits
+            .iter()
+            .find_map(|hit| match hit.action {
+                Action::OpenPlayerMenu(rect) => Some(rect),
+                _ => None,
+            })
+            .expect("the compact bar offers a More menu");
+        app.dispatch(Action::OpenPlayerMenu(more), &mut doc);
+        assert!(app.context.is_open(), "More opens the player menu");
+        let labels: Vec<&str> = app
+            .context
+            .items()
+            .iter()
+            .filter_map(ui::widget::context_menu::MenuItem::label)
+            .collect();
+        for label in ["Shuffle", "Repeat all", "Repeat one", "Lyrics", "Queue"] {
+            assert!(
+                labels.contains(&label),
+                "the More menu offers {label}: {labels:?}"
+            );
+        }
+        assert!(
+            labels.contains(&"Like") || labels.contains(&"Unlike"),
+            "the More menu offers like: {labels:?}"
+        );
     }
 
     // Phase `volume_button_opens_a_slider_popover`.
@@ -3917,15 +3940,17 @@ fn queue_view_and_volume_controls_are_responsive() {
 
     // Phase `songs_row_columns_share_the_width_without_a_dead_gap`.
     {
-        // A wide row: title and album split the free width, one column gap
-        // apart, so no cavern opens between them; the actions and duration
+        // A wide row: the title column is as wide as its widest line (but a
+        // readable column at least), the album follows one column gap
+        // later, so no cavern opens between them; the actions and duration
         // keep their own trailing columns.
-        let (left, right, gap, min_text) = (304.0, 1256.0, 12.0, 160.0);
+        let (left, right, gap, min_text) = (304.0, 1256.0, 24.0, 160.0);
         let widths = render::ColumnWidths {
             index: 24.0,
             duration: 32.0,
             action: 28.0,
             actions: 2,
+            title: 210.0,
             gap,
             min_text,
         };
@@ -3935,7 +3960,37 @@ fn queue_view_and_volume_controls_are_responsive() {
             (album_x - cols.title_x1 - gap).abs() < 0.5,
             "album follows the title"
         );
-        assert!(cols.title_x1 - cols.title_x >= min_text);
+        assert!(
+            (cols.title_x1 - cols.title_x - 210.0).abs() < 0.5,
+            "the title column fits its widest line"
+        );
+        let short = render::track_columns(
+            left,
+            right,
+            render::ColumnWidths {
+                title: 90.0,
+                ..widths
+            },
+            true,
+        );
+        assert!(
+            (short.title_x1 - short.title_x - min_text).abs() < 0.5,
+            "short titles keep a readable column"
+        );
+        let long = render::track_columns(
+            left,
+            right,
+            render::ColumnWidths {
+                title: 2000.0,
+                ..widths
+            },
+            true,
+        );
+        let (long_album, _) = long
+            .album
+            .expect("long titles still leave the album its half");
+        assert!(long_album - long.title_x1 >= gap - 0.5);
+        assert!(long.title_x1 - long.title_x <= (long.actions_x - gap - long.title_x) / 2.0 + 0.5);
         assert!(album_x1 - album_x >= min_text);
         assert!(
             (cols.actions_x - album_x1 - gap).abs() < 0.5,

@@ -33,6 +33,7 @@ use ui::theme::Theme;
 #[cfg(test)]
 use ui::widget::SplitLayout;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
+use ui::widget::toast::ToastKind;
 use ui::widget::{ModalDialog, PromptBody, SidebarDrawer, Widget};
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -55,6 +56,18 @@ use crate::stream::{StreamRequest, StreamUpdate, StreamWorker};
 /// non-cancellable lifecycle contract without turning a slow normal seek into
 /// a fabricated success.
 const STREAM_START_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// What a failed offline download says in passing. The reason stays with the
+/// song: its row in Downloads offers Retry, and that button names the cause.
+const OFFLINE_FAILED: &str = "Couldn\u{2019}t download for offline listening";
+
+/// A transient message over the content: what it says, what kind of result
+/// it reports, and when it appeared.
+struct Notice {
+    text: String,
+    kind: ToastKind,
+    at: Instant,
+}
 
 fn cover_request() -> PickRequest {
     PickRequest::open("Choose a playlist cover", "Set cover")
@@ -115,6 +128,11 @@ enum Action {
     Prev,
     ToggleShuffle,
     CycleRepeat,
+    /// Repeat in this mode, or stop repeating when it already does.
+    SetRepeat(RepeatMode),
+    /// Open the narrow transport's More menu, anchored at this button: the
+    /// playback controls the compact bar has no room for.
+    OpenPlayerMenu(Rect),
     SeekFrac(f64),
     VolumeFrac(f64),
     /// Toggle mute: drop the volume to 0, or restore the pre-mute level.
@@ -411,7 +429,7 @@ pub struct MusicApp {
     /// resetting. `None` when the queue view wasn't opened via the toggle.
     queue_return: Option<(View, f64)>,
     dirty: bool,
-    toast: Option<(String, Instant)>,
+    toast: Option<Notice>,
 
     /// Self-routing right-click context menu (the `ui` primitive, driven
     /// imperatively: opened at the cursor, drawn last, polled via a sink).
@@ -469,6 +487,8 @@ pub struct MusicApp {
     /// A staged track whose context menu opens over its row once the row is
     /// laid out.
     staged_menu_track: Option<String>,
+    /// Open the narrow transport's More menu once the bar is laid out.
+    staged_player_menu: bool,
     /// A staged sidebar state, snapped once the drawer knows the window's
     /// size class (docked or floating each remember their own state).
     staged_sidebar: Option<bool>,
@@ -741,6 +761,7 @@ impl MusicApp {
             lyrics_synced: false,
             shot_stage: None,
             staged_menu_track: None,
+            staged_player_menu: false,
             staged_sidebar: None,
             images: ImageStore::new(&image_fetcher()),
             art_urls: HashMap::new(),
@@ -1037,13 +1058,7 @@ impl MusicApp {
                     {
                         self.update_device_cache(&track_id, CacheState::Cached);
                         self.settle_offline_track(&track_id, None);
-                        self.toast = Some((
-                            format!(
-                                "Saved “{}” for offline playback",
-                                self.track_label(&track_id)
-                            ),
-                            ui::time::now(),
-                        ));
+                        self.notify(ToastKind::Success, "Saved for offline listening");
                     } else {
                         self.update_device_cache(&track_id, CacheState::Streamed);
                         self.settle_offline_track(
@@ -1056,8 +1071,7 @@ impl MusicApp {
                     self.update_device_cache(&track_id, CacheState::Streamed);
                     self.offline_errors.insert(track_id.clone(), error.clone());
                     self.settle_offline_track(&track_id, Some(error.clone()));
-                    self.toast =
-                        Some((format!("Offline download failed: {error}"), ui::time::now()));
+                    self.notify(ToastKind::Error, OFFLINE_FAILED);
                 }
             }
         }
@@ -1124,8 +1138,18 @@ impl MusicApp {
     fn report_device_profile_error(&mut self) {
         if let Err(error) = self.persist_device_profile() {
             self.playback_error = Some(error.clone());
-            self.toast = Some((error, ui::time::now()));
+            self.notify(ToastKind::Error, error);
         }
+    }
+
+    /// Show a transient message: a confirmation (`Success`), something under
+    /// way (`Info`) or a failure (`Error`).
+    fn notify(&mut self, kind: ToastKind, text: impl Into<String>) {
+        self.toast = Some(Notice {
+            text: text.into(),
+            kind,
+            at: ui::time::now(),
+        });
     }
 
     fn update_device_cache(&mut self, id: &str, state: CacheState) {
@@ -1213,7 +1237,8 @@ impl MusicApp {
                     .take(crate::actions::OPEN_PLAYLIST_TRACK_LIMIT)
                     .map(|tid| crate::actions::TrackRef {
                         id: tid.clone(),
-                        label: self.track_label(tid),
+                        label: self.track_title(tid),
+                        artist: self.track_artist(tid),
                         liked: self.lib.is_liked(tid),
                         rank: p.track_ranks.get(tid).copied().unwrap_or_default(),
                     })
@@ -1236,7 +1261,8 @@ impl MusicApp {
                 .take(crate::actions::OPEN_RESOURCE_CATEGORY_LIMIT)
                 .map(|track| crate::actions::CatalogTrackResource {
                     id: track.id.clone(),
-                    label: self.track_label(&track.id),
+                    label: self.track_title(&track.id),
+                    artist: self.track_artist(&track.id),
                     album_id: track.album_id.clone(),
                     artist_id: track.artist_id.clone(),
                     offline: matches!(self.lib.cache_state(&track.id), CacheState::Cached),
@@ -1272,7 +1298,8 @@ impl MusicApp {
                 .map(|(index, track)| crate::actions::QueueItemResource {
                     index,
                     track: track.clone(),
-                    label: self.track_label(track),
+                    label: self.track_title(track),
+                    artist: self.track_artist(track),
                     current: self.pb.queue_index == index
                         && self.pb.current.as_deref() == Some(track),
                 })
@@ -1293,7 +1320,8 @@ impl MusicApp {
             playlist: playlist.id.clone(),
             track: crate::actions::TrackRef {
                 id: track.id.clone(),
-                label: self.track_label(&track.id),
+                label: self.track_title(&track.id),
+                artist: self.track_artist(&track.id),
                 liked: self.lib.is_liked(&track.id),
                 rank: playlist
                     .track_ranks
@@ -1351,7 +1379,8 @@ impl MusicApp {
                 .map(|(index, track)| crate::actions::QueueItemResource {
                     index,
                     track: track.clone(),
-                    label: self.track_label(track),
+                    label: self.track_title(track),
+                    artist: self.track_artist(track),
                     current: self.pb.queue_index == index
                         && self.pb.current.as_deref() == Some(track),
                 })
@@ -1364,7 +1393,8 @@ impl MusicApp {
             }
             ctx.queue.push(crate::actions::QueueItemResource {
                 index,
-                label: self.track_label(&track_id),
+                label: self.track_title(&track_id),
+                artist: self.track_artist(&track_id),
                 track: track_id,
                 current: self.pb.queue_index == index
                     && self.pb.current.as_deref() == self.pb.queue.get(index).map(String::as_str),
@@ -1375,7 +1405,8 @@ impl MusicApp {
             let track = self.lib.track(track_id)?;
             ctx.tracks.push(crate::actions::CatalogTrackResource {
                 id: track.id.clone(),
-                label: self.track_label(&track.id),
+                label: self.track_title(&track.id),
+                artist: self.track_artist(&track.id),
                 album_id: track.album_id.clone(),
                 artist_id: track.artist_id.clone(),
                 offline: matches!(self.lib.cache_state(&track.id), CacheState::Cached),
@@ -1428,7 +1459,8 @@ impl MusicApp {
             .values()
             .map(|track| crate::actions::CatalogTrackResource {
                 id: track.id.clone(),
-                label: self.track_label(&track.id),
+                label: self.track_title(&track.id),
+                artist: self.track_artist(&track.id),
                 album_id: track.album_id.clone(),
                 artist_id: track.artist_id.clone(),
                 offline: matches!(self.lib.cache_state(&track.id), CacheState::Cached),
@@ -1437,19 +1469,17 @@ impl MusicApp {
             .collect()
     }
 
-    /// A one-line "Title — Artist" label for a track id, for the palette.
-    fn track_label(&self, track_id: &str) -> String {
-        match self.playback_track(track_id) {
-            Some(t) => {
-                let artist = self.lib.artist_name(&t.artist_id);
-                if artist.is_empty() {
-                    t.title.clone()
-                } else {
-                    format!("{} — {artist}", t.title)
-                }
-            }
-            None => track_id.to_string(),
-        }
+    /// A track's title for the palette (its id when the track is gone).
+    fn track_title(&self, track_id: &str) -> String {
+        self.playback_track(track_id)
+            .map_or_else(|| track_id.to_string(), |t| t.title.clone())
+    }
+
+    /// Who performs a track, the palette row's secondary line.
+    fn track_artist(&self, track_id: &str) -> String {
+        self.playback_track(track_id)
+            .map(|t| self.lib.artist_name(&t.artist_id).to_string())
+            .unwrap_or_default()
     }
 
     fn current_duration_ms(&self) -> u64 {
@@ -1706,17 +1736,14 @@ impl MusicApp {
                 };
                 self.cover_embed_for = Some(playlist_id);
                 self.cover_embed = Some(embed_cover_off_thread(path));
-                self.toast = Some((
-                    "Preparing portable playlist cover…".to_string(),
-                    ui::time::now(),
-                ));
+                self.notify(ToastKind::Info, "Preparing the playlist cover");
             }
             PortalOutcome::Cancelled => {}
             PortalOutcome::Failed(reason) => {
-                self.toast = Some((
-                    format!("Couldn\u{2019}t set cover: {reason}"),
-                    ui::time::now(),
-                ));
+                self.notify(
+                    ToastKind::Error,
+                    format!("Couldn\u{2019}t set the cover: {reason}"),
+                );
             }
         }
     }
@@ -1731,7 +1758,7 @@ impl MusicApp {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.cover_embed = None;
                 self.cover_embed_for = None;
-                self.toast = Some(("Couldn’t prepare playlist cover".into(), ui::time::now()));
+                self.notify(ToastKind::Error, "Couldn’t prepare the playlist cover");
                 return;
             }
         };
@@ -1742,10 +1769,13 @@ impl MusicApp {
                 self.perform_action(state, &crate::actions::set_cover_action(&playlist_id, &url));
                 self.reload_library(state);
                 self.art_urls.insert(playlist_id, url);
-                self.toast = Some(("Playlist cover updated".to_string(), ui::time::now()));
+                self.notify(ToastKind::Success, "Playlist cover updated");
             }
             (_, Err(reason)) => {
-                self.toast = Some((format!("Couldn’t set cover: {reason}"), ui::time::now()));
+                self.notify(
+                    ToastKind::Error,
+                    format!("Couldn’t set the cover: {reason}"),
+                );
             }
             (None, Ok(_)) => {}
         }
@@ -1782,7 +1812,7 @@ impl MusicApp {
                     .unwrap_or_else(|| "this track could not be played".to_string());
                 let message = format!("Can\u{2019}t play: {msg}");
                 self.playback_error = Some(message.clone());
-                self.toast = Some((message, ui::time::now()));
+                self.notify(ToastKind::Error, message);
                 self.pb.playing = false;
                 self.audio.stop();
                 self.fail_resource_stream(
@@ -2225,6 +2255,8 @@ impl MusicApp {
             Action::Prev => self.on_prev(state),
             Action::ToggleShuffle => self.on_toggle_shuffle(state),
             Action::CycleRepeat => self.on_cycle_repeat(state),
+            Action::SetRepeat(mode) => self.on_set_repeat(mode, state),
+            Action::OpenPlayerMenu(anchor) => self.open_player_menu(anchor),
             Action::SeekFrac(f) => self.on_seek_frac(f, state),
             Action::VolumeFrac(f) => self.on_volume_frac(f, state),
             Action::ToggleVolumePopover => {
@@ -2241,8 +2273,8 @@ impl MusicApp {
             Action::SetOffline { track, keep } => {
                 if keep {
                     if let Err(error) = self.request_offline_download(&track) {
-                        self.toast =
-                            Some((format!("Offline download failed: {error}"), ui::time::now()));
+                        self.offline_errors.insert(track, error);
+                        self.notify(ToastKind::Error, OFFLINE_FAILED);
                     }
                 } else {
                     if let Some(download) = self.downloads.remove(&track) {
@@ -2251,10 +2283,10 @@ impl MusicApp {
                     self.offline_resolves.retain(|_, pending| pending != &track);
                     self.offline_errors.remove(&track);
                     if let Err(error) = self.media_cache.remove(&self.media_cache_root, &track) {
-                        self.toast = Some((
-                            format!("Couldn’t remove offline media: {error}"),
-                            ui::time::now(),
-                        ));
+                        self.notify(
+                            ToastKind::Error,
+                            format!("Couldn’t remove the download: {error}"),
+                        );
                     }
                     self.update_device_cache(&track, CacheState::Streamed);
                     self.settle_offline_track(&track, Some("offline download cancelled".into()));
@@ -2295,12 +2327,24 @@ impl MusicApp {
         self.persist_playback(state);
     }
 
+    fn on_set_repeat(&mut self, mode: RepeatMode, state: &mut AutoCommit) {
+        self.pb.repeat = if self.pb.repeat == mode {
+            RepeatMode::Off
+        } else {
+            mode
+        };
+        self.persist_playback(state);
+    }
+
     fn on_remove_from_queue(&mut self, index: usize, state: &mut AutoCommit) {
         let Some(track) = self.pb.queue.get(index).cloned() else {
             return;
         };
         if let Err(error) = self.apply_resource_remove_queue_item(index, &track) {
-            self.toast = Some((format!("Couldn’t update queue: {error}"), ui::time::now()));
+            self.notify(
+                ToastKind::Error,
+                format!("Couldn’t update the queue: {error}"),
+            );
         }
         self.persist_playback(state);
     }
@@ -2492,32 +2536,18 @@ impl MusicApp {
         // outcome and applies the cover.
         self.cover_pick_for = Some(playlist_id);
         self.cover_pick = Some(cover_request().send());
-        self.toast = Some(("Choose a cover image\u{2026}".to_string(), ui::time::now()));
+        self.notify(ToastKind::Info, "Choose a cover image");
     }
 
     fn on_add_to_queue(&mut self, id: &str, state: &mut AutoCommit) {
         self.pb.queue.push(id.to_string());
-        let label = self
-            .playback_track(id)
-            .map(|t| t.title.clone())
-            .unwrap_or_default();
-        self.toast = Some((
-            format!("Added \u{201c}{label}\u{201d} to queue"),
-            ui::time::now(),
-        ));
+        self.notify(ToastKind::Success, "Added to the queue");
         self.persist_playback(state);
     }
 
     fn on_play_next(&mut self, id: &str, state: &mut AutoCommit) {
         self.queue_play_next(id.to_string());
-        let label = self
-            .playback_track(id)
-            .map(|t| t.title.clone())
-            .unwrap_or_default();
-        self.toast = Some((
-            format!("Playing \u{201c}{label}\u{201d} next"),
-            ui::time::now(),
-        ));
+        self.notify(ToastKind::Success, "Playing next");
         if self.pb.current.as_deref() == Some(id) {
             self.start_stream(id);
         }
@@ -2529,19 +2559,14 @@ impl MusicApp {
         self.perform_action(state, &crate::actions::set_liked_action(id, liked));
         self.reload_library(state);
         let now = self.lib.is_liked(id);
-        let label = self
-            .lib
-            .track(id)
-            .map(|t| t.title.clone())
-            .unwrap_or_default();
-        self.toast = Some((
+        self.notify(
+            ToastKind::Success,
             if now {
-                format!("Liked \u{201c}{label}\u{201d}")
+                "Added to liked songs"
             } else {
-                format!("Removed \u{201c}{label}\u{201d} from liked songs")
+                "Removed from liked songs"
             },
-            ui::time::now(),
-        ));
+        );
     }
 
     fn on_toggle_save_album(&mut self, id: &str, state: &mut AutoCommit) {
@@ -2549,15 +2574,14 @@ impl MusicApp {
         self.perform_action(state, &crate::actions::set_saved_album_action(id, saved));
         self.reload_library(state);
         let now = self.lib.is_album_saved(id);
-        let label = self.lib.album_title(id).to_string();
-        self.toast = Some((
+        self.notify(
+            ToastKind::Success,
             if now {
-                format!("Added \u{201c}{label}\u{201d} to your library")
+                "Saved to your library"
             } else {
-                format!("Removed \u{201c}{label}\u{201d} from your library")
+                "Removed from your library"
             },
-            ui::time::now(),
-        ));
+        );
     }
 
     fn on_toggle_follow(&mut self, id: &str, state: &mut AutoCommit) {
@@ -2575,14 +2599,14 @@ impl MusicApp {
             .map(|p| p.name.clone())
             .filter(|n| !n.is_empty())
             .unwrap_or_else(|| self.lib.artist_name(id).to_string());
-        self.toast = Some((
+        self.notify(
+            ToastKind::Success,
             if now {
                 format!("Following {label}")
             } else {
                 format!("Unfollowed {label}")
             },
-            ui::time::now(),
-        ));
+        );
     }
 
     fn on_add_to_playlist(&mut self, playlist: &str, track: &str, state: &mut AutoCommit) {
@@ -2603,7 +2627,7 @@ impl MusicApp {
             .playlist(playlist)
             .map(|p| p.name.clone())
             .unwrap_or_default();
-        self.toast = Some((format!("Added to \u{201c}{pl}\u{201d}"), ui::time::now()));
+        self.notify(ToastKind::Success, format!("Added to {pl}"));
     }
 
     /// Begin the new-playlist name prompt; `track` is set when this came from
@@ -2639,14 +2663,14 @@ impl MusicApp {
         self.nav_back.push(self.view.clone());
         self.view = View::Playlist(id);
         self.scroll = 0.0;
-        self.toast = Some((
+        self.notify(
+            ToastKind::Success,
             if added_track.is_some() {
-                format!("Added to new playlist \u{201c}{name}\u{201d}")
+                format!("Added to {name}")
             } else {
-                format!("Created \u{201c}{name}\u{201d}")
+                format!("Created {name}")
             },
-            ui::time::now(),
-        ));
+        );
     }
 
     fn on_begin_rename_playlist(&mut self, id: String) {
@@ -2678,7 +2702,7 @@ impl MusicApp {
             self.view = View::Playlists;
             self.scroll = 0.0;
         }
-        self.toast = Some(("Playlist deleted".into(), ui::time::now()));
+        self.notify(ToastKind::Success, "Playlist deleted");
     }
 
     fn on_toggle_queue(&mut self) {
@@ -2723,7 +2747,7 @@ impl MusicApp {
                 Ok(request) => Some(request),
                 Err(error) => {
                     self.playback_error = Some(error.clone());
-                    self.toast = Some((error, ui::time::now()));
+                    self.notify(ToastKind::Error, error);
                     self.pb.playing = false;
                     self.audio.stop();
                     None
@@ -2742,7 +2766,7 @@ impl MusicApp {
             self.resolve_in_flight = 0;
             let message = "Can’t start audio: request identity space is exhausted".to_string();
             self.playback_error = Some(message.clone());
-            self.toast = Some((message, ui::time::now()));
+            self.notify(ToastKind::Error, message);
             self.pb.playing = false;
             self.audio.stop();
             return None;
@@ -2778,7 +2802,7 @@ impl MusicApp {
                 self.resolve_in_flight = 0;
                 let message = format!("Can\u{2019}t start audio: {error}");
                 self.playback_error = Some(message.clone());
-                self.toast = Some((message, ui::time::now()));
+                self.notify(ToastKind::Error, message);
                 self.pb.playing = false;
                 self.audio.stop();
                 None
@@ -2970,7 +2994,11 @@ impl MusicApp {
         self.audio.stop();
         let message = "Audio startup timed out before playback could begin.";
         self.playback_error = Some(message.into());
-        self.toast = Some((message.into(), now));
+        self.toast = Some(Notice {
+            text: message.into(),
+            kind: ToastKind::Error,
+            at: now,
+        });
         self.fail_resource_stream(
             "music.stream_start_timed_out",
             message,
@@ -3323,10 +3351,7 @@ impl MusicApp {
                                 self.offline_errors
                                     .insert(cache_track.clone(), error.clone());
                                 self.settle_offline_track(&cache_track, Some(error.clone()));
-                                self.toast = Some((
-                                    format!("Offline download failed: {error}"),
-                                    ui::time::now(),
-                                ));
+                                self.notify(ToastKind::Error, OFFLINE_FAILED);
                             }
                         }
                     } else {
@@ -3343,8 +3368,7 @@ impl MusicApp {
                         self.offline_errors
                             .insert(cache_track.clone(), error.clone());
                         self.settle_offline_track(&cache_track, Some(error.clone()));
-                        self.toast =
-                            Some((format!("Offline download failed: {error}"), ui::time::now()));
+                        self.notify(ToastKind::Error, OFFLINE_FAILED);
                     } else {
                         self.apply_resolve_failure(&track_id, request_id, &error);
                     }
@@ -3483,7 +3507,7 @@ impl MusicApp {
         if self.pb.current.as_deref() == Some(track_id) {
             let message = format!("Can\u{2019}t stream: {error}");
             self.playback_error = Some(message.clone());
-            self.toast = Some((message, ui::time::now()));
+            self.notify(ToastKind::Error, message);
             self.pb.playing = false;
             self.audio.stop();
         }
@@ -3679,10 +3703,10 @@ impl MusicApp {
                 Ok(()) => self.home_requested = true,
                 Err(error) => {
                     self.home_failed = true;
-                    self.toast = Some((
+                    self.notify(
+                        ToastKind::Error,
                         format!("Couldn\u{2019}t load Home: {error}"),
-                        ui::time::now(),
-                    ));
+                    );
                 }
             }
         }
@@ -3701,10 +3725,10 @@ impl MusicApp {
                 }
                 Err(error) => {
                     self.failed_pages.insert(id.to_string());
-                    self.toast = Some((
+                    self.notify(
+                        ToastKind::Error,
                         format!("Couldn\u{2019}t load artist: {error}"),
-                        ui::time::now(),
-                    ));
+                    );
                 }
             }
         }
@@ -3723,10 +3747,10 @@ impl MusicApp {
                 }
                 Err(error) => {
                     self.failed_pages.insert(id.to_string());
-                    self.toast = Some((
+                    self.notify(
+                        ToastKind::Error,
                         format!("Couldn\u{2019}t load album: {error}"),
-                        ui::time::now(),
-                    ));
+                    );
                 }
             }
         }
@@ -3745,10 +3769,10 @@ impl MusicApp {
                 }
                 Err(error) => {
                     self.failed_pages.insert(id.to_string());
-                    self.toast = Some((
+                    self.notify(
+                        ToastKind::Error,
                         format!("Couldn\u{2019}t load playlist: {error}"),
-                        ui::time::now(),
-                    ));
+                    );
                 }
             }
         }
@@ -3860,6 +3884,13 @@ impl MusicApp {
     pub fn snap_nowplaying(&mut self) {
         self.shot_stage = Some(ShotStage::NowPlaying);
         self.view = View::Songs;
+    }
+
+    /// Stage a playing track on a narrow window with the transport's More
+    /// menu open (shuffle, repeat, like, lyrics, queue).
+    pub fn snap_player_menu(&mut self) {
+        self.snap_nowplaying();
+        self.staged_player_menu = true;
     }
 
     /// Stage the Queue view with a real "Next up" list: a bundled track plays
@@ -4280,6 +4311,67 @@ impl MusicApp {
             self.push_menu("Remove from queue", Action::RemoveFromQueue(qi));
         }
         self.open_context_menu_at_pointer();
+    }
+
+    /// A menu row that shows whether its setting is on.
+    fn push_checked_menu(&mut self, label: impl Into<String>, checked: bool, action: Action) {
+        let idx = self.menu_actions.len() as i64;
+        let pending = self.pending.clone();
+        self.context.push(
+            MenuItem::action(label, move || {
+                pending.store(idx, Ordering::SeqCst);
+            })
+            .with_checked(checked),
+        );
+        self.menu_actions.push(action);
+    }
+
+    /// The narrow transport's More menu: shuffle, repeat, like, lyrics and
+    /// the queue, each showing whether it is on. Opens beside `anchor`.
+    fn open_player_menu(&mut self, anchor: Rect) {
+        self.context = ContextMenu::new();
+        self.menu_actions.clear();
+        self.ctx_track = None;
+        self.ctx_in_playlist = None;
+        self.ctx_queue_index = None;
+        self.menu_anchor_row = None;
+        let idle = self.pb.current.is_none() && self.pb.queue.is_empty();
+        self.push_checked_menu("Shuffle", self.pb.shuffle, Action::ToggleShuffle);
+        self.push_checked_menu(
+            "Repeat all",
+            self.pb.repeat == RepeatMode::All,
+            Action::SetRepeat(RepeatMode::All),
+        );
+        self.push_checked_menu(
+            "Repeat one",
+            self.pb.repeat == RepeatMode::One,
+            Action::SetRepeat(RepeatMode::One),
+        );
+        if idle {
+            for index in 0..3 {
+                self.context.set_item_enabled(index, false);
+            }
+        }
+        self.context.push(MenuItem::separator());
+        self.menu_actions.push(Action::None);
+        if let Some(track) = self.pb.current.clone()
+            && !self.is_local_file(&track)
+        {
+            let liked = self.lib.is_liked(&track);
+            self.push_menu(
+                if liked { "Unlike" } else { "Like" },
+                Action::ToggleLike(track),
+            );
+        }
+        self.push_checked_menu(
+            "Lyrics",
+            self.view == View::Lyrics,
+            Action::Nav(View::Lyrics),
+        );
+        self.push_checked_menu("Queue", self.view == View::Queue, Action::ToggleQueue);
+        self.context.set_text_scale(self.context_text_scale);
+        self.context.open_anchored(anchor, self.rect);
+        self.dirty = true;
     }
 
     /// Build + open the "Add to playlist…" secondary picker.
