@@ -192,7 +192,7 @@ fn launch_args(args: &[String]) -> Result<LaunchArgs, String> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--cwd" => {
-                parsed.cwd = Some(PathBuf::from(args.next().ok_or("--cwd needs a directory")?))
+                parsed.cwd = Some(PathBuf::from(args.next().ok_or("--cwd needs a directory")?));
             }
             "--share-cwd" => parsed.share_cwd = true,
             "--no-window" => parsed.windowed = false,

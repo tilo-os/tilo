@@ -24,6 +24,9 @@ qemu-img create -q -f qcow2 -F qcow2 -b "$disk" "$work/overlay.qcow2"
 vsock=()
 if [[ -w /dev/vhost-vsock ]]; then
   vsock=(-device "vhost-vsock-pci,guest-cid=$((1000 + RANDOM))")
+  echo "booting with a vhost-vsock device"
+else
+  echo "no /dev/vhost-vsock on this runner; booting without a vsock device"
 fi
 qemu-system-x86_64 \
   -machine q35,accel=kvm -cpu host -smp 2 -m 2048 \
