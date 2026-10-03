@@ -53,6 +53,7 @@ impl Resource for Remote {
                 anchor: Some(format!("remote.session:{}", connection.id)),
                 title: connection.name.clone(),
                 text: connection.host.clone(),
+                action: None,
             })
             .collect()
     }

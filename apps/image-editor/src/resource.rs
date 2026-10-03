@@ -59,6 +59,7 @@ impl Resource for ImageEditor {
                 anchor: Some(crate::actions::adjustment_resource_id(id)),
                 title: node.title.clone(),
                 text: id.clone(),
+                action: None,
             })
             .collect()
     }

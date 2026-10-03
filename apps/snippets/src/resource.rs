@@ -95,6 +95,7 @@ impl Resource for Snippets {
                     snippet.title.clone()
                 },
                 text: snippet.description.clone(),
+                action: None,
             })
             .collect()
     }

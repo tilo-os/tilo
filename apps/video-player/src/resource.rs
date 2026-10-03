@@ -61,11 +61,13 @@ impl Resource for VideoPlayer {
             anchor: Some(playlist_resource_id(&playlist.id)),
             title: playlist.name.clone(),
             text: "Playlist".to_owned(),
+            action: None,
         });
         let annotations = state.annotations.iter().map(|annotation| SearchEntry {
             anchor: Some(annotation_resource_id(&annotation.id)),
             title: annotation.text.clone(),
             text: format!("{} ms", annotation.time_ms),
+            action: None,
         });
         playlists.chain(annotations).collect()
     }
