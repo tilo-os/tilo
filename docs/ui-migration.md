@@ -204,7 +204,7 @@ and presence palette. There is no accent colour any more: nothing in
 | `QueryInk::accented(text, placeholder, accent)` | `QueryInk::of(&theme.tokens.colors)` (caret and selection in your colour) |
 | `palette.surface_radius_px()` (`CommandPalette`) | `CommandPalette::surface_radius_px(theme)` (the panel radius) |
 | `ui::presence::PEER_PALETTE` (24 entries), `user_color` returning Tailwind colours | 12 entries, the dark presence palette; `user_color` is an identity, paint it with `colors.presence.of_rgb(user_color(id))` |
-| `Theme::configured()` reading the person's colour | it reads `identity.colour`; an app does nothing |
+| `Theme::configured()` reading the person's colour | the window's host applies it (`Theme::in_window`, see [Window appearance](#window-appearance)); an app does nothing |
 | `elevation.e0` … `elevation.e4` | `elevation.floating` for anything floating (menu, popover, palette, sheet, quick settings, toast, tooltip, dragged object); **no shadow** for a window tile, a card, a bar or a selected control: delete the `surface::shadow` call |
 | `radii.sm` (4) | `radii.detail` (progress track, badge, sparkline clip, caret) |
 | `radii.md` (8), `radii.lg` (12) | `radii.control` (8) for a button, field, segmented track or a tile inside a panel; `radii.item` (6) for a selected row or a segment thumb |
@@ -1471,7 +1471,9 @@ header row and which reads as on while History shows. Apps place nothing.
    `let mut scene = frame.draw(&mut root); frame.draw_overlay(&mut root, &mut scene); frame.write_png(&scene, out);`
    (`ui::launch::render_widget_png` does all three).
 6. Light shots through a remote cargo drop-in: pass `--theme light` (the
-   environment is not forwarded).
+   environment is not forwarded). A shot is neutral, as a window without a
+   shell is; `--workspace-hue DEGREES` and `--your-colour NAME` show it as
+   the shell would in a workspace ([Window appearance](#window-appearance)).
 7. History mode: pass `--history` with `--shots` or `--responsive-matrix`;
    the capture opens History first (`FrameHarness::open_history`), as the
    History shortcut does.
@@ -1614,6 +1616,31 @@ writers of the appearance state.
 | `day_schedule::AUTOMATIC_THEME` (`"Automatic"`) | `day_schedule::AUTOMATIC_MODE` (`"automatic"`), read from `appearance.mode` |
 | `backdrop::FLOATING_TINT_ALPHA` | `surfaces.material_opacity` (a theme role) |
 | A primary label resolved from `Color::WHITE` | `colors.intent.on_inverted` |
+| `DEFAULT_NEUTRAL_HUE` (hue 255 as every palette's fallback) | none: `Palette::hue` is `Option<f32>`; `None` (the light, dark and high-contrast presets) is pure grey until the window's workspace gives it a hue |
+| `ui::workspace_hue(..) -> f32` | `-> Option<f32>`, `None` for a wallpaper without a hue |
+| `ThemeLayerStack::{workspace_hue, your_colour}` | `ThemeLayerStack::window: WindowAppearance`, set by the host that shows the window |
+| `Theme::configured` applying `identity.colour` | the host applies the colour (`Theme::in_window`); the shell sends it to each app window, a standalone app reads the stored choice once |
+| `collaboration::Collaborator::color: [f32; 3]` | `Collaborator::colour: Option<PresenceHue>` (packed on the roster wire with `Collaborator::packed_colour`) |
+
+### Window appearance
+
+Where and for whom a window is shown is not part of its theme:
+`ui::WindowAppearance { workspace_hue, your_colour }`, applied over any
+theme with `Theme::in_window`. Apps do nothing to receive it. The shell
+sends it over the app's shell-ui connection
+(`FloatingSurfaceHostMessage::Appearance`) and `App` applies it on every
+rebuild (`App::set_window_appearance`, `App::window_appearance`), so the
+temperature and the person's colour survive settings and contrast changes.
+A host that embeds windows itself (a test harness, another shell) calls
+`App::set_window_appearance` directly.
+
+A capture shows a window without a shell, neutral and in the default
+colour. To show it in a workspace, pass what the shell would send:
+
+```bash
+cargo run -p <pkg> --bin <bin> -- --shots target/look/<dir>/warm.png \
+  --viewport 1280x800 --theme light --workspace-hue 60 --your-colour violet
+```
 
 ### Settings > Appearance
 
