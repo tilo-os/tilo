@@ -1131,12 +1131,18 @@ fn persist_personal_continuity(path: &Path, value: &PersistedPersonalContinuity)
         tracing::warn!(%error, path = %path.display(), "personal continuity directory unavailable");
         return false;
     }
+    let current = std::fs::read(path).ok();
+    // A quiet tree asks to persist the same state on every sync round. The
+    // primary already holds it, and rewriting it costs four fsyncs (file and
+    // directory, for backup and primary) on the compositor thread.
+    if current.as_deref() == Some(bytes.as_slice()) {
+        return true;
+    }
     // Establish the recovery point before replacing the primary. Refusing to
     // advance when this fails keeps the backup exactly one committed primary
     // behind (or equal on first write), which makes the reserved-counter
     // recovery rule above sound even across repeated failures.
-    let prior = std::fs::read(path)
-        .ok()
+    let prior = current
         .filter(|prior| decode_persisted_personal_continuity(prior).is_some())
         .unwrap_or_else(|| bytes.clone());
     if let Err(error) = tilo_files::native::atomic::write_with_mode(
@@ -3021,11 +3027,17 @@ impl ShellNetwork {
 
     fn adopt_enrolled_rooms(&self) {
         let path = personal_device_peer_path().with_file_name("personal-rooms.json");
+        // Read the file before taking the tree's write lock: the frame
+        // painter reads the same tree.
+        let rooms = personal_room_ids(&path);
+        if rooms.is_empty() {
+            return;
+        }
         let Ok(replica) = self.replica.lock() else {
             return;
         };
         let mut tree = replica.tree.write();
-        for room in personal_room_ids(&path) {
+        for room in rooms {
             tree.join_enrolled_room(room);
         }
     }
@@ -3046,12 +3058,18 @@ impl ShellNetwork {
             .filter(|id| RoomId::parse(id).is_some())
             .collect::<Vec<_>>();
         drop(replica);
+        let Ok(bytes) = serde_json::to_vec(&ids) else {
+            return;
+        };
+        // Runs on every home-peer refresh; the room list rarely changes, and
+        // an unchanged rewrite still costs a file and a directory fsync.
+        if std::fs::read(&path).is_ok_and(|current| current == bytes) {
+            return;
+        }
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if let Ok(bytes) = serde_json::to_vec(&ids) {
-            let _ = tilo_files::native::atomic::write(&path, &bytes);
-        }
+        let _ = tilo_files::native::atomic::write(&path, &bytes);
     }
 
     /// Attach an always-on home or hosted workspace server. The actor keeps
@@ -6968,6 +6986,53 @@ mod tests {
                 .all(|command| !matches!(command, NetCmd::JoinWorkspace { ws, .. } if ws == topic)),
             "a joined room is not joined again"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn an_unchanged_room_export_is_not_rewritten() {
+        use std::os::unix::fs::MetadataExt as _;
+        let dir = tempfile::tempdir().expect("temp");
+        let peers = dir.path().join("home-peers.json");
+        std::fs::write(&peers, b"[]").unwrap();
+        let state = dir.path().join("state");
+        let export = state.join("tilo/personal-rooms.json");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &peers);
+        env.set("XDG_STATE_HOME", &state);
+        let (net, _commands) = personal_continuity_network_for_test([0x44; 32]);
+        assert!(net.join_default_workspace());
+        let published = std::fs::metadata(&export).expect("export").ino();
+        let _ = net.refresh_home_peer_hosts();
+        assert_eq!(
+            std::fs::metadata(&export).expect("export").ino(),
+            published,
+            "an unchanged room list must not be republished on every refresh"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unchanged_personal_continuity_is_not_rewritten() {
+        use std::os::unix::fs::MetadataExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("personal-continuity.postcard");
+        let value = |counter| PersistedPersonalContinuity {
+            counter,
+            continuity: crate::shell::personal_continuity::PersonalContinuity::default(),
+        };
+        assert!(persist_personal_continuity(&path, &value(7)));
+        let written = std::fs::metadata(&path).unwrap().ino();
+        assert!(persist_personal_continuity(&path, &value(7)));
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().ino(),
+            written,
+            "the same state must not be rewritten"
+        );
+        assert!(persist_personal_continuity(&path, &value(8)));
+        assert_ne!(std::fs::metadata(&path).unwrap().ino(), written);
+        assert_eq!(load_personal_continuity(&path).counter, 8);
     }
 
     #[test]
