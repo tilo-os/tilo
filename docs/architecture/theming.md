@@ -120,6 +120,9 @@ The document is `ThemeDocument`
 }
 ```
 
+`palette.hue` may be absent: the palette then has no hue of its own and is
+pure grey until the workspace it is shown in gives it one.
+
 Built-in presets, distribution defaults, the user's themes and every file
 Theme Studio exports are this document. Unknown fields are refused, and a
 document of any other schema version is not admitted: the layer it sits on
@@ -134,7 +137,7 @@ The shipped presets (`Preset`, `Theme::ALL`):
 | Dark cool | 255 / 0.008 | dark ladder |
 | Dark graphite | 60 / 0.006 | dark ladder |
 | Dark soft | 270 / 0.003 | base 0.19, content 0.25, sidebar 0.228, inspector 0.27, raised 0.30, overlay 0.32; tertiary ink 0.65 |
-| Light | 255 / 0.010 | the light ladder |
+| Light | – / 0.010 (neutral until a workspace gives it a hue) | the light ladder |
 | High contrast | – / 0 | black surfaces, ink 1.0 / 0.94 / 0.88, AAA |
 | High contrast light | – / 0 | white surfaces, ink 0 / 0.30 / 0.40, AAA |
 
@@ -186,7 +189,7 @@ The theme a person sees is resolved from layers, lowest to highest:
 | 1 | Built-in defaults | the toolkit, in code | `Preset::Dark` |
 | 2 | **Distribution defaults** (`appearance.distribution_defaults` / `appearance.distribution`) | whoever ships the OS image | a preset id or a whole document, and pins |
 | 3 | User theme | the person, through Settings and Theme Studio, or an agent through the same actions | the theme for the current mode, and the person's density |
-| 4 | Workspace temperature | the shell, per workspace | the neutral hue of the workspace being shown |
+| 4 | Window | the shell, per window | the neutral hue of the workspace the window is in, and the person's colour (`WindowAppearance`) |
 | 5 | Accessibility | the person or assistive policy | high contrast / forced colours, text scale, UI scale, reduce motion, reduce transparency, thick caret, the Hyperlegible face |
 
 **Accessibility always wins.** Nothing below layer 5 can lower contrast,
@@ -217,9 +220,25 @@ theme, so distribution defaults still show.
 **The workspace temperature** is a hue only: the person's override for that
 workspace (`appearance.workspace_temperatures`, OKLCH degrees by workspace
 id, `workspace_temperature_override`) or the dominant hue of its wallpaper
-(`ui::workspace_hue`). It never adds chroma, so the default dark (chroma 0)
-shows no temperature and Light (0.010) shows the most. The high-contrast
-palettes carry none.
+(`ui::workspace_hue`, `None` for a grey one). It never adds chroma, so the
+default dark (chroma 0) shows no temperature and Light (0.010) shows the
+most. Light has no hue of its own (`Palette::hue` is `None`): without a
+temperature — a grey wallpaper, no shell, a capture — it is pure neutral.
+The high-contrast palettes carry none.
+
+**The window layer** (`ThemeLayerStack::window`, `ui::WindowAppearance`) is
+set by the host that shows a window, never by a settings document: the
+temperature of the workspace the window is in and the person's colour,
+applied with `Theme::in_window`. The shell keeps every workspace's
+temperature and the person's colour (`shell::window_appearance`), dresses
+its own chrome in the active workspace's, and sends each app window the
+appearance of the workspace holding it over the app's authenticated
+shell-ui connection (`FloatingSurfaceHostMessage::Appearance`, on connect
+and whenever a temperature, the window's workspace or the colour changes).
+The app keeps it across theme rebuilds (`App::set_window_appearance`), so
+a workspace switch, a new wallpaper or a new colour reaches focus ring,
+caret, selection and unread marks live. Captures take it from
+`--workspace-hue DEGREES` and `--your-colour NAME`.
 
 **Accessibility** high contrast or forced colours swaps the palette for the
 high-contrast palette of the theme's own polarity (`Theme::with_high_contrast`):
@@ -239,9 +258,17 @@ A person's colour is part of their identity, not of a theme: one of the
 twelve presence hues (`PresenceHue`: red, orange, amber, olive, green, teal,
 cyan, sky, blue, violet, magenta, pink), stored as `identity.colour` in the
 settings document and roaming with their other personal settings. Until
-they choose, it is derived from their identity
-(`PresenceHue::of_identity`, the same hash collaborators' colours come
-from). It is their focus ring, text caret, text-selection tint and unread
+they choose, it is derived from their stable identity
+(`PresenceHue::of_identity` of the person's id, never the session's
+handle). It reaches windows through the window layer, not the theme:
+`Theme::configured` does not read `identity.colour`; the shell sends it to
+each app window, and a standalone app that may read the person's settings
+starts from the stored choice (a private app with an ephemeral identity
+does not). Collaborators see the same colour: every presence plane carries
+it (`NeighbourMsg::PresenceMoved` and `AppPresenceV2` as the hue's
+`PresenceHue::id`, a live frame's `LiveParticipant::color`), and each
+receiving shell paints that peer in it and announces it to its apps in the
+roster (`Collaborator::colour`). It is their focus ring, text caret, text-selection tint and unread
 mark (`intent.you`, `selection_tint`, `border_focus`), painted at the
 current theme's presence lightness and chroma, so it reads on every theme.
 The theme sets only that lightness and chroma.
@@ -338,16 +365,14 @@ Verified against the code at the time of writing:
 - **Forced colours.** `Theme::colors_are_forced` and `Theme::content_surface`
   answer "am I forced?" with the theme's page and ink tokens; apps still
   have to honour the flag.
-- **Workspace temperature** is applied by the shell to its own chrome
-  (`FrameBuilder` follows the active workspace's override or wallpaper
-  hue). App processes read their theme from the settings document and do
-  not receive the temperature yet.
-- **Your colour.** The shell paints its chrome and the person's own avatar
-  in `identity.colour` or the identity-derived hue; app processes read a
-  stored choice through `Theme::configured` and show the default hue until
-  one is stored. Collaborators see a person in the hue their id derives (or
-  an explicit roster colour); a chosen colour does not travel to other
-  hosts yet.
+- **Workspace temperature** is applied by the shell to its own chrome and
+  sent to every app window for the workspace that window is in, over the
+  shell-ui channel. Without one (a grey wallpaper, no shell, a capture) the
+  light palette is pure neutral.
+- **Your colour.** The shell resolves `identity.colour` or the
+  identity-derived hue, paints its chrome and the person's own avatar in it,
+  and sends it to every app window; collaborators receive it with the
+  person's presence and paint them in it.
 - **The material.** Blur and tint opacity are theme roles read by the
   backdrop pass; reduce transparency, forced colours and the high-contrast
   palettes keep floating chrome opaque.
@@ -375,12 +400,7 @@ Verified against the code at the time of writing:
    `crates/sdk/ui-core/tests/baselines/`.
 2. **Settings > Appearance** exposes the controls listed in
    `docs/ui-migration.md` ("Theming").
-3. **The workspace temperature and your colour in app processes**: a
-   per-window appearance channel from the shell, so an app tile takes the
-   hue of the workspace it is shown in.
-4. **A chosen colour on the wire**: carry the person's presence hue in
-   their presence so collaborators paint them in it.
-5. **A compositor-drawn trusted-UI marker** no theme or app can reproduce,
+3. **A compositor-drawn trusted-UI marker** no theme or app can reproduce,
    and wallpaper / greeter / boot artwork on the distribution layer.
 
 ## Appendix: hard-coded colours in `apps/`
