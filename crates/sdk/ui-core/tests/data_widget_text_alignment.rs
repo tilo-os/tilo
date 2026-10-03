@@ -83,7 +83,7 @@ fn capture_with_theme(name: &str, root: Element, viewport: (u32, u32), theme: Th
         format!("{name}-{}-{scale}x", theme.name)
     };
     let harness = FrameHarness::new_with_theme(State::new(), root, viewport, theme);
-    let rgba = harness.render_window_rgba();
+    let rgba = harness.render_rgba();
     crate::support::evidence::save_png(
         &format!("data_widget_text_alignment/{stem}"),
         viewport.0,

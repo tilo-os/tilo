@@ -16,13 +16,13 @@
 use crate::time::Duration;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
-use crate::text_render::{TextRenderer, TextStyle, TextWeight};
+use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
@@ -307,7 +307,6 @@ fn kind_color(kind: ToastKind, theme: &Theme) -> vello::peniko::Color {
 const CARD_ACCENT_BAR_W: f64 = 4.0;
 const CARD_PAD_X: f64 = 14.0;
 const CARD_PAD_Y: f64 = 8.0;
-const CARD_CLOSE_SIZE: f64 = 22.0;
 
 /// Immediate-mode content for one notification / toast card, painted by
 /// [`paint_card`]. Built fluently:
@@ -454,39 +453,15 @@ pub fn paint_card(
     rect: Rect,
     card: &ToastCard<'_>,
 ) -> ToastCardHit {
-    use crate::color_compat::ColorCompat;
     let mut hit = ToastCardHit::default();
     let a = card.alpha.clamp(0.0, 1.0);
     if rect.width() <= 0.0 || rect.height() <= 0.0 || a <= 0.0 {
         return hit;
     }
     hit.card_rect = rect;
-    let radius = f64::from(theme.tokens.radii.control);
-    let shape = RoundedRect::from_rect(rect, radius);
-
-    // Drop shadow from the elevation token (not ad-hoc literals), following
-    // the card's own radius and fading with the card.
-    let mut elev = theme.tokens.elevation.floating;
-    elev.color = elev.color.with_alpha_factor(a);
-    crate::surface::shadow(scene, transform, rect, radius, &elev);
-
-    // Panel role (HIG §9.1): panel ground + the derived panel edge as a
-    // crisp 1 px inset stroke, both fading with the card. The declared
-    // `border_standard` on `raised` was invisible on the dark preset.
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        crate::chrome::panel_ground(theme).with_alpha(a),
-        None,
-        &shape,
-    );
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        crate::chrome::panel_border(theme).with_alpha_factor(a),
-        None,
-        &crate::surface::edge_outline(rect, radius),
-    );
+    // A floating Panel (`widget::floating_surface`): panel radius, the
+    // blurred material, one soft shadow, all fading with the card.
+    crate::widget::floating_surface::paint_faded(scene, transform, rect, a, theme);
 
     // Left severity accent stripe — the at-a-glance state form (HIG §7).
     // Inset a token step from the 1 px edge so the two never touch, and
@@ -630,17 +605,20 @@ pub fn paint_transient(
         return ToastCardHit::default();
     }
 
-    let title_style = theme.text(TextRole::Caption);
+    // Measured in the style the card draws its title in, plus the close
+    // button's column when there is one, so a short title is never elided.
+    let title_style = theme.text(TextRole::Label).strong();
     let title_width = f64::from(
         text_renderer
-            .measure_style(
-                card.title,
-                None,
-                &title_style.clone().with_weight(TextWeight::Semibold),
-            )
+            .measure_style(card.title, None, &title_style)
             .0,
     );
-    let natural_width = title_width + 2.0 * CARD_PAD_X + CARD_ACCENT_BAR_W + 2.0;
+    let close_column = if card.closable {
+        f64::from(theme.tokens.metrics.bar_control_height) + f64::from(theme.tokens.spacing.s2)
+    } else {
+        0.0
+    };
+    let natural_width = title_width + 2.0 * CARD_PAD_X + CARD_ACCENT_BAR_W + 2.0 + close_column;
     let width = natural_width
         .max(MIN_WIDTH.min(available_width))
         .min(available_width);
@@ -675,9 +653,12 @@ fn paint_dismiss_button(
     if !card.closable {
         return None;
     }
-    let cx1 = rect.x1 - 6.0;
-    let cy0 = rect.y0 + 6.0;
-    let close_rect = Rect::new(cx1 - CARD_CLOSE_SIZE, cy0, cx1, cy0 + CARD_CLOSE_SIZE);
+    // An icon button, a Small control, inset one step from the corner.
+    let side = f64::from(theme.tokens.metrics.bar_control_height);
+    let inset = f64::from(theme.tokens.spacing.s2);
+    let cx1 = rect.x1 - inset;
+    let cy0 = rect.y0 + inset;
+    let close_rect = Rect::new(cx1 - side, cy0, cx1, cy0 + side);
     let faded = alpha < 0.999;
     if faded {
         scene.push_layer(
@@ -685,7 +666,7 @@ fn paint_dismiss_button(
             BlendMode::default(),
             alpha,
             transform,
-            &RoundedRect::from_rect(close_rect, 6.0),
+            &close_rect,
         );
     }
     Button::paint(
@@ -696,7 +677,7 @@ fn paint_dismiss_button(
         &ButtonFace::new(close_rect, "")
             .ghost()
             .icon(crate::icons::Icon::X)
-            .radius(6.0)
+            .control_size(crate::widget::control_size::ControlSize::Small)
             .hovered(card.close_hovered)
             .accessible_name("Dismiss"),
     );
@@ -1037,8 +1018,14 @@ mod tests {
                 "close rect hugs the card's right edge",
             );
             assert!(
-                hit.close_rect.y0 >= rect.y0 && hit.close_rect.y1 < rect.center().y,
+                hit.close_rect.y0 >= rect.y0
+                    && hit.close_rect.y0 - rect.y0 <= f64::from(theme.tokens.spacing.s2) + 0.5,
                 "close rect sits at the top of the card",
+            );
+            assert_eq!(
+                hit.close_rect.height(),
+                f64::from(theme.tokens.metrics.bar_control_height),
+                "the close control is a Small icon button"
             );
         }
 
