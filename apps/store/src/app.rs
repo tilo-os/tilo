@@ -1920,8 +1920,11 @@ impl StoreApp {
     }
 
     fn live_moderation_resource(&self, doc: &AutoCommit) -> Resource {
-        let mut moderation =
-            Resource::new("store:moderation", "store.moderation", "Trust & moderation");
+        let mut moderation = Resource::new(
+            "store:moderation",
+            "store.moderation",
+            "Trust and moderation",
+        );
         if let Ok(show) = ActionSpec::operation(
             "show",
             "Show trust and moderation",
@@ -2995,6 +2998,44 @@ mod tests {
                 grids[2].0
             );
         }
+    }
+
+    /// A catalogue longer than one page offers Previous and Next only where they lead somewhere.
+    #[test]
+    fn a_long_catalogue_pages_with_previous_and_next() {
+        let mut app = StoreApp::new();
+        let items = (0..(PAGE_SIZE * 2 + 5))
+            .map(|index| {
+                let mut entry = item(
+                    "Utility",
+                    StoreSource::Flathub,
+                    "Utilities",
+                    InstalledState::Not,
+                );
+                entry.id = format!("dev.example.utility{index:03}");
+                entry.name = format!("Utility {index:03}");
+                entry
+            })
+            .collect();
+        app.set_items(items);
+        let has = |app: &StoreApp, id: &str| {
+            let frame = frame_composition(app.compose(&Theme::dark()), 800.0);
+            has_test_id(frame.root_widget(), id)
+        };
+        assert!(has(&app, "store.page.next"));
+        assert!(!has(&app, "store.page.previous"));
+        app.catalog_page = 1;
+        assert!(has(&app, "store.page.next") && has(&app, "store.page.previous"));
+        app.catalog_page = 2;
+        assert!(!has(&app, "store.page.next") && has(&app, "store.page.previous"));
+    }
+
+    fn has_test_id(widget: &dyn Widget, id: &str) -> bool {
+        widget.test_id() == Some(id)
+            || widget
+                .children()
+                .into_iter()
+                .any(|child| has_test_id(child, id))
     }
 
     /// Mount a composed tree and run one frame at `width` × 900.
