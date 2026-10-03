@@ -165,13 +165,18 @@ fn a_tools_key_works_after_a_click_in_the_rail_and_a_tool_click_after_a_drag_lan
         1,
         "R after a click in the rail drew a rectangle"
     );
-    // Right after a drag on the canvas, a click on the ellipse (third in
-    // the rail) is taken, and the next drag draws an ellipse.
+    // Right after a drag on the canvas, a click on the ellipse in the rail
+    // is taken, and the next drag draws an ellipse.
     app.harness()
         .drag_at((x - 100.0, y - 100.0), (x - 80.0, y - 80.0));
-    let segment = rail.height() / 8.0;
-    app.harness()
-        .click_at(rail.center().x, rail.y0 + segment * 3.5);
+    let tools = canvas::tools::Tool::ALL;
+    let index = tools
+        .iter()
+        .position(|tool| *tool == canvas::tools::Tool::Ellipse)
+        .unwrap();
+    #[allow(clippy::cast_precision_loss, reason = "a handful of tools")]
+    let at = rail.y0 + rail.height() / tools.len() as f64 * (index as f64 + 0.5);
+    app.harness().click_at(rail.center().x, at);
     app.harness()
         .drag_at((x + 80.0, y + 60.0), (x + 160.0, y + 120.0));
     assert!(
@@ -219,4 +224,27 @@ fn a_person_opens_a_recent_artwork_from_the_welcome() {
         "the recent artwork opened"
     );
     assert_eq!(app.versions().len(), 2, "opening is one step");
+}
+
+#[test]
+fn the_panels_stay_put_away_on_a_narrow_window() {
+    let mut app = TestApp::<App>::new().unwrap();
+    app.harness().resize((868, 772)).unwrap();
+    app.harness().key("Shift");
+    let shown = |app: &mut TestApp<App>| app.harness().targets().contains_key("canvas-dock");
+    let before = shown(&mut app);
+    app.harness().click_named("canvas-sidebar").unwrap();
+    for _ in 0..4 {
+        app.harness().key("Shift");
+    }
+    assert_ne!(
+        shown(&mut app),
+        before,
+        "the toggle shows or hides the panels"
+    );
+    app.harness().click_named("canvas-sidebar").unwrap();
+    for _ in 0..4 {
+        app.harness().key("Shift");
+    }
+    assert_eq!(shown(&mut app), before, "and brings them back");
 }
