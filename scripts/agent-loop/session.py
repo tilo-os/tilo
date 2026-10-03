@@ -93,6 +93,11 @@ class Session:
                 "TILO_RUNTIME_PROFILE": str(self.profile),
                 "TILO_RUNTIME_BINARY": str(RUNTIME_HOST),
                 "TILO_TEST_CONTROL": str(self.run / "control.sock"),
+                # The agent's hands: the compositor's agent-control socket
+                # (input and screenshots only) and the runtime's `computer`
+                # tool driving it, as on a hosted machine an agent uses.
+                "TILO_AGENT_CONTROL": str(self.run / "agent.sock"),
+                "TILO_RUNTIME_COMPUTER_CONTROL": str(self.run / "agent.sock"),
                 # The dev host keeps the user's real build cache.
                 "CARGO_HOME": os.environ.get("CARGO_HOME", str(pathlib.Path.home() / ".cargo")),
                 "RUSTUP_HOME": os.environ.get("RUSTUP_HOME", str(pathlib.Path.home() / ".rustup")),
@@ -146,7 +151,7 @@ def start(args) -> int:
         if not binary.exists():
             sys.exit(
                 f"FAIL: {binary} is missing; build it with\n"
-                "  cargo build -p shell --bin shell --bin tilo-runtime-mcp && cargo build -p tilo-app-cli"
+                "  cargo build -p shell --bin shell --bin tilo-runtime-mcp --features agent-control && cargo build -p tilo-app-cli"
             )
     prepare(session)
     env = session.env()
