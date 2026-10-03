@@ -13,7 +13,10 @@ sources; every following commit is a reviewable topic change:
   encoding budget/accounting, renderer measurement, atlas diagnostics, the
   clipped-image PTCL floor, the viewport-scaled line floor, and compatibility
   lint cleanup, separation of budget readback from debug-buffer capture, and
-  the upstream lint-format cleanup found by the feature-matrix CI.
+  the upstream lint-format cleanup found by the feature-matrix CI. Later
+  commits sync the maintained source tree and add an API switch for canonical
+  segment order, so exact-pixel oracles render repeatably without
+  `VELLO_CANONICAL_SEGMENT_ORDER`.
   The code is now ported onto current upstream `main` as three
   independently reviewable draft pull requests:
   [adaptive bump budgets and safety floors](https://github.com/linebender/vello/pull/1861),
