@@ -302,6 +302,8 @@ pub struct MailApp {
     menu_target: Option<MenuTarget>,
     /// A row menu to open once the list has been laid out (a capture).
     pending_menu: Option<MessageId>,
+    /// Open the sidebar drawer once the window has its size (a capture).
+    pending_drawer: bool,
     /// An explicit destructive confirmation for the selection toolbar. This
     /// is local presentation state; the actual purge remains one canonical
     /// `MailAction` only after the person confirms.
@@ -512,9 +514,8 @@ impl MailApp {
             nav,
             nav_node: None,
             overview_title,
-            first_run: EmptyState::new("Welcome to Mail")
+            first_run: EmptyState::new("No email account yet")
                 .with_icon(Icon::Mail)
-                .with_message("Add your email account to start reading and sending mail.")
                 .with_action("Add account")
                 .with_action_id("mail.add-account"),
             first_run_node: None,
@@ -524,6 +525,7 @@ impl MailApp {
             menu: ContextMenu::new(),
             menu_target: None,
             pending_menu: None,
+            pending_drawer: false,
             bulk_purge_confirmation: None,
             search: SearchOpener::new(),
             setup_open: false,
@@ -768,7 +770,8 @@ impl MailApp {
 
     /// Cached mail remains usable while connectivity is unavailable.
     pub fn prime_offline_shot(&mut self) {
-        self.shared.borrow_mut().status = Some("You’re offline · Showing downloaded mail".into());
+        self.shared.borrow_mut().status =
+            Some("You’re offline. Downloaded mail is still here.".into());
         self.dirty = true;
     }
 
@@ -782,10 +785,10 @@ impl MailApp {
         self.dirty = true;
     }
 
-    /// Open the sidebar drawer and snap it (narrow drawer shot).
+    /// Open the sidebar drawer once the window has its size (narrow drawer
+    /// shot).
     pub fn prime_drawer_shot(&mut self) {
-        self.nav.open_sidebar();
-        self.nav.snap();
+        self.pending_drawer = true;
         self.dirty = true;
     }
 
@@ -3082,9 +3085,6 @@ impl MailApp {
             );
         }
         if let Some(rect) = oauth {
-            if let Some(text) = m.labels.get(3) {
-                label_at(tr, scene, text, rect, false);
-            }
             let label = self.oauth_button_label();
             Button::paint(
                 scene,
@@ -4441,6 +4441,10 @@ impl Widget for MailApp {
                 // Rest the shell for this width before the first frame.
                 self.nav.snap();
                 self.first_layout = false;
+                if std::mem::take(&mut self.pending_drawer) {
+                    self.nav.open_sidebar();
+                    self.nav.snap();
+                }
                 self.nav.apply_layout(taffy, nav_node, inner);
             }
             self.publish_shell_flags();
@@ -4488,7 +4492,23 @@ impl Widget for MailApp {
         if let Some(id) = self.pending_menu.take() {
             self.open_menu_on_row(id, tr, theme);
         }
-        // App-owned overlays on top.
+    }
+
+    /// The window's top layer: the shell's own floating parts and the
+    /// confirmation dialog, then the composer, the account sheet, the row
+    /// menu, the status toast and the shortcut list, over the window's
+    /// chrome.
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        for child in self.children_mut() {
+            child.draw_overlay(scene, t, tr, theme, presence);
+        }
         self.compose.draw(scene, t, tr, theme, presence);
         self.compose.draw_inputs(scene, t, tr, theme, presence);
         self.draw_setup(scene, t, tr, theme, presence);
@@ -7435,7 +7455,7 @@ mod tests {
                 "no configured account → first-run onboarding"
             );
             let semantics = app.first_run.accessibility().expect("first-run semantics");
-            assert_eq!(semantics.name.as_deref(), Some("Welcome to Mail"));
+            assert_eq!(semantics.name.as_deref(), Some("No email account yet"));
             assert!(semantics.children.iter().any(|node| {
                 node.role == ui::a11y::Role::Button && node.name.as_deref() == Some("Add account")
             }));
