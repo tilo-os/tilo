@@ -258,7 +258,7 @@ mod tests {
     fn every_launch_withholds_the_vault_window_from_captures() {
         // The framework applies the declaration to every window hosting the
         // component; mounting the live view here would open the user's vault.
-        assert!(<PasswordsShell as ResourceApp>::BEHAVIOUR.capture_protected);
+        const { assert!(<PasswordsShell as ResourceApp>::BEHAVIOUR.capture_protected) };
     }
 
     #[test]

@@ -171,6 +171,6 @@ mod tests {
 
     #[test]
     fn every_launch_withholds_the_codes_window_from_captures() {
-        assert!(<TotpShell as ResourceApp>::BEHAVIOUR.capture_protected);
+        const { assert!(<TotpShell as ResourceApp>::BEHAVIOUR.capture_protected) };
     }
 }
