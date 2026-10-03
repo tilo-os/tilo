@@ -161,6 +161,32 @@ jobs:
           fallback-keys: |
             github-assets-all-v1-${{ hashFiles('os/external-assets/github-assets.tsv') }}
             github-assets-all-v1-
+      # The tilo-session-apps RPM ships the published env-runtime environment
+      # image, so a first environment opens offline. It is resolved and
+      # Cosign-verified here on the host; the Fedora container's source copy
+      # carries it to dist/rpm/build-rpm.sh.
+      - name: Fetch the env-runtime environment image
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v skopeo >/dev/null; then
+            if command -v apt-get >/dev/null; then
+              sudo -n apt-get update
+              sudo -n apt-get install -y --no-install-recommends skopeo
+            else
+              sudo -n dnf install -y skopeo
+            fi
+          fi
+          ./os/dev/install-cached-cosign.sh
+          export PATH="$RUNNER_TEMP/tilo-cosign-tools:$PATH"
+          rm -rf dist/rpm/build/env-runtime
+          status=0
+          ./os/dev/fetch-env-runtime.sh dist/rpm/build/env-runtime || status=$?
+          case $status in
+            0) ;;
+            1) echo "::warning::no env-runtime is published for os/Containerfile.env-runtime yet; the RPM ships none" ;;
+            *) exit "$status" ;;
+          esac
       - name: Build and install-test all five target userspaces
         env:
           # The compiler cache never enters pull-request code here, and a
