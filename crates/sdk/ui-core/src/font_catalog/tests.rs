@@ -344,7 +344,7 @@ fn a_face_installed_twice_resolves_the_same_whatever_the_discovery_order() {
 /// not hold one this build accepts, sets UI text in Tilo Sans. The host's own
 /// copy of a catalog family sorts before the catalog's path and must still
 /// not displace the catalog's face.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 #[test]
 fn a_machine_without_tilo_sans_sets_ui_text_in_the_bundled_catalog() {
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts");

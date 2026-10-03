@@ -20,13 +20,12 @@ mod windows;
 #[cfg(all(target_os = "android", feature = "native"))]
 pub(crate) use android::android_font_system;
 
-/// The product catalog with the system's fonts behind it, for every native
-/// Windows and Linux process that is not handed a host font database. The
+/// The product catalog with the system's fonts behind it, for every process
+/// that is not handed a host font database or Android's own catalog. The
 /// catalog is verified and the system fonts discovered once per process; each
 /// renderer gets its own copy of the database, so its shaping caches stay its
 /// own while font bytes and discovery are shared. `None` when no root in
 /// [`catalog_roots`] holds a catalog this build accepts.
-#[cfg(any(windows, target_os = "linux"))]
 #[cfg_attr(
     test,
     allow(dead_code, reason = "unit tests build the fixture font system instead")
@@ -51,9 +50,9 @@ pub(crate) fn bundled_font_system(locale: String) -> Option<FontSystem> {
 
 /// Where a native process looks for the product catalog, in order: a
 /// `fonts/` directory next to the executable (an installed app bundle), the
-/// catalog the Tilo image installs, then this source tree's `assets/fonts`,
-/// so a binary run from a checkout sets text in the faces the product ships.
-#[cfg(any(windows, target_os = "linux"))]
+/// catalog the Tilo image installs (absent on other systems), then this
+/// source tree's `assets/fonts`, so a binary run from a checkout sets text in
+/// the faces the product ships.
 #[cfg_attr(
     test,
     allow(dead_code, reason = "unit tests build the fixture font system instead")
@@ -64,7 +63,6 @@ pub(crate) fn catalog_roots() -> Vec<PathBuf> {
         .and_then(|exe| exe.parent().map(|dir| dir.join("fonts")))
         .into_iter()
         .collect();
-    #[cfg(target_os = "linux")]
     roots.push(PathBuf::from("/usr/share/fonts/tilo"));
     roots.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts"));
     roots
@@ -78,7 +76,6 @@ pub(crate) fn catalog_roots() -> Vec<PathBuf> {
 /// # Errors
 ///
 /// Every root's failure, in order, when none loads.
-#[cfg(any(windows, target_os = "linux"))]
 #[cfg_attr(
     test,
     allow(dead_code, reason = "unit tests build the fixture font system instead")

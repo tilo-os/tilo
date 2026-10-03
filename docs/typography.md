@@ -18,10 +18,10 @@ family, a size or an OpenType feature.
 Every native process sets text in the product font catalog
 (`crates/sdk/ui-core/assets/fonts`, described by
 `crates/sdk/font-catalog/manifest.toml`), with the system's fonts behind it
-for anything the catalog does not cover. On Windows and Linux the catalog is
-taken from the first of: a `fonts/` directory next to the executable, the
-catalog the Tilo image installs at `/usr/share/fonts/tilo` (Linux), and the
-source tree's `assets/fonts`. A binary run from a checkout, an app's
+for anything the catalog does not cover. The catalog is taken from the
+first of: a `fonts/` directory next to the executable, the catalog the Tilo
+image installs at `/usr/share/fonts/tilo`, and the source tree's
+`assets/fonts`. A binary run from a checkout, an app's
 `--shots` capture and the Tilo image therefore draw the same faces whether or
 not the machine has Tilo Sans installed. Android copies the catalog out of
 the APK; a browser page loads it from the bytes its host supplies.
