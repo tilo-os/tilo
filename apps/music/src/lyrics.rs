@@ -535,7 +535,8 @@ pub mod bundled {
     }
 
     const GLASSLIGHT_LRC: &str = "\
-[00:00.00] (Glasslight — Aurora Skies)
+[ti:Glasslight]
+[ar:Aurora Skies]
 [00:08.50] Held to the window, a paper sun
 [00:14.20] Counting the colours one by one
 [00:21.00] Slow as the morning, soft as the rain
@@ -546,7 +547,8 @@ pub mod bundled {
 [01:00.20] Nothing to keep and nothing to store";
 
     const NEON_MILEAGE_LRC: &str = "\
-[00:00.00] (Neon Mileage — Midnight Transit)
+[ti:Neon Mileage]
+[ar:Midnight Transit]
 [00:06.00] Tail lights bleeding down the interstate
 [00:12.50] Radio humming, it's getting late
 [00:19.00] Neon mileage on an empty tank
@@ -555,14 +557,16 @@ pub mod bundled {
 [00:40.00] Drive, just drive, to the wordless hum";
 
     const HARBOR_LIGHTS_LRC: &str = "\
-[00:00.00] (Harbor Lights — Neon Harbor)
+[ti:Harbor Lights]
+[ar:Neon Harbor]
 [00:07.00] Ferries are humming across the bay
 [00:13.40] Harbor lights wash the dusk away
 [00:20.10] Cassette-warm summer on a salt-air breeze
 [00:27.00] Boulevard glowing through the harbor trees";
 
     const PAPER_BOATS_LRC: &str = "\
-[00:00.00] (Paper Boats — Aurora Skies)
+[ti:Paper Boats]
+[ar:Aurora Skies]
 [00:09.00] Folding the evening into little boats
 [00:16.00] Setting them loose where the river floats
 [00:23.50] Undertow pulling the day from view

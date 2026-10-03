@@ -19,7 +19,7 @@ use automerge::{AutoCommit, ChangeHash, ObjId};
 use base64::Engine as _;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
 
 use std::cell::Cell;
@@ -28,34 +28,28 @@ use ui::ImageStore;
 use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
 #[cfg(test)]
 use ui::widget::SplitLayout;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
-use ui::widget::{ModalDialog, PromptBody, SidebarDrawer, TextInput, Widget};
+use ui::widget::{ModalDialog, PromptBody, SidebarDrawer, Widget};
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::art;
 use crate::audio::AudioEngine;
 use crate::backend::{
     AlbumPage, ArtistHit, ArtistPage, HomeContent, HomeItem, HomeItemKind, HomeSection,
-    PlaylistHit, PlaylistPage, SearchBundle, SearchKind, SearchTop, TrackHit,
+    PlaylistPage, SearchBundle, SearchTop, TrackHit,
 };
 use crate::doc::{self, LiveTrack};
-use crate::icon::{self, Icon};
+use crate::icon;
 use crate::lyrics::{self, LyricsLine, LyricsWorker, TrackMeta};
-use crate::model::{
-    Album, Artist, CacheState, Library, Playback, RepeatMode, SearchResults, Track,
-};
+use crate::model::{Album, Artist, CacheState, Library, Playback, RepeatMode, Track};
 use crate::mpris::{MprisCommand, MprisHandle, PlaybackStatus, PlayerSnapshot};
 use crate::seed;
 use crate::stream::{StreamRequest, StreamUpdate, StreamWorker};
 
-const SIDEBAR_W: f64 = 236.0;
-const NOWPLAYING_H: f64 = 92.0;
-const HEADER_H: f64 = 72.0;
 /// A host-visible stream-start operation must eventually settle even when a
 /// resolver, staging download, or audio backend wedges. This bounds the
 /// non-cancellable lifecycle contract without turning a slow normal seek into
@@ -78,13 +72,6 @@ fn cover_request() -> PickRequest {
         .all_files()
 }
 
-/// Below this allocated width (logical px) the navigation sidebar stops
-/// sitting permanently beside the content and becomes an overlay flap that
-/// slides in over it behind a dimming scrim. Chosen so the sidebar plus a
-/// readable two-column content area (album/track grids) stop fitting side by
-/// side.
-const SIDEBAR_BREAKPOINT: f64 = 760.0;
-
 /// Which screen is showing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum View {
@@ -95,55 +82,12 @@ pub enum View {
     Playlists,
     Downloads,
     Liked,
-    Search,
+    Browse,
     Queue,
     Lyrics,
     Album(String),
     Artist(String),
     Playlist(String),
-}
-
-/// The Spotify-style filter tabs across the top of the search results. `All`
-/// shows a curated mix (top-result hero + a few of each type); the others show
-/// just that type in a fuller layout.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SearchTab {
-    All,
-    Songs,
-    Albums,
-    Artists,
-    Playlists,
-}
-
-impl SearchTab {
-    pub const ALL: [SearchTab; 5] = [
-        SearchTab::All,
-        SearchTab::Songs,
-        SearchTab::Albums,
-        SearchTab::Artists,
-        SearchTab::Playlists,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            SearchTab::All => "All",
-            SearchTab::Songs => "Songs",
-            SearchTab::Albums => "Albums",
-            SearchTab::Artists => "Artists",
-            SearchTab::Playlists => "Playlists",
-        }
-    }
-
-    /// The deep per-type fetch a tab drives (none for the mixed `All` tab).
-    pub fn kind(self) -> Option<SearchKind> {
-        match self {
-            SearchTab::All => None,
-            SearchTab::Songs => Some(SearchKind::Songs),
-            SearchTab::Albums => Some(SearchKind::Albums),
-            SearchTab::Artists => Some(SearchKind::Artists),
-            SearchTab::Playlists => Some(SearchKind::Playlists),
-        }
-    }
 }
 
 /// A click action captured during draw and dispatched on the next mouse
@@ -152,8 +96,8 @@ impl SearchTab {
 enum Action {
     Nav(View),
     Back,
-    /// Open the Search screen filtered to a genre — the "Browse all" category
-    /// chips route here so a tap actually navigates + filters.
+    /// Open the platform search for this app, prefilled with a genre: the
+    /// Browse tiles route here.
     BrowseGenre(String),
     /// Play `queue[index]` after replacing the queue.
     Play {
@@ -162,6 +106,10 @@ enum Action {
         queue: Arc<Vec<String>>,
         index: usize,
     },
+    /// Turn shuffle on and play the queue from a random entry.
+    ShufflePlay(Arc<Vec<String>>),
+    /// Open the platform search for Music.
+    OpenSearch,
     TogglePlay,
     Next,
     Prev,
@@ -197,8 +145,6 @@ enum Action {
     },
     /// Toggle whether the user follows an artist.
     ToggleFollow(String),
-    /// Switch the active search filter tab (All / Songs / Albums / …).
-    SelectSearchTab(SearchTab),
     /// Append a track to a named playlist (from the context menu).
     AddToPlaylist {
         playlist: String,
@@ -239,14 +185,11 @@ enum Action {
     OpenAddToPlaylist(String),
     /// Dismiss the inline name-input overlay without committing.
     CloseNamePrompt,
-    FocusSearch,
-    /// Retry the current live search after a terminal source failure.
-    RetrySearch,
     /// Toggle the queue view from the now-playing bar: open it (remembering the
     /// current view), or, when already on it, hide it and return to where the
     /// user was before.
     ToggleQueue,
-    /// Toggle the adaptive navigation sidebar (hamburger / collapse chevron).
+    /// Show or hide the adaptive navigation sidebar.
     ToggleSidebar,
     /// Dismiss the overlay sidebar (scrim tap / Esc).
     CloseSidebar,
@@ -305,17 +248,18 @@ pub struct MusicApp {
     pb: Playback,
     view: View,
     nav_back: Vec<View>,
-    /// The header search field — a real `ui::TextInput` (local mode), so it
-    /// gets full editing affordances for free: Ctrl+A/C/X/V, drag-to-select,
-    /// double-click word, Shift+Arrow selection, word navigation. The app reads
-    /// the live query via `search_input.value()`.
-    search_input: TextInput,
+    /// The query the live catalogue is answering. Search belongs to the
+    /// platform: the app draws no field, it only runs the remote query the
+    /// platform's search provider asks for.
+    search_query: String,
+    /// The exchange with the platform search's live-catalogue provider.
+    live_search: crate::live_search::LiveSearch,
+    /// The header's two actions, real retained buttons: open an audio file,
+    /// and open the platform search for this app.
     open_file_button: ui::widget::Button,
-    open_file_layout_visible: Option<bool>,
-    open_file_gap: f64,
-    /// The search pill's full rect, captured during draw so a press inside it
-    /// routes to `search_input` (caret placement / drag-select).
-    search_pill_rect: Rect,
+    search_button: ui::widget::Button,
+    /// Search opened from the app's own painted controls (a Browse tile).
+    search_opener: ui::search::SearchOpener,
     audio: AudioEngine,
 
     /// The non-blocking streaming worker (real YouTube-Music search + audio
@@ -342,11 +286,6 @@ pub struct MusicApp {
     /// artists, playlists + a top-result hero. Powers the Spotify-style filter
     /// tabs; per-type "see all" deep fetches merge into the matching bucket.
     live_bundle: Option<(String, SearchBundle)>,
-    /// The active search filter tab (All / Songs / Albums / Artists / Playlists).
-    search_tab: SearchTab,
-    /// Deep per-type "see all" fetches already dispatched, keyed `"query|kind"`,
-    /// so switching to a tab enriches it exactly once.
-    search_more_sent: HashSet<String>,
     /// Count of in-flight stream resolutions (keeps redraws flowing until the
     /// resolved URL lands and can be handed to the audio engine).
     resolve_in_flight: usize,
@@ -364,7 +303,6 @@ pub struct MusicApp {
     /// just because the host polls on a later frame.
     resource_stream_results: Vec<tilo_actions::InvocationUpdate>,
     active_search_request: Option<u64>,
-    active_search_more: HashMap<String, u64>,
     /// `(query, reason)` for the current live-search failure. Kept separate
     /// from a toast so it can be rendered with a retry control and announced
     /// through the app's accessibility tree.
@@ -436,9 +374,12 @@ pub struct MusicApp {
     /// sidebar/content rects — so collapse clears cleanly (its own clip) and the
     /// panel never resizes against the content.
     drawer: SidebarDrawer,
-    /// Hit rect of the hamburger toggle, captured during draw so the event
+    /// Hit rect of the sidebar toggle, captured during draw so the event
     /// handler can route a press to [`SidebarDrawer::toggle`].
-    hamburger_rect: Rect,
+    toggle_rect: Rect,
+    /// Height of the now-playing bar in the last painted theme, so the event
+    /// path hit-tests the bar that was drawn.
+    bar_h: f64,
 
     mouse: Point,
     hits: Vec<Hit>,
@@ -490,6 +431,9 @@ pub struct MusicApp {
     /// `Send + Sync`.
     pending: Arc<AtomicI64>,
 
+    /// The row a context menu was opened on: it stays lifted while the menu
+    /// is open.
+    menu_anchor_row: Option<Rect>,
     /// The track the open context menu targets (for go-to-album/artist etc.).
     ctx_track: Option<String>,
     /// The playlist the context-menu target row belongs to, if it was opened
@@ -522,6 +466,12 @@ pub struct MusicApp {
     /// A deferred `--shots` staging action, applied once on the first `sync`
     /// after the library has loaded (the catalog is empty at construction).
     shot_stage: Option<ShotStage>,
+    /// A staged track whose context menu opens over its row once the row is
+    /// laid out.
+    staged_menu_track: Option<String>,
+    /// A staged sidebar state, snapped once the drawer knows the window's
+    /// size class (docked or floating each remember their own state).
+    staged_sidebar: Option<bool>,
 
     // ---- real artwork + live content -------------------------------------
     /// Async remote-image cache: real album/artist/playlist covers fetched off
@@ -574,9 +524,6 @@ pub struct MusicApp {
     prefetched_for: Option<String>,
 
     // ---- search performance ----------------------------------------------
-    /// Memoised local search results for the last query, so the Search view
-    /// doesn't re-scan the whole library every frame while typing.
-    search_cache: Option<(String, SearchResults)>,
     /// Wall-clock of the last search keystroke, for debouncing the live query.
     search_edit_at: Option<Instant>,
     /// The last query actually dispatched to the live worker (dedupe debounce).
@@ -678,15 +625,6 @@ impl MusicApp {
         // A preset search query (`TILO_MUSIC_VIEW=search:…`) arms the debounce so
         // the live-shot loop dispatches it after the usual idle beat.
         let preset_search_at = (!query.is_empty()).then(ui::time::now);
-        let mut search_input = TextInput::local()
-            .with_kind(ui::widget::TextInputKind::Search)
-            .with_plain_chrome()
-            .with_font_size(14.0)
-            .with_placeholder("Search songs, albums, artists")
-            .with_id("music_search");
-        if !query.is_empty() {
-            search_input.set_text(&query);
-        }
         let persist_device_profile = load_device_profile && !cfg!(test);
         let device_profile = persist_device_profile
             .then(crate::storage::load_device_profile)
@@ -719,11 +657,15 @@ impl MusicApp {
             pb: device_profile.playback,
             view,
             nav_back: Vec::new(),
-            search_input,
+            search_query: query,
+            live_search: {
+                let live = crate::live_search::LiveSearch::default();
+                live.set_reachable(true);
+                live
+            },
             open_file_button: Self::make_open_file_button(),
-            open_file_layout_visible: None,
-            open_file_gap: 0.0,
-            search_pill_rect: Rect::ZERO,
+            search_button: ui::search::search_button(ui::search::SearchRequest::this_app()),
+            search_opener: ui::search::SearchOpener::new(),
             audio: AudioEngine::new(),
             worker: None,
             backend_name: "offline (bundled library)".to_string(),
@@ -732,8 +674,6 @@ impl MusicApp {
             live_search_pending: None,
             live_results: None,
             live_bundle: None,
-            search_tab: SearchTab::All,
-            search_more_sent: HashSet::new(),
             resolve_in_flight: 0,
             next_request_id: 0,
             active_resolve_request: None,
@@ -741,7 +681,6 @@ impl MusicApp {
             resource_stream_resume: None,
             resource_stream_results: Vec::new(),
             active_search_request: None,
-            active_search_more: HashMap::new(),
             search_error: None,
             playback_error: None,
             mpris: MprisHandle::disabled(),
@@ -767,11 +706,9 @@ impl MusicApp {
             body_rect: Rect::ZERO,
             scroll: 0.0,
             content_height: 0.0,
-            drawer: SidebarDrawer::new()
-                .left()
-                .docked_width(SIDEBAR_W)
-                .breakpoint(SIDEBAR_BREAKPOINT),
-            hamburger_rect: Rect::ZERO,
+            drawer: SidebarDrawer::new().left(),
+            toggle_rect: Rect::ZERO,
+            bar_h: 0.0,
             mouse: Point::ZERO,
             hits: Vec::new(),
             row_menu_hits: Vec::new(),
@@ -791,6 +728,7 @@ impl MusicApp {
             context_text_scale: 1.0,
             menu_actions: Vec::new(),
             pending: Arc::new(AtomicI64::new(-1)),
+            menu_anchor_row: None,
             ctx_track: None,
             ctx_in_playlist: None,
             ctx_queue_index: None,
@@ -802,6 +740,8 @@ impl MusicApp {
             lyrics_for: None,
             lyrics_synced: false,
             shot_stage: None,
+            staged_menu_track: None,
+            staged_sidebar: None,
             images: ImageStore::new(&image_fetcher()),
             art_urls: HashMap::new(),
             home: None,
@@ -820,7 +760,6 @@ impl MusicApp {
             lyrics_pending_for: None,
             lyrics_cache: HashMap::new(),
             prefetched_for: None,
-            search_cache: None,
             search_edit_at: preset_search_at,
             live_query_sent: None,
             downloads: HashMap::new(),
@@ -839,6 +778,7 @@ impl MusicApp {
     /// placeholders render deterministically.
     pub fn set_offline_for_shot(&mut self) {
         self.allow_network = false;
+        self.live_search.set_reachable(false);
         self.persist_device_profile = false;
     }
 
@@ -876,7 +816,7 @@ impl MusicApp {
             View::Artist(id) => self.artist_pages.contains_key(id) || !is_live_id(id),
             View::Album(id) => self.album_pages.contains_key(id) || !is_live_album_id(id),
             View::Playlist(id) => self.playlist_pages.contains_key(id) || !is_live_playlist_id(id),
-            View::Search => self.live_bundle.is_some(),
+            View::Browse => self.live_bundle.is_some(),
             _ => true,
         }
     }
@@ -884,7 +824,7 @@ impl MusicApp {
     /// Kick off a real search (keeping the current view), for staging a
     /// lyrics/now-playing live shot. Idempotent per query.
     pub fn shot_begin_search(&mut self, query: &str) {
-        self.search_input.set_text(query);
+        query.clone_into(&mut self.search_query);
         self.request_live_search();
     }
 
@@ -969,7 +909,7 @@ impl MusicApp {
             "liked" => View::Liked,
             "queue" => View::Queue,
             "lyrics" => View::Lyrics,
-            "search" => View::Search,
+            "search" => View::Browse,
             other => {
                 if let Some(id) = other.strip_prefix("album:") {
                     View::Album(id.to_string())
@@ -978,7 +918,7 @@ impl MusicApp {
                 } else if let Some(id) = other.strip_prefix("playlist:") {
                     View::Playlist(id.to_string())
                 } else if let Some(q) = other.strip_prefix("search:") {
-                    return (View::Search, q.to_string());
+                    return (View::Browse, q.to_string());
                 } else {
                     View::Home
                 }
@@ -999,7 +939,7 @@ impl MusicApp {
             "playlists" => Some(View::Playlists),
             "downloads" => Some(View::Downloads),
             "liked" => Some(View::Liked),
-            "search" => Some(View::Search),
+            "search" => Some(View::Browse),
             "queue" => Some(View::Queue),
             "lyrics" => Some(View::Lyrics),
             _ => None,
@@ -2124,7 +2064,7 @@ impl MusicApp {
         let cancel = Rc::new(Cell::new(false));
         let dialog = ModalDialog::new(title, body)
             .open(true)
-            .with_max_size(420.0, 190.0)
+            .with_max_width(420.0)
             .primary_action(primary, {
                 let s = submit.clone();
                 move || s.set(true)
@@ -2275,6 +2215,11 @@ impl MusicApp {
             Action::Back => self.on_back(),
             Action::BrowseGenre(genre) => self.on_browse_genre(&genre),
             Action::Play { queue, index } => self.on_play(queue, index, state),
+            Action::ShufflePlay(queue) => self.on_shuffle_play(queue, state),
+            Action::OpenSearch => {
+                self.search_opener
+                    .open(ui::search::SearchRequest::this_app());
+            }
             Action::TogglePlay => self.on_toggle_play(state),
             Action::Next => self.on_next(state),
             Action::Prev => self.on_prev(state),
@@ -2316,7 +2261,6 @@ impl MusicApp {
                 }
             }
             Action::ToggleFollow(id) => self.on_toggle_follow(&id, state),
-            Action::SelectSearchTab(tab) => self.on_select_search_tab(tab),
             Action::AddToPlaylist { playlist, track } => {
                 self.on_add_to_playlist(&playlist, &track, state);
             }
@@ -2338,8 +2282,6 @@ impl MusicApp {
                 queue_index,
             } => self.open_track_menu(track, in_playlist.as_deref(), queue_index),
             Action::OpenAddToPlaylist(track) => self.open_add_to_playlist_menu(&track),
-            Action::FocusSearch => self.on_focus_search(),
-            Action::RetrySearch => self.request_live_search(),
             Action::ToggleQueue => self.on_toggle_queue(),
             Action::ToggleSidebar => self.toggle_sidebar(),
             Action::CloseSidebar => self.drawer.close(),
@@ -2366,14 +2308,6 @@ impl MusicApp {
     fn on_move_queue_item(&mut self, from: usize, to: usize, state: &mut AutoCommit) {
         self.queue_move(from, to);
         self.persist_playback(state);
-    }
-
-    fn on_select_search_tab(&mut self, tab: SearchTab) {
-        self.search_tab = tab;
-        self.scroll = 0.0;
-        // Switching to a specific type deep-fetches a fuller list for it
-        // (once per query) so the tab is genuinely richer than the mix.
-        self.request_search_more(tab);
     }
 
     fn on_remove_from_playlist(&mut self, playlist: &str, track: &str, state: &mut AutoCommit) {
@@ -2410,14 +2344,6 @@ impl MusicApp {
         self.reload_library(state);
     }
 
-    fn on_focus_search(&mut self) {
-        if self.view != View::Search {
-            self.nav_back.push(self.view.clone());
-        }
-        self.view = View::Search;
-        self.search_input.set_focus(true);
-    }
-
     fn on_close_name_prompt(&mut self) {
         self.name_prompt = None;
         self.name_input.clear();
@@ -2430,9 +2356,6 @@ impl MusicApp {
             self.nav_back.push(self.view.clone());
             self.view = v;
             self.scroll = 0.0;
-        }
-        if matches!(self.view, View::Search) {
-            self.search_input.set_focus(true);
         }
         // Picking a destination dismisses the overlay sidebar so the
         // chosen screen takes the full width (Adwaita flap behaviour).
@@ -2449,19 +2372,10 @@ impl MusicApp {
     }
 
     fn on_browse_genre(&mut self, genre: &str) {
-        // A "Browse all" category chip: drop the genre into the search
-        // field and stay on Search so the (genre-aware) results render.
-        if self.view != View::Search {
-            self.nav_back.push(self.view.clone());
-            self.view = View::Search;
-        }
-        self.search_input.set_text(genre);
-        self.search_input.set_focus(true);
-        // Invalidate the memoised query so the new results recompute, and
-        // arm the debounced live search (live build surfaces real hits).
-        self.search_cache = None;
-        self.search_edit_at = Some(ui::time::now());
-        self.scroll = 0.0;
+        // A Browse tile opens the platform search for Music, prefilled with
+        // the genre; the live catalogue answers through the search provider.
+        self.search_opener
+            .open(ui::search::SearchRequest::this_app().with_query(genre));
         if self.drawer.is_overlay() {
             self.drawer.close();
         }
@@ -2528,6 +2442,17 @@ impl MusicApp {
             // Back to the queue's linear order.
             self.shuffle_order.clear();
         }
+        self.persist_playback(state);
+    }
+
+    fn on_shuffle_play(&mut self, queue: Arc<Vec<String>>, state: &mut AutoCommit) {
+        if queue.is_empty() {
+            return;
+        }
+        let start = (self.next_rand() % queue.len() as u64) as usize;
+        self.pb.shuffle = true;
+        self.on_play(queue, start, state);
+        self.rebuild_shuffle_order();
         self.persist_playback(state);
     }
 
@@ -2688,7 +2613,6 @@ impl MusicApp {
         self.name_input = String::new();
         self.name_dialog = None;
         self.new_playlist_track = track;
-        self.search_input.set_focus(false);
     }
 
     fn on_create_playlist(&mut self, state: &mut AutoCommit) {
@@ -2733,7 +2657,6 @@ impl MusicApp {
             .unwrap_or_default();
         self.name_prompt = Some(NamePrompt::Rename(id));
         self.name_dialog = None;
-        self.search_input.set_focus(false);
     }
 
     fn on_commit_rename(&mut self, id: &str, state: &mut AutoCommit) {
@@ -3277,7 +3200,7 @@ impl MusicApp {
     /// No-op offline builds still spawn the worker (which reports the offline
     /// backend); the UI keeps showing the local library either way.
     fn request_live_search(&mut self) {
-        let q = self.search_input.value().trim().to_string();
+        let q = self.search_query.trim().to_string();
         if q.is_empty() {
             return;
         }
@@ -3353,36 +3276,6 @@ impl MusicApp {
                     request_id,
                     error,
                 } => self.apply_search_failure(&query, request_id, &error),
-                StreamUpdate::SearchMore {
-                    query,
-                    kind,
-                    request_id,
-                    bundle,
-                } => {
-                    let key = format!("{query}|{kind:?}");
-                    if self.active_search_more.get(&key) == Some(&request_id)
-                        && self.search_input.value().trim() == query
-                    {
-                        self.merge_search_more(&query, kind, *bundle);
-                    }
-                }
-                StreamUpdate::SearchMoreUnavailable {
-                    query,
-                    kind,
-                    request_id,
-                    error,
-                } => {
-                    let key = format!("{query}|{kind:?}");
-                    if self.active_search_more.get(&key) == Some(&request_id)
-                        && self.search_input.value().trim() == query
-                    {
-                        self.active_search_more.remove(&key);
-                        self.toast = Some((
-                            format!("Couldn\u{2019}t load more results: {error}"),
-                            ui::time::now(),
-                        ));
-                    }
-                }
                 StreamUpdate::Home { content } => {
                     self.absorb_home(&content);
                     self.home = Some(*content);
@@ -3456,28 +3349,51 @@ impl MusicApp {
                         self.apply_resolve_failure(&track_id, request_id, &error);
                     }
                 }
-                StreamUpdate::Note(_) => {}
+                // Per-kind "more" pages are never requested (the platform
+                // search pages the live catalogue itself); notes are logs.
+                StreamUpdate::SearchMore { .. }
+                | StreamUpdate::SearchMoreUnavailable { .. }
+                | StreamUpdate::Note(_) => {}
             }
         }
     }
 
     fn apply_search_results(&mut self, query: &str, request_id: u64, bundle: &SearchBundle) {
-        if self.active_search_request == Some(request_id)
-            && self.search_input.value().trim() == query
-        {
+        if self.active_search_request == Some(request_id) && self.search_query == query {
             self.active_search_request = None;
             self.search_error = None;
+            self.live_search
+                .answer(query, &crate::live_search::rows_of(bundle));
             self.ingest_search_results(query, bundle.clone());
         }
     }
 
     fn apply_search_failure(&mut self, query: &str, request_id: u64, error: &str) {
-        if self.active_search_request == Some(request_id)
-            && self.search_input.value().trim() == query
-        {
+        if self.active_search_request == Some(request_id) && self.search_query == query {
             self.active_search_request = None;
             self.live_search_pending = None;
             self.search_error = Some((query.to_string(), error.to_string()));
+            self.live_search.fail(query);
+        }
+    }
+
+    /// Send the newest catalogue query the platform search asked for to the
+    /// worker, or answer it at once from the last reply when it is the same.
+    fn pump_live_search(&mut self) {
+        let Some(query) = self.live_search.take_query() else {
+            return;
+        };
+        if let Some((answered, bundle)) = &self.live_bundle
+            && answered.trim() == query.trim()
+        {
+            let rows = crate::live_search::rows_of(bundle);
+            self.live_search.answer(&query, &rows);
+            return;
+        }
+        self.search_query = query;
+        self.request_live_search();
+        if self.active_search_request.is_none() {
+            self.live_search.fail(&self.search_query);
         }
     }
 
@@ -3722,8 +3638,7 @@ impl MusicApp {
     }
 
     /// Ingest a fresh multi-type search response for `query`: record covers,
-    /// make tracks playable, and stash the bundle so the filter tabs render.
-    /// Resets the active tab to `All` so a new query lands on the mix.
+    /// make tracks playable, and stash the bundle the platform search reads.
     fn ingest_search_results(&mut self, query: &str, bundle: SearchBundle) {
         if self.live_search_pending.as_deref() == Some(query) {
             self.live_search_pending = None;
@@ -3734,127 +3649,8 @@ impl MusicApp {
             .iter()
             .map(|h| format!("{LIVE_TRACK_PREFIX}{}", h.video_id))
             .collect();
-        let n_types = [
-            !bundle.tracks.is_empty(),
-            !bundle.albums.is_empty(),
-            !bundle.artists.is_empty(),
-            !bundle.playlists.is_empty(),
-        ]
-        .iter()
-        .filter(|b| **b)
-        .count();
         self.live_results = Some((query.to_string(), ordered));
-        // A brand-new query resets the tab to the curated mix; re-running the
-        // same query (debounce/Enter) keeps the user's chosen tab.
-        let same_query = self.live_bundle.as_ref().is_some_and(|(q, _)| q == query);
-        if !same_query {
-            self.search_tab = SearchTab::All;
-        }
         self.live_bundle = Some((query.to_string(), bundle));
-        self.toast = Some((
-            format!(
-                "Results for \u{201c}{query}\u{201d}{}",
-                if n_types > 1 {
-                    " across songs, albums, artists & playlists"
-                } else {
-                    ""
-                }
-            ),
-            ui::time::now(),
-        ));
-    }
-
-    /// Merge a deep per-type "see all" result into the current bundle's matching
-    /// bucket (only if it's still the same query).
-    fn merge_search_more(&mut self, query: &str, kind: SearchKind, more: SearchBundle) {
-        self.absorb_bundle(&more);
-        let Some((q, bundle)) = self.live_bundle.as_mut() else {
-            return;
-        };
-        if q != query {
-            return;
-        }
-        match kind {
-            SearchKind::Songs => {
-                // Extend the ordered live-results list with any new track ids too.
-                let mut ids = self
-                    .live_results
-                    .as_ref()
-                    .filter(|(rq, _)| rq == query)
-                    .map(|(_, v)| v.clone())
-                    .unwrap_or_default();
-                for h in &more.tracks {
-                    let id = format!("{LIVE_TRACK_PREFIX}{}", h.video_id);
-                    if !bundle.tracks.iter().any(|t| t.video_id == h.video_id) {
-                        bundle.tracks.push(h.clone());
-                    }
-                    if !ids.contains(&id) {
-                        ids.push(id);
-                    }
-                }
-                self.live_results = Some((query.to_string(), ids));
-            }
-            SearchKind::Albums => {
-                for a in more.albums {
-                    if !bundle.albums.iter().any(|x| x.id == a.id) {
-                        bundle.albums.push(a);
-                    }
-                }
-            }
-            SearchKind::Artists => {
-                for a in more.artists {
-                    if !bundle.artists.iter().any(|x| x.id == a.id) {
-                        bundle.artists.push(a);
-                    }
-                }
-            }
-            SearchKind::Playlists => {
-                for p in more.playlists {
-                    if !bundle.playlists.iter().any(|x| x.id == p.id) {
-                        bundle.playlists.push(p);
-                    }
-                }
-            }
-        }
-    }
-
-    /// Fire a deep per-type search for the given filter tab, once per
-    /// `(query, kind)`. No-op for the `All` tab and offline / no-query states.
-    fn request_search_more(&mut self, tab: SearchTab) {
-        let Some(kind) = tab.kind() else { return };
-        if !self.allow_network {
-            return;
-        }
-        let Some((query, _)) = self.live_bundle.clone() else {
-            return;
-        };
-        let key = format!("{query}|{kind:?}");
-        if self.search_more_sent.contains(&key) {
-            return;
-        }
-        self.ensure_worker();
-        let Some(request_id) = self.next_worker_request_id() else {
-            self.toast = Some((
-                "Couldn’t load more results: request identity space is exhausted".to_string(),
-                ui::time::now(),
-            ));
-            return;
-        };
-        if let Some(w) = &self.worker {
-            if let Err(error) = w.request(StreamRequest::SearchMore {
-                query,
-                kind,
-                request_id,
-            }) {
-                self.toast = Some((
-                    format!("Couldn\u{2019}t load more results: {error}"),
-                    ui::time::now(),
-                ));
-                return;
-            }
-            self.active_search_more.insert(key.clone(), request_id);
-            self.search_more_sent.insert(key);
-        }
     }
 
     /// The decoded cover image for an entity id, if one has loaded. Requests an
@@ -3970,13 +3766,14 @@ impl MusicApp {
         self.row_menu_hits.push(Hit { rect, action });
     }
 
-    /// Topmost right-click target containing `p` (later-drawn = on top).
-    fn row_menu_at(&self, p: Point) -> Option<Action> {
+    /// Topmost right-click target containing `p` (later-drawn = on top), and
+    /// the row it belongs to.
+    fn row_menu_at(&self, p: Point) -> Option<(Rect, Action)> {
         self.row_menu_hits
             .iter()
             .rev()
             .find(|h| h.rect.contains(p))
-            .map(|h| h.action.clone())
+            .map(|h| (h.rect, h.action.clone()))
     }
 
     // ---- adaptive sidebar geometry (delegated to `SidebarDrawer`) --------
@@ -4008,19 +3805,13 @@ impl MusicApp {
     /// where the floating sidebar draws above it) and spans to the right edge.
     fn nowplaying_rect(&self) -> Rect {
         let r = self.rect;
-        Rect::new(
-            self.drawer.content_rect().x0,
-            r.y1 - NOWPLAYING_H,
-            r.x1,
-            r.y1,
-        )
+        Rect::new(self.drawer.content_rect().x0, r.y1 - self.bar_h, r.x1, r.y1)
     }
 
-    /// Whether the hamburger toggle is currently shown — whenever the sidebar
-    /// is not fully docked-open, so the user can summon / re-expand it (also
-    /// while it's mid-collapse animation).
-    fn show_hamburger(&self) -> bool {
-        self.drawer.is_overlay() || !self.drawer.is_open() || self.drawer.reveal() < 0.999
+    /// Whether the sidebar toggle sits at the content's leading edge rather
+    /// than in the sidebar's own header: whenever the sidebar is hidden.
+    fn toggle_in_content(&self) -> bool {
+        !self.drawer.is_open()
     }
 
     /// Flip the sidebar open/closed for the current layout.
@@ -4032,7 +3823,7 @@ impl MusicApp {
     /// Stage the sidebar for a deterministic `--shots` frame (no event loop to
     /// drive the reveal animation). `open` snaps it fully revealed.
     pub fn snap_sidebar(&mut self, open: bool) {
-        self.drawer.snap(open);
+        self.staged_sidebar = Some(open);
     }
 
     /// Stage a track context menu open for a `--shots` frame. Deferred to the
@@ -4053,15 +3844,9 @@ impl MusicApp {
         }
     }
 
-    /// Stage the Search page's field focused with an empty query for a
-    /// `--shots` frame — captures the caret at the field start (it must not sit
-    /// at the end of the placeholder hint). This deliberately opens Search:
-    /// compact non-search headers replace their field with a button, so leaving
-    /// the view on Home would produce a misleading `search-focus` screenshot.
-    pub fn snap_search_focus(&mut self) {
-        self.view = View::Search;
-        self.search_input.set_focus(true);
-        self.search_input.set_text("");
+    /// Open `view` for a `--shots` frame.
+    pub fn snap_view(&mut self, view: View) {
+        self.view = view;
     }
 
     /// Stage the Home skeleton loading state for a `--shots` frame.
@@ -4108,138 +3893,6 @@ impl MusicApp {
     pub fn snap_offline_error(&mut self) {
         self.shot_stage = Some(ShotStage::OfflineError);
         self.view = View::Downloads;
-    }
-
-    /// Stage the Search screen showing a multi-type result set + the Spotify
-    /// filter tabs, for a hermetic `--shots` frame. Builds a bundle from
-    /// sample-library entities so the render exercises the real search path
-    /// (identical to a live query) without any network.
-    pub fn snap_search_results(&mut self, tab: SearchTab) {
-        let bundle = SearchBundle {
-            top: Some(SearchTop::Artist(ArtistHit {
-                id: "ar_aurora".into(),
-                name: "Aurora Skies".into(),
-                subscriber_count: 2_140_553,
-                avatar_url: String::new(),
-            })),
-            tracks: Self::snap_search_tracks(),
-            albums: Self::snap_search_albums(),
-            artists: Self::snap_search_artists(),
-            playlists: Self::snap_search_playlists(),
-        };
-        self.ingest_search_results("aurora", bundle);
-        self.search_tab = tab;
-        self.search_input.set_text("aurora");
-        self.view = View::Search;
-    }
-
-    fn snap_search_tracks() -> Vec<TrackHit> {
-        vec![
-            sample_hit(
-                "aur_g1",
-                "Glasslight",
-                "Aurora Skies",
-                "ar_aurora",
-                "al_glasslight",
-                "Glasslight",
-                215,
-            ),
-            sample_hit(
-                "aur_p1",
-                "Paper Boats",
-                "Aurora Skies",
-                "ar_aurora",
-                "al_paperboats",
-                "Paper Boats",
-                221,
-            ),
-            sample_hit(
-                "aur_g5",
-                "Halcyon",
-                "Aurora Skies",
-                "ar_aurora",
-                "al_glasslight",
-                "Glasslight",
-                263,
-            ),
-            sample_hit(
-                "aur_g3",
-                "Slow Tide",
-                "Aurora Skies",
-                "ar_aurora",
-                "al_glasslight",
-                "Glasslight",
-                242,
-            ),
-        ]
-    }
-
-    fn snap_search_albums() -> Vec<crate::backend::AlbumHit> {
-        vec![
-            sample_album_hit(
-                "al_glasslight",
-                "Glasslight",
-                "Aurora Skies",
-                "ar_aurora",
-                2023,
-            ),
-            sample_album_hit(
-                "al_paperboats",
-                "Paper Boats",
-                "Aurora Skies",
-                "ar_aurora",
-                2021,
-            ),
-            sample_album_hit(
-                "al_afterhours",
-                "After Hours Drive",
-                "Midnight Transit",
-                "ar_midnight",
-                2022,
-            ),
-        ]
-    }
-
-    fn snap_search_artists() -> Vec<ArtistHit> {
-        vec![
-            ArtistHit {
-                id: "ar_aurora".into(),
-                name: "Aurora Skies".into(),
-                subscriber_count: 2_140_553,
-                avatar_url: String::new(),
-            },
-            ArtistHit {
-                id: "ar_lumen".into(),
-                name: "Lumen Theory".into(),
-                subscriber_count: 3_771_440,
-                avatar_url: String::new(),
-            },
-            ArtistHit {
-                id: "ar_neon".into(),
-                name: "Neon Harbor".into(),
-                subscriber_count: 1_009_330,
-                avatar_url: String::new(),
-            },
-        ]
-    }
-
-    fn snap_search_playlists() -> Vec<PlaylistHit> {
-        vec![
-            PlaylistHit {
-                id: "PLaurora_essentials".into(),
-                title: "Aurora Skies Essentials".into(),
-                subtitle: "YouTube Music".into(),
-                track_count: 40,
-                cover_url: String::new(),
-            },
-            PlaylistHit {
-                id: "PLdreampop".into(),
-                title: "Dream Pop Dreaming".into(),
-                subtitle: "YouTube Music".into(),
-                track_count: 80,
-                cover_url: String::new(),
-            },
-        ]
     }
 
     /// Stage a full (live-style) artist page for a hermetic `--shots` frame:
@@ -4484,20 +4137,13 @@ impl MusicApp {
         };
         match stage {
             ShotStage::TrackMenu => {
-                // Target the 3rd sorted track and anchor the cursor on its row
-                // (rows start at HEADER_H + ~9, 52px tall) so the highlighted
-                // row and the menu's target track line up in the frame.
+                // Target the 3rd sorted track; the menu opens over its row once
+                // the row has been laid out (see `open_staged_track_menu`).
                 let tracks = self.lib.tracks_sorted();
-                let track = tracks
+                self.staged_menu_track = tracks
                     .get(2)
                     .or_else(|| tracks.first())
-                    .map(|t| t.id.clone())
-                    .unwrap_or_default();
-                if !track.is_empty() {
-                    let row_y = self.rect.y0 + HEADER_H + 2.0 * 52.0 + 26.0;
-                    self.mouse = Point::new(self.rect.x0 + 360.0, row_y);
-                    self.open_track_menu(track, None, None);
-                }
+                    .map(|t| t.id.clone());
             }
             ShotStage::NewPlaylistPrompt => {
                 self.name_prompt = Some(NamePrompt::NewPlaylist);
@@ -4679,6 +4325,9 @@ impl MusicApp {
     /// could disagree with the painted ones at any other density or scale.
     fn open_context_menu_at_pointer(&mut self) {
         let anchor = Rect::from_origin_size(self.mouse, (0.0, 0.0));
+        if let Some(row) = self.menu_anchor_row {
+            self.context.anchor_row(row);
+        }
         self.context.set_text_scale(self.context_text_scale);
         self.context.open_anchored(anchor, self.rect);
         self.dirty = true;
@@ -4844,29 +4493,6 @@ impl MusicApp {
         true
     }
 
-    // ---- search (debounced + memoised) -----------------------------------
-
-    /// Memoised local-library search: recomputes only when the query changes,
-    /// so typing doesn't re-scan the whole catalog every frame.
-    fn local_search_cached(&mut self, q: &str) -> SearchResults {
-        // `TILO_MUSIC_NOCACHE=1` forces the pre-memoisation behaviour (re-scan
-        // every frame) so the search-cache win can be measured head-to-head.
-        // Read once (not per frame).
-        use std::sync::OnceLock;
-        static NOCACHE: OnceLock<bool> = OnceLock::new();
-        let nocache = *NOCACHE
-            .get_or_init(|| std::env::var("TILO_MUSIC_NOCACHE").is_ok_and(|v| !v.is_empty()));
-        if !nocache
-            && let Some((cached_q, res)) = &self.search_cache
-            && cached_q == q
-        {
-            return res.clone();
-        }
-        let res = self.lib.search(q);
-        self.search_cache = Some((q.to_string(), res.clone()));
-        res
-    }
-
     /// Debounced live search: fire a real YouTube-Music query a short beat after
     /// the user stops typing, so keystrokes stay smooth and we don't spam the
     /// API. Enter still fires immediately (via [`Self::request_live_search`]).
@@ -4879,7 +4505,7 @@ impl MusicApp {
             return;
         }
         self.search_edit_at = None;
-        let q = self.search_input.value().trim().to_string();
+        let q = self.search_query.trim().to_string();
         if q.len() < 2 || self.live_query_sent.as_deref() == Some(q.as_str()) {
             return;
         }
@@ -4895,19 +4521,15 @@ impl Default for MusicApp {
 
 // ---- small drawing helpers ----------------------------------------------
 
-fn rrect(r: Rect, radius: f64) -> RoundedRect {
-    RoundedRect::from_rect(r, radius)
-}
-
-/// Truncate `text` to fit `max_w` px at `size`, appending an ellipsis.
+/// Truncate `text` to fit `max_w` px in `style`, appending an ellipsis.
 ///
 /// Only appends the ellipsis when at least one real glyph fits before it. When
 /// the column is too narrow for even a single character, this renders **nothing**
 /// (an empty string) rather than a lone `\u{2026}`: a stray ellipsis with no
 /// preceding text conveys nothing and, in a too-narrow column, would spill past
 /// its bounds into the neighbouring UI.
-fn elide(tr: &mut TextRenderer, text: &str, size: f32, weight: TextWeight, max_w: f64) -> String {
-    let out = tr.elide_to_width_weighted(text, size, ui::num::f32_of_f64(max_w), weight);
+fn elide(tr: &mut TextRenderer, text: &str, style: &TextStyle, max_w: f64) -> String {
+    let out = tr.elide_to_width_style(text, ui::num::f32_of_f64(max_w.max(0.0)), style);
     if out != text && out.starts_with(ui::text_render::ELLIPSIS) {
         // Not even one glyph + ellipsis fits — render nothing so the `\u{2026}`
         // never overflows into an adjacent column.
@@ -4963,25 +4585,6 @@ fn sample_hit(
         album: Some(album.into()),
         album_id: Some(album_id.into()),
         duration_s: dur,
-        cover_url: String::new(),
-    }
-}
-
-/// Build an [`AlbumHit`] for a hermetic shot from sample-library-shaped fields.
-fn sample_album_hit(
-    id: &str,
-    title: &str,
-    artist: &str,
-    artist_id: &str,
-    year: u32,
-) -> crate::backend::AlbumHit {
-    crate::backend::AlbumHit {
-        id: id.into(),
-        title: title.into(),
-        artist: artist.into(),
-        artist_id: Some(artist_id.into()),
-        year,
-        kind: crate::backend::AlbumKind::Album,
         cover_url: String::new(),
     }
 }
