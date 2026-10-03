@@ -380,6 +380,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
         floating,
     };
 
+    app.accessibility.window.your_colour = (inputs.your_colour)();
     app.accessibility.a11y.high_contrast = (inputs.high_contrast)();
     app.accessibility.a11y.reduce_motion = match app.palette_source {
         PaletteSource::Host => app.accessibility.base_theme.reduce_motion,

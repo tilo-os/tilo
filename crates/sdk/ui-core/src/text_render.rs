@@ -176,19 +176,22 @@ fn share_host_font_database(font_system: &FontSystem) {
         Some((font_system.locale().to_owned(), font_system.db().clone()));
 }
 
-/// Build a font system whose generic families are deterministic across the
-/// developer distrobox and the Tilo image. cosmic-text's platform fallback
-/// still supplies script-aware Noto faces for Arabic, Indic, CJK, emoji, and
-/// other characters not covered by the selected primary face.
+/// Build the process's font system: the database a host built for it when
+/// there is one, otherwise the product font catalog with the system's fonts
+/// behind it and Tilo's script fallback (Android copies its catalog out of
+/// the APK first). A binary run from a checkout, a screenshot and the Tilo
+/// image therefore all set text in the same faces, whether or not the
+/// machine has them installed. Only when no catalog loads does it fall back
+/// to the system's fonts alone with the generic families pinned to the
+/// product names.
 #[cfg(not(test))]
 pub fn configured_font_system() -> FontSystem {
-    #[cfg(test)]
-    FONT_SYSTEM_CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
-    #[cfg(windows)]
-    if let Some(font_system) =
-        crate::font_catalog::windows_font_system(crate::i18n::I18nManager::current_locale())
-    {
-        return font_system;
+    let host = HOST_FONT_DATABASE
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    if let Some((locale, database)) = host {
+        return crate::font_catalog::system_over(locale, database);
     }
     #[cfg(all(target_os = "android", feature = "native"))]
     if let Some(font_system) =
@@ -196,12 +199,10 @@ pub fn configured_font_system() -> FontSystem {
     {
         return font_system;
     }
-    let host = HOST_FONT_DATABASE
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone();
-    if let Some((locale, database)) = host {
-        return crate::font_catalog::system_over(locale, database);
+    if let Some(font_system) =
+        crate::font_catalog::bundled_font_system(crate::i18n::I18nManager::current_locale())
+    {
+        return font_system;
     }
     let mut font_system = FontSystem::new();
     let database = font_system.db_mut();
@@ -215,27 +216,19 @@ pub fn configured_font_system() -> FontSystem {
 /// The toolkit's color emoji face for engines that load their own fonts, as
 /// font data and face index.
 ///
-/// On Windows the toolkit ships its font catalog, so this returns the
-/// catalog's Noto Color Emoji face instead of relying on machine-specific font
-/// discovery. Elsewhere the platform's fonts already provide emoji and this
-/// returns `None`.
+/// The toolkit sets text in its font catalog, so this is the catalog's Noto
+/// Color Emoji face rather than whatever the machine has installed. `None`
+/// only when no emoji face is loaded at all.
 #[must_use]
 pub fn bundled_emoji_face() -> Option<(Vec<u8>, u32)> {
-    #[cfg(windows)]
-    {
-        let system = configured_font_system();
-        let database = system.db();
-        let face = database.faces().find(|face| {
-            face.families
-                .iter()
-                .any(|(name, _)| name == "Noto Color Emoji")
-        })?;
-        database.with_face_data(face.id, |data, index| (data.to_vec(), index))
-    }
-    #[cfg(not(windows))]
-    {
-        None
-    }
+    let system = configured_font_system();
+    let database = system.db();
+    let face = database.faces().find(|face| {
+        face.families
+            .iter()
+            .any(|(name, _)| name == "Noto Color Emoji")
+    })?;
+    database.with_face_data(face.id, |data, index| (data.to_vec(), index))
 }
 
 pub(crate) fn balance_buffer(buffer: &mut Buffer, font_system: &mut FontSystem, max_width: f32) {

@@ -140,7 +140,7 @@ def pairs_body(wght, wdth, italic) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--final", action="store_true", help="write to proofs/sheets/il-sheet/ (tracked)")
+    ap.add_argument("--final", action="store_true", help="write to proofs/sheets/il-sheet/")
     ap.add_argument("--pages", default="ui,ui2x,pairs")
     a = ap.parse_args()
     for f in (UPRIGHT, ITALIC):

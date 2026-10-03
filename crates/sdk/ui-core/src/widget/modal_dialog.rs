@@ -503,8 +503,14 @@ pub fn paint_backdrop(
         let face = ButtonFace::icon_only(c, Icon::X, "Close")
             .hovered(spec.close_hovered)
             .focused(spec.close_focused);
-        Button::paint(scene, transform, text_renderer, theme, &face);
+        Button::paint(scene, transform, text_renderer, &on_sheet(theme), &face);
     }
+}
+
+/// `theme` as seen by what stands on the sheet: controls lift off the
+/// panel ground rather than the window's (`Theme::on_ground`).
+fn on_sheet(theme: &Theme) -> Theme {
+    theme.on_ground(crate::chrome::panel_ground(theme))
 }
 
 /// Paint the footer actions. Call after drawing the body.
@@ -516,6 +522,7 @@ pub fn paint_actions(
     layout: &ModalLayout,
     spec: &ModalSpec<'_>,
 ) {
+    let theme = &on_sheet(theme);
     for (i, a) in spec.actions.iter().enumerate() {
         let Some(rect) = layout.actions.get(i).copied() else {
             continue;
@@ -1033,10 +1040,12 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                 &layout.body,
             );
         }
+        // The body stands on the sheet: its controls lift off the panel.
+        let on_panel = on_sheet(theme);
         self.content
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw(scene, transform, text_renderer, &on_panel, presence);
         self.content
-            .draw_overlay(scene, transform, text_renderer, theme, presence);
+            .draw_overlay(scene, transform, text_renderer, &on_panel, presence);
         if layout.body_overflows {
             scene.pop_layer();
         }

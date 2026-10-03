@@ -429,8 +429,12 @@ impl Widget for CandlestickChart {
                 &theme.text(TextRole::Heading),
             );
         }
-        for index in 0_u32..=4 {
-            let fraction = f64::from(index) / 4.0;
+        for value in crate::charts::nice_ticks(min, max, 5) {
+            let fraction = if max > min {
+                (max - value) / (max - min)
+            } else {
+                0.0
+            };
             let y = price.y0 + price.height() * fraction;
             if self.style.show_grid {
                 scene.stroke(
@@ -441,11 +445,7 @@ impl Widget for CandlestickChart {
                     &Line::new((price.x0, y), (price.x1, y)),
                 );
             }
-            let label = format!(
-                "{:.*}",
-                self.style.price_decimals,
-                max - (max - min) * fraction
-            );
+            let label = format!("{:.*}", self.style.price_decimals, value);
             let (width, _) = tr.measure_style(&label, None, &theme.text(TextRole::Caption));
             tr.draw_style(
                 scene,
