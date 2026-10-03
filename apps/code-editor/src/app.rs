@@ -387,6 +387,9 @@ pub struct CodeApp {
     status: StatusModel,
     panel: BottomPanel,
     panel_toggle: BottomPanelToggle,
+    /// Opens the platform search over this app: the one search affordance in
+    /// the chrome.
+    search_button: Button,
 
     /// Framework-owned action dispatch (the Tilo resource + action model). The
     /// only doc-mutating operation Code exports beyond raw text is materialising
@@ -434,6 +437,7 @@ pub struct CodeApp {
     tabs_node: Option<NodeId>,
     editor_header_node: Option<NodeId>,
     panel_toggle_node: Option<NodeId>,
+    search_button_node: Option<NodeId>,
     editor_node: Option<NodeId>,
     panel_node: Option<NodeId>,
     status_node: Option<NodeId>,
@@ -765,13 +769,10 @@ impl CodeApp {
         app
     }
 
-    fn from_session(session: Session, default: Option<TreeId>) -> Self {
-        let explorer_events = ExplorerEvents::default();
-        let mut sidebar = explorer::explorer(&session.project, &explorer_events);
-        explorer::set_current(&mut sidebar, default);
-
-        // The buffers open when the window appears are its first tabs, not
-        // tabs entering: they start in place instead of fading in.
+    /// The tab strip over the buffers open when the window appears. They are
+    /// its first tabs, not tabs entering: they start in place instead of
+    /// fading in.
+    fn opening_tabs(session: &Session) -> TabBar {
         let opening: Vec<TabDescriptor> = session
             .open
             .iter()
@@ -785,6 +786,15 @@ impl CodeApp {
         // a maximize chip to do, and a chip that appears under the pointer
         // and then does nothing is worse than no chip.
         tabs.set_show_maximize(false);
+        tabs
+    }
+
+    fn from_session(session: Session, default: Option<TreeId>) -> Self {
+        let explorer_events = ExplorerEvents::default();
+        let mut sidebar = explorer::explorer(&session.project, &explorer_events);
+        explorer::set_current(&mut sidebar, default);
+
+        let tabs = Self::opening_tabs(&session);
 
         let project_id = Uuid::new_v4().to_string();
         let next_new_file_id = Uuid::new_v4().to_string();
@@ -807,6 +817,7 @@ impl CodeApp {
             status: StatusModel::new(),
             panel: BottomPanel::new(),
             panel_toggle,
+            search_button: ui::search::search_button(ui::search::SearchRequest::this_app()),
             actions: crate::resource::ActionSink::default(),
             pending_resource_command: None,
             project_id,
@@ -829,6 +840,7 @@ impl CodeApp {
             tabs_node: None,
             editor_header_node: None,
             panel_toggle_node: None,
+            search_button_node: None,
             editor_node: None,
             panel_node: None,
             status_node: None,
@@ -876,6 +888,11 @@ impl CodeApp {
             notice: None,
             pending_jump: None,
         }
+    }
+
+    /// Whether there is a project to list: the root alone is no project.
+    fn has_project(&self) -> bool {
+        self.session.project.nodes.len() > 1
     }
 
     /// The project root on disk, when a real directory is open.
@@ -2230,7 +2247,7 @@ impl CodeApp {
         self.lsp_status = LspStatus::Busy {
             server: "rust-analyzer".to_string(),
             title: "Indexing".to_string(),
-            detail: Some("tilo-shell".to_string()),
+            detail: Some("ferris-cli".to_string()),
             percentage: Some(37),
         };
     }
@@ -2434,6 +2451,23 @@ impl CodeApp {
             );
         }
         self.panel_toggle_node = Some(panel_toggle_node);
+
+        let search_button_node = self.search_button.build_layout(taffy, theme, node_map);
+        if let Ok(existing) = taffy.style(search_button_node).cloned() {
+            let _ = taffy.set_style(
+                search_button_node,
+                Style {
+                    margin: taffy::Rect {
+                        left: taffy::LengthPercentageAuto::length(spacing.s2),
+                        right: taffy::LengthPercentageAuto::length(0.0),
+                        top: taffy::LengthPercentageAuto::length(0.0),
+                        bottom: taffy::LengthPercentageAuto::length(0.0),
+                    },
+                    ..existing
+                },
+            );
+        }
+        self.search_button_node = Some(search_button_node);
         #[allow(
             clippy::unwrap_used,
             reason = "the editor header inserts two freshly-created children into the same app-owned taffy arena"
@@ -2451,7 +2485,7 @@ impl CodeApp {
                     flex_shrink: 0.0,
                     ..Default::default()
                 },
-                &[tabs_node, panel_toggle_node],
+                &[tabs_node, search_button_node, panel_toggle_node],
             )
             .unwrap();
         self.editor_header_node = Some(editor_header_node);
@@ -2537,9 +2571,7 @@ impl CodeApp {
     // ---- handle_event helpers (split out of `Widget::handle_event`, which
     // dispatches to them in the same order they used to run inline) ----
 
-    /// Track the pointer for the controls this root draws itself, and keep
-    /// the question's action hover current. Returns `true` when the event was
-    /// consumed here.
+    /// Track the pointer for the controls this root draws itself.
     fn track_pointer(&mut self, event: &WindowEvent, scale_factor: f64) {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -2802,6 +2834,10 @@ impl CodeApp {
             self.find.set_focus(false);
         }
 
+        if let Some(n) = self.search_button_node {
+            self.search_button
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+        }
         if let Some(n) = self.panel_toggle_node {
             self.panel_toggle
                 .handle_event(event, &mut ctx.reborrow(ctx.path, n));
@@ -3188,6 +3224,9 @@ impl Widget for CodeApp {
                             self.tabs.inset_left(self.toggle_slot_w);
                         }
                     }
+                    if let Some(n) = self.search_button_node {
+                        self.search_button.apply_layout(taffy, n, header_origin);
+                    }
                     if let Some(n) = self.panel_toggle_node {
                         self.panel_toggle.apply_layout(taffy, n, header_origin);
                     }
@@ -3394,6 +3433,20 @@ impl Widget for CodeApp {
         "CodeApp"
     }
 
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        _state: &mut AppModel,
+        _path: &ModelPath,
+    ) -> bool {
+        if target == "sidebar-toggle" && matches!(action, ui::a11y::Action::Activate) {
+            self.toggle_sidebar();
+            return true;
+        }
+        false
+    }
+
     fn test_id(&self) -> Option<&str> {
         Some("code-editor")
     }
@@ -3431,6 +3484,20 @@ impl Widget for CodeApp {
                     }),
             );
         }
+        // The sidebar toggle is painted by the toolkit, so it is published here.
+        if self.toggle_rect.width() > 0.0 {
+            children.push(
+                AccessNode::new(Role::Button)
+                    .with_name(if self.sidebar_open() {
+                        "Hide sidebar"
+                    } else {
+                        "Show sidebar"
+                    })
+                    .with_bounds(self.toggle_rect)
+                    .with_action_target("sidebar-toggle")
+                    .with_state(AccessState::new().focusable(true)),
+            );
+        }
         let analysis = self.lsp_status.label();
         if !analysis.is_empty() {
             children.push(
@@ -3455,7 +3522,12 @@ impl Widget for CodeApp {
     /// this the whole editor is one opaque rect and `--headless-drive` can only
     /// click at raw coordinates.
     fn children(&self) -> Vec<&dyn Widget> {
-        let mut out: Vec<&dyn Widget> = vec![&self.sidebar, &self.tabs, &self.panel_toggle];
+        let mut out: Vec<&dyn Widget> = vec![
+            &self.sidebar,
+            &self.tabs,
+            &self.search_button,
+            &self.panel_toggle,
+        ];
         if self.find_open {
             out.push(&self.find);
         }
@@ -3467,8 +3539,12 @@ impl Widget for CodeApp {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let mut out: Vec<&mut (dyn Widget + '_)> =
-            vec![&mut self.sidebar, &mut self.tabs, &mut self.panel_toggle];
+        let mut out: Vec<&mut (dyn Widget + '_)> = vec![
+            &mut self.sidebar,
+            &mut self.tabs,
+            &mut self.search_button,
+            &mut self.panel_toggle,
+        ];
         if self.find_open {
             out.push(&mut self.find);
         }
@@ -3552,6 +3628,7 @@ impl Widget for CodeApp {
     fn needs_redraw(&self) -> bool {
         self.sidebar.needs_redraw()
             || self.tabs.needs_redraw()
+            || self.search_button.needs_redraw()
             || self.panel_toggle.needs_redraw()
             || self.editor.needs_redraw()
             || self.panel.needs_redraw()
@@ -3600,6 +3677,7 @@ impl Widget for CodeApp {
     fn mark_drawn(&mut self) {
         self.sidebar.mark_drawn();
         self.tabs.mark_drawn();
+        self.search_button.mark_drawn();
         self.panel_toggle.mark_drawn();
         self.editor.mark_drawn();
         self.panel.mark_drawn();

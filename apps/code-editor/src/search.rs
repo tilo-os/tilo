@@ -1,17 +1,18 @@
-//! Project-wide search: find a string across every text file under the project
-//! root, without the UI thread ever waiting for the filesystem.
+//! Project text search: find a string across every text file under the project
+//! root, without the UI thread ever waiting for the filesystem. The platform
+//! search lists what it finds (see `search_provider.rs`).
 //!
 //! Searching this repository means walking tens of thousands of files. Doing
 //! that between two frames would freeze the window for seconds, so a [`Job`]
 //! runs the walk on a worker thread and streams batches of [`Hit`]s back over a
-//! channel that the app drains once per frame — the same shape the portal and
-//! the language-server reader use. Results appear progressively as they are
-//! found rather than all at once at the end, and [`Job::cancel`] stops a walk
+//! channel that the provider drains — the same shape the portal and the
+//! language-server reader use. Results appear progressively as they are found
+//! rather than all at once at the end, and [`Job::cancel`] stops a walk
 //! the moment the query changes, so typing does not pile up eight live searches.
 //!
 //! The matcher itself is [`line_matches`], which is also what the in-buffer
 //! find bar uses — one definition of "what counts as a match" for both, so the
-//! count in the find bar and the hits in the panel can never disagree.
+//! count in the find bar and the hits in the palette can never disagree.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -23,7 +24,7 @@ use crate::disk;
 /// How many hits a single search will report before it stops. A query like `e`
 /// over a large repository matches millions of times; past a few thousand the
 /// list has stopped being a search result and become a denial of service
-/// against the person reading it. The UI says plainly when it truncated.
+/// against the person reading it. The editor says plainly when it truncated.
 pub const MAX_HITS: usize = 5_000;
 
 /// A no-match query must not be able to turn an arbitrarily huge checkout into

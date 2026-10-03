@@ -231,6 +231,7 @@ fn stage_scenario(app: &mut code_editor::CodeApp, scenario: Option<&str>, frame:
             // can search for something that is actually in it.
             let q = std::env::var("TILO_SHOTS_FIND").unwrap_or_else(|_| "primes".to_string());
             app.shots_open_find(&q, &frame.state.doc);
+            frame.sync(app);
         }
         Some("conflict") => app.shots_conflict(),
         Some("close-prompt") => app.shots_close_prompt(),

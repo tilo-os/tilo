@@ -14,9 +14,9 @@ use crate::find::{byte_ranges, matches_in};
 use crate::search::Query;
 
 /// The active buffer as the find bar's target for one `drive`.
-struct FindTarget<'a> {
-    app: &'a mut CodeApp,
-    doc: &'a mut AutoCommit,
+pub(super) struct FindTarget<'a> {
+    pub(super) app: &'a mut CodeApp,
+    pub(super) doc: &'a mut AutoCommit,
 }
 
 impl FindTarget<'_> {
