@@ -36,7 +36,7 @@ use crate::widget::identity_flow::sheet::{
     wrap_chars,
 };
 use crate::widget::identity_flow::{InviteEnvelope, InviteExpiry, ScreenOutcome, mint_invite};
-use crate::widget::modal_frame::ModalAction;
+use crate::widget::modal_dialog::ModalAction;
 use crate::widget::qr::QrWidget;
 
 const EXPIRY_LABEL: &str = "Expires after";

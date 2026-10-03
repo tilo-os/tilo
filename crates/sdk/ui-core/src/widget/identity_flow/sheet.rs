@@ -1,6 +1,6 @@
 //! The one layout the identity ceremony screens share.
 //!
-//! Each screen is a *sheet*: the modal chrome from [`ModalFrame`] — scrim,
+//! Each screen is a *sheet*: the modal chrome of [`modal_dialog`] — scrim,
 //! centred card, title row and action row — with the screen's own rows
 //! stacked inside [`ModalLayout::body`] on the spacing scale. Before this
 //! module every screen placed its content at absolute offsets from a card
@@ -15,7 +15,7 @@
 //! protocol state, so they paint through the shared *faces*
 //! ([`Checkbox::paint`], [`ToggleGroup::paint`], and `Button::paint` via
 //! the modal action row) rather than hosting retained widgets — the same
-//! door [`ModalFrame`] itself uses. The one exception is text entry: a
+//! door [`modal_dialog::layout`] itself uses. The one exception is text entry: a
 //! field is the shared [`TextInput`], embedded the way `ModalPrompt` embeds
 //! it — placed by [`place_field`] / [`place_code_cell`] from the row plan,
 //! drawn and fed events by the screen — so IME, clipboard, selection,
@@ -43,10 +43,7 @@ use crate::text_render::{TextKind, TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::checkbox::{Checkbox, CheckboxFace};
-use crate::widget::modal_frame::{
-    MODAL_CLOSE_SIZE, MODAL_MIN_WIDTH, MODAL_PAD, MODAL_VIEWPORT_MARGIN, ModalAction, ModalFrame,
-    ModalLayout, ModalSpec,
-};
+use crate::widget::modal_dialog::{self, ModalAction, ModalLayout, ModalSpec};
 use crate::widget::qr::QrWidget;
 use crate::widget::text_input::TextInput;
 use crate::widget::toggle_group::{SegmentedFace, SegmentedStyle, ToggleGroup};
@@ -243,7 +240,7 @@ impl Role {
     /// title uses, so a palette where `text_primary` fails against the card
     /// fixes every sheet at once.
     pub(super) fn color(self, theme: &Theme) -> Color {
-        let (ink, dim) = ModalFrame::ink(theme);
+        let (ink, dim) = modal_dialog::ink(theme);
         match self {
             Role::Value | Role::Code => ink,
             Role::Body | Role::Label | Role::Caption => dim,
@@ -317,16 +314,13 @@ pub(super) struct SheetSpec<'a> {
 }
 
 impl<'a> SheetSpec<'a> {
-    fn modal(&self, body_height: f64, theme: &Theme) -> ModalSpec<'a> {
-        // `ModalSpec::body_height` is in design pixels; the rows were
-        // measured in scaled pixels, so hand the scale back.
-        let scale = f64::from(theme.text_scale).max(f32::EPSILON.into());
+    fn modal(&self, body_height: f64) -> ModalSpec<'a> {
         ModalSpec::new(self.title)
             .actions(self.actions)
             .max_width(self.max_width)
             .closable(false)
             .dismiss_on_scrim(false)
-            .body_height(body_height / scale)
+            .body_height(body_height)
     }
 }
 
@@ -342,12 +336,7 @@ impl Sheet {
     /// measured: the card's width depends on the viewport and the sheet's
     /// maximum, never on its height.
     pub(super) fn body_width(viewport: Rect, max_width: f64, theme: &Theme) -> f64 {
-        let scale = f64::from(theme.text_scale);
-        let avail = (viewport.width() - MODAL_VIEWPORT_MARGIN * scale * 2.0).max(0.0);
-        let card_w = (max_width * scale)
-            .min(avail)
-            .max((MODAL_MIN_WIDTH * scale).min(avail));
-        (card_w - MODAL_PAD * scale * 2.0).max(0.0)
+        modal_dialog::body_width(viewport, max_width, theme)
     }
 
     /// Resolve the sheet for a body that measured `body_height` tall.
@@ -358,9 +347,9 @@ impl Sheet {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) -> Self {
-        let modal = spec.modal(body_height, theme);
+        let modal = spec.modal(body_height);
         Self {
-            layout: ModalFrame::layout(viewport, &modal, text_renderer, theme),
+            layout: modal_dialog::layout(viewport, &modal, text_renderer, theme),
         }
     }
 
@@ -400,7 +389,7 @@ impl Sheet {
             .iter()
             .map(Rect::height)
             .find(|h| *h > 0.0)
-            .unwrap_or_else(|| MODAL_CLOSE_SIZE * f64::from(theme.text_scale))
+            .unwrap_or_else(|| modal_dialog::action_height(theme))
     }
 
     /// Scrim, card, title. Paint before the body.
@@ -412,8 +401,8 @@ impl Sheet {
         theme: &Theme,
         spec: &SheetSpec<'_>,
     ) {
-        let modal = spec.modal(0.0, theme);
-        ModalFrame::paint_backdrop(scene, transform, text_renderer, theme, &self.layout, &modal);
+        let modal = spec.modal(0.0);
+        modal_dialog::paint_backdrop(scene, transform, text_renderer, theme, &self.layout, &modal);
     }
 
     /// The action row. Paint after the body.
@@ -425,8 +414,8 @@ impl Sheet {
         theme: &Theme,
         spec: &SheetSpec<'_>,
     ) {
-        let modal = spec.modal(0.0, theme);
-        ModalFrame::paint_actions(scene, transform, text_renderer, theme, &self.layout, &modal);
+        let modal = spec.modal(0.0);
+        modal_dialog::paint_actions(scene, transform, text_renderer, theme, &self.layout, &modal);
     }
 }
 
@@ -848,7 +837,7 @@ fn narrow(px: f64) -> f32 {
 mod tests {
     use super::*;
     use crate::widget::Widget;
-    use crate::widget::modal_frame::MODAL_MAX_WIDTH;
+    use crate::widget::modal_dialog::MODAL_MAX_WIDTH;
 
     const VIEWPORT: Rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
 

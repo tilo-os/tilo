@@ -54,7 +54,7 @@ pub fn run(args: &[String]) {
         let png = out.join(format!("gallery-{name}.png"));
         // Composited on the theme's own background, so pixel probes see the
         // real ground, not a transparent canvas.
-        harness.render_window_png(&png);
+        harness.render_png(&png);
         match harness.inspection_json() {
             Ok(json) => {
                 let path = out.join(format!("gallery-{name}.inspection.json"));
