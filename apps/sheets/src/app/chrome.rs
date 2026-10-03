@@ -7,6 +7,7 @@
 //! The bars stand on the window ground; the command bar is separated from the
 //! formula bar by one hairline and the sheet tabs from the grid by another.
 
+use super::annotations::CardMetrics;
 use super::{
     Affine, BlendMode, Button, Fill, GridMetrics, HashMap, MenuItem, OpenMenu, Point, PresenceCtx,
     PresenceKey, Rect, RoundedRect, Scene, SheetsApp, TextRenderer, TextRole, TextStyle, Theme,
@@ -90,6 +91,8 @@ pub(super) struct ChromeMetrics {
     pub field_h: f64,
     /// The grid's share of the same resolution.
     pub grid: GridMetrics,
+    /// What the annotation dock's cards need.
+    pub cards: CardMetrics,
 }
 
 impl ChromeMetrics {
@@ -127,7 +130,7 @@ impl ChromeMetrics {
             })
             .collect();
         let sp = &theme.tokens.spacing;
-        Self {
+        let mut metrics = Self {
             scale: f64::from(theme.text_scale),
             lh_label: f64::from(lh_label),
             lh_body: f64::from(lh_body),
@@ -145,7 +148,10 @@ impl ChromeMetrics {
             control_h: ControlSize::Small.height(theme),
             field_h: ControlSize::Regular.height(theme),
             grid: GridMetrics::resolve(tr, theme),
-        }
+            cards: CardMetrics::default(),
+        };
+        metrics.cards = CardMetrics::resolve(tr, theme, &metrics);
+        metrics
     }
 
     /// The 1× metrics used before the first draw has a renderer. Every band
@@ -171,6 +177,7 @@ impl ChromeMetrics {
             control_h: ControlSize::Small.height(&theme),
             field_h: ControlSize::Regular.height(&theme),
             grid: GridMetrics::fallback(),
+            cards: CardMetrics::default(),
         }
     }
 
@@ -214,9 +221,10 @@ impl ChromeMetrics {
         self.fx_w + 2.0 * self.s2
     }
 
-    /// Sheet tabs: a small segmented control with `s1` above and below.
+    /// Sheet tabs: a small segmented control with `s2` above and below, so a
+    /// tab (and the editor that replaces it) never sits tight to the window edge.
     pub(super) fn tabs_h(&self) -> f64 {
-        self.control_h + 2.0 * self.s1
+        self.control_h + 2.0 * self.s2
     }
 
     /// Diameter of a tab's colour dot.
@@ -267,7 +275,21 @@ impl SheetsApp {
     pub(super) fn refresh_chrome_metrics(&mut self, tr: &mut TextRenderer, theme: &Theme) {
         let (commands, tabs) = self.chrome_labels();
         let metrics = ChromeMetrics::resolve(tr, theme, &commands, &tabs);
-        if metrics == self.metrics {
+        // The tab being renamed grows with the name typed into it.
+        let mut rename_moved = false;
+        if let Some(rename) = &mut self.tab_rename {
+            let (w, _) = tr.measure_style(
+                rename.editor.current_text(),
+                None,
+                &theme.text(TextRole::Label),
+            );
+            let w = f64::from(w);
+            if (w - rename.text_w).abs() > 0.5 {
+                rename.text_w = w;
+                rename_moved = true;
+            }
+        }
+        if metrics == self.metrics && !rename_moved {
             return;
         }
         self.grid.set_metrics(metrics.grid);
@@ -287,7 +309,17 @@ impl SheetsApp {
             self.toolbar_rect.y1 + m.formula_h(),
         );
         self.tabs_rect = Rect::new(r.x0, r.y1 - m.tabs_h(), r.x1, r.y1);
-        self.grid_rect = Rect::new(r.x0, self.formula_rect.y1, r.x1, self.tabs_rect.y0);
+        // The annotation dock stands between the grid and the tabs, so the
+        // grid gives up the height instead of a card covering its cells.
+        let (dock_h, dock_cards) = self.dock_layout(Rect::new(
+            r.x0,
+            self.formula_rect.y1,
+            r.x1,
+            self.tabs_rect.y0,
+        ));
+        self.dock_cards = dock_cards;
+        self.dock_rect = Rect::new(r.x0, self.tabs_rect.y0 - dock_h, r.x1, self.tabs_rect.y0);
+        self.grid_rect = Rect::new(r.x0, self.formula_rect.y1, r.x1, self.dock_rect.y0);
         self.grid.rect = self.grid_rect;
 
         self.menu_buttons = Self::command_buttons(m, self.toolbar_rect);
@@ -312,11 +344,16 @@ impl SheetsApp {
         // the add button.
         self.tab_rects.clear();
         let mut tx = self.tabs_rect.x0 + m.s3;
-        let ty = self.tabs_rect.y0 + m.s1;
+        let ty = self.tabs_rect.y0 + m.s2;
         let th = m.control_h;
         for (i, name) in self.sheet_names.iter().enumerate() {
             let coloured = self.sheet_colors.get(i).copied().flatten().is_some();
-            let w = m.tab_w(name, coloured);
+            let mut w = m.tab_w(name, coloured);
+            if let Some(rename) = self.tab_rename.as_ref().filter(|rename| rename.idx == i) {
+                // The editor stands on the tab's own slot, wide enough for
+                // what is typed; the tabs after it move over.
+                w = w.max(rename.text_w + 4.0 * m.s3);
+            }
             self.tab_rects.push((Rect::new(tx, ty, tx + w, ty + th), i));
             tx += w;
         }
@@ -388,10 +425,13 @@ impl SheetsApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
+        // While the workbook is still being read there is no selection, no
+        // formula and no sheet to name: the bars keep their places, empty.
+        let loading = self.is_loading();
         self.draw_command_bar(scene, transform, tr, theme);
-        self.draw_name_box(scene, transform, tr, theme);
-        self.draw_formula_field(scene, transform, tr, theme);
-        self.draw_sheet_tabs_strip(scene, transform, tr, theme);
+        self.draw_name_box(scene, transform, tr, theme, loading);
+        self.draw_formula_field(scene, transform, tr, theme, loading);
+        self.draw_sheet_tabs_strip(scene, transform, tr, theme, loading);
     }
 
     /// Whether the command at `item` is a toggle that is on right now.
@@ -460,6 +500,7 @@ impl SheetsApp {
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        loading: bool,
     ) {
         let colors = &theme.tokens.colors;
         let name_box = self.name_box_rect;
@@ -484,7 +525,11 @@ impl SheetsApp {
             input.draw(scene, transform, tr, theme, &PresenceCtx::default());
         } else {
             let style = theme.text(TextRole::Body);
-            let label = self.grid.selection_label();
+            let label = if loading {
+                String::new()
+            } else {
+                self.grid.selection_label()
+            };
             let (_, line_h) = tr.measure_style(&label, None, &style);
             tr.draw_style(
                 scene,
@@ -511,13 +556,18 @@ impl SheetsApp {
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        loading: bool,
     ) {
         self.draw_formula_fx_label(scene, transform, tr, theme);
-        let editing = self.grid.is_editing();
+        let editing = !loading && self.grid.is_editing();
         let field = self.formula_field_rect;
         Self::paint_field(scene, transform, theme, field, editing);
 
-        let content = self.grid.active_display_raw();
+        let content = if loading {
+            String::new()
+        } else {
+            self.grid.active_display_raw()
+        };
         let style = theme.text(TextRole::Body);
         let text_x0 = field.x0 + self.metrics.s3;
         // Rebuild the per-character x boundaries for click/caret mapping. This
@@ -595,6 +645,7 @@ impl SheetsApp {
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        loading: bool,
     ) {
         let colors = &theme.tokens.colors;
         let m = &self.metrics;
@@ -609,6 +660,9 @@ impl SheetsApp {
             0.0,
             colors.surfaces.content,
         );
+        if loading {
+            return;
+        }
         if !self.tab_rects.is_empty() {
             let rects: Vec<Rect> = self.tab_rects.iter().map(|(rect, _)| *rect).collect();
             let labels: Vec<&str> = self
@@ -626,7 +680,7 @@ impl SheetsApp {
                 .iter()
                 .position(|(rect, _)| rect.contains(self.last_mouse));
             let face = SegmentedFace::new(&rects, &labels, selected)
-                .style(SegmentedStyle::Tabs)
+                .style(SegmentedStyle::Quiet)
                 .control_size(ControlSize::Small)
                 .hovered(hovered);
             ui::widget::ToggleGroup::paint(scene, transform, tr, theme, &face);
@@ -770,21 +824,15 @@ impl SheetsApp {
             .draw(scene, transform, tr, theme, &PresenceCtx::default());
     }
 
-    /// Where the inline rename editor for tab `idx` sits: over the tab, with
-    /// room for a longer name while typing (grown with the text), clamped to
-    /// the window. Re-derived by `relayout` so the editor follows its tab
-    /// through any reflow.
+    /// Where the inline rename editor for tab `idx` sits: exactly on the tab's
+    /// own slot. `relayout` widens the slot for a longer name and moves the
+    /// later tabs aside, so the editor never covers a neighbour, and it
+    /// follows its tab through any reflow.
     pub(super) fn tab_rename_rect(&self, idx: usize) -> Rect {
-        let m = &self.metrics;
-        let tab = self
-            .tab_rects
+        self.tab_rects
             .iter()
             .find(|(_, i)| *i == idx)
-            .map_or(self.add_tab_rect, |(r, _)| *r);
-        let right = (tab.x0 + m.s16 * 2.5 * m.text_growth())
-            .min(self.rect.x1 - m.s2)
-            .max(tab.x1);
-        Rect::new(tab.x0, tab.y0, right, tab.y1)
+            .map_or(self.add_tab_rect, |(r, _)| *r)
     }
 }
 

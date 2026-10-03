@@ -121,6 +121,18 @@ impl SheetsApp {
         }
     }
 
+    /// Where a floating surface may stand: the window, kept `s2` off every
+    /// edge so a menu never touches it.
+    fn float_bounds(&self) -> Rect {
+        self.rect.inset(-self.metrics.s2)
+    }
+
+    /// `anchor` with `gap` of air above and below, so a menu or popover stands
+    /// clear of what opened it (and of that thing's focus ring).
+    fn float_anchor(anchor: Rect, gap: f64) -> Rect {
+        Rect::new(anchor.x0, anchor.y0 - gap, anchor.x1, anchor.y1 + gap)
+    }
+
     /// Open `menu` anchored under its button, closing whatever else floats.
     pub(super) fn open_command_menu(&mut self, menu: OpenMenu) {
         self.close_overlays();
@@ -150,7 +162,10 @@ impl SheetsApp {
                 }
             }
         }
-        context.open_anchored(anchor, self.rect);
+        context.open_anchored(
+            Self::float_anchor(anchor, self.metrics.s1),
+            self.float_bounds(),
+        );
         self.menu = context;
         self.open_menu = menu;
         self.pending.redraw = true;
@@ -177,7 +192,10 @@ impl SheetsApp {
                 .find(|button| button.opens == Some(self.open_menu))
                 .map(|button| button.rect);
             if let Some(anchor) = anchor {
-                self.menu.reanchor(anchor, self.rect);
+                self.menu.reanchor(
+                    Self::float_anchor(anchor, self.metrics.s1),
+                    self.float_bounds(),
+                );
             } else {
                 self.menu.close();
                 self.open_menu = OpenMenu::None;
@@ -185,8 +203,13 @@ impl SheetsApp {
         }
         if let Some(target) = self.tab_menu_target {
             let tab = self.tab_anchor(target);
-            self.tab_menu.reanchor(tab, self.rect);
-            self.tab_colour.set_anchor(tab);
+            self.tab_menu.reanchor(
+                Self::float_anchor(tab, self.metrics.s3),
+                self.float_bounds(),
+            );
+            self.tab_colour
+                .set_anchor(Self::float_anchor(tab, self.metrics.s2));
+            self.tab_colour.set_viewport(self.float_bounds());
         }
     }
 
@@ -243,11 +266,16 @@ impl SheetsApp {
         rows.push(Some(TabMenuRow::Act(TabAction::Delete)));
         let tab = self.tab_anchor(idx);
         context.anchor_row(tab);
-        context.open_anchored(tab, self.rect);
+        context.open_anchored(
+            Self::float_anchor(tab, self.metrics.s3),
+            self.float_bounds(),
+        );
         self.tab_menu = context;
         self.tab_menu_rows = rows;
         self.tab_menu_target = Some(idx);
-        self.tab_colour.set_anchor(tab);
+        self.tab_colour
+            .set_anchor(Self::float_anchor(tab, self.metrics.s2));
+        self.tab_colour.set_viewport(self.float_bounds());
         self.pending.redraw = true;
     }
 
@@ -269,7 +297,10 @@ impl SheetsApp {
                 Some(TabMenuRow::PickColour) => {
                     // The menu closed itself; the colour popover takes the
                     // same anchor and the target stays.
-                    self.tab_colour.set_anchor(self.tab_anchor(target));
+                    let tab = self.tab_anchor(target);
+                    self.tab_colour
+                        .set_anchor(Self::float_anchor(tab, self.metrics.s2));
+                    self.tab_colour.set_viewport(self.float_bounds());
                     self.tab_colour.set_open(true);
                 }
                 None => {}
@@ -336,7 +367,11 @@ impl SheetsApp {
                 .swatch(slot)
                 .is_none_or(|have| have.color != swatch.color)
         });
-        if stale {
+        // A choice made elsewhere (or a sync that landed after the popover
+        // opened) changes which swatch is marked, so the picker follows it.
+        let shown = Some((target, current));
+        if stale || self.tab_colour_shown != shown {
+            self.tab_colour_shown = shown;
             let mut picker = ColorSwatchPicker::new(swatches, TAB_PALETTE_LEN);
             if let Some(slot) = current {
                 picker = picker.with_selected(slot % TAB_PALETTE_LEN);
