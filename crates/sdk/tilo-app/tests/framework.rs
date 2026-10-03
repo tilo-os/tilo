@@ -306,3 +306,38 @@ fn history_restores_a_past_version_through_the_host() {
     assert!(app.undo());
     assert_eq!(app.state().title, "Hardware");
 }
+
+#[test]
+fn the_framework_paints_the_window_ground_live_and_in_shots() {
+    let mut app = TestApp::<ChecklistApp>::new().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+        let ground = theme.tokens.colors.surfaces.content.to_rgba8();
+        let ground = [ground.r, ground.g, ground.b, ground.a];
+        let harness = app.harness();
+        harness.set_theme(theme.clone());
+        let (width, height) = harness.frame_output().logical_size;
+        let corners = |rgba: &[u8], frame: &str| {
+            let w = usize::try_from(width).unwrap();
+            let h = usize::try_from(height).unwrap();
+            // The view fills from the top; the bottom corners are ground.
+            for (x, y) in [(0, h - 1), (w - 1, h - 1)] {
+                let at = (y * w + x) * 4;
+                assert_eq!(
+                    rgba[at..at + 4],
+                    ground,
+                    "{}: the {frame} corner ({x}, {y}) is not the window ground",
+                    theme.name
+                );
+            }
+        };
+        // What the app's own frame paints, before any clear colour: a live
+        // window, a hosted tile and a capture all show this.
+        corners(&harness.render_rgba(), "drawn");
+        let shot = out.path().join(format!("{}.png", theme.name));
+        harness.render_window_png(&shot);
+        let png = tilo_app::png::read_rgba8(&shot).unwrap();
+        assert_eq!((png.width, png.height), (width, height));
+        corners(&png.rgba, "shot");
+    }
+}
