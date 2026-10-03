@@ -1439,6 +1439,11 @@ impl TopBarChrome {
             || self.sharing_summary().0 > 0
     }
 
+    /// The empty-room Invite pill stands in for the avatar stack.
+    fn invite_visible(&self) -> bool {
+        !self.collaborators_visible() && !self.avatar_stack_rect.is_zero_area()
+    }
+
     /// `(viewers, controllers, surfaces)` from the compositor authority.
     fn sharing_summary(&self) -> (usize, usize, usize) {
         let Some(chrome) = self.chrome.as_ref() else {
@@ -1653,7 +1658,7 @@ impl TopBarChrome {
                     .then_some(Self::editor_control(widget, present))
             }));
         }
-        if self.collaborators_visible() {
+        if self.collaborators_visible() || self.invite_visible() {
             controls.push(Self::CONTROL_COLLABORATORS);
         }
         if !self.media_indicator_rect.is_zero_area() {
@@ -1734,6 +1739,7 @@ impl TopBarChrome {
             Self::CONTROL_CENTER_MONITOR => t("topbar-show-system-monitor"),
             Self::CONTROL_CENTER_CALENDAR => t("topbar-show-calendar"),
             Self::CONTROL_QUICK_SETTINGS => t("topbar-open-quick-settings"),
+            Self::CONTROL_COLLABORATORS if self.invite_visible() => t("topbar-invite"),
             Self::CONTROL_COLLABORATORS => {
                 let named = self.sharing_viewers();
                 if named.is_empty() {
@@ -6862,6 +6868,31 @@ mod tests {
         bar.handle_left_click(&mut handled);
         assert!(handled);
         assert!(chrome.borrow().overlays.collaborators);
+
+        let node = bar.accessibility().expect("topbar semantics");
+        let (index, invite) = node
+            .children
+            .iter()
+            .enumerate()
+            .find(|(_, child)| child.name.as_deref() == Some("Invite"))
+            .expect("assistive technology reaches the Invite control");
+        assert_eq!(invite.role, ui::a11y::Role::Button);
+        assert_eq!(
+            bar.synthetic_accessibility_rect(&[index]),
+            Some(bar.avatar_stack_rect)
+        );
+        let target = invite.action_target.clone().expect("an action target");
+        let mut doc = AutoCommit::new();
+        assert!(bar.perform_semantic_action(
+            &target,
+            &ui::a11y::Action::Activate,
+            &mut doc,
+            &automerge::ROOT,
+        ));
+        assert!(
+            !chrome.borrow().overlays.collaborators,
+            "activating Invite toggles the same overlay a click does",
+        );
     }
 
     #[test]
