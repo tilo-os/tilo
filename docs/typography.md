@@ -5,7 +5,7 @@ Tilo text has one central rule: measurement and painting must use the same
 italic state, and family. Passing one value through the whole layout pipeline
 prevents wrapping, clipping, and baseline drift.
 
-The product font policy is deterministic: Instrument Sans is the UI face,
+The product font policy is deterministic: Tilo Sans is the UI face,
 Noto Serif is the reading serif, and Noto Sans Mono is the code face. The
 renderer pins all three generic families to those names; a theme can set the
 UI face to the built-in Hyperlegible face instead ([UI faces](#ui-faces)).
@@ -117,9 +117,12 @@ set in, applying only what that face has and leaving out the rest silently.
 "Distinct I and l" is whatever stylistic set or character variant of the face
 changes I or l and nothing but their look-alikes (1, |, accented I and l),
 found in the face's own `GSUB`. Nothing names a font or a feature tag, so a
-face that gains such a set (Tilo Sans) is used for it with no code change;
-Instrument Sans has none, so identifiers in the default face are unchanged
-today, while Hyperlegible's letterforms are distinct by design.
+face that gains such a set is used for it with no code change. Tilo Sans
+has one (`ss13`, with `cv01` and `cv02` for each letter alone) and a slashed
+`zero`, but the shipped build holds all four back until review approves
+them, so identifiers in the default face are unchanged today and pick them
+up when a build with them ships; Hyperlegible's letterforms are distinct by
+design.
 
 Widgets whose content is inherently one kind set it themselves: `StatTile`
 values, the status-bar clock, gauge and badge counts, the pairing code in the
@@ -149,16 +152,17 @@ counts raw feature settings in `apps/` and only lets the count fall.
 
 ## Script fallbacks
 
-Instrument Sans covers Latin. Before shaping, every run is split into spans
-of one face: a word in a script the run's face lacks is set in a face matched
-to it for that script, and everything else stays in the run's face. The split
-is part of the one shaping path that both measurement and painting use.
+Tilo Sans covers Latin, Vietnamese and Greek, upright and italic; its
+Cyrillic is drawn but not shipped yet. Before shaping, every run is split
+into spans of one face: a word in a script the run's face lacks is set in a
+face matched to it for that script, and everything else stays in the run's
+face. The split is part of the one shaping path that both measurement and
+painting use.
 
 | Script | Face | Shapes | Weight (UI 400 / 500 / 600 / 700) |
 |---|---|---|---|
-| Cyrillic | Onest | `ss02` (closest to Instrument) | 390 / 510 / 630 / 750 |
-| Greek | Geologica | default | 215 / 348 / 481 / 614 |
-| Italic Cyrillic and Greek, Vietnamese, other Latin the face lacks | Noto Sans | default | as the UI |
+| Cyrillic | Onest | `ss02` (closest to Tilo Sans' Latin) | 390 / 510 / 630 / 750 |
+| Italic Cyrillic; Greek, Vietnamese and other Latin a face lacks | Noto Sans | default | as the UI |
 | CJK, Arabic, Hebrew, Indic, Thai, symbols, emoji | Noto, unchanged | | |
 
 - **Size.** Each fallback span is set at the size that gives it the UI
@@ -172,19 +176,20 @@ is part of the one shaping path that both measurement and painting use.
   any of its letters, so a Vietnamese word is never set half in one face.
   Punctuation stays with the word it closes or opens; spaces, digits and
   dashes between two faces are the UI face's.
-- **Italic.** Onest and Geologica have no italic, so italic Greek and
-  Cyrillic use Noto Sans Italic, x-height matched.
+- **Italic.** Onest has no italic, so italic Cyrillic uses Noto Sans
+  Italic, x-height matched.
 - **Any UI face.** The fallbacks are matched to the run's own face, so they
   apply to Hyperlegible (or any theme face that lacks the script) at its
-  x-height. A face that covers a script, like Tilo Sans will, keeps it.
-  Monospaced faces are never split.
+  x-height: Hyperlegible's Greek and Vietnamese are Noto Sans. A face that
+  covers a script keeps it, as Tilo Sans keeps Greek and Vietnamese and will
+  keep Cyrillic once it ships. Monospaced faces are never split.
 
-The fallback faces ship as subsets of their upstream releases, built by
+The Cyrillic fallback ships as a subset of its upstream release, built by
 `tools/font-fallback-subsets.py` (see the catalog's `PROVENANCE.md`).
 
 ## UI faces
 
-A theme's type role names the UI face: `Default` (Instrument Sans) or
+A theme's type role names the UI face: `Default` (Tilo Sans) or
 `Hyperlegible` (Atkinson Hyperlegible Next, upright and italic, 200–800),
 the face whose letterforms are designed to be told apart at low vision.
 `ui::UiFace` lists the built-in faces; `Typography::set_face("Hyperlegible")`

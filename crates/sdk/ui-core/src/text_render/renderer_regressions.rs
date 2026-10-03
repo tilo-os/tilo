@@ -1005,9 +1005,10 @@ fn matched_fallbacks_paint_at_the_size_they_were_shaped_at() {
     let runs = renderer.shaped_runs("Report Отчёт Αναφορά", None, &style);
     let sizes: Vec<f32> = runs.iter().map(|run| run.size).collect();
     assert!(sizes.contains(&style.size), "{sizes:?}");
-    assert!(
-        sizes.iter().filter(|size| **size != style.size).count() >= 2,
-        "Cyrillic and Greek are x-height matched: {sizes:?}"
+    assert_eq!(
+        sizes.iter().filter(|size| **size != style.size).count(),
+        1,
+        "Cyrillic is x-height matched, Greek is the UI face's own: {sizes:?}"
     );
     // Measurement and paint come from the same shaped buffer.
     let (width, _) = renderer.measure_style("Report Отчёт Αναφορά", None, &style);
@@ -1019,12 +1020,12 @@ fn matched_fallbacks_paint_at_the_size_they_were_shaped_at() {
 fn the_generic_sans_follows_the_theme_ui_face() {
     let mut renderer = renderer();
     let generic = TextStyle::new(20.0);
-    let instrument = renderer.measure_style("Hamburgefonstiv", None, &generic).0;
+    let default_face = renderer.measure_style("Hamburgefonstiv", None, &generic).0;
     renderer.set_ui_face(UI_HYPERLEGIBLE_FAMILY);
     let hyperlegible = renderer.measure_style("Hamburgefonstiv", None, &generic).0;
     assert!(
-        (instrument - hyperlegible).abs() > 1.0,
-        "{instrument} vs {hyperlegible}"
+        (default_face - hyperlegible).abs() > 1.0,
+        "{default_face} vs {hyperlegible}"
     );
     renderer.set_ui_face("No Such Family");
     let unchanged = renderer.measure_style("Hamburgefonstiv", None, &generic).0;
