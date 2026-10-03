@@ -10,6 +10,8 @@ mod governor_actions;
 mod hosted_topology;
 mod native_enrollment;
 mod native_ingress;
+#[cfg(test)]
+mod node_member_tests;
 mod relay_rooms;
 
 use std::collections::VecDeque;
@@ -773,6 +775,19 @@ fn parse_host_addr(value: &str) -> Option<iroh::EndpointAddr> {
             .ok()
             .map(iroh::EndpointAddr::new)
     })
+}
+
+/// Which peers a session's endpoint can reach.
+#[derive(Clone, Copy)]
+enum Reach {
+    /// Any, through the public relays and discovery.
+    Internet,
+    /// Only this machine's (tests).
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "tests reach only loopback peers")
+    )]
+    Loopback,
 }
 
 fn configured_host_addrs() -> Vec<iroh::EndpointAddr> {
@@ -1550,13 +1565,24 @@ impl ShellNetwork {
     /// Returns an error if the tokio runtime fails to build, the device
     /// keypair can't be loaded or generated at `keypair_path`, or the
     /// Iroh endpoint fails to bind.
+    pub fn spawn(
+        tree: WorkspaceTreeHandle,
+        keypair_path: &std::path::Path,
+    ) -> std::io::Result<Self> {
+        Self::spawn_with(tree, keypair_path, Reach::Internet, host_identity_for_key)
+    }
+
+    /// [`Self::spawn`] reaching peers as `reach` says, authenticating to
+    /// hosts with the identity `identity` finds for the key.
     #[allow(
         clippy::too_many_lines,
         reason = "network startup keeps endpoint construction, identity recovery, and task wiring in a single failure-atomic boundary"
     )]
-    pub fn spawn(
+    fn spawn_with(
         tree: WorkspaceTreeHandle,
         keypair_path: &std::path::Path,
+        reach: Reach,
+        identity: impl FnOnce(&iroh::SecretKey, &std::path::Path) -> Option<HostIdentity>,
     ) -> std::io::Result<Self> {
         // Peer sync owns its runtime so that dropping the network ends every
         // task it started. Two workers: the actor waits on sockets.
@@ -1570,22 +1596,32 @@ impl ShellNetwork {
         // both sides of the wire.
         let local_peer_hash = crate::network::behaviour::peer_liveness_handle(&keypair.public());
         let lookup = MemoryLookup::new();
+        let builder = match reach {
+            Reach::Internet => iroh::Endpoint::builder(presets::N0),
+            Reach::Loopback => iroh::Endpoint::builder(presets::Minimal)
+                .relay_mode(iroh::RelayMode::Disabled)
+                .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
+                .map_err(|e| std::io::Error::other(format!("iroh bind: {e}")))?,
+        };
         let endpoint = runtime
             .block_on(
-                iroh::Endpoint::builder(presets::N0)
+                builder
                     .secret_key(keypair.clone())
                     .address_lookup(lookup.clone())
                     .bind(),
             )
             .map_err(|e| std::io::Error::other(format!("iroh bind: {e}")))?;
-        let mdns = init_lan_discovery(&endpoint);
+        let mdns = match reach {
+            Reach::Internet => init_lan_discovery(&endpoint),
+            Reach::Loopback => None,
+        };
         tracing::info!(
             local_peer_id = %local_peer_id,
             addr = ?endpoint.addr(),
             "peer-sync: Iroh endpoint started"
         );
         let listen_addrs: Arc<Mutex<Vec<iroh::EndpointAddr>>> = Arc::new(Mutex::new(Vec::new()));
-        let host_identity = host_identity_for_key(&keypair, keypair_path);
+        let host_identity = identity(&keypair, keypair_path);
         let personal_continuity_user = host_identity
             .as_ref()
             .map(|identity| identity.device_cert.user_public_key);
@@ -2146,6 +2182,7 @@ impl ShellNetwork {
         if self.native_topic_required(ws)
             && matches!(&msg, NeighbourMsg::AppDocument { .. })
             && !self.native_document_committed(&msg)
+            && !self.sealed_record_write(&msg)
         {
             return false;
         }
@@ -2422,6 +2459,7 @@ impl ShellNetwork {
     ) {
         if let Some(room) = RoomId::parse(&cluster_id)
             && self.native_topic_required(room_topic_id(room))
+            && !(envelope.encryption.is_some() && self.native_room_seals_records(room))
         {
             let _ = self.cmd_tx.try_send(NetCmd::NativePublish {
                 ws: room_topic_id(room),
