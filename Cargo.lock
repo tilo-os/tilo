@@ -7524,6 +7524,50 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
+name = "legacy-agent"
+version = "0.1.0"
+dependencies = [
+ "legacy-agent-protocol",
+ "libc",
+ "tempfile",
+ "tilo-desktop-entry",
+ "workspace-hack",
+]
+
+[[package]]
+name = "legacy-agent-protocol"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "thiserror 2.0.18",
+ "wire-frame",
+ "workspace-hack",
+]
+
+[[package]]
+name = "legacy-vm"
+version = "0.1.0"
+dependencies = [
+ "collab-types",
+ "fnv",
+ "legacy-agent-protocol",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tilo-advisory-lock",
+ "tilo-desktop-entry",
+ "tilo-files",
+ "tilo-libvirt-domain",
+ "tilo-paths",
+ "tilo-sandbox-core",
+ "wire-frame",
+ "workspace-hack",
+]
+
+[[package]]
 name = "lettre"
 version = "0.11.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -13181,6 +13225,7 @@ dependencies = [
  "iroh-gossip",
  "iroh-mdns-address-lookup",
  "launcher",
+ "legacy-agent-protocol",
  "libc",
  "mime_guess",
  "naga",
@@ -15677,6 +15722,14 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-libvirt-domain"
+version = "0.1.0"
+dependencies = [
+ "quick-xml 0.41.0",
  "workspace-hack",
 ]
 
@@ -18186,6 +18239,7 @@ dependencies = [
  "env-tools",
  "hex",
  "landlock",
+ "legacy-vm",
  "libc",
  "package-store",
  "runtime-portal",
@@ -19545,6 +19599,7 @@ dependencies = [
  "tilo-advisory-lock",
  "tilo-clock",
  "tilo-files",
+ "tilo-libvirt-domain",
  "tilo-net",
  "tilo-xdg-paths",
  "tokio",
