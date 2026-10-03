@@ -21,7 +21,8 @@ const AUTHOR: &str = "test-author";
 use ui_core::record::{RecordCheckout, RecordStore};
 
 use super::app::{
-    DATA_DIR_INSTANCE, ResourceApp, data_dir_host, default_record, definition, role_permissions,
+    DATA_DIR_INSTANCE, ResourceApp, data_dir_host, data_dir_settings, default_record, definition,
+    role_permissions, with_settings_file,
 };
 
 const INSTANCE: u64 = 7;
@@ -31,6 +32,17 @@ enum Profile {
     Temporary(Rc<tempfile::TempDir>),
     /// An explicit `--data-dir` profile the app itself would open.
     DataDir(PathBuf),
+}
+
+impl Profile {
+    /// The profile's settings document, which the app's typed settings use
+    /// instead of the person's.
+    fn settings(&self) -> PathBuf {
+        match self {
+            Self::Temporary(directory) => directory.path().join("settings.json"),
+            Self::DataDir(directory) => data_dir_settings(directory),
+        }
+    }
 }
 
 /// One framework app mounted headlessly: a test, a fixture seeder or an
@@ -114,6 +126,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             None,
             ComponentRunnerInputs::from_native_process(),
         )?;
+        let prepared = with_settings_file(prepared, profile.settings());
         let component =
             definition.instantiate(prepared.context, prepared.target, prepared.restore)?;
         let harness =
@@ -128,6 +141,13 @@ impl<A: ResourceApp> HeadlessApp<A> {
             permissions,
             marker: std::marker::PhantomData,
         })
+    }
+
+    /// The app's typed settings in this profile's settings document, which
+    /// the running app follows: a write here is what another window, the
+    /// Settings app or another of the person's devices writing them does.
+    pub fn settings<T: ui_core::storage::SettingsSchema>(&self) -> ui_core::storage::Settings<T> {
+        ui_core::storage::Settings::for_app(A::ID).in_file(self.profile.settings())
     }
 
     /// Change the participant's role while the app runs, as the record's

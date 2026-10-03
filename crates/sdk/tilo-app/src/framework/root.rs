@@ -43,6 +43,8 @@ pub(crate) struct ResourceRoot<R: Resource> {
     write: Option<PermissionScope>,
     stages: Stages,
     feeds: super::history::HistoryFeeds,
+    /// The settings the view follows, re-read when their document changes.
+    storage: Rc<super::settings::ViewStorage>,
     content: Element,
     /// View and effect operations of the app's presentation, attached to the
     /// published resource. Document specs are dropped.
@@ -150,6 +152,7 @@ impl<R: Resource> ResourceRoot<R> {
             write: None,
             stages: cx.stages,
             feeds: cx.feeds,
+            storage: cx.storage,
             content,
             presentation: Vec::new(),
             search: std::cell::RefCell::new(None),
@@ -394,6 +397,7 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         let (state, path) = ui_core::doc::document(state, path);
         self.refresh_access();
         self.refresh(state);
+        self.storage.refresh();
         self.content.sync(state, path);
     }
 

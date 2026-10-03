@@ -67,6 +67,20 @@
 //!   the wrapped widget by default.
 //! * **Local view state** is a [`LocalState`](crate::LocalState): never
 //!   persisted, never shared, never undone.
+//! * **Settings** — preferences that follow a person or stay on a device,
+//!   never seen by collaborators — are a typed
+//!   [`SettingsSchema`](crate::storage::SettingsSchema) whose
+//!   [`Scope`](crate::storage::Scope) says how far they travel: `Personal`
+//!   roams across the person's own devices, `DeviceLocal` never leaves this
+//!   one, `Shared` reads a per-user section every app follows (`locale`,
+//!   `text_assistance`). [`ViewCx::settings`] and [`SurfaceCx::settings`]
+//!   hand out a [`Setting`] kept current while the view lives; a write from
+//!   another window or device reaches it on the next frame. Files and
+//!   secrets come from the same context ([`ViewCx::storage`],
+//!   [`SurfaceCx::secrets`], [`SurfaceCx::files`]); a secret that belongs to
+//!   one document item (a profile's password) is
+//!   `secrets().item(purpose, id)`, so the document names the item and the
+//!   secret stays on the device.
 //! * **Screenshot scenarios** (`--shots --scenario NAME`) stage the resource
 //!   with actions ([`ResourceApp::scenario`]) and view state where it lives:
 //!   [`ViewCx::on_stage`] for a view's local state, `ResourceSurface::stage`
@@ -85,6 +99,7 @@ pub mod history;
 mod live;
 mod preview;
 mod root;
+mod settings;
 mod stage;
 mod surface;
 mod switch;
@@ -104,6 +119,7 @@ pub use dispatch::{DispatchGroup, Dispatcher};
 pub use each::Each;
 pub use live::Live;
 pub use preview::PastVersion;
+pub use settings::Setting;
 pub use stage::stage;
 pub use surface::{ResourceSelection, ResourceSurface, SurfaceCx};
 pub use view::ViewCx;

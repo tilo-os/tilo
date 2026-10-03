@@ -13,6 +13,7 @@ use ui_core::application::{
 use ui_core::launch::LaunchError;
 use ui_core::permissions::{LivePermissions, PermissionScope, Verb};
 use ui_core::record::RecordKind;
+use ui_core::storage::AppStorage;
 use ui_core::widget::{Element, IconDescriptor};
 
 // Launching (live windows, captures, headless drives, test hosts) discovers
@@ -174,6 +175,7 @@ fn write_scope<A: ResourceApp>() -> PermissionScope {
 pub(crate) fn build_root<A: ResourceApp>(
     reader: Reader<A::Resource>,
     editing: Editing,
+    storage: AppStorage,
 ) -> ResourceRoot<A::Resource> {
     let scope = write_scope::<A>();
     let (permissions, read_only) = match editing {
@@ -192,7 +194,10 @@ pub(crate) fn build_root<A: ResourceApp>(
     let dispatch = Dispatcher::new(A::ID, resource_id, read_only);
     let saved = ui_core::LocalState::new(ui_core::record::RecordSaveStatus::Saved);
     let stages = Stages::new();
-    let mut cx = ViewCx::root(live, updaters, &alive, dispatch, published, saved, stages);
+    let storage = super::settings::ViewStorage::new(storage);
+    let mut cx = ViewCx::root(
+        live, updaters, &alive, dispatch, published, saved, stages, storage,
+    );
     let content = A::view(&mut cx);
     let live = permissions.is_some();
     let root = ResourceRoot::new(A::TITLE, icon::<A>(), label, cx, alive, content)
@@ -235,7 +240,7 @@ fn create<A: ResourceApp>(
         .read_record(Reader::<A::Resource>::read)
         .map_err(LaunchError::Record)?
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
-    let root = build_root::<A>(reader, Editing::Live(permissions));
+    let root = build_root::<A>(reader, Editing::Live(permissions), context.storage());
     let mut component = AppComponent::new(context, Box::new(root), action_registry::<A>());
     component.set_behaviour(A::BEHAVIOUR);
     component
@@ -313,6 +318,7 @@ fn prepare_definition(
             .tempdir()
             .map_err(operation)?;
         let root = profile.path().join("state");
+        let settings = profile.path().join("settings.json");
         let mut host = ApplicationHost::new_with_profile_lifetime(
             root,
             "capture-device".into(),
@@ -322,13 +328,15 @@ fn prepare_definition(
             tilo_actions::ActionContext::default(),
             Rc::new(CaptureProfile(profile)),
         )?;
-        return host.prepare_default(
-            definition,
-            CAPTURE_INSTANCE,
-            default_record_of(definition),
-            None,
-            inputs,
-        );
+        return host
+            .prepare_default(
+                definition,
+                CAPTURE_INSTANCE,
+                default_record_of(definition),
+                None,
+                inputs,
+            )
+            .map(|prepared| with_settings_file(prepared, settings));
     }
     if let Some(directory) = args.value("--data-dir") {
         let author = ui_core::collaboration::local_user_id();
@@ -337,13 +345,15 @@ fn prepare_definition(
             &author,
             role_permissions(&author.0, Role::Owner),
         )?;
-        return host.prepare_default(
-            definition,
-            DATA_DIR_INSTANCE,
-            default_record_of(definition),
-            None,
-            inputs,
-        );
+        return host
+            .prepare_default(
+                definition,
+                DATA_DIR_INSTANCE,
+                default_record_of(definition),
+                None,
+                inputs,
+            )
+            .map(|prepared| with_settings_file(prepared, data_dir_settings(directory.as_ref())));
     }
     let mut native = NativeProcessHost::open(definition)?;
     let instance = native.instance_id();
@@ -354,6 +364,27 @@ fn prepare_definition(
         None,
         inputs,
     )
+}
+
+/// A component prepared on a private or explicit profile keeps its settings
+/// in that profile too, never in the person's session document.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn with_settings_file(
+    mut prepared: PreparedComponentInputs,
+    file: std::path::PathBuf,
+) -> PreparedComponentInputs {
+    prepared
+        .context
+        .provide_settings(ui_core::storage::SettingsDocument::File(file));
+    prepared
+}
+
+/// The settings document of a `--data-dir` profile.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn data_dir_settings(directory: &std::path::Path) -> std::path::PathBuf {
+    std::path::absolute(directory)
+        .unwrap_or_else(|_| directory.to_path_buf())
+        .join("settings.json")
 }
 
 #[cfg(not(target_arch = "wasm32"))]

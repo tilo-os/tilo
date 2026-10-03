@@ -2,7 +2,7 @@
 //! resource: collaboration, history, undo, permissions and the action door.
 
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use ui_core::widget::{AppModel, ModelPath};
 
 use tilo_resource::Resource;
@@ -12,6 +12,7 @@ use ui_core::widget::{Decorator, Widget};
 
 use super::dispatch::Dispatcher;
 use super::live::Live;
+use super::settings::{Setting, ViewStorage};
 
 /// A custom widget or renderer — a timeline, a canvas, a GPU viewport, a page
 /// layout engine — taking part in a resource.
@@ -85,6 +86,8 @@ pub trait ResourceSurface<R: Resource>: Widget {
 pub struct SurfaceCx<R: Resource> {
     pub(crate) dispatch: Dispatcher<R>,
     pub(crate) live: Live<R>,
+    pub(crate) storage: Rc<ViewStorage>,
+    pub(crate) alive: Weak<()>,
 }
 
 impl<R: Resource> SurfaceCx<R> {
@@ -109,6 +112,34 @@ impl<R: Resource> SurfaceCx<R> {
     /// name ([`ResourceSelection::presence`]).
     pub fn app_id(&self) -> &'static str {
         self.dispatch.app_id()
+    }
+
+    /// The app's typed settings of type `S`, kept current while the view
+    /// that hosts the surface lives: keep the [`Setting`] and read it where
+    /// it is needed. `S` declares whether they follow the person or stay on
+    /// the device ([`Scope`](ui_core::storage::Scope)).
+    pub fn settings<S>(&self) -> Setting<S>
+    where
+        S: ui_core::storage::SettingsSchema + Clone + PartialEq + Send + Sync,
+    {
+        self.storage.follow(self.alive.clone())
+    }
+
+    /// The app's files, secrets and settings documents, as its host gave
+    /// them.
+    pub fn storage(&self) -> ui_core::storage::AppStorage {
+        self.storage.storage().clone()
+    }
+
+    /// The app's secrets. A secret of one document item (a profile's
+    /// password) is `cx.secrets().item(purpose, id)`.
+    pub fn secrets(&self) -> ui_core::secrets::SecretStore {
+        self.storage.storage().secrets()
+    }
+
+    /// The app's private file areas.
+    pub fn files(&self) -> ui_core::storage::AppFiles {
+        self.storage.storage().files()
     }
 }
 
