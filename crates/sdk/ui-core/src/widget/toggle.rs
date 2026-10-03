@@ -432,14 +432,6 @@ impl Toggle {
             None,
             &track_shape,
         );
-        // Rest edge and focus ring share one half-pixel-inset outline.
-        scene.stroke(
-            &Stroke::new(colors.edge_width),
-            transform,
-            colors.edge,
-            None,
-            &crate::surface::edge_outline(face.rect, radius),
-        );
         // Knob radius follows the track: 10 px inside the 24 px default.
         let kr = (radius - KNOB_EDGE_GAP).max(1.0);
         let cy = face.rect.y0 + face.rect.height() / 2.0;
@@ -467,6 +459,16 @@ impl Toggle {
         if dim {
             scene.pop_layer();
         }
+        // Rest edge and focus ring share one half-pixel-inset outline, drawn
+        // outside the disabled layer so a disabled switch keeps its bounds
+        // at full strength (HIG §9.5).
+        scene.stroke(
+            &Stroke::new(colors.edge_width),
+            transform,
+            colors.edge,
+            None,
+            &crate::surface::edge_outline(face.rect, radius),
+        );
     }
 }
 
@@ -858,16 +860,6 @@ mod tests {
                     None,
                     &pill_shape,
                 );
-                // The edge (and the focus ring) ride the shared half-pixel-inset
-                // outline, so a 1 px hairline covers the pill's outermost pixel
-                // row instead of bleeding half onto the ground.
-                expected.stroke(
-                    &Stroke::new(colors.edge_width),
-                    Affine::IDENTITY,
-                    colors.edge,
-                    None,
-                    &crate::surface::edge_outline(pill, 12.0),
-                );
                 let knob_x = if on { pill.x1 - 12.0 } else { pill.x0 + 12.0 };
                 expected.fill(
                     vello::peniko::Fill::NonZero,
@@ -888,6 +880,17 @@ mod tests {
                 if !enabled {
                     expected.pop_layer();
                 }
+                // The edge (and the focus ring) ride the shared half-pixel-inset
+                // outline, so a 1 px hairline covers the pill's outermost pixel
+                // row instead of bleeding half onto the ground. It sits
+                // outside the disabled layer, at full strength.
+                expected.stroke(
+                    &Stroke::new(colors.edge_width),
+                    Affine::IDENTITY,
+                    colors.edge,
+                    None,
+                    &crate::surface::edge_outline(pill, 12.0),
+                );
 
                 let state =
                     format!("on={on} hovered={hovered} focused={focused} enabled={enabled}");
