@@ -21831,7 +21831,7 @@ impl ShellOverlayHost {
         card: &tilo_desktop::overview::RoomCard,
         name_size: f32,
     ) {
-        use ui::widget::{Chip, ChipLead, ChipStyle};
+        use ui::widget::{ChipFace, ChipLead, ChipStyle, Tone};
 
         let (scene, transform, text_renderer, theme) =
             (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
@@ -21862,7 +21862,7 @@ impl ShellOverlayHost {
         let chip_h = m.chip_h;
         let here_label = t("overview-you-are-here");
         let chip_w =
-            Chip::natural_width_at(&here_label, chip_h, ChipLead::None, theme, text_renderer);
+            ChipFace::intrinsic_width(&here_label, ChipLead::None, false, text_renderer, theme);
         let anchor = (faces_left - s4, here_rect.y0 + m.name_lh / 2.0);
         let marks_left =
             Self::draw_overview_app_marks(scene, transform, theme, anchor, &card.apps());
@@ -21885,9 +21885,7 @@ impl ShellOverlayHost {
             TextWeight::Bold,
         );
         let chip_x0 = content.x0 + f64::from(name_w) + s3;
-        Chip::draw_at(
-            scene,
-            transform,
+        ChipFace::new(
             Rect::new(
                 chip_x0,
                 here_rect.y0 + f64::from(name_h) / 2.0 - chip_h / 2.0,
@@ -21895,11 +21893,9 @@ impl ShellOverlayHost {
                 here_rect.y0 + f64::from(name_h) / 2.0 + chip_h / 2.0,
             ),
             &here_label,
-            ChipLead::None,
-            ChipStyle::tinted(colors.intent.you),
-            theme,
-            text_renderer,
-        );
+        )
+        .style(ChipStyle::Tinted(Tone::Presence(colors.intent.you)))
+        .paint(scene, transform, text_renderer, theme);
 
         let access = tilo_desktop::overview::room_access_label(card);
         text_renderer.draw_style(

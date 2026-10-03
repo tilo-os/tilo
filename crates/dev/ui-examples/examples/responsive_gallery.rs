@@ -110,11 +110,9 @@ fn build_root_widget(theme: &Theme) -> Box<dyn Widget> {
             .push(Box::new(
                 Row::new()
                     .push(Box::new(Chip::new("All").selected(true)))
-                    .push(Box::new(
-                        Chip::new("Design")
-                            .selectable()
-                            .with_dot(theme.tokens.colors.semantic.info),
-                    ))
+                    .push(Box::new(Chip::new("Design").selectable().with_lead(
+                        tilo_ui::widget::ChipLead::Dot(theme.tokens.colors.presence.series(0)),
+                    )))
                     .push(Box::new(Chip::new("Engineering").selectable()))
                     .push(Box::new(Chip::new("Research").selectable()))
                     .push(Box::new(Chip::new("archived").removable())),

@@ -235,8 +235,7 @@ fn window_group_journey_is_deterministic_and_distinguishes_states_in_both_themes
 
     // Case `window_group_visual_journey_distinguishes_all_states_in_light`.
     // The same journey on the **light** preset. The maximized chrome's chips
-    // are the one live consumer of `surface::chip_colors` / `surface::pill`,
-    // whose quiet edge is now derived from the chip fill; a light-theme frame
+    // are quiet pills whose edge is derived from the chip fill; a light-theme frame
     // is where a declared or literal-white edge used to vanish, so the four
     // states must stay distinct there too. Writes `window_group_<state>_light.png`
     // under `TILO_UI_SCREENSHOT_DIR` for by-eye inspection beside the dark set.

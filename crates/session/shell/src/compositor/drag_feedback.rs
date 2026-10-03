@@ -108,7 +108,7 @@ pub fn draw(
 
 /// The carried-item chip: a rounded card with the item's name in it.
 ///
-/// Deliberately not [`ui::widget::Chip::draw_at`]: a chip is a Selector
+/// Deliberately not [`ui::widget::ChipFace`]: a chip is a Selector
 /// that sits *inside* a Panel and paints a veneer fill (`overlay_subtle`),
 /// which over arbitrary app content would let whatever is being dragged
 /// across show through the label. The carried item is an Object off the

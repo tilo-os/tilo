@@ -11,7 +11,7 @@ use super::{
 use crate::a11y::{AccessNode, AccessState, Role};
 use crate::text_render::TextStyle;
 use crate::widget::context_menu::{ContextMenu, MenuItem};
-use crate::widget::{Chip, ChipLead, ChipStyle, Widget};
+use crate::widget::{ChipFace, ChipLead, Widget};
 
 /// Prefix of the context menu's semantic targets inside the tree.
 const MENU_TARGET: &str = "menu:";
@@ -415,21 +415,10 @@ impl<T, M: TreeModel> TreeView<T, M> {
             return;
         };
         let hovered = self.last_cursor.is_some_and(|point| rect.contains(point));
-        let style = if hovered {
-            ChipStyle::tinted(theme.tokens.colors.intent.inverted)
-        } else {
-            ChipStyle::quiet()
-        };
-        Chip::draw_at(
-            scene,
-            transform,
-            rect,
-            "",
-            ChipLead::Glyph(action.icon),
-            style,
-            theme,
-            text_renderer,
-        );
+        ChipFace::new(rect, "")
+            .lead(ChipLead::Glyph(action.icon))
+            .hovered(hovered)
+            .paint(scene, transform, text_renderer, theme);
     }
 
     /// Paint the hovered row's actions; the one under the pointer lifts.
