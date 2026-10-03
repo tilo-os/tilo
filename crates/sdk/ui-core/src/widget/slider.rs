@@ -1116,6 +1116,34 @@ mod tests {
             assert_eq!(s.value, before, "a disabled slider must not change value");
         }
 
+        // Case `a_settling_slider_invokes_its_action_once_per_drag`.
+        {
+            let mut slider = slider_at(0.0, 0.0, 200.0, 30.0)
+                .on_action(crate::widget::test_number_action_binding())
+                .commits_on_release();
+            crate::widget::controls::refresh_control_action_availability(
+                &mut slider,
+                &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
+                    "test:control",
+                    "set",
+                )]),
+            );
+            dispatch(&mut slider, &cursor_moved(20.0, 15.0));
+            dispatch(&mut slider, &mouse_press());
+            dispatch(&mut slider, &cursor_moved(100.0, 15.0));
+            dispatch(&mut slider, &cursor_moved(150.0, 15.0));
+            assert!(
+                crate::widget::controls::take_control_invocation(&mut slider).is_none(),
+                "nothing is invoked while the drag goes on"
+            );
+            dispatch(&mut slider, &mouse_release());
+            let invoked = crate::widget::controls::take_control_invocation(&mut slider)
+                .expect("letting go invokes the action");
+            let value = invoked.arguments["value"].as_f64().unwrap();
+            assert!((value - slider.value).abs() < 1e-9);
+            assert!(crate::widget::controls::take_control_invocation(&mut slider).is_none());
+        }
+
         // Case `action_binding_owns_accessibility_value_changes`.
         {
             let mut slider = Slider::new("native", "legacy")

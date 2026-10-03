@@ -1381,6 +1381,62 @@ mod tests {
     }
 
     #[test]
+    fn a_vertical_rail_stacks_square_segments_bound_to_view_state() {
+        let state = crate::LocalState::new('b');
+        let mut rail = ToggleGroup::from_state(
+            vec![
+                (
+                    'a',
+                    Segment::new("Select")
+                        .with_icon(Icon::MousePointer2)
+                        .with_hint("V"),
+                ),
+                (
+                    'b',
+                    Segment::new("Brush").with_icon(Icon::Brush).with_hint("B"),
+                ),
+                ('c', Segment::new("Text").with_icon(Icon::Type)),
+            ],
+            &state,
+        )
+        .vertical();
+        assert_eq!(
+            rail.selected(),
+            1,
+            "the state's value is the chosen segment"
+        );
+        rail.apply_layout_external(Rect::new(0.0, 0.0, 40.0, 128.0));
+        let rects = rail.segment_rects.clone();
+        assert_eq!(rects.len(), 3);
+        assert!(
+            rects
+                .iter()
+                .all(|rect| (rect.width() - rect.height()).abs() < 1e-9)
+        );
+        assert!(
+            (rects[2].y1 - 128.0).abs() < 1e-9,
+            "the gaps share the rest"
+        );
+
+        // A press chooses the segment and stores its value.
+        dispatch(&mut rail, &cursor_moved(20.0, rects[2].center().y));
+        dispatch(&mut rail, &mouse_press());
+        assert_eq!(state.with(|value| *value), 'c');
+
+        // A value set elsewhere (a keyboard shortcut) is shown on sync.
+        state.set('a');
+        let mut doc = AutoCommit::new();
+        Widget::sync(&mut rail, &mut doc, &automerge::ROOT);
+        assert_eq!(rail.selected(), 0);
+
+        // An icon segment's label and shortcut are its tooltip.
+        let (_, tip) = rail
+            .tooltip_target_at(rects[0].center())
+            .expect("an icon segment has a tooltip");
+        assert_eq!(tip, "Select  V");
+    }
+
+    #[test]
     fn toggle_group_geometry_scales_labels_once_and_is_touch_sized() {
         // Case `retained_labels_apply_resolved_text_scale_exactly_once`.
         {
