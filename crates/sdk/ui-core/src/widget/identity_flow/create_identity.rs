@@ -61,7 +61,7 @@ use crate::widget::identity_flow::sheet::{
 use crate::widget::identity_flow::{
     IdentityFlowError, IdentityRecord, IdentityStore, ScreenOutcome,
 };
-use crate::widget::modal_frame::ModalAction;
+use crate::widget::modal_dialog::ModalAction;
 use crate::widget::text_input::TextInput;
 
 /// Default accent-tile palette. Picked so each tile reads as a

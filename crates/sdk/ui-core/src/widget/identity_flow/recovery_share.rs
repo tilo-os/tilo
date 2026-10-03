@@ -30,7 +30,7 @@ use crate::widget::identity_flow::sheet::{
     paint_check_row, paint_text, paragraph_height, resolve, with_layout_renderer,
 };
 use crate::widget::identity_flow::{IdentityRecord, ScreenOutcome};
-use crate::widget::modal_frame::ModalAction;
+use crate::widget::modal_dialog::ModalAction;
 
 const TITLE_READY: &str = "Your recovery words";
 const TITLE_UNAVAILABLE: &str = "Recovery is not ready yet";
@@ -592,14 +592,14 @@ mod tests {
                     node,
                     Size {
                         width: taffy::AvailableSpace::Definite(1280.0),
-                        height: taffy::AvailableSpace::Definite(800.0),
+                        height: taffy::AvailableSpace::Definite(420.0),
                     },
                 )
                 .expect("layout");
             s.apply_layout(&taffy, node, Point::ORIGIN);
             assert!(
                 s.scroll.max() > 0.0,
-                "24 words at 2× do not fit an 800 px window"
+                "24 words at 2× do not fit a 420 px window"
             );
             let actions = Rect::new(
                 s.copy_rect.x0.min(s.continue_rect.x0),

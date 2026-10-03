@@ -38,7 +38,7 @@ use crate::widget::identity_flow::sheet::{
     paint_text, paragraph_height, place_field, resolve, with_layout_renderer,
 };
 use crate::widget::identity_flow::{RecoveryChallenge, ScreenOutcome};
-use crate::widget::modal_frame::ModalAction;
+use crate::widget::modal_dialog::ModalAction;
 use crate::widget::text_input::TextInput;
 
 const TITLE: &str = "Confirm your recovery words";

@@ -2805,14 +2805,6 @@ impl FrameHarness {
                 &self.presence,
                 &self.permissions,
             );
-            self.root.draw_overlay(
-                &mut self.scene,
-                Affine::IDENTITY,
-                &mut self.text,
-                &self.theme,
-                &self.presence,
-            );
-            self.root.mark_drawn();
         }
         if self.history_chrome_enabled {
             let context = crate::standalone_history::HistoryReadContext {
@@ -2836,6 +2828,42 @@ impl FrameHarness {
                 self.presence.pop_viewport(previous_viewport);
                 return Err(error);
             }
+        }
+        // The window's top layer, after the app and the window's own chrome:
+        // open menus, popovers and modals, so a modal's scrim covers the
+        // History bar and every region of the window.
+        if self
+            .history
+            .as_ref()
+            .is_none_or(|history| history.live_visible())
+            && self.history_layout.is_none_or(|layout| layout.app_visible)
+        {
+            self.root.draw_overlay(
+                &mut self.scene,
+                Affine::IDENTITY,
+                &mut self.text,
+                &self.theme,
+                &self.presence,
+            );
+            self.root.mark_drawn();
+        }
+        if let Some(history) = &mut self.history {
+            history.draw_overlay(
+                &mut self.scene,
+                Affine::IDENTITY,
+                &mut self.text,
+                &self.theme,
+                &self.presence,
+            );
+        }
+        if self.history_chrome_enabled {
+            self.document_history.draw_overlay(
+                &mut self.scene,
+                Affine::IDENTITY,
+                &mut self.text,
+                &self.theme,
+                &self.presence,
+            );
         }
         if let Some(palette) = self
             .action_palette

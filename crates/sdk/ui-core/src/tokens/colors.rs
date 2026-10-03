@@ -511,6 +511,48 @@ impl PresencePalette {
     }
 }
 
+/// What is drawn straight onto media (video, a camera viewfinder, a photo):
+/// the letterbox around a frame, the fade under text that sits on the
+/// picture, and that text. Media is dark or light regardless of the theme,
+/// so these are the same in every theme; only the hue of the neutral
+/// material follows it. Controls over media are a floating Panel on the
+/// material instead, inked from the theme.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MediaColors {
+    /// Behind a frame that does not fill its box. Near-black in every
+    /// theme, so a light theme does not turn the letterbox mid-grey.
+    pub letterbox: Color,
+    /// The colour of a fade under text on media
+    /// (`ui::overlay::scrim::vertical_fade`).
+    pub scrim: Color,
+    /// Primary ink on [`Self::scrim`] and on the letterbox.
+    pub ink: Color,
+    /// Secondary ink on [`Self::scrim`] and on the letterbox.
+    pub ink_dim: Color,
+}
+
+impl MediaColors {
+    /// Lightness of the letterbox and of the fade under media text.
+    const GROUND_L: f32 = 0.13;
+    /// Lightness of primary and secondary ink on it: AA for body text at
+    /// the full fade (`media_ink_is_legible_on_its_scrim`).
+    const INK_L: f32 = 0.97;
+    const INK_DIM_L: f32 = 0.80;
+
+    /// The media set in the neutral material's `hue` at no chroma: media
+    /// takes no temperature from the workspace.
+    #[must_use]
+    pub fn new(hue: f32) -> Self {
+        let n = |lightness: f32| oklch(lightness, 0.0, hue);
+        Self {
+            letterbox: n(Self::GROUND_L * 0.5),
+            scrim: n(Self::GROUND_L),
+            ink: n(Self::INK_L),
+            ink_dim: n(Self::INK_DIM_L),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Colors {
     /// The palette these colours were made from.
@@ -524,6 +566,8 @@ pub struct Colors {
     pub surfaces: Surfaces,
     pub intent: Intents,
     pub presence: PresencePalette,
+    /// Ink, scrim and letterbox for what is drawn straight onto media.
+    pub media: MediaColors,
     /// Primary ink on [`Surfaces::content`].
     pub text_primary: Color,
     /// Secondary ink on [`Surfaces::content`].
@@ -713,6 +757,7 @@ impl Colors {
                 selection_tint: Self::selection_tint_of(you_colour),
             },
             presence,
+            media: MediaColors::new(hue),
             text_primary: primary,
             text_dim: n(palette.ink.secondary),
             text_tertiary: n(palette.ink.tertiary),
@@ -1152,6 +1197,30 @@ mod tests {
             let h = i as f32 * 15.0;
             h
         })
+    }
+
+    #[test]
+    fn media_ink_is_legible_on_its_scrim_in_every_theme() {
+        // Media is the same picture under a light and a dark theme, so the
+        // ink drawn on it may not follow the theme's lightness.
+        let dark = Colors::stock(&Palette::dark()).media;
+        for (name, palette) in palettes() {
+            let media = Colors::stock(&palette).media;
+            for (ink, floor, role) in [(media.ink, 7.0, "ink"), (media.ink_dim, 4.5, "ink_dim")] {
+                for ground in [media.scrim, media.letterbox] {
+                    let ratio = contrast_ratio(ink, ground);
+                    assert!(
+                        ratio >= floor,
+                        "{name}: media {role} on its ground is {ratio:.2}:1, needs {floor}:1"
+                    );
+                }
+            }
+            assert_eq!(
+                rgba(media.letterbox),
+                rgba(dark.letterbox),
+                "{name}: the letterbox may not follow the theme's lightness"
+            );
+        }
     }
 
     fn at_hue(palette: &Palette, hue: f32) -> Colors {
