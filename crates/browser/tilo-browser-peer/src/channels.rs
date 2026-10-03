@@ -584,7 +584,10 @@ impl Channels {
                 ),
             });
         }
-        if events.contains(&MemberEvent::Desynchronised) {
+        // Ask again with a fresh key package: the request sent before was
+        // answered with a Welcome this device cannot open, or by an
+        // admission the steward has since replaced.
+        if events.contains(&MemberEvent::Desynchronised) || events.contains(&MemberEvent::Removed) {
             route.request = None;
             route.next_request_ms = now_ms;
             route.request_delay_ms = REQUEST_FIRST_MS;
