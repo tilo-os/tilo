@@ -2500,7 +2500,7 @@ mod tests {
         let mut b = a.clone();
         b.name = "after.png".into();
         b.path = PathBuf::from("/var/workspace/after.png");
-        b.modified = Some(chrono::Local::now());
+        b.modified = Some(ui::clock::local_now());
         assert_eq!(
             FileView::thumb_key(&ctx, &a),
             FileView::thumb_key(&ctx, &b),

@@ -4938,6 +4938,79 @@ mod responsive_body_tests {
             "wide navigation leaves the docked list in place — nothing to dismiss",
         );
     }
+
+    /// With the places list not beside the files, the shell's toggle sits at
+    /// the leading edge of the content header; the toolbar starts after it
+    /// instead of drawing over it.
+    #[test]
+    fn the_toolbar_starts_after_the_shells_toggle_when_the_places_list_is_away() {
+        let mut h = H::new(None, 520.0, 720.0);
+        for _ in 0..2 {
+            // The inset is discovered by a layout and applied by the rebuild
+            // it asks for, as the live frame loop does.
+            h.w.take_structure_dirty();
+            h.lay_out(520.0, 720.0);
+        }
+        let toggle = h.w.nav.geometry().toggle;
+        assert!(toggle.width() > 0.0, "the narrow shell shows its toggle");
+        let up =
+            h.w.toolbar
+                .up_button_rect()
+                .expect("the toolbar is laid out");
+        assert!(
+            up.x0 > toggle.x1,
+            "the toolbar's controls clear the toggle: toggle={toggle:?} up={up:?}"
+        );
+
+        // Beside the files the toggle belongs to the sidebar's own header, so
+        // the toolbar needs no room for it.
+        h.lay_out(1200.0, 720.0);
+        h.w.take_structure_dirty();
+        h.lay_out(1200.0, 720.0);
+        let docked = h.w.nav.geometry();
+        assert!(docked.toggle.x1 <= docked.content_column.x0 + 1.0);
+    }
+
+    /// The state a menu row shows as a check follows the sort in force and
+    /// whether hidden files are shown; no other row is a state.
+    #[test]
+    fn menu_rows_show_the_sort_and_hidden_state_as_checks() {
+        let mut w = FileExplorerWidget::with_persistence(None, None);
+        assert_eq!(
+            w.command_checked(Some(&FileCommand::SetSort(SortBy::Name))),
+            Some(true)
+        );
+        assert_eq!(
+            w.command_checked(Some(&FileCommand::SetSort(SortBy::Size))),
+            Some(false)
+        );
+        assert_eq!(
+            w.command_checked(Some(&FileCommand::ToggleHidden)),
+            Some(false)
+        );
+        w.show_hidden = true;
+        assert_eq!(
+            w.command_checked(Some(&FileCommand::ToggleHidden)),
+            Some(true)
+        );
+        assert_eq!(w.command_checked(Some(&FileCommand::NewFolder)), None);
+        assert_eq!(w.command_checked(None), None);
+    }
+
+    /// A folder that did not open, or is still opening, has no item count to
+    /// float over the surface that says what is happening.
+    #[test]
+    fn the_item_count_is_withheld_while_a_folder_is_loading_or_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
+        let mut w = FileExplorerWidget::with_persistence(None, None);
+        w.navigate(dir.path().to_path_buf());
+        assert!(!w.footer_label().is_empty());
+        w.debug_show_error_state();
+        assert!(w.footer_label().is_empty(), "no count over an error");
+        w.debug_show_loading_state();
+        assert!(w.footer_label().is_empty(), "no count while opening");
+    }
 }
 
 #[cfg(test)]
