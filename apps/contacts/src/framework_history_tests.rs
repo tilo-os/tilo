@@ -85,9 +85,11 @@ fn history_navigation_and_preview_render_at_every_width_and_theme() {
             let mut renderer = OffscreenRenderer::new(w, h);
             // A first Vello submission can drop geometry while its bump budget
             // grows; the resilient render retries until a frame confirmably fits.
-            let rgba = renderer.render_rgba_resilient(&scene);
+            // The history surface stands on the window ground; the preview
+            // paints none of its own.
+            let rgba = renderer.render_resilient(&scene, theme.tokens.colors.surfaces.content);
             assert_eq!(rgba.len(), (w * h * 4) as usize);
-            let ground = theme.bg_primary.to_rgba8();
+            let ground = theme.tokens.colors.surfaces.content.to_rgba8();
             let is_ground = |x: u32, y: u32| {
                 let (r, g, b, _) = OffscreenRenderer::sample(&rgba, w, x, y);
                 (r, g, b) == (ground.r, ground.g, ground.b)
@@ -126,7 +128,7 @@ fn history_navigation_and_preview_render_at_every_width_and_theme() {
                 .join(theme.name.to_lowercase())
                 .join("history_preview.png");
             std::fs::create_dir_all(out.parent().unwrap()).unwrap();
-            renderer.render_png(&scene, theme.bg_app, &out);
+            renderer.render_png(&scene, theme.tokens.colors.surfaces.content, &out);
         }
     }
 }
@@ -190,11 +192,11 @@ fn history_restore_reconciles_fields_and_rebases_open_forms() {
             let (doc, selected, _) = fixture();
             let mut d = managed_driver(doc, selected);
             d.click_named("history-back-live").unwrap();
-            let edit = d.a11y_node_named("Edit contact").unwrap();
+            let edit = d.a11y_node_named("Edit").unwrap();
             d.perform_a11y_action(edit, &ui::a11y::Action::Activate)
                 .unwrap();
             if let Some(label) = edited {
-                let field = d.a11y_node_named(label).unwrap();
+                let field = input_named(&d, label);
                 d.perform_a11y_action(
                     field,
                     &ui::a11y::Action::SetValue("Unsaved local edit".into()),
@@ -214,7 +216,7 @@ fn history_restore_reconciles_fields_and_rebases_open_forms() {
             let displayed = |label: &str| {
                 d.a11y_nodes()
                     .into_iter()
-                    .find(|(_, n)| n.label() == Some(label))
+                    .find(|(_, n)| n.label() == Some(label) && is_input(n))
                     .and_then(|(_, n)| n.value().map(str::to_owned))
                     .unwrap()
             };
@@ -232,7 +234,7 @@ fn history_restore_reconciles_fields_and_rebases_open_forms() {
                 crate::doc::ContactsDoc::list_contacts(&d.state_mut().doc)[0].first,
                 "Selected contact"
             );
-            let save = d.a11y_node_named("Save changes").unwrap();
+            let save = d.a11y_node_named("Save").unwrap();
             d.perform_a11y_action(save, &ui::a11y::Action::Activate)
                 .unwrap();
             let current = crate::doc::ContactsDoc::list_contacts(&d.state_mut().doc).remove(0);
@@ -265,11 +267,11 @@ fn history_restore_keeps_unsaved_drafts_and_row_identity() {
             doc.get_heads();
             let mut d = managed_driver(doc, selected);
             d.click_named("history-back-live").unwrap();
-            let edit = d.a11y_node_named("Edit contact").unwrap();
+            let edit = d.a11y_node_named("Edit").unwrap();
             d.perform_a11y_action(edit, &ui::a11y::Action::Activate)
                 .unwrap();
             if dirty {
-                let field = d.a11y_node_named("First name").unwrap();
+                let field = input_named(&d, "First name");
                 d.perform_a11y_action(
                     field,
                     &ui::a11y::Action::SetValue("Unsaved deleted contact".into()),
@@ -284,14 +286,16 @@ fn history_restore_keeps_unsaved_drafts_and_row_identity() {
             assert!(crate::doc::ContactsDoc::list_contacts(&d.state_mut().doc).is_empty());
             if dirty {
                 assert!(format!("{:?}", d.a11y_nodes()).contains("Unsaved deleted contact"));
-                assert!(format!("{:?}", d.a11y_nodes()).contains("no longer exists"));
-                let save = d.a11y_node_named("Save changes").unwrap();
+                assert!(format!("{:?}", d.a11y_nodes()).contains("deleted elsewhere"));
+                let save = d.a11y_node_named("Save").unwrap();
                 d.perform_a11y_action(save, &ui::a11y::Action::Activate)
                     .unwrap();
                 assert!(crate::doc::ContactsDoc::list_contacts(&d.state_mut().doc).is_empty());
             } else {
                 assert!(
-                    d.a11y_node_named("First name").is_none(),
+                    !d.a11y_nodes()
+                        .iter()
+                        .any(|(_, node)| node.label() == Some("First name") && is_input(node)),
                     "a removed clean form must close"
                 );
             }
@@ -325,7 +329,7 @@ fn history_restore_keeps_unsaved_drafts_and_row_identity() {
         doc.get_heads();
         let mut d = managed_driver(doc, selected);
         d.click_named("history-back-live").unwrap();
-        let edit = d.a11y_node_named("Edit contact").unwrap();
+        let edit = d.a11y_node_named("Edit").unwrap();
         d.perform_a11y_action(edit, &ui::a11y::Action::Activate)
             .unwrap();
         let field = d.a11y_node_named("Phone 1").unwrap();
@@ -350,7 +354,7 @@ fn history_restore_keeps_unsaved_drafts_and_row_identity() {
                     .collect::<Vec<_>>()
             );
         }
-        let save = d.a11y_node_named("Save changes").unwrap();
+        let save = d.a11y_node_named("Save").unwrap();
         d.perform_a11y_action(save, &ui::a11y::Action::Activate)
             .unwrap();
         let saved = crate::doc::ContactsDoc::list_contacts(&d.state_mut().doc).remove(0);
@@ -358,6 +362,22 @@ fn history_restore_keeps_unsaved_drafts_and_row_identity() {
         assert_eq!(saved.phones[1].id, expected[1].id);
         assert_eq!(saved.phones[1].value, "local 222");
     }
+}
+
+/// A text field's node (a form label shares the field's name).
+fn is_input(node: &ui::accesskit::Node) -> bool {
+    matches!(
+        node.role(),
+        ui::accesskit::Role::TextInput | ui::accesskit::Role::MultilineTextInput
+    )
+}
+
+/// The text field named `label`.
+fn input_named(d: &ui::headless::Driver, label: &str) -> ui::accesskit::NodeId {
+    d.a11y_nodes()
+        .into_iter()
+        .find_map(|(id, node)| (node.label() == Some(label) && is_input(&node)).then_some(id))
+        .unwrap_or_else(|| panic!("a text field named {label}"))
 }
 
 fn test_root() -> Box<dyn ui::widget::Widget> {
