@@ -56,8 +56,10 @@ jobs:
           if-no-files-found: error
 
   # Fail in seconds, before the disk build, when the signing authority is
-  # missing or no longer matches the committed trust root.
+  # missing or no longer matches the committed trust root. Only main signs:
+  # a branch run builds and boots the guest but publishes nothing.
   signing-preflight:
+    if: github.ref == 'refs/heads/main'
     runs-on: runner
     timeout-minutes: 5
     enable-openid-connect: true
@@ -75,6 +77,7 @@ jobs:
 
   build:
     needs: [agent, signing-preflight]
+    if: ${{ !cancelled() && needs.agent.result == 'success' && needs.signing-preflight.result != 'failure' }}
     runs-on: runner-disk-100g
     timeout-minutes: 150
     enable-openid-connect: true
@@ -162,13 +165,16 @@ jobs:
           sudo -n chmod 0666 /dev/kvm
           [[ ! -e /dev/vhost-vsock ]] || sudo -n chmod 0666 /dev/vhost-vsock
           ./os/dev/legacy-guest-smoke.sh "$OUT/qcow2/disk.qcow2"
+      # Only main publishes: the release signing identity trusts main alone.
       - name: Log in to registry.tilo.so
+        if: github.ref == 'refs/heads/main'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: registry.tilo.so
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Publish the disk as a single-layer image
+        if: github.ref == 'refs/heads/main'
         run: |
           set -euo pipefail
           wrap=$(mktemp -d /var/tmp/legacy-guest-wrap.XXXXXX)
@@ -183,6 +189,7 @@ jobs:
           [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
           echo "LEGACY_GUEST_REF=registry.tilo.so/tilo/legacy-guest@$digest" >> "$GITHUB_ENV"
       - name: Sign with the non-exportable release key
+        if: github.ref == 'refs/heads/main'
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
           AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
@@ -190,8 +197,10 @@ jobs:
           . os/dev/configure-cosign-kms.sh
           cosign sign --yes --key "$COSIGN_KEY_REF" "$LEGACY_GUEST_REF"
       - name: Verify the signature and record the immutable reference
+        if: github.ref == 'refs/heads/main'
         run: os/dev/legacy-guest-snapshot.sh record "$LEGACY_GUEST_REF"
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: github.ref == 'refs/heads/main'
         with:
           name: legacy-guest-x86_64
           path: refs/x86_64.env
@@ -204,7 +213,7 @@ jobs:
 
   promote:
     needs: build
-    if: github.ref == 'refs/heads/main'
+    if: ${{ !cancelled() && needs.build.result == 'success' && github.ref == 'refs/heads/main' }}
     runs-on: runner
     timeout-minutes: 30
     steps:

@@ -98,7 +98,7 @@ mod tests {
     #[test]
     fn each_share_gets_a_confined_unprivileged_daemon() {
         let share = HostShare {
-            path: "/var/home/me/Music".into(),
+            path: "/var/home/you/Music".into(),
             read_only: true,
         };
         let socket = Path::new("/run/user/1000/tilo-legacy/linux/fs-1.sock");
@@ -112,7 +112,7 @@ mod tests {
                     "--socket-path",
                     "/run/user/1000/tilo-legacy/linux/fs-1.sock",
                     "--shared-dir",
-                    "/var/home/me/Music",
+                    "/var/home/you/Music",
                     "--sandbox",
                     "none",
                     "--cache",
@@ -144,7 +144,7 @@ mod tests {
             );
             assert_eq!(argv[..2], ["/usr/bin/tilo-legacy", "confine-fs"]);
             let (ro, rw, program) = parse_confined(&argv[2..]).unwrap();
-            assert!(ro.contains(&PathBuf::from("/var/home/me/Music")));
+            assert!(ro.contains(&PathBuf::from("/var/home/you/Music")));
             assert!(ro.contains(&PathBuf::from("/usr")));
             assert_eq!(rw, [PathBuf::from("/run/user/1000/tilo-legacy/linux")]);
             assert_eq!(program, daemon);
