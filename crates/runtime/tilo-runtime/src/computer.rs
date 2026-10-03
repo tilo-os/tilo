@@ -38,14 +38,6 @@ const MAX_BATCH: usize = 50;
 const MAX_REPEAT: u32 = 100;
 const MAX_WAIT: Duration = Duration::from_secs(30);
 const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(10);
-/// How long after a window's last new frame it counts as done answering.
-const SETTLE_QUIET: Duration = Duration::from_millis(600);
-/// How long a window may take to start answering input before it counts
-/// as having nothing to show for it.
-const SETTLE_FIRST: Duration = Duration::from_millis(2000);
-/// Longest wait for windows that keep drawing, such as an animation.
-const SETTLE_MAX: Duration = Duration::from_secs(5);
-const SETTLE_POLL: Duration = Duration::from_millis(25);
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// One compositor reached through its control socket, shared by every agent
@@ -90,9 +82,6 @@ struct State {
     frame: u64,
     /// Screen size and returned frame size of the last screenshot.
     geometry: Option<Geometry>,
-    /// Input was sent since the last screenshot, which waits for the
-    /// windows to answer it.
-    unsettled: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -376,6 +365,7 @@ impl Turn<'_> {
                     self.chord(&chord, None)?;
                 }
             }
+            "key_down" | "key_up" => self.hold(action)?,
             "hold_key" => {
                 let combo = action
                     .text
@@ -561,6 +551,33 @@ impl Turn<'_> {
         result
     }
 
+    /// Press (`key_down`) or let go of (`key_up`) a chord, held across the
+    /// steps between: modifiers first down, last up.
+    fn hold(&self, action: &Action) -> Result<(), String> {
+        let combo = action
+            .text
+            .as_deref()
+            .or(action.key.as_deref())
+            .ok_or_else(|| format!("{} needs text", action.action))?;
+        let chord = Chord::parse(combo)?;
+        let keys: Vec<&str> = chord
+            .modifiers
+            .iter()
+            .copied()
+            .chain(chord.key.as_deref())
+            .collect();
+        if action.action == "key_down" {
+            for key in keys {
+                self.send(&json!({"op":"key_down","key":key}))?;
+            }
+        } else {
+            for key in keys.into_iter().rev() {
+                self.send(&json!({"op":"key_up","key":key}))?;
+            }
+        }
+        Ok(())
+    }
+
     fn chord(&self, chord: &Chord, hold: Option<Duration>) -> Result<(), String> {
         for key in &chord.modifiers {
             self.send(&json!({"op":"key_down","key":key}))?;
@@ -600,13 +617,6 @@ impl Turn<'_> {
                 fields.insert("window".into(), json!(app_id));
             }
         }
-        let op = command.get("op").and_then(Value::as_str).unwrap_or("");
-        if !matches!(
-            op,
-            "snapshot" | "foreign_frames" | "agent_seat" | "agent_leave" | "watch"
-        ) {
-            self.lock().unsettled = true;
-        }
         let reply = self.request(&command).map_err(|error| error.to_string())?;
         if let Some(error) = reply.get("err") {
             let code = error.get("code").and_then(Value::as_str).unwrap_or("error");
@@ -630,6 +640,8 @@ impl Turn<'_> {
     }
 
     /// One snapshot from the compositor: the screen, or the aimed-at window.
+    /// After input the compositor writes it once the windows in it answered
+    /// that input, so it shows what the input did.
     fn snapshot(&self) -> Result<image::RgbaImage, String> {
         let shot = self.computer.shots.fetch_add(1, Ordering::Relaxed);
         let path = self.computer.scratch.join(format!("frame-{shot}.png"));
@@ -640,63 +652,6 @@ impl Turn<'_> {
         image
     }
 
-    /// A snapshot once the windows in view answered the input sent since
-    /// the last one: their frames stopped coming, or none came at all.
-    fn settled_snapshot(&self) -> Result<image::RgbaImage, String> {
-        if std::mem::take(&mut self.lock().unsettled) {
-            self.settle();
-        }
-        self.snapshot()
-    }
-
-    /// Wait until the windows in view drew what the input asked for: after a
-    /// new frame, until none followed for [`SETTLE_QUIET`]; with no new
-    /// frame, for [`SETTLE_FIRST`]; never longer than [`SETTLE_MAX`].
-    fn settle(&self) {
-        let Some(mut frames) = self.frame_count() else {
-            return;
-        };
-        let started = Instant::now();
-        let mut drew: Option<Instant> = None;
-        loop {
-            std::thread::sleep(SETTLE_POLL);
-            let Some(now) = self.frame_count() else {
-                return;
-            };
-            let at = Instant::now();
-            if now != frames {
-                frames = now;
-                drew = Some(at);
-            }
-            let calm = match drew {
-                Some(drew) => at.duration_since(drew) >= SETTLE_QUIET,
-                None => at.duration_since(started) >= SETTLE_FIRST,
-            };
-            if calm || at.duration_since(started) >= SETTLE_MAX {
-                return;
-            }
-        }
-    }
-
-    /// The frames drawn so far by the aimed-at window, or every window when
-    /// none is aimed at; `None` when the compositor does not say.
-    fn frame_count(&self) -> Option<u64> {
-        let reply = self.answer(&json!({"op":"foreign_frames"})).ok()?;
-        let frames = reply.pointer("/foreign_frames/frames")?.as_array()?;
-        let window = self.window.borrow();
-        Some(
-            frames
-                .iter()
-                .filter(|frame| {
-                    window
-                        .as_deref()
-                        .is_none_or(|app_id| frame["app_id"].as_str() == Some(app_id))
-                })
-                .filter_map(|frame| frame["frame_seq"].as_u64())
-                .sum(),
-        )
-    }
-
     /// A fresh frame of the whole screen, or of `region` scaled up to the
     /// frame size, encoded as the action asks.
     fn capture(&self, region: Option<[f64; 4]>, action: &Action) -> Result<Frame, String> {
@@ -704,7 +659,7 @@ impl Turn<'_> {
             let mut state = self.lock();
             state.frame = state.frame.saturating_add(1);
         }
-        let screen = self.settled_snapshot()?;
+        let screen = self.snapshot()?;
         let screen_size = (screen.width(), screen.height());
         let window = self.window.borrow().clone();
         let current = Geometry::fit(screen_size, window);
@@ -942,7 +897,7 @@ pub fn tool_definitions() -> Vec<Value> {
     let action = json!({
         "type":"object",
         "properties":{
-            "action":{"type":"string","enum":["screenshot","left_click","right_click","middle_click","double_click","triple_click","mouse_move","left_click_drag","left_mouse_down","left_mouse_up","scroll","type","key","hold_key","wait","zoom","cursor_position"]},
+            "action":{"type":"string","enum":["screenshot","left_click","right_click","middle_click","double_click","triple_click","mouse_move","left_click_drag","left_mouse_down","left_mouse_up","scroll","type","key","key_down","key_up","hold_key","wait","zoom","cursor_position"]},
             "coordinate":point,
             "start_coordinate":point,
             "text":{"type":"string"},
@@ -963,7 +918,7 @@ pub fn tool_definitions() -> Vec<Value> {
     });
     let effect = json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true});
     vec![
-        json!({"name":"computer","description":"Use a window as a person does: pointer, keys, scroll. One action; returns a screenshot once the window stopped drawing (a slow app may lag: screenshot again). For work, prefer an app's typed actions (tilo_invoke); this is for trying its UI and for windows without actions. With app_id the action lands in that app's window. Without it coordinates are pixels in the last screenshot's frame: take a screenshot first. modifier (e.g. \"shift\", \"ctrl+alt\") is held during a click, drag, move or scroll; key takes chords like \"ctrl+z\"","inputSchema":action,"annotations":effect}),
+        json!({"name":"computer","description":"Use a window as a person does: pointer, keys, scroll. One action; returns a screenshot once the window drew its answer. For work, prefer an app's typed actions (tilo_invoke); this is for trying its UI and for windows without actions. With app_id the action lands in that app's window. Without it coordinates are pixels in the last screenshot's frame: take a screenshot first. modifier (e.g. \"shift\", \"ctrl+alt\") is held during a click, drag, move or scroll; key takes chords like \"ctrl+z\"; key_down/key_up hold one across the next steps, as for a space-drag","inputSchema":action,"annotations":effect}),
         // Each step takes the `computer` tool's arguments; restating that
         // schema here would double what every model turn reads.
         json!({"name":"computer_batch","description":"Up to 50 computer actions in order, each an object of the computer tool's arguments, stopping at the first failure; screenshot steps and the last step return a frame unless no_screenshot says otherwise. app_id applies to every step naming none. A stroke along a path: left_mouse_down, mouse_move steps, left_mouse_up","inputSchema":{"type":"object","properties":{"actions":{"type":"array","items":{"type":"object"},"minItems":1,"maxItems":MAX_BATCH},"app_id":{"type":"string"}},"required":["actions"],"additionalProperties":false},"annotations":effect}),

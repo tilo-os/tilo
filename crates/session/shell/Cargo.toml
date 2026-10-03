@@ -301,6 +301,9 @@ tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["te
 tilo-joined-room = { path = "../../collab/tilo-joined-room", features = ["test-support"] }
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics", features = ["test-support"] }
 collab-fixtures = { path = "../../collab/collab-fixtures" }
+# A browser in the room a node governs, for the node's own session to share
+# sealed records with.
+tilo-browser-peer = { path = "../../browser/tilo-browser-peer" }
 # The CPU replay of shell scenes, checked against vello on the same scenes.
 tilo-cpu-raster = { path = "../../sdk/tilo-cpu-raster" }
 rand_chacha.workspace = true

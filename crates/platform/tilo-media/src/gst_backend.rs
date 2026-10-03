@@ -620,6 +620,16 @@ impl GstState {
     /// re-prerolls and the new frame arrives on the preroll path, so scrubbing
     /// never starts the audio sink.
     pub fn seek(&mut self, ms: u64, mode: SeekMode) -> bool {
+        // Not before the first preroll completes. Until the pipeline reaches
+        // PAUSED, decodebin may still be autoplugging the decoder, and a
+        // flushing seek that GStreamer accepts in that window can leave the
+        // decoder's caps unnegotiated, so no picture ever arrives. Refusing
+        // here is the same "not accepted yet" the caller already retries.
+        let (_, current, _) = self.playbin.state(gst::ClockTime::ZERO);
+        if current < gst::State::Paused {
+            tracing::debug!("media: seek to {ms}ms deferred until the first preroll");
+            return false;
+        }
         let pos = gst::ClockTime::from_mseconds(ms);
         match self.playbin.seek_simple(mode.flags(), pos) {
             Ok(()) => {

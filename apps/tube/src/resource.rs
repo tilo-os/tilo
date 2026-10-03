@@ -208,7 +208,16 @@ impl ResourceApp for TubeShell {
     const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
 
     fn view(cx: &mut ViewCx<Tube>) -> Element {
-        cx.surface(TubeApp::new())
+        cx.surface(Self::surface())
+    }
+}
+
+impl TubeShell {
+    /// The widget the framework mounts: the live app, which fetches the real
+    /// catalogue and runs device sync. Hermetic `--shots` renders take the
+    /// standalone launch path and never mount this.
+    pub(crate) fn surface() -> TubeApp {
+        TubeApp::new().online()
     }
 }
 

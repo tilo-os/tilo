@@ -195,7 +195,10 @@ profile installs both sets. The NVRAM text names Broadcom's sample MAC
 `00:90:4c:c5:12:38`; the image installs it without that line, so boards do
 not share one address. NetworkManager keeps the permanent MAC for `brcmfmac`
 (`os/etc/NetworkManager/conf.d/10-tilo-brcmfmac.conf`): the driver drops the
-link when the address is changed.
+link when the address is changed. The onboard Ethernet PHY drops the cable
+after idle while Energy Efficient Ethernet is on, so a NetworkManager
+dispatcher (`os/usr/lib/NetworkManager/dispatcher.d/10-tilo-disable-eee`)
+turns EEE off whenever `end0` comes up.
 
 The profile is `"always_on": true`. `os/dev/install-board-layer.sh` gives such
 a board image a session instead of a greeter:
