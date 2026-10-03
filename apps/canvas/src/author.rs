@@ -93,8 +93,8 @@ pub fn resolve(select: &mut Select) -> Result<(), String> {
         at: select.at.map(|[x, y]| Point::new(x, y)),
         colour,
         tolerance,
-        everywhere: select.everywhere == Some(true) || select.at.is_none(),
-        layers: select.layers.clone(),
+        everywhere: select.at.is_none(),
+        layers: None,
     };
     let found = with_sight(|renderer, text, art| colour_region(renderer, text, art, &query))?;
     let found = match &select.d {
@@ -109,8 +109,6 @@ pub fn resolve(select: &mut Select) -> Result<(), String> {
     select.at = None;
     select.colour = None;
     select.tolerance = None;
-    select.everywhere = None;
-    select.layers = None;
     Ok(())
 }
 

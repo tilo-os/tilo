@@ -74,13 +74,12 @@ pub struct EditLayer {
     pub to: Option<String>,
     /// `0..=1`: let the ground's tooth show through the layer's marks.
     pub texture: Option<f64>,
-    /// Give the layer a mask that shows (`reveal`) or hides (`hide`) all of
-    /// it, or `remove` it. The mask is a layer of its own (`<id>-mask`):
-    /// paint or draw on it in greys, white shows and black hides.
+    /// `reveal`, `hide` or `remove`: a mask layer `<id>-mask` to paint
+    /// greys on, white shows, black hides.
     pub mask: Option<String>,
-    /// A mask: hide where it is light instead.
+    /// Invert the mask.
     pub invert: Option<bool>,
-    /// Show the layer only where the layer below has paint.
+    /// Clip to the layer below.
     pub clip: Option<bool>,
 }
 
@@ -141,7 +140,7 @@ pub struct NewMark {
     /// A group id: edits naming it change the members as one; `a/b`
     /// nests group b in a.
     pub group: Option<String>,
-    /// Cut to this mark's shape (opacity 0 hides that mark), or to the
+    /// Cut to this mark's shape (opacity 0 hides that mark), or
     /// `selection`.
     pub clip: Option<String>,
     /// An affine `[a, b, c, d, e, f]` on the geometry, as `inspect` shows.
@@ -226,7 +225,7 @@ pub struct NewStroke {
     pub angle: Option<f64>,
     /// Keep the paint inside this mark's shape, as a painter cuts in
     /// against an edge: texture a rock or a crown within its silhouette.
-    /// `selection` keeps it inside the selection.
+    /// Or `selection`.
     pub clip: Option<String>,
 }
 
