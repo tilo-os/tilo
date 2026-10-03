@@ -2528,6 +2528,10 @@ impl FrameHarness {
                     f64::from(self.viewport.0),
                     None,
                 );
+                if self.history.is_none() && self.history_chrome_enabled {
+                    self.document_history
+                        .place_in_app_header(self.root.as_mut());
+                }
                 self.child_node = if let Some(history) = &mut self.history {
                     history.build_composition(
                         self.root.as_mut(),
@@ -5878,7 +5882,9 @@ impl FrameHarness {
             );
         }
         for (target, intent) in registered.components.into_iter().chain(bound.pending) {
-            self.dispatch_bound_control(target, &intent);
+            if !self.take_history_invocation(&intent) {
+                self.dispatch_bound_control(target, &intent);
+            }
         }
 
         let batch =
@@ -5894,6 +5900,9 @@ impl FrameHarness {
             .pop_front()
             .or_else(|| crate::widget::controls::take_control_invocation(self.root.as_mut()))
         {
+            if self.take_history_invocation(&intent) {
+                continue;
+            }
             // The remaining controls originated in the outer document. Never
             // reselect a matching component or legacy owner from their address.
             let mut resources = Vec::new();

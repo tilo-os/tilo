@@ -1574,9 +1574,9 @@ fn closed_history_strip_insets_its_button_by_the_theme_spacing() {
     let spacing = driver.theme().tokens.spacing;
     let button = driver.targets()["history-open"];
     assert_eq!(
-        button.x0,
-        f64::from(spacing.s3),
-        "sibling step from the edge"
+        button.x1,
+        900.0 - f64::from(spacing.s3),
+        "sibling step from the trailing edge"
     );
     assert_eq!(
         button.y0,
