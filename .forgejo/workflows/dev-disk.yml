@@ -30,7 +30,7 @@ on:
         required: false
         default: ""
       base_image:
-        description: "Signed production image (registry.tilo.so/tilo/tilo:<tag> or @sha256:...), or a dev-trust integration image (registry.tilo.so/tilo/tilo-ci:main-<sha7>-<arch> or @sha256:...); empty uses tilo:main-<sha7>."
+        description: "Signed production image (registry.tilo.so/tilo/tilo:<tag> or @sha256:...), or a dev-trust integration image (registry.tilo.so/tilo/tilo-ci:main-<sha7>-<arch> or @sha256:...; aarch64 exists only for the main commits its newest-first lane built); empty uses tilo:main-<sha7>."
         required: false
         default: ""
       dev_image:
