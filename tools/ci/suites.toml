@@ -391,6 +391,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/actions.test.mjs",
   "crates/browser/tilo-browser-runtime/web/agents.test.mjs",
   "crates/browser/tilo-browser-runtime/web/app-crash.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/channel-vault.test.mjs",
   "crates/browser/tilo-browser-runtime/web/data-loader.test.mjs",
   "crates/browser/tilo-browser-runtime/web/device-custody.test.mjs",
   "crates/browser/tilo-browser-runtime/web/durable-host.test.mjs",

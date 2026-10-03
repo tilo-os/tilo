@@ -242,7 +242,7 @@ impl Relay {
         let host = match tls {
             TlsSource::Development { hosts, .. } => hosts.first().cloned(),
             TlsSource::Managed { domain } => Some(domain.clone()),
-            TlsSource::Files { .. } => None,
+            TlsSource::Files { host, .. } => host.clone(),
         }
         .filter(|_| addr.ip().is_unspecified())
         .unwrap_or_else(|| addr.ip().to_string());
