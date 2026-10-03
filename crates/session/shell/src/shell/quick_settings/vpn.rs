@@ -20,6 +20,7 @@ use tilo_desktop::drill_in::{
     centred_text_top, leading_glyph, paint_control, trailing_toggle,
 };
 use ui::TextRole;
+use ui::widget::ButtonRole;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VpnPaneOutcome {
@@ -294,7 +295,7 @@ impl QuickSettingsVpnPane {
                 text,
                 theme,
                 &ButtonFace::new(Self::back_rect(panel), "")
-                    .ghost()
+                    .role(ButtonRole::Plain)
                     .icon(ui::icons::Icon::ChevronLeft)
                     .focused(true)
                     .accessible_name(&t("qs-back")),
@@ -324,7 +325,7 @@ impl QuickSettingsVpnPane {
                     text,
                     theme,
                     &ButtonFace::new(*row, "")
-                        .ghost()
+                        .role(ButtonRole::Plain)
                         .focused(true)
                         .accessible_name(&profile.name),
                 );

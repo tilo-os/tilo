@@ -171,7 +171,7 @@ impl AppShell {
     /// Add a search field with [`AppShell::with_search`].
     pub fn new(nav: Element, content: Element) -> Self {
         let back_requested = Rc::new(Cell::new(false));
-        let back = Self::back_button("app-shell-back", "Back", &back_requested, BACK_BTN);
+        let back = Self::back_button("app-shell-back", "Back", &back_requested);
         Self {
             nav,
             content,
@@ -205,17 +205,9 @@ impl AppShell {
         }
     }
 
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "a button side in on-screen pixels, far inside f32's exact range"
-    )]
-    fn back_button(id: &str, name: &str, requested: &Rc<Cell<bool>>, side: f64) -> Button {
+    fn back_button(id: &str, name: &str, requested: &Rc<Cell<bool>>) -> Button {
         let requested = Rc::clone(requested);
-        Button::new(id, "", None)
-            .with_icon(crate::icons::Icon::ArrowLeft)
-            .with_accessible_name(name)
-            .with_size(side as f32, side as f32)
-            .ghost()
+        Button::icon_only(id, crate::icons::Icon::ArrowLeft, name)
             .on_view(move || requested.set(true))
     }
 
@@ -224,12 +216,7 @@ impl AppShell {
             .test_id
             .as_deref()
             .map_or_else(|| String::from("app-shell-back"), |id| format!("{id}-back"));
-        self.back = Self::back_button(
-            &id,
-            &self.back_accessible_name,
-            &self.back_requested,
-            self.back_btn,
-        );
+        self.back = Self::back_button(&id, &self.back_accessible_name, &self.back_requested);
     }
 
     /// Resolve the authored inputs and chrome metrics against `theme`

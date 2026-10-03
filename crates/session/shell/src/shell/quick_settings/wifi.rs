@@ -27,6 +27,7 @@ use tilo_desktop::drill_in::{
     trailing_dot_center, trailing_status_glyph, trailing_toggle,
 };
 use ui::TextRole;
+use ui::widget::ButtonRole;
 
 fn f32v(value: f64) -> f32 {
     #[allow(
@@ -662,7 +663,7 @@ impl QuickSettingsWifiPane {
                     text,
                     theme,
                     &ButtonFace::new(*row, "")
-                        .ghost()
+                        .role(ButtonRole::Plain)
                         .focused(true)
                         .disabled(network.connected || busy)
                         .accessible_name(&network.ssid),

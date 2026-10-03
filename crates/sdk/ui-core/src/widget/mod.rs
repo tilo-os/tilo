@@ -2163,7 +2163,7 @@ pub use layout::{
 };
 
 mod button;
-pub use button::{Button, ButtonFace, ButtonInteract, ButtonStyle, face_colors};
+pub use button::{Button, ButtonFace, ButtonInteract, ButtonRole, face_colors};
 mod control_size;
 pub use control_size::ControlSize;
 mod checkbox;

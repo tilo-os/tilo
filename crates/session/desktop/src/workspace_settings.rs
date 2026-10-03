@@ -34,6 +34,7 @@ use tilo_desktop_model::service_member::{ServiceMember, service_purpose};
 use tilo_desktop_model::{UserId, Workspace, WorkspaceId};
 use ui::TextRole;
 use ui::text_render::TextStyle;
+use ui::widget::ButtonRole;
 
 pub mod overlay;
 
@@ -1401,7 +1402,9 @@ fn draw_danger_button(
         transform,
         text_renderer,
         theme,
-        &ButtonFace::new(rect, label).danger().disabled(!enabled),
+        &ButtonFace::new(rect, label)
+            .role(ButtonRole::Destructive)
+            .disabled(!enabled),
     );
 }
 
@@ -1420,7 +1423,9 @@ fn draw_primary_button(
         transform,
         text_renderer,
         theme,
-        &ButtonFace::new(rect, label).primary().disabled(!enabled),
+        &ButtonFace::new(rect, label)
+            .role(ButtonRole::Primary)
+            .disabled(!enabled),
     );
 }
 

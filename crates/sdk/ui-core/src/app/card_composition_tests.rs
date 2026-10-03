@@ -1,4 +1,5 @@
 use super::*;
+use crate::widget::ButtonRole;
 use crate::widget::{
     Actions, Button, Card, CardGrid, Column, Element, EmptyState, Scrollable, Text,
 };
@@ -24,7 +25,7 @@ fn fixture() -> App {
                             "Refresh connections",
                             Some("clicked"),
                         )
-                        .primary(),
+                        .role(ButtonRole::Primary),
                     )
                     .secondary(Button::new(
                         &format!("secondary-{index}"),

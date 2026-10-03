@@ -332,7 +332,8 @@ fn dense_row() -> Box<dyn Widget> {
             .no_wrap()
             .push(Box::new(Button::new("save", "Save", None)))
             .push(Box::new(
-                Button::new("delete", "Delete", None).danger_outline(),
+                Button::new("delete", "Delete", None)
+                    .role(tilo_ui::widget::ButtonRole::Destructive),
             ))
             .push(Box::new(Chip::new("Filter").selectable()))
             .push(Box::new(NumberInput::new(3.0).with_id("count")))

@@ -44,14 +44,35 @@ impl ControlSize {
     }
 
     /// The control's height in `theme`, already grown by its UI scale.
+    ///
+    /// At a large text scale the height grows with the label's line, keeping
+    /// the padding the size has around it at 1×, so a label never overflows
+    /// its control; on a stock theme it is exactly the metric.
     #[must_use]
     pub fn height(self, theme: &Theme) -> f64 {
-        let metrics = &theme.tokens.metrics;
-        f64::from(match self {
-            Self::Small => metrics.bar_control_height,
-            Self::Regular => metrics.min_pointer_target,
-            Self::Large => metrics.bar_height,
-        })
+        let authored = |metrics: &crate::tokens::Metrics| {
+            f64::from(match self {
+                Self::Small => metrics.bar_control_height,
+                Self::Regular => metrics.min_pointer_target,
+                Self::Large => metrics.bar_height,
+            })
+        };
+        let height = authored(&theme.tokens.metrics);
+        let stock_line = f64::from(
+            crate::tokens::typography::stock()
+                .style(self.text_role())
+                .line_height_px(),
+        );
+        let padding = (authored(&crate::tokens::Metrics::BASE) - stock_line).max(0.0)
+            * f64::from(theme.ui_scale);
+        let grown = f64::from(self.label_style(theme).line_height_px()) + padding;
+        // Half a pixel of slack absorbs float noise in the scaled line, so
+        // a uniform UI scale lands exactly on the scaled metric.
+        if grown > height + 0.5 {
+            grown.ceil()
+        } else {
+            height
+        }
     }
 }
 

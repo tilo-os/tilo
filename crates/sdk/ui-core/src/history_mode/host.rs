@@ -4,6 +4,7 @@ use super::{
     HistoryRegistrationError, HistorySourceRegistration, PreviewInput, PreviewSide, PreviewView,
     canvas::PreviewCanvas,
 };
+use crate::widget::ButtonRole;
 use crate::{
     i18n::I18nManager,
     presence::PresenceCtx,
@@ -229,7 +230,6 @@ impl HistoryHost {
                 Row::new()
                     .push(Box::new(
                         Button::new("history-open", "History", None)
-                            .fit_content(32.0)
                             .on_click(move || clicked.set(true)),
                     ))
                     .push(Box::new(Text::new(scope.title))),
@@ -1224,9 +1224,7 @@ impl HistoryHost {
     }
     fn command_button(&self, id: &str, label: &str, command: Command) -> Button {
         let queue = self.commands.clone();
-        Button::new(id, label, None)
-            .fit_content(32.0)
-            .on_click(move || queue.borrow_mut().push_back(command))
+        Button::new(id, label, None).on_click(move || queue.borrow_mut().push_back(command))
     }
     fn preview_page_toolbar(&self, mut toolbar: Column) -> Column {
         if let Some(preview) = &self.canvas().preview {
@@ -1284,7 +1282,6 @@ impl HistoryHost {
                     Row::new()
                         .push(Box::new(
                             Button::new("history-open", "history-mode-title", None)
-                                .fit_content(32.0)
                                 .on_click(move || clicked.set(true)),
                         ))
                         .push(Box::new(Text::new(title))),
@@ -1367,9 +1364,7 @@ impl HistoryHost {
                         self.pending_control_callbacks
                             .insert(id.clone(), callback.clone());
                         row = row.push(Box::new(
-                            Button::new(&id, label, None)
-                                .fit_content(32.0)
-                                .on_click(move || callback.invoke()),
+                            Button::new(&id, label, None).on_click(move || callback.invoke()),
                         ));
                     } else {
                         let command =
@@ -1381,9 +1376,7 @@ impl HistoryHost {
                         self.pending_control_callbacks
                             .insert(id.clone(), callback.clone());
                         row = row.push(Box::new(
-                            Button::new(&id, label, None)
-                                .fit_content(32.0)
-                                .on_click(move || callback.invoke()),
+                            Button::new(&id, label, None).on_click(move || callback.invoke()),
                         ));
                     }
                     let commands = self.pending_controls.commands();
@@ -1398,7 +1391,6 @@ impl HistoryHost {
                         .insert(cancel_id.clone(), callback.clone());
                     row = row.push(Box::new(
                         Button::new(&cancel_id, "history-mode-cancel", None)
-                            .fit_content(32.0)
                             .on_click(move || callback.invoke()),
                     ));
                 }
@@ -1438,7 +1430,7 @@ impl HistoryHost {
             ] {
                 let mut button = self.command_button(id, label, command);
                 if self.side == side {
-                    button = button.primary();
+                    button = button.role(ButtonRole::Primary);
                 }
                 compare = compare.push(Box::new(button));
             }
@@ -1499,7 +1491,7 @@ impl HistoryHost {
                     Command::Scope(index),
                 );
                 if index == self.active_scope {
-                    button = button.primary();
+                    button = button.role(ButtonRole::Primary);
                 }
                 scopes = scopes.push(Box::new(button));
             }

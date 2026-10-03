@@ -17,6 +17,7 @@ use ui::TextRole;
 use ui::paint::PaintCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::ButtonRole;
 use ui::widget::drag::{DragController, ListMetrics};
 use ui::widget::{Button, ButtonFace, Slider, SliderFace, Toggle, ToggleFace};
 use vello::Scene;
@@ -1629,7 +1630,7 @@ impl QuickSettingsRoot {
                 text,
                 theme,
                 &ButtonFace::new(r, "")
-                    .ghost()
+                    .role(ButtonRole::Plain)
                     .hovered(cursor.is_some_and(|p| r.contains(p)))
                     .focused(self.is_focused(state, RootStop::Edit))
                     .accessible_name(name),
@@ -2271,7 +2272,7 @@ impl QuickSettingsRoot {
             text,
             theme,
             &ButtonFace::new(done, &t("qs-edit-done"))
-                .primary()
+                .role(ButtonRole::Primary)
                 .hovered(cursor.is_some_and(|p| done.contains(p)))
                 .focused(self.keyboard_focus == Some(edit_count.saturating_add(1)))
                 .accessible_name(&t("qs-edit-done-a11y")),
@@ -2353,7 +2354,7 @@ impl QuickSettingsRoot {
             .hovered(cursor.is_some_and(|point| action.contains(point)))
             .accessible_name(&action_name);
         let action_face = if c.required() {
-            action_face.ghost()
+            action_face.role(ButtonRole::Plain)
         } else {
             action_face.icon(ui::icons::Icon::X)
         };

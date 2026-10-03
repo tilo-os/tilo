@@ -1,7 +1,7 @@
 //! Every label a filled control paints on its own fill, measured on every
 //! theme the shell can be running under.
 //!
-//! This exists because the defect it guards shipped: `ButtonStyle::Primary`
+//! This exists because the defect it guards shipped: `ButtonRole::Primary`
 //! and `Danger` hard-coded a white label over `accent_primary` /
 //! `semantic.danger`, and a toggle group's selected segment did the same. On
 //! the dark palette the primary button's label measured 3.17:1, and
@@ -28,7 +28,7 @@ use tilo_ui::color_compat::ColorCompat;
 use tilo_ui::theme::Theme;
 use tilo_ui::tokens::colors::{NON_TEXT_MIN_CONTRAST, ON_FILL_MIN_CONTRAST};
 use tilo_ui::widget::{
-    ButtonInteract, ButtonStyle, SegmentedStyle, ToggleInteract, face_colors, segment_colors,
+    ButtonInteract, ButtonRole, SegmentedStyle, ToggleInteract, face_colors, segment_colors,
     toggle_face_colors,
 };
 use vello::peniko::Color;
@@ -79,12 +79,11 @@ fn interacts() -> [(&'static str, ButtonInteract); 4] {
     ]
 }
 
-const STYLES: [ButtonStyle; 5] = [
-    ButtonStyle::Neutral,
-    ButtonStyle::Primary,
-    ButtonStyle::Danger,
-    ButtonStyle::Ghost,
-    ButtonStyle::DangerOutline,
+const STYLES: [ButtonRole; 4] = [
+    ButtonRole::Secondary,
+    ButtonRole::Primary,
+    ButtonRole::Destructive,
+    ButtonRole::Plain,
 ];
 
 #[test]

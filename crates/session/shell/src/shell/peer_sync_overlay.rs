@@ -17,6 +17,7 @@ use ui::text_render::TextRenderer;
 use crate::shell::i18n::{t, t_args};
 use ui::TextRole;
 use ui::theme::Theme;
+use ui::widget::ButtonRole;
 
 /// A transport request emitted by the overlay.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1229,10 +1230,9 @@ impl PeerSyncOverlay {
             // The pass paints with the renderer reset to 1× (see `draw`), so
             // the face is handed the theme-scaled label size explicitly.
             let mut face = ui::widget::ButtonFace::new(brect, &label)
-                .radius(ui::chrome::ChromeRole::Control.radius(theme, bh))
                 .control_size(ui::widget::ControlSize::Large);
             if primary {
-                face = face.primary();
+                face = face.role(ButtonRole::Primary);
             }
             ui::widget::Button::paint(scene, transform, text, theme, &face);
             self.button_rects.push((button, brect));

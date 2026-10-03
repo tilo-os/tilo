@@ -1,6 +1,7 @@
 use super::*;
 use crate::headless::{FrameHarness, InspectionNode};
 use crate::theme::Theme;
+use crate::widget::ButtonRole;
 use crate::widget::TextInput;
 
 fn fixture() -> Element {
@@ -172,7 +173,7 @@ fn long_form() -> Form {
                 .with_error("Enter a valid email address, including the domain after the at sign.")))
             .section(FormSection::new("Preferences").content(Box::new(super::super::Checkbox::new("updates", "updates")
                 .with_label("Send me occasional product updates and tips for working with my team."))))
-            .with_actions(Actions::new(super::super::Button::new("save", "Save account changes", None).primary())
+            .with_actions(Actions::new(super::super::Button::new("save", "Save account changes", None).role(ButtonRole::Primary))
                 .secondary(super::super::Button::new("cancel", "Cancel", None)))
 }
 #[test]
