@@ -1522,6 +1522,7 @@ impl EditorView {
         let c = &theme.tokens.colors;
         let code_style = Self::code_style(theme);
         let keyword_style = code_style.clone().strong();
+        let number_style = code_style.clone().numeric();
         // Horizontal editor scrolling moves source text, never the gutter.
         // Vello text does not implicitly inherit a clipping rect, so without
         // this explicit layer negative-x text painted back through line
@@ -1558,7 +1559,7 @@ impl EditorView {
                 num_color,
                 transform * Affine::translate((num_x, y + self.text_dy)),
                 None,
-                &code_style,
+                &number_style,
             );
 
             // The highlighted code text, span by span.
@@ -2638,6 +2639,35 @@ mod tests {
         assert_eq!(ev.point_to_caret(third_row_2x).0, 2);
         // The 1× third-row point now lands on the taller second row.
         assert_eq!(ev.point_to_caret(third_row_1x).0, 1);
+    }
+
+    #[test]
+    fn completion_candidates_show_their_kind_and_macros_have_their_own_icon() {
+        let item = |label: &str, kind: Option<u8>, detail: Option<&str>| CompletionItem {
+            label: label.to_string(),
+            kind,
+            detail: detail.map(str::to_string),
+            insert_text: label.to_string(),
+        };
+        assert_eq!(
+            completion_kind_icon(&item("primes_below", Some(3), Some("fn(u64) -> Vec<u64>"))),
+            Icon::Code
+        );
+        // A macro is a function by LSP kind; its detail (or the `!` of its
+        // name) says what it is.
+        assert_eq!(
+            completion_kind_icon(&item("println", Some(3), Some("macro"))),
+            Icon::Sparkles
+        );
+        assert_eq!(
+            completion_kind_icon(&item("vec!", Some(3), None)),
+            Icon::Sparkles
+        );
+        assert_eq!(
+            completion_kind_icon(&item("primary", Some(6), Some("let binding"))),
+            Icon::Square
+        );
+        assert_eq!(completion_kind_icon(&item("x", None, None)), Icon::FileText);
     }
 
     #[test]

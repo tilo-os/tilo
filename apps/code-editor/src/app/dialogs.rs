@@ -183,7 +183,12 @@ impl CodeApp {
         }
     }
 
-    fn answer(&mut self, question: Question, index: usize, doc: &mut automerge::AutoCommit) {
+    pub(super) fn answer(
+        &mut self,
+        question: Question,
+        index: usize,
+        doc: &mut automerge::AutoCommit,
+    ) {
         self.dialog_hover = None;
         match question {
             Question::Conflict => {

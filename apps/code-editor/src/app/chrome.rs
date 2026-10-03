@@ -43,15 +43,20 @@ impl CodeApp {
             self.toggle_hovered,
         );
 
-        // The project's name, beside it.
+        // The project's name, beside it; with no project there is none to
+        // name.
         let gap = f64::from(local.tokens.spacing.s2);
         let x = self.toggle_rect.x1 + gap;
         let room = (header.x1 - f64::from(local.tokens.spacing.s3) - x).max(0.0);
-        let name = text_renderer.elide_to_width_style(
-            &self.session.project.name,
-            room as f32,
-            &local.text(TextRole::Subheading),
-        );
+        let name = if self.has_project() {
+            text_renderer.elide_to_width_style(
+                &self.session.project.name,
+                room as f32,
+                &local.text(TextRole::Subheading),
+            )
+        } else {
+            String::new()
+        };
         PaintCtx::new(scene, transform, text_renderer, &local).text_role_in_band(
             &name,
             TextRole::Subheading,
@@ -65,7 +70,7 @@ impl CodeApp {
         // drawer that is sliding in. With no project there is nothing to
         // list, and the body offers to open one.
         self.sidebar_empty_action = Rect::ZERO;
-        if self.session.project.nodes.len() <= 1 {
+        if !self.has_project() {
             self.sidebar_empty_action = EmptyState::paint(
                 &mut PaintCtx::new(scene, transform, text_renderer, &local),
                 body,
@@ -97,6 +102,8 @@ impl CodeApp {
         presence: &PresenceCtx,
     ) {
         self.tabs
+            .draw(scene, transform, text_renderer, theme, presence);
+        self.search_button
             .draw(scene, transform, text_renderer, theme, presence);
         self.panel_toggle
             .draw(scene, transform, text_renderer, theme, presence);
