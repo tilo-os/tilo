@@ -125,10 +125,24 @@ pub trait Resource: Sized + 'static {
         Vec::new()
     }
 
-    /// Document actions whose payload is bound from `state` at publish time
-    /// (clear-all that names the current rows). Prefer [`declarations`] when
-    /// the payload does not need the live state. Published on the same
-    /// resource as [`declarations`].
+    /// Mutations whose arguments are bound from `state` at publish time
+    /// (clear-all that names the current rows): typed builders of
+    /// [`Action`](Self::Action), published beside
+    /// [`declarations`](Self::declarations) and checked, confirmed and undone
+    /// the same way. Prefer [`declarations`](Self::declarations) when the
+    /// action does not need the state. An action bound to where a person is
+    /// rather than to the document (the selection, the current folder) is
+    /// bound by the view or surface that knows it.
+    fn bound_declarations(_state: &Self::State) -> Vec<ActionDecl<Self>> {
+        Vec::new()
+    }
+
+    /// View and effect operations that depend on `state` (start or stop,
+    /// carrying the current on/off), published on the same resource as
+    /// [`declarations`](Self::declarations). Static ones stay on
+    /// [`local_operations`](Self::local_operations); a mutation bound from
+    /// the state is a [`bound_declarations`](Self::bound_declarations) entry,
+    /// never a hand-built document spec here.
     fn bound_actions(_state: &Self::State) -> Vec<tilo_actions::ActionSpec> {
         Vec::new()
     }
@@ -151,6 +165,16 @@ pub trait Resource: Sized + 'static {
     /// agents and scripts — the same door as the root, not a second tree.
     fn children(_state: &Self::State) -> Vec<tilo_actions::Resource> {
         Vec::new()
+    }
+
+    /// The nested resource `id`, when [`children`](Self::children) leaves it
+    /// out. A resource with more children than a published tree should carry
+    /// (a book of contacts, a long history) publishes a bounded page from
+    /// `children` and resolves the rest here, so an action addressed to any
+    /// of them still reaches it through the same door. The default resolves
+    /// nothing beyond `children`.
+    fn child(_state: &Self::State, _id: &str) -> Option<tilo_actions::Resource> {
+        None
     }
 
     /// View and effect operations on this resource: local presentation and
@@ -205,12 +229,41 @@ pub const APPLY: &str = "apply";
 /// The parameter of [`APPLY`] carrying the JSON-encoded action.
 pub const APPLY_PARAM: &str = "action";
 
-/// A search index entry. `anchor` addresses what a hit opens (an item id).
+/// A search index entry. `anchor` addresses what a hit opens (an item id);
+/// `action`, when set, is the published action a hit invokes, so choosing it
+/// goes through the same door, permissions and history as the palette.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SearchEntry {
     pub anchor: Option<String>,
     pub title: String,
     pub text: String,
+    pub action: Option<tilo_actions::ActionAddress>,
+}
+
+impl SearchEntry {
+    /// An entry titled `title` whose body text is `text`.
+    pub fn new(title: impl Into<String>, text: impl Into<String>) -> Self {
+        Self {
+            anchor: None,
+            title: title.into(),
+            text: text.into(),
+            action: None,
+        }
+    }
+
+    /// The item a hit opens.
+    #[must_use]
+    pub fn anchored(mut self, anchor: impl Into<String>) -> Self {
+        self.anchor = Some(anchor.into());
+        self
+    }
+
+    /// The published action a hit invokes.
+    #[must_use]
+    pub fn invoking(mut self, action: tilo_actions::ActionAddress) -> Self {
+        self.action = Some(action);
+        self
+    }
 }
 
 /// Builds a resource's action from arguments already bound against the
@@ -401,7 +454,9 @@ fn refused<R: Resource>(reason: &str) -> EncodedAction {
     }
 }
 
-fn spec_from<R: Resource>(decl: &ActionDecl<R>) -> ActionSpec {
+/// The published spec of one declared or bound mutation: what the palette,
+/// agents and scripts invoke, building `R::Action` from their arguments.
+pub fn declaration_spec<R: Resource>(decl: &ActionDecl<R>) -> ActionSpec {
     let build = Arc::clone(&decl.build);
     let mut spec = ActionSpec::typed(
         decl.id,
@@ -583,9 +638,9 @@ fn group_spec<R: Resource>() -> ActionSpec {
     })
 }
 
-/// The resource tree published for one open resource: every declared action,
-/// the generic [`APPLY`] and [`GROUP`](crate::GROUP) actions, the named
-/// [`Resource::views`], and the nested resources.
+/// The resource tree published for one open resource: every declared and
+/// state-bound action, the generic [`APPLY`] and [`GROUP`](crate::GROUP)
+/// actions, the named [`Resource::views`], and the nested resources.
 ///
 /// This is the only bridge from a [`Resource`] type to the
 /// [`tilo_actions::Resource`] tree the palette, agents, scripts and the shell
@@ -603,16 +658,24 @@ pub fn publish<R: Resource>(id: &str, label: &str, state: &R::State) -> tilo_act
         .collect();
     let mut resource = tilo_actions::Resource::new(id, R::KIND, label);
     for decl in R::declarations() {
-        let spec = spec_from(&decl);
+        let spec = declaration_spec(&decl);
         resource = resource.with_action(if on_items.contains(decl.id) {
             spec.programmatic()
         } else {
             spec
         });
     }
+    for decl in R::bound_declarations(state) {
+        if resource
+            .actions
+            .iter()
+            .any(|existing| existing.id == decl.id)
+        {
+            continue;
+        }
+        resource = resource.with_action(declaration_spec(&decl));
+    }
     for spec in R::bound_actions(state) {
-        // Document actions and state-dependent views or effects. Static views
-        // and effects stay on `local_operations`.
         resource = resource.with_action(spec);
     }
     for view in R::views(state) {

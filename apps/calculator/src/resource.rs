@@ -234,6 +234,7 @@ impl Resource for Calculator {
                 anchor: Some(format!("calculator.history_entry:{id}")),
                 title: history_label(entry),
                 text: entry.expr.clone(),
+                action: None,
             });
         let graphs = state
             .funcs
@@ -280,6 +281,7 @@ fn graph_search(kind: GraphKind, id: &str, plot: &PlotFn) -> ui::tilo_resource::
         anchor: Some(format!("calculator.graph:{slug}:{id}")),
         title: graph_label(kind, plot),
         text: plot.expr.clone(),
+        action: None,
     }
 }
 

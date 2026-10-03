@@ -129,7 +129,7 @@ pub use reader::{Demand, Reader, heads_of};
 pub use replica::Replica;
 pub use resource::{
     APPLY, APPLY_PARAM, ActionDecl, BuildAction, Resource, SearchEntry, action_label, build_action,
-    encode, origin_now_ms, publish,
+    declaration_spec, encode, origin_now_ms, publish,
 };
 pub use schema::JsonSchema;
 pub use shape::{FieldShape, Shape};
@@ -156,6 +156,7 @@ pub mod __private {
             anchor: None,
             title: text.first().cloned().unwrap_or_else(|| label.to_owned()),
             text: text.join("\n"),
+            action: None,
         }]
     }
 

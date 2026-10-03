@@ -98,6 +98,7 @@ impl Resource for Ebook {
                 anchor: Some(format!("ebook.book:{}", entry.id)),
                 title: entry.title.clone(),
                 text: entry.author.clone(),
+                action: None,
             })
             .collect()
     }

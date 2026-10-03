@@ -126,11 +126,13 @@ impl Resource for Feeds {
             anchor: Some(format!("feeds.subscription:{}", feed.id)),
             title: feed.title.clone(),
             text: feed.url.clone(),
+            action: None,
         });
         let articles = state.store.articles.iter().map(|article| SearchEntry {
             anchor: Some(format!("feeds.article:{}", article.id)),
             title: article.title.clone(),
             text: article.summary.clone(),
+            action: None,
         });
         feeds.chain(articles).collect()
     }
