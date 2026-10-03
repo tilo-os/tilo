@@ -216,17 +216,62 @@ fn point_of(point: &[f64]) -> (f64, f64, f64) {
     )
 }
 
-/// `points` with the hand's wobble taken out: each pass pulls every point
-/// toward its neighbours, the ends staying put. `amount` 1 is twelve
-/// passes.
+/// `points` with the hand's wobble taken out. The stroke is first laid
+/// along its smooth curve at an even spacing, so a stroke of a few points
+/// keeps its shape; then each pass pulls every point toward its
+/// neighbours, the ends staying put. `amount` 1 evens out wobble about six
+/// units across; a half, about three.
 pub fn smoothed(points: &[Vec<f64>], amount: f64) -> Vec<Vec<f64>> {
+    // Passes of a [1, 2, 1] kernel blur by about the square root of half
+    // their number, in steps: 72 passes is six.
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        reason = "clamped to 0..=12 before the cast"
+        reason = "clamped to 0..=72 before the cast"
     )]
-    let passes = (amount.clamp(0.0, 1.0) * 12.0).round() as usize;
-    let mut points: Vec<(f64, f64, f64)> = points.iter().map(|point| point_of(point)).collect();
+    let passes = (amount.clamp(0.0, 1.0).powi(2) * 72.0).round() as usize;
+    if passes == 0 || points.len() <= 2 {
+        return points
+            .iter()
+            .map(|point| {
+                let (x, y, pressure) = point_of(point);
+                vec![x, y, pressure]
+            })
+            .collect();
+    }
+    let length: f64 = points
+        .windows(2)
+        .map(|pair| match pair {
+            [a, b] => {
+                let (a, b) = (point_of(a), point_of(b));
+                (b.0 - a.0).hypot(b.1 - a.1)
+            }
+            _ => 0.0,
+        })
+        .sum();
+    // Even steps of a unit or more, never more than the stroke may hold.
+    let spacing = (length / 1000.0).max(1.0);
+    let curve: Vec<WetPoint> = points
+        .iter()
+        .map(|point| {
+            let (x, y, pressure) = point_of(point);
+            WetPoint::new(narrow(x), narrow(y), narrow(pressure))
+        })
+        .collect();
+    let mut points: Vec<(f64, f64, f64)> = tilo_wet_media::brush::smooth(&curve, narrow(spacing))
+        .iter()
+        .map(|sample| {
+            (
+                f64::from(sample.x),
+                f64::from(sample.y),
+                f64::from(sample.pressure),
+            )
+        })
+        .collect();
+    if let (Some(last), Some(end)) = (points.last_mut(), curve.last()) {
+        // The curve ends where the stroke does, not a step short of it.
+        *last = (f64::from(end.x), f64::from(end.y), f64::from(end.pressure));
+    }
     for _ in 0..passes {
         if points.len() <= 2 {
             break;
@@ -679,10 +724,12 @@ impl Grid {
     /// where the preset has grain.
     fn coloured(&self, preset: Preset, input: &DabInput<'_>) -> Vec<u8> {
         let grain = preset.grain();
+        // How far pressing fills the tooth's valleys: graphite never quite
+        // does, dry charcoal less still.
         let fill = if preset == Preset::Charcoal {
-            0.85
+            0.55
         } else {
-            1.05
+            0.6
         };
         let mut pixels = vec![0_u8; self.cover.len() * 4];
         for (index, value) in self.cover.iter().enumerate() {
@@ -699,7 +746,9 @@ impl Grid {
                 let at = input.to_artwork * local;
                 // Light pressure touches only the tooth's peaks; pressing
                 // harder fills the valleys too.
-                let tooth = (input.tooth)(at) * 0.6 + noise(at.x / 1.1, at.y / 1.1, 7) * 0.4;
+                let tooth = (input.tooth)(at) * 0.5
+                    + noise(at.x / 1.1, at.y / 1.1, 7) * 0.3
+                    + noise(at.x / 0.4, at.y / 0.4, 13) * 0.2;
                 let threshold = 1.0 - laid * fill;
                 let caught = smoothstep(threshold - 0.2, threshold + 0.2, tooth);
                 laid * (1.0 - grain + grain * caught)
@@ -863,12 +912,11 @@ mod tests {
         assert!(
             smooth
                 .iter()
-                .skip(3)
-                .take(30)
-                .all(|point| point[1].abs() < 1.0)
+                .filter(|point| (30.0..170.0).contains(&point[0]))
+                .all(|point| point[1].abs() < 1.2)
         );
         let fewer = simplified(&smooth, 1.5);
-        assert!(fewer.len() < 6, "{}", fewer.len());
+        assert!(fewer.len() < 12, "{}", fewer.len());
         assert_eq!(fewer.last(), smooth.last());
     }
 }

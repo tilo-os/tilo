@@ -185,10 +185,20 @@ fn brush(cx: &ViewCx<ArtworkResource>, tools: &Tools, layer: &str) -> Element {
             .unwrap_or_default();
         (medium, pigments, crate::tools::load_fraction(art, layer))
     });
-    let title = medium.as_ref().map_or_else(
-        || ui::i18n::I18nManager::lookup_plain("canvas-medium-plain-ink"),
-        |medium| medium.label.clone(),
-    );
+    // The medium that paints the layer, or on a plain layer the preset the
+    // brush is loaded with.
+    let title: Element = if let Some(medium) = &medium {
+        caption(&medium.label)
+    } else {
+        let preset = tools.preset.clone();
+        Box::new(
+            Text::dynamic(move || {
+                ui::i18n::I18nManager::lookup_plain(&preset.with(|preset| preset.label()))
+            })
+            .with_role(TextRole::Caption)
+            .dimmed(),
+        )
+    };
     let mut parts: Vec<Element> = vec![Box::new(
         Row::new()
             .with_gap(8.0)
@@ -196,7 +206,7 @@ fn brush(cx: &ViewCx<ArtworkResource>, tools: &Tools, layer: &str) -> Element {
             .with_align_items(ui::taffy::AlignItems::Center)
             .push(heading("canvas-brush"))
             .push(Box::new(Spacer::new()))
-            .push(caption(&title)),
+            .push(title),
     )];
     if medium.is_none() {
         parts.push(preset_picker(tools));

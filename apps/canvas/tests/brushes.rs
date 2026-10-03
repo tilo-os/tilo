@@ -418,11 +418,12 @@ fn strokes_are_rebrushed_and_reshaped_after_the_fact() {
     assert_eq!(state.marks.len(), 1);
     assert_eq!(points(&art, "wobbly").last().unwrap()[..2], [290.0, 140.0]);
 
+    let start = points(&art, "wobbly")[0].clone();
     let refused = apply(
         &mut art,
         edit(EditMarks {
             ids: vec!["wobbly".into()],
-            split: Some([20.0, 100.0]),
+            split: Some([start[0] - 1.0, start[1]]),
             ..EditMarks::default()
         }),
     )

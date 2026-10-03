@@ -1351,11 +1351,14 @@ fn draw_dabbed(
     let rgba = ink.to_rgba8();
     let mut key = blake3::Hasher::new();
     key.update(mark.id.as_bytes());
-    key.update(
-        serde_json::to_string(&mark.shape)
-            .unwrap_or_default()
-            .as_bytes(),
-    );
+    // Hashed as bytes: this runs for every dabbed stroke every frame.
+    for point in points {
+        for value in point {
+            key.update(&value.to_le_bytes());
+        }
+        key.update(&[0xff]);
+    }
+    key.update(&size.to_le_bytes());
     key.update(format!("{:?}{:?}{:?}", style.brush, style.params, style.angle).as_bytes());
     key.update(&[rgba.r, rgba.g, rgba.b]);
     key.update(&scale.to_le_bytes());
