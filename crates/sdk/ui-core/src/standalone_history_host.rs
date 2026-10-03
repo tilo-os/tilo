@@ -34,7 +34,7 @@ use crate::theme::Theme;
 use crate::widget::layout::CompositionFocus;
 use crate::widget::{Button, HistoryEntryId, TaffyTreeExt, Widget};
 
-pub(crate) use crate::search::{SEARCH_OPERATION, SEARCH_RESOURCE, search_resource};
+use crate::search::search_resource;
 
 pub(crate) const HISTORY_OPERATION: &str = "tilo.host.history.view";
 pub(crate) const HISTORY_RESOURCE: &str = "tilo.host:history";
@@ -1425,7 +1425,7 @@ mod tests {
             .into_iter()
             .map(|resource| resource.id.as_str().to_owned())
             .collect();
-        assert_eq!(ids, [HISTORY_RESOURCE, SEARCH_RESOURCE]);
+        assert_eq!(ids, [HISTORY_RESOURCE, crate::search::SEARCH_RESOURCE]);
 
         let mut app = Text::new("app");
         let mut tree = TaffyTree::new();

@@ -10,7 +10,8 @@ use tilo_actions::{ActionAddress, ControlInvocation};
 
 use super::model::{CommandGroup, HostCommand};
 use crate::platform::PlatformConventions;
-use crate::standalone_history_host::{HISTORY_RESOURCE, SEARCH_RESOURCE};
+use crate::search::SEARCH_RESOURCE;
+use crate::standalone_history_host::HISTORY_RESOURCE;
 
 /// The launch option a Jump List task passes its invocation in.
 pub(crate) const LAUNCH_OPTION: &str = "--host-command";
