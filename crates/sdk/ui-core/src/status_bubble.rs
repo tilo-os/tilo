@@ -168,7 +168,13 @@ pub fn draw_pill(
 ) {
     let radius = rect.height() / 2.0;
 
-    crate::surface::shadow(scene, transform, rect, radius, &theme.tokens.elevation.e2);
+    crate::surface::shadow(
+        scene,
+        transform,
+        rect,
+        radius,
+        &theme.tokens.elevation.floating,
+    );
 
     // Overlay fill under a rest edge derived from it (HIG §9.5): the
     // declared `border_standard` this replaces is one fixed colour per theme

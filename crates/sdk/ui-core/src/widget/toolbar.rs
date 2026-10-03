@@ -990,7 +990,7 @@ impl Toolbar {
             return;
         };
         let theme = ctx.theme;
-        let radius = f64::from(theme.tokens.radii.sm);
+        let radius = f64::from(theme.tokens.radii.detail);
         let shape = RoundedRect::from_rect(rect, radius);
         let color = if self.hovered == Some(target) {
             theme.bg_hover

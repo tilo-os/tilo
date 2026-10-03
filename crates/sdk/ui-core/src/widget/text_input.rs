@@ -2139,7 +2139,7 @@ impl TextInput {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.accent_primary,
+            theme.tokens.colors.intent.you,
             None,
             &caret,
         );
@@ -2204,7 +2204,7 @@ impl TextInput {
         self.draw_current_line_band(scene, transform, theme, caret_byte, gutter_width);
 
         if let Some((start, end)) = self.selection_range() {
-            let color = theme.accent_primary.with_alpha_factor(0.35);
+            let color = theme.tokens.colors.intent.selection_tint;
             for rect in self.selection_rects(theme, start, end) {
                 scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &rect);
             }
@@ -2473,7 +2473,7 @@ impl TextInput {
         self.draw_body_current_line_band(scene, transform, theme, &rows, lh, gutter_w);
 
         if let Some((s, e)) = self.selection_range() {
-            let sel_color = theme.accent_primary.with_alpha_factor(0.35);
+            let sel_color = theme.tokens.colors.intent.selection_tint;
             for r in self.selection_rects(theme, s, e) {
                 scene.fill(vello::peniko::Fill::NonZero, transform, sel_color, None, &r);
             }
@@ -2508,7 +2508,7 @@ impl TextInput {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                theme.accent_primary,
+                theme.tokens.colors.intent.you,
                 None,
                 &caret,
             );
@@ -3580,7 +3580,7 @@ impl TextInput {
             scene.stroke(
                 &Stroke::new(1.5),
                 transform,
-                theme.accent_primary,
+                theme.tokens.colors.semantic.info,
                 None,
                 &line,
             );
@@ -3618,7 +3618,7 @@ impl TextInput {
             self.rect.y0 - height - 4.0
         };
         let rect = Rect::new(x, y, x + width, y + height);
-        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm));
+        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.detail));
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -3629,7 +3629,7 @@ impl TextInput {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            theme.accent_primary,
+            crate::surface::edge_on(theme.tokens.colors.surfaces.overlay),
             None,
             &shape,
         );
@@ -4112,7 +4112,7 @@ impl Widget for TextInput {
     ) {
         self.last_caret_width = theme.caret_width;
         self.gutter_text_scale = f64::from(theme.text_scale);
-        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
+        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.control));
         if !self.plain {
             self.draw_field_chrome(scene, transform, theme, &shape);
         }
@@ -4935,7 +4935,7 @@ impl TextInput {
         let Some((sel_start, sel_end)) = self.selection_range() else {
             return;
         };
-        let sel_color = theme.accent_primary.with_alpha_factor(0.35);
+        let sel_color = theme.tokens.colors.intent.selection_tint;
         for sel_rect in self.selection_rects(theme, sel_start, sel_end) {
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -4991,7 +4991,7 @@ impl TextInput {
                 let color = if backgrounds {
                     theme.tokens.colors.surfaces.raised
                 } else {
-                    theme.tokens.colors.accent[5]
+                    theme.tokens.colors.text_primary
                 };
                 scene.fill(
                     vello::peniko::Fill::NonZero,
@@ -5094,7 +5094,7 @@ impl TextInput {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.accent_primary,
+            theme.tokens.colors.intent.you,
             None,
             &cursor_rect,
         );

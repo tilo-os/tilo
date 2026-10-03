@@ -30,7 +30,6 @@ use crate::icons::Icon;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::colors::ACCENT_PRIMARY_IDX;
 use crate::widget::{FullscreenProvider, Widget};
 
 const CONTROLS_AUTO_HIDE: Duration = Duration::from_secs(3);
@@ -1268,7 +1267,7 @@ impl VideoPlayer {
                 mid_y + icon * 0.5,
             );
             let tint = if self.open_menu == Some(OpenMenu::Gear) {
-                colors.accent[ACCENT_PRIMARY_IDX]
+                colors.intent.inverted
             } else {
                 colors.text_primary
             };
@@ -1293,7 +1292,7 @@ impl VideoPlayer {
     ) {
         let (play, mid_y, cluster_x0, pad, icon) = layout;
         let colors = &theme.tokens.colors;
-        let accent = colors.accent[ACCENT_PRIMARY_IDX];
+        let accent = colors.intent.inverted;
         let time_text = format!(
             "{} / {}",
             format_ms(self.position_ms),
@@ -1401,7 +1400,7 @@ impl VideoPlayer {
             ..
         } = *layout;
         let colors = &theme.tokens.colors;
-        let accent = colors.accent[ACCENT_PRIMARY_IDX];
+        let accent = colors.intent.inverted;
 
         let fs_size = icon;
         let btn = icon;
@@ -1522,7 +1521,7 @@ impl VideoPlayer {
         shown: &[usize],
     ) -> Option<f64> {
         let colors = &theme.tokens.colors;
-        let accent = colors.accent[ACCENT_PRIMARY_IDX];
+        let accent = colors.intent.inverted;
         let btn = layout.icon;
         let gap = layout.pad;
         let mid_y = layout.mid_y;
@@ -1623,7 +1622,7 @@ impl VideoPlayer {
             ..
         } = *layout;
         let colors = &theme.tokens.colors;
-        let accent = colors.accent[ACCENT_PRIMARY_IDX];
+        let accent = colors.intent.inverted;
 
         let vol_x1 = cluster_x0 - pad;
         let vol_x0 = (vol_x1 - VOLUME_WIDTH).max(play_btn.x1);
@@ -1698,7 +1697,7 @@ impl VideoPlayer {
         }
         let mid_y = layout.mid_y;
         let colors = &theme.tokens.colors;
-        let accent = colors.accent[ACCENT_PRIMARY_IDX];
+        let accent = colors.intent.inverted;
 
         let track = Rect::new(
             track_x0,
@@ -1867,7 +1866,7 @@ impl VideoPlayer {
         // Panel role (HIG §9.1): a settings menu floats over the video, so it
         // takes the panel ground and the panel edge — the declared
         // `border_standard` this replaces vanished on the dark preset.
-        let radius = f64::from(theme.tokens.radii.md);
+        let radius = f64::from(theme.tokens.radii.control);
         let bg = RoundedRect::from_rect(panel_rect, radius);
         scene.fill(
             Fill::NonZero,
@@ -1963,7 +1962,7 @@ impl VideoPlayer {
         let pad = f64::from(theme.tokens.spacing.s2);
         let text_scale = f64::from(theme.text_scale);
         let colors = &theme.tokens.colors;
-        let accent = colors.accent[ACCENT_PRIMARY_IDX];
+        let accent = colors.intent.inverted;
 
         if theme.text_scale > 1.25 {
             self.paint_large_setting_row(
@@ -2067,7 +2066,7 @@ impl VideoPlayer {
         if !value.is_empty() {
             let value = text_renderer.elide_to_width(&value, 12.0, text_budget);
             let tint = matches!(setting.control, PlayerSettingControl::Toggle { on: true })
-                .then_some(colors.accent[ACCENT_PRIMARY_IDX])
+                .then_some(colors.intent.inverted)
                 .unwrap_or(colors.text_dim);
             text_renderer.draw_text(
                 scene,
@@ -2105,7 +2104,7 @@ impl VideoPlayer {
         let row_h = row_rect.height() + 2.0;
         let pad = f64::from(theme.tokens.spacing.s2);
         let colors = &theme.tokens.colors;
-        let accent = colors.accent[ACCENT_PRIMARY_IDX];
+        let accent = colors.intent.inverted;
 
         let selected = *selected == oi;
         // The standalone popover has no header, so no indent.
@@ -2198,7 +2197,7 @@ impl VideoPlayer {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                theme.tokens.colors.accent[ACCENT_PRIMARY_IDX],
+                theme.tokens.colors.intent.inverted,
                 None,
                 &Circle::new((cx, cy), (r * 0.12).max(2.0)),
             );
@@ -2246,7 +2245,7 @@ impl VideoPlayer {
             scene.stroke(
                 &Stroke::new(2.0),
                 transform,
-                theme.tokens.colors.accent[ACCENT_PRIMARY_IDX],
+                theme.tokens.colors.intent.inverted,
                 None,
                 &RoundedRect::from_rect(rect.inflate(3.0, 3.0), 6.0),
             );

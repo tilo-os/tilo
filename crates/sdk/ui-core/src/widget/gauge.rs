@@ -735,7 +735,7 @@ mod tests {
                 6.0,
                 &GaugeReading {
                     frac: 0.0,
-                    color: theme.accent_primary,
+                    color: theme.tokens.colors.intent.inverted,
                     label: "",
                     value: "",
                 },
@@ -747,7 +747,7 @@ mod tests {
                 6.0,
                 &GaugeReading {
                     frac: 0.5,
-                    color: theme.accent_primary,
+                    color: theme.tokens.colors.intent.inverted,
                     label: "",
                     value: "",
                 },
@@ -769,7 +769,7 @@ mod tests {
                 6.0,
                 &GaugeReading {
                     frac: 0.7,
-                    color: theme.accent_primary,
+                    color: theme.tokens.colors.intent.inverted,
                     label: "cpu",
                     value: "70%",
                 },
@@ -812,7 +812,7 @@ mod tests {
                 rect,
                 &GaugeReading {
                     frac: 0.0,
-                    color: theme.accent_primary,
+                    color: theme.tokens.colors.intent.inverted,
                     label: "",
                     value: "",
                 },
@@ -823,7 +823,7 @@ mod tests {
                 rect,
                 &GaugeReading {
                     frac: 0.5,
-                    color: theme.accent_primary,
+                    color: theme.tokens.colors.intent.inverted,
                     label: "",
                     value: "",
                 },
@@ -845,7 +845,7 @@ mod tests {
                 Rect::new(0.0, 0.0, 200.0, 32.0),
                 &GaugeReading {
                     frac: 0.4,
-                    color: theme.accent_primary,
+                    color: theme.tokens.colors.intent.inverted,
                     label: "Memory",
                     value: "4.2 GB",
                 },
@@ -876,7 +876,7 @@ mod tests {
             Rect::new(0.0, 0.0, 120.0, 6.0),
             &theme,
             (0.7, 0.7),
-            &Brush::Solid(theme.accent_primary),
+            &Brush::Solid(theme.tokens.colors.intent.inverted),
             &GaugeStyle::default(),
         );
         assert_eq!(count_color_tags(&scene), 2);

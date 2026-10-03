@@ -362,7 +362,7 @@ impl PresenceCtx {
     ) {
         let interaction = &entry.interaction;
         let rect = placement.rect;
-        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
+        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control));
         scene.fill(
             Fill::NonZero,
             transform,

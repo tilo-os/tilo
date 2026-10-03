@@ -599,8 +599,8 @@ pub fn face_colors(
             (bg, Some(crate::surface::edge_on(rest)), fg)
         }
         ButtonStyle::Primary => {
-            let rest = theme.accent_primary;
-            let active = theme.accent_hover;
+            let rest = theme.tokens.colors.intent.inverted;
+            let active = theme.tokens.colors.intent.inverted_hover;
             let bg = if interact.hovered || interact.pressed {
                 active
             } else {
@@ -672,7 +672,7 @@ pub fn face_colors(
 
 /// Built fluently: `ButtonFace::new(rect, "Save").primary().hovered(hit)`.
 /// Defaults to a neutral, medium-weight, 14 px label and the theme's
-/// `radii.md` corner (8 px at 1×, read from the [`Theme`] handed to
+/// `radii.control` corner (8 px at 1×, read from the [`Theme`] handed to
 /// [`Button::paint`]).
 ///
 /// The label size is *renderer-relative*, like every legacy `measure` /
@@ -687,7 +687,7 @@ pub struct ButtonFace<'a> {
     icon: Option<crate::icons::Icon>,
     style: ButtonStyle,
     interact: ButtonInteract,
-    /// `None` resolves to `theme.tokens.radii.md` at paint time.
+    /// `None` resolves to `theme.tokens.radii.control` at paint time.
     radius: Option<f64>,
     weight: crate::text_render::TextWeight,
     /// Renderer-relative label size.
@@ -748,7 +748,7 @@ impl<'a> ButtonFace<'a> {
         self.icon = Some(icon);
         self
     }
-    /// Override the theme's `radii.md` corner.
+    /// Override the theme's `radii.control` corner.
     #[must_use]
     pub fn radius(mut self, radius: f64) -> Self {
         self.radius = Some(radius);
@@ -999,7 +999,7 @@ impl Button {
         let (bg, border, fg) = face_colors(theme, face.style, face.interact);
         let radius = face
             .radius
-            .unwrap_or_else(|| f64::from(theme.tokens.radii.md));
+            .unwrap_or_else(|| f64::from(theme.tokens.radii.control));
         let shape = RoundedRect::from_rect(face.rect, radius);
 
         // Disabled is the rest face under one group alpha (HIG §9.5), the
@@ -1412,7 +1412,7 @@ impl Widget for Button {
             },
         );
 
-        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
+        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.control));
         // Disabled is the rest face under one group alpha (HIG §9.5); the
         // layer lives inside the cache so a cached frame carries it too.
         if !enabled {
@@ -1434,7 +1434,8 @@ impl Widget for Button {
 
         // Focus ring wins over the style border; an accent-filled style
         // has no rest border, so it only strokes when focused.
-        let outline = crate::surface::edge_outline(self.rect, f64::from(theme.tokens.radii.md));
+        let outline =
+            crate::surface::edge_outline(self.rect, f64::from(theme.tokens.radii.control));
         if self.is_focused && enabled {
             scene.stroke(
                 &vello::kurbo::Stroke::new(FOCUS_RING_WIDTH),
@@ -2713,7 +2714,10 @@ mod tests {
                 ..Default::default()
             };
             let (bg, border, fg) = face_colors(&theme, ButtonStyle::Primary, rest);
-            assert_eq!(bg, theme.accent_primary, "primary rest = accent fill");
+            assert_eq!(
+                bg, theme.tokens.colors.intent.inverted,
+                "primary rest = accent fill"
+            );
             assert_eq!(border, None, "accent fill is self-defining — no border");
             let r = contrast_ratio(fg, bg);
             assert!(
@@ -2722,7 +2726,7 @@ mod tests {
             );
             let (hbg, _, hfg) = face_colors(&theme, ButtonStyle::Primary, hover);
             assert_eq!(
-                hbg, theme.accent_hover,
+                hbg, theme.tokens.colors.intent.inverted_hover,
                 "primary hover darkens to the accent-hover token"
             );
             assert_eq!(
@@ -3001,7 +3005,7 @@ mod tests {
                 .text_size(13.0);
             let theme = Theme::dark();
             let (bg, border, fg) = f.colors(&theme);
-            assert_eq!(bg, theme.accent_hover);
+            assert_eq!(bg, theme.tokens.colors.intent.inverted_hover);
             assert_eq!(border, None);
             // Resolves through `face_colors`, so it carries the same derived
             // label rather than a literal of its own.

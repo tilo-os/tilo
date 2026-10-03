@@ -558,7 +558,7 @@ impl RecoveryVerifyScreen {
             .as_ref()
             .is_some_and(|c| answer.trim().eq_ignore_ascii_case(&c.expected_word(slot)));
         if matches {
-            Some(theme.accent_primary)
+            Some(theme.tokens.colors.intent.inverted)
         } else if self.last_attempt_failed && !answer.is_empty() {
             Some(theme.tokens.colors.semantic.danger)
         } else {
@@ -589,7 +589,7 @@ impl RecoveryVerifyScreen {
                 transform,
                 edge,
                 None,
-                &RoundedRect::from_rect(editor.get_rect(), f64::from(theme.tokens.radii.md)),
+                &RoundedRect::from_rect(editor.get_rect(), f64::from(theme.tokens.radii.control)),
             );
         }
     }

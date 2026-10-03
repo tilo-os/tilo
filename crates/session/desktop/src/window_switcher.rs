@@ -450,15 +450,15 @@ impl Metrics {
             icon: f64::from(spacing.s12),
             mark: f64::from(tokens.metrics.icon_sm),
             well_h,
-            well_radius: f64::from(tokens.radii.md),
+            well_radius: f64::from(tokens.radii.control),
             card_w: well_w + 2.0 * inset,
             card_h: inset + well_h + inset + title_h + inset,
             inset,
             gap: f64::from(spacing.s2),
             pad: f64::from(spacing.s4),
             margin: f64::from(spacing.s8),
-            radius: f64::from(tokens.radii.xl),
-            card_radius: f64::from(tokens.radii.lg),
+            radius: f64::from(tokens.radii.panel),
+            card_radius: f64::from(tokens.radii.control),
             title_size,
             caption_size,
             caption_h: f64::from(caption_size) * 1.4 + f64::from(spacing.s3),
@@ -1056,7 +1056,13 @@ impl WindowSwitcher {
 
         // A Panel (HIG §9.1): the shell's floating-surface ground, edge and
         // elevation, like the overview and the palette.
-        ui::surface::shadow(scene, transform, panel, m.radius, &tokens.elevation.e4);
+        ui::surface::shadow(
+            scene,
+            transform,
+            panel,
+            m.radius,
+            &tokens.elevation.floating,
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -1254,7 +1260,7 @@ pub fn draw_preview_well(
     scene.fill(
         Fill::NonZero,
         transform,
-        colors.surfaces.window_card,
+        colors.surfaces.content,
         None,
         &well_rr,
     );
@@ -1275,7 +1281,7 @@ pub fn draw_preview_well(
     scene.stroke(
         &vello::kurbo::Stroke::new(1.0),
         transform,
-        colors.surfaces.window_card_border,
+        colors.surfaces.content_edge,
         None,
         &well_rr,
     );
@@ -1293,7 +1299,7 @@ pub fn draw_preview_well(
             ),
             window.app.icon.as_ref(),
             window.app.kind,
-            colors.on_card().ink,
+            colors.on_content().ink,
         );
     }
     live

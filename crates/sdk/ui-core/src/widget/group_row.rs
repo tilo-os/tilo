@@ -4107,7 +4107,7 @@ impl GroupRow {
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.accent[6],
+            theme.tokens.colors.intent.you,
             None,
             &capsule,
         );

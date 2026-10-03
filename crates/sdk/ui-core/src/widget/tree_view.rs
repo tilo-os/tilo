@@ -28,7 +28,6 @@ use crate::presence::{PresenceCtx, PresenceKey};
 use crate::reorder::{DropCandidate, DropPlacement, DropTarget, ReorderController, ReorderDrop};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::colors::ACCENT_PRIMARY_IDX;
 use crate::virtual_viewport::{
     DragScroller, ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport, WheelStep,
 };
@@ -2845,7 +2844,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         // The indent and disclosure column hit-testing uses, resolved from
         // this theme at layout.
         let indent_px = self.indent_px;
-        let accent = tokens.colors.accent[ACCENT_PRIMARY_IDX];
+        let accent = tokens.colors.intent.inverted;
         let now = crate::time::now();
         let ground = self
             .ground
@@ -4064,7 +4063,7 @@ fn paint_row_icon(
                 anchor.x + chip_w,
                 anchor.y + side / 2.0,
             );
-            let radius = f64::from(tokens.radii.sm);
+            let radius = f64::from(tokens.radii.detail);
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,

@@ -672,7 +672,7 @@ impl QuickSettingsWifiPane {
                     scene,
                     &t("qs-connecting"),
                     theme.tokens.typography.scale.xs,
-                    colors.accent[5],
+                    colors.intent.inverted,
                     transform.pre_translate((row.x0 + 44.0, row.y0 + 38.0).into()),
                     Some(f32v((row.width() - 120.0).max(1.0))),
                 );
@@ -681,7 +681,7 @@ impl QuickSettingsWifiPane {
                     scene,
                     &t("qs-connected"),
                     theme.tokens.typography.scale.xs,
-                    colors.accent[5],
+                    colors.intent.inverted,
                     transform.pre_translate((row.x0 + 44.0, row.y0 + 38.0).into()),
                     Some(f32v((row.width() - 120.0).max(1.0))),
                 );
@@ -724,7 +724,7 @@ impl QuickSettingsWifiPane {
                 scene.fill(
                     Fill::NonZero,
                     transform,
-                    colors.accent[5],
+                    colors.intent.inverted,
                     None,
                     &Circle::new(trailing_dot_center(*row, CONTROL_INSET), STATUS_DOT / 2.0),
                 );

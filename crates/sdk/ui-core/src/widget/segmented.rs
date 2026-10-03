@@ -194,7 +194,7 @@ impl Widget for TriStateControl {
         if self.rect.width() <= 0.0 {
             return;
         }
-        let radius = f64::from(theme.tokens.radii.sm);
+        let radius = f64::from(theme.tokens.radii.detail);
         // Track with its derived rest edge (HIG §9.5), stroked half a pixel
         // inside so the hairline never bleeds onto the ground.
         crate::surface::card(
@@ -550,7 +550,7 @@ impl Widget for ColorSwatchPicker {
             scene,
             transform,
             self.rect,
-            f64::from(theme.tokens.radii.md),
+            f64::from(theme.tokens.radii.control),
             theme.tokens.colors.surfaces.raised,
         );
 

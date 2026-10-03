@@ -13,7 +13,6 @@ use vello::peniko::Color;
 use winit::event::{ElementState, Ime, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::color_compat::ColorCompat;
 use crate::paint::PaintCtx;
 use crate::richtext::RichTextLayout;
 use crate::text_render::TextStyle;
@@ -63,13 +62,15 @@ pub struct QueryInk {
 }
 
 impl QueryInk {
-    /// Caret in `accent`, selection bands in `accent` at 30% alpha.
-    pub fn accented(text: Color, placeholder: Color, accent: Color) -> Self {
+    /// Primary ink, the secondary tier for the placeholder, and the
+    /// person's own colour for the caret and selection
+    /// ([`crate::tokens::Intents::you`]).
+    pub fn of(colors: &crate::tokens::Colors) -> Self {
         Self {
-            text,
-            placeholder,
-            selection: accent.with_alpha_factor(0.3),
-            caret: accent,
+            text: colors.text_primary,
+            placeholder: colors.text_dim,
+            selection: colors.intent.selection_tint,
+            caret: colors.intent.you,
         }
     }
 }

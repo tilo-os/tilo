@@ -1090,7 +1090,7 @@ impl Widget for ColorPicker {
         presence: &crate::presence::PresenceCtx,
     ) {
         let colors = &theme.tokens.colors;
-        let radius_sm = f64::from(theme.tokens.radii.sm);
+        let radius_sm = f64::from(theme.tokens.radii.detail);
 
         // No bounding-box focus border: the picker's rect spans empty
         // space between its controls, so a stroke around all of it would

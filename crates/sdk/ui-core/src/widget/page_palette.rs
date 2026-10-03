@@ -25,7 +25,6 @@ use crate::text_render::TextRenderer;
 use crate::text_selection::Selection;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::link_popover::PageEntry;
@@ -486,7 +485,7 @@ impl PageJumpPalette {
             rect.x1 - PADDING * scale,
             rect.y0 + (PADDING + INPUT_HEIGHT) * scale,
         );
-        let input_shape = RoundedRect::from_rect(input_rect, f64::from(theme.tokens.radii.md));
+        let input_shape = RoundedRect::from_rect(input_rect, f64::from(theme.tokens.radii.control));
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -517,11 +516,7 @@ impl PageJumpPalette {
                 input_rect.y1,
             ),
             &tokens.typography.style(TextRole::Body),
-            QueryInk::accented(
-                tokens.colors.text_primary,
-                tokens.colors.text_dim,
-                tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
-            ),
+            QueryInk::of(&tokens.colors),
         );
         input_rect
     }
@@ -543,7 +538,7 @@ impl PageJumpPalette {
     ) {
         let tokens = &theme.tokens;
         let scale = f64::from(theme.text_scale);
-        let selected_ink = tokens.colors.on_accent(ON_FILL_MIN_CONTRAST);
+        let selected_ink = tokens.colors.intent.on_inverted;
         let list_top = input_rect.y1 + PADDING * scale;
         // Result rows use `TextRenderer`, which owns the global accessibility
         // multiplier. Keep the requested size at the unscaled design token so
@@ -587,11 +582,11 @@ impl PageJumpPalette {
                 y0 + self.row_height() * scale,
             );
             if visible_index == self.cursor {
-                let hl = RoundedRect::from_rect(row_rect, f64::from(theme.tokens.radii.sm));
+                let hl = RoundedRect::from_rect(row_rect, f64::from(theme.tokens.radii.detail));
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
+                    tokens.colors.intent.inverted,
                     None,
                     &hl,
                 );
@@ -821,13 +816,12 @@ mod tests {
         {
             for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
                 let colors = &theme.tokens.colors;
-                let ratio = crate::a11y::contrast_ratio(
-                    colors.on_accent(ON_FILL_MIN_CONTRAST),
-                    colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
-                );
+                let ratio =
+                    crate::a11y::contrast_ratio(colors.intent.on_inverted, colors.intent.inverted);
+                let floor = crate::tokens::colors::ON_FILL_MIN_CONTRAST;
                 assert!(
-                    ratio >= ON_FILL_MIN_CONTRAST,
-                    "selected result contrast {ratio:.2}:1 is below {ON_FILL_MIN_CONTRAST}:1"
+                    ratio >= floor,
+                    "selected result contrast {ratio:.2}:1 is below {floor}:1"
                 );
             }
         }

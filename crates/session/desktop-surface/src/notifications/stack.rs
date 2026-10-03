@@ -305,7 +305,7 @@ impl NotificationStack {
         // this pass and restore it below.
         let renderer_scale = text_renderer.text_scale();
         text_renderer.set_text_scale(1.0);
-        let radius = f64::from(theme.tokens.radii.md);
+        let radius = f64::from(theme.tokens.radii.control);
         let x0_rest = self.viewport.x1 - EDGE_INSET - width;
         let mut y = self.viewport.y0 + EDGE_INSET;
         let mut ctx = PaintCtx {

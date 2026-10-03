@@ -190,10 +190,6 @@ pub struct ToggleInteract {
     pub disabled: bool,
 }
 
-/// Hover is visible without a colour swap: the knob is pushed this multiple
-/// of the contrast it already reached, rather than resolved to a second tone.
-const HOVER_KNOB_GAIN: f64 = 1.4;
-
 /// The switch's visual footprint: a 44×24 pill centred in whatever target
 /// rect layout assigns (32 px tall at a fine pointer, 48 at a coarse one), so
 /// the pill itself never stretches. Off the spacing scale on purpose: 24 is
@@ -226,15 +222,19 @@ pub fn toggle_face_colors(
     vello::peniko::Color,
     f64,
 ) {
-    face_for(theme, theme.accent_primary, on, interact)
+    face_for(theme, theme.tokens.colors.intent.inverted, on, interact)
 }
 
-/// One palette for a switch whose on track is `on_track` — the accent for
-/// [`toggle_face_colors`], a semantic colour for [`ToggleFace::on_color`].
-/// Off is a lift off the ground, not a ramp slot: `neutral[3]` was one fixed
-/// grey per theme and read as a dead control on a raised card (HIG §9.2,
-/// §9.5 "Rest edges"). The rest edge derives from the track; focus keeps
-/// `border_focus`.
+/// One palette for a switch whose on track is `on_track` — the inverted
+/// fill for [`toggle_face_colors`], a semantic colour for
+/// [`ToggleFace::on_color`]. Off is a lift off the ground, not a ramp slot
+/// (HIG §9.2, §9.5 "Rest edges"). The rest edge derives from the track;
+/// focus keeps `border_focus`.
+///
+/// The knob is the glyph on the track it rides. On, the switch is an
+/// inverted control, so the knob takes the inverted label colour
+/// ([`crate::tokens::Intents::on_inverted`]); off, it is the secondary ink,
+/// and hover lifts it to the primary ink rather than to a second hue.
 fn face_for(
     theme: &Theme,
     on_track: vello::peniko::Color,
@@ -246,52 +246,31 @@ fn face_for(
     vello::peniko::Color,
     f64,
 ) {
-    let off_track = theme.tokens.colors.lift(1.0);
+    let colors = &theme.tokens.colors;
+    let floor = crate::tokens::colors::NON_TEXT_MIN_CONTRAST;
+    let off_track = colors.lift(1.0);
     let track = if on { on_track } else { off_track };
-    let knob = knob_ink(theme, &[off_track, on_track], track, interact.hovered);
+    let knob = if on {
+        let knob = ink_across(&[track], colors.intent.on_inverted, floor);
+        if interact.hovered {
+            // Further from the track, never across it: hover is the same knob
+            // pressed harder, one contrast step (1:1) further out.
+            let reached = worst_contrast(knob, &[track]);
+            ink_across(&[track], knob, reached + 1.0)
+        } else {
+            knob
+        }
+    } else if interact.hovered {
+        ink_across(&[track], colors.text_primary, floor)
+    } else {
+        ink_across(&[track], colors.text_dim, floor)
+    };
     let (border, border_w) = if interact.focused {
         (theme.border_focus, 2.0)
     } else {
         (crate::surface::edge_on(track), 1.0)
     };
     (track, knob, border, border_w)
-}
-
-/// **One knob colour for both states** wherever a single tone can clear
-/// [`crate::tokens::colors::NON_TEXT_MIN_CONTRAST`] on the off *and* the on
-/// track — the shipped dark and light presets both can. Resolved per state,
-/// the knob flipped from light on the off track to dark on the accent, so a
-/// switch appeared to swap knobs as it moved. Hover pushes that one tone
-/// further out rather than swapping to a second one (the dim tone would
-/// otherwise jump near-white to near-black under the pointer on a light
-/// accent).
-///
-/// Where the two tracks straddle too far for *any* single tone — the
-/// high-contrast accent `#0099FF` sits at 2.9995:1 to white over a black
-/// off-track; a bright semantic `on_color` over the dark off-track — the
-/// knob is resolved against the track it actually rides, because a knob you
-/// cannot see is the state that matters.
-fn knob_ink(
-    theme: &Theme,
-    tracks: &[vello::peniko::Color],
-    track: vello::peniko::Color,
-    hovered: bool,
-) -> vello::peniko::Color {
-    let floor = crate::tokens::colors::NON_TEXT_MIN_CONTRAST;
-    let shared = ink_across(tracks, theme.text_dim, floor);
-    let (grounds, knob): (&[vello::peniko::Color], vello::peniko::Color) =
-        if worst_contrast(shared, tracks) >= floor {
-            (tracks, shared)
-        } else {
-            let own = core::slice::from_ref(&track);
-            (own, ink_across(own, theme.text_dim, floor))
-        };
-    if hovered {
-        let reached = worst_contrast(knob, grounds);
-        ink_across(grounds, knob, reached * HOVER_KNOB_GAIN)
-    } else {
-        knob
-    }
 }
 
 /// The lowest contrast `ink` reaches over any of `grounds`.
@@ -402,7 +381,7 @@ impl ToggleFace {
         // still one knob for both states, resolved against both tracks.
         face_for(
             theme,
-            self.on_color.unwrap_or(theme.accent_primary),
+            self.on_color.unwrap_or(theme.tokens.colors.intent.inverted),
             self.on,
             self.interact,
         )
@@ -917,7 +896,10 @@ mod tests {
             let theme = Theme::dark();
             let off = toggle_face_colors(&theme, false, ToggleInteract::default());
             let on = toggle_face_colors(&theme, true, ToggleInteract::default());
-            assert_eq!(on.0, theme.accent_primary, "on-track is the accent fill");
+            assert_eq!(
+                on.0, theme.tokens.colors.intent.inverted,
+                "on-track is the inverted fill"
+            );
             assert_eq!(
                 off.0,
                 theme.tokens.colors.lift(1.0),
@@ -926,29 +908,20 @@ mod tests {
             assert_ne!(on.0, off.0, "on and off tracks must differ");
         }
 
-        // Case `toggle_knob_is_one_colour_for_both_states_where_a_tone_exists`.
-        // HIG §9.5: one knob colour for both states wherever a single tone can
-        // clear the floor on both tracks — true of the shipped dark and light
-        // presets, including light, where the off track (white) and the on
-        // track (mid blue) straddle the light/dark line. High contrast is the
-        // documented exception: its accent `#0099FF` is 2.9995:1 to white over a
-        // black off-track, so no one tone exists and the knob resolves per
-        // track — legible either way, which every preset asserts below.
+        // Case `toggle_knob_is_the_glyph_of_the_track_it_rides`.
+        // On, the switch is an inverted control and its knob is the inverted
+        // label colour; off, the knob is the secondary ink. Legible on every
+        // material either way.
         {
-            for (theme, one_tone) in [
-                (Theme::dark(), true),
-                (Theme::light(), true),
-                (Theme::high_contrast(), false),
-            ] {
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
                 let off = toggle_face_colors(&theme, false, ToggleInteract::default());
                 let on = toggle_face_colors(&theme, true, ToggleInteract::default());
-                if one_tone {
-                    assert_eq!(
-                        off.1, on.1,
-                        "{}: knob must not change colour with the state",
-                        theme.name
-                    );
-                }
+                assert_eq!(
+                    on.1, theme.tokens.colors.intent.on_inverted,
+                    "{}",
+                    theme.name
+                );
+                assert_eq!(off.1, theme.tokens.colors.text_dim, "{}", theme.name);
                 for (state, (track, knob, ..)) in [("off", off), ("on", on)] {
                     let ratio = crate::a11y::contrast_ratio(knob, track);
                     assert!(

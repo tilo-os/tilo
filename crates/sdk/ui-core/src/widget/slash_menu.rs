@@ -582,20 +582,14 @@ impl SlashMenu {
                 filter_rect.y1,
             ),
             &TextStyle::new(tokens.typography.scale.sm),
-            QueryInk::accented(
-                tokens.colors.text_primary,
-                tokens.colors.text_dim,
-                tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
-            ),
+            QueryInk::of(&tokens.colors),
         );
 
         let font_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
         // The armed row's ink is resolved against the accent it sits on, the
         // same way `Popover` and `Dropdown` do; `text_primary` is only legible
         // there on a dark theme.
-        let armed_ink = tokens
-            .colors
-            .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST);
+        let armed_ink = tokens.colors.intent.on_inverted;
         for (i, &row_idx) in self.visible.iter().enumerate() {
             let Some(row) = self.rows.get(row_idx) else {
                 continue;
@@ -604,11 +598,11 @@ impl SlashMenu {
             let row_rect = Rect::new(rect.x0 + 4.0, y0, rect.x1 - 4.0, y0 + ROW_HEIGHT);
             let armed = i == self.cursor;
             if armed {
-                let hl = RoundedRect::from_rect(row_rect, f64::from(tokens.radii.sm));
+                let hl = RoundedRect::from_rect(row_rect, f64::from(tokens.radii.detail));
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
+                    tokens.colors.intent.inverted,
                     None,
                     &hl,
                 );

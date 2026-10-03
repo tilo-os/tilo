@@ -508,7 +508,7 @@ pub(super) fn paint_text_in(
 }
 
 /// Seat an embedded [`TextInput`] in the row the plan gave it. The field
-/// keeps the shared widget's own chrome (raised fill, `radii.md`, the
+/// keeps the shared widget's own chrome (raised fill, `radii.control`, the
 /// focus edge, the standard text inset); the sheet only decides where it
 /// goes and that its text is the sheet's `Value` role, so a field and the
 /// word beside it in a grid are one size.
@@ -572,7 +572,7 @@ pub(super) fn place_code_cell(
 }
 
 /// The box of a checkbox row: an `s6` square (the retained checkbox's own
-/// size — the face rounds with `radii.md`, so a smaller square would turn
+/// size — the face rounds with `radii.control`, so a smaller square would turn
 /// into a disc) at the row's start, centred on the row. Pure, so the layout
 /// pass can place it without painting.
 pub(super) fn check_box_rect(row: Rect, theme: &Theme) -> Rect {
@@ -595,7 +595,7 @@ pub(super) fn paint_check_row(
     label: &str,
 ) -> Rect {
     // `s6` matches the retained checkbox's own box (the pointer minimum
-    // target); the face rounds with `radii.md`, so a smaller square would
+    // target); the face rounds with `radii.control`, so a smaller square would
     // turn into a disc.
     let box_rect = check_box_rect(row, theme);
     Checkbox::paint(
@@ -650,7 +650,7 @@ pub(super) fn paint_segments(
 ) {
     let face = SegmentedFace::new(segments, labels, selected)
         .style(SegmentedStyle::Solid)
-        .radius(f64::from(theme.tokens.radii.md))
+        .radius(f64::from(theme.tokens.radii.control))
         .text_size(Role::Label.size(theme, text_renderer))
         .weight(TextWeight::Medium)
         .hovered(hovered);
@@ -692,7 +692,7 @@ pub(super) fn wrap_chars(
 /// A bare field box with no text — the frame a code digit or a QR
 /// placeholder sits in. It restates the shared `TextInput`'s field chrome
 /// (raised fill, active fill and the two-pixel focus edge while focused,
-/// `radii.md`) so a code cell reads as the same control as the fields
+/// `radii.control`) so a code cell reads as the same control as the fields
 /// around it while the digit inside is a plain-chrome [`TextInput`].
 pub(super) fn paint_cell(
     scene: &mut Scene,
@@ -702,7 +702,7 @@ pub(super) fn paint_cell(
     focused: bool,
 ) {
     let colors = &theme.tokens.colors;
-    let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
+    let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control));
     let fill = if focused {
         theme.bg_active
     } else {

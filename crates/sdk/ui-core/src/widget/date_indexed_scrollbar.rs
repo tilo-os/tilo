@@ -643,7 +643,7 @@ impl DateIndexedScrollbar {
                 vello::peniko::Fill::NonZero,
                 transform,
                 if marker.kind == DateIndexMarkerKind::Major {
-                    theme.accent_primary
+                    theme.tokens.colors.intent.inverted
                 } else {
                     crate::tokens::Colors::hairline_on(theme.tokens.colors.surfaces.base, 51)
                 },
@@ -664,7 +664,7 @@ impl DateIndexedScrollbar {
         let colors = &theme.tokens.colors;
         if let Some(thumb) = self.bar.thumb_rect(self.rect, metrics) {
             let fill = if active {
-                theme.accent_primary
+                theme.tokens.colors.intent.inverted
             } else {
                 colors.lift(0.45)
             };

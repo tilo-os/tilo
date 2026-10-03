@@ -1975,7 +1975,7 @@ impl QuickSettingsRoot {
             leading_glyph(icon_row, inset, glyph),
             Self::icon(c, s),
             if on {
-                colors.accent[5]
+                colors.intent.inverted
             } else {
                 colors.text_primary
             },
@@ -2137,7 +2137,13 @@ impl QuickSettingsRoot {
                 ghost_y0 + metrics.item_extent,
             );
             let radius = control_radius(theme, ghost);
-            ui::surface::shadow(scene, transform, ghost, radius, &theme.tokens.elevation.e4);
+            ui::surface::shadow(
+                scene,
+                transform,
+                ghost,
+                radius,
+                &theme.tokens.elevation.floating,
+            );
             let tier = ui::chrome::selection_tier(theme, ui::chrome::SelectionState::active(true));
             let shape = RoundedRect::from_rect(ghost, radius);
             scene.fill(Fill::NonZero, transform, tier.fill, None, &shape);
@@ -2162,7 +2168,7 @@ impl QuickSettingsRoot {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                colors.accent[5],
+                colors.intent.inverted,
                 None,
                 &RoundedRect::from_rect(
                     Rect::new(
@@ -2190,7 +2196,7 @@ impl QuickSettingsRoot {
                 scene.fill(
                     Fill::NonZero,
                     transform,
-                    colors.accent[5],
+                    colors.intent.inverted,
                     None,
                     &RoundedRect::from_rect(
                         Rect::new(

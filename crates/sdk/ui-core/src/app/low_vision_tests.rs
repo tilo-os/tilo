@@ -100,7 +100,7 @@ fn low_vision_setters_thread_onto_the_theme_and_survive_toggles() {
     {
         let mut a = app();
         let base_gap = a.theme.tokens.spacing.s3;
-        let base_radius = a.theme.tokens.radii.md;
+        let base_radius = a.theme.tokens.radii.control;
         let base_type = a.theme.tokens.typography.scale.base;
         a.set_ui_scale(1.5);
         assert_eq!(a.ui_scale(), 1.5);
@@ -109,7 +109,7 @@ fn low_vision_setters_thread_onto_the_theme_and_survive_toggles() {
             "spacing grows"
         );
         assert!(
-            (a.theme.tokens.radii.md - base_radius * 1.5).abs() < 1e-3,
+            (a.theme.tokens.radii.control - base_radius * 1.5).abs() < 1e-3,
             "radii grow"
         );
         assert!(
@@ -206,7 +206,7 @@ fn appearance_reconcile_is_a_noop_when_off_and_applies_live_otherwise() {
     // Case `appearance_reconcile_off_is_a_noop`.
     {
         let root = AppearanceRoot {
-            intent: intent(Theme::nord(), 1.5, 1.3, true),
+            intent: intent(Theme::light(), 1.5, 1.3, true),
         };
         let mut a = App::new(State::new(), Box::new(root));
         assert!(!a.reconcile_appearance());
@@ -218,9 +218,9 @@ fn appearance_reconcile_is_a_noop_when_off_and_applies_live_otherwise() {
     {
         let base_gap = Theme::high_contrast().tokens.spacing.s3;
         let base_type = Theme::high_contrast().tokens.typography.scale.base;
-        // Nord base + high_contrast=true → high-contrast track wins; ui 1.5, text 1.2.
+        // Light base + high_contrast=true → high-contrast track wins; ui 1.5, text 1.2.
         let root = AppearanceRoot {
-            intent: intent(Theme::nord(), 1.5, 1.2, true),
+            intent: intent(Theme::light(), 1.5, 1.2, true),
         };
         let mut a = App::new(State::new(), Box::new(root));
         a.appearance_reconcile = true;
@@ -233,7 +233,7 @@ fn appearance_reconcile_is_a_noop_when_off_and_applies_live_otherwise() {
         assert!(a.high_contrast());
         assert_eq!(
             a.theme.name, "High Contrast",
-            "high_contrast overrides the Nord base"
+            "high_contrast overrides the Light base"
         );
         // Spacing grew by the UI factor; type by UI × text.
         assert!((a.theme.tokens.spacing.s3 - base_gap * 1.5).abs() < 1e-1);
@@ -274,8 +274,13 @@ fn host_appearance_rethemes_through_the_appearance_intent() {
         "an accent change alone re-themes"
     );
     assert_eq!(
-        a.theme.accent_primary,
-        vello::peniko::Color::from_rgb8(0xE0, 0x40, 0x80)
+        a.theme.tokens.colors.intent.you,
+        Theme::light()
+            .tokens
+            .colors
+            .presence
+            .of(vello::peniko::Color::from_rgb8(0xE0, 0x40, 0x80)),
+        "the host accent is the person's own colour"
     );
 
     assert!(a.apply_host_appearance(HostAppearance {
