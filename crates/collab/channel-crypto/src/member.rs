@@ -390,7 +390,7 @@ impl ChannelMember {
                 let Some((recipient, welcome, _, key_history)) = action.admission() else {
                     return Ok(MemberEvent::Recorded);
                 };
-                if *recipient != me {
+                if *recipient != me || !ChannelGroup::welcome_names(welcome, pending) {
                     return Ok(MemberEvent::Recorded);
                 }
                 let attempt = pending.duplicate()?;

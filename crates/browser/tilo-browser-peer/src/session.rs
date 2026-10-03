@@ -2126,7 +2126,12 @@ impl Task {
                 }
                 let changes = self.channels.open(&route, now);
                 self.absorb(changes);
-                if envelope.encryption.is_some() && !self.ciphers.contains_key(&route) {
+                let awaiting_keys = envelope.encryption.is_some_and(|metadata| {
+                    self.ciphers
+                        .get(&route)
+                        .is_none_or(|cipher| !cipher.holds_epoch(metadata.epoch))
+                });
+                if awaiting_keys {
                     let held = self.held_inbound.entry(route.clone()).or_default();
                     if held.len() >= MAX_HELD_DOCUMENTS {
                         held.pop_front();

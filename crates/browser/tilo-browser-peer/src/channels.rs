@@ -53,6 +53,10 @@ const MAX_CANDIDATES: usize = 256;
 pub(crate) struct KeysCipher(pub(crate) ChannelContentKeys);
 
 impl ContentCipher for KeysCipher {
+    fn holds_epoch(&self, epoch: u64) -> bool {
+        self.0.holds_epoch(epoch)
+    }
+
     fn seal(
         &mut self,
         artifact: collab_types::ArtifactId,

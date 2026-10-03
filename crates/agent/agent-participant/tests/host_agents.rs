@@ -339,6 +339,24 @@ impl Browser {
         .unwrap()
     }
 
+    /// Wait until everything this page published is durable on the host.
+    async fn durable(&self) {
+        let receipt = self.peer.barrier().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            match receipt.try_recv() {
+                Ok(result) => return result.unwrap(),
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(error) => panic!("the barrier ended: {error}"),
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the page's edits never became durable"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
     /// Wait until `done` holds for the supervisor's status.
     async fn until(&mut self, what: &str, done: impl Fn(&AgentsStatus) -> bool) -> AgentsStatus {
         let deadline = Instant::now() + Duration::from_secs(30);
@@ -919,11 +937,15 @@ impl Page {
             if sheet_names(&self.app) == want {
                 return;
             }
-            assert!(
-                Instant::now() < deadline,
-                "the page shows {:?}, not {want:?}",
-                sheet_names(&self.app)
-            );
+            if Instant::now() >= deadline {
+                let status = browser.status().await;
+                panic!(
+                    "the page shows {:?}, not {want:?}: agents {:#?}, browser channels {}",
+                    sheet_names(&self.app),
+                    status.agents,
+                    browser.peer.status().channels
+                );
+            }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
@@ -945,9 +967,11 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
 
-    // The person opens a workbook before any agent exists.
+    // The person opens a workbook before any agent exists, and it is in the
+    // room (sealed and durable on the host) before the agent arrives.
     let mut page = Page::create(&browser, SHEETS);
     page.until_sheets(&mut browser, &["Sheet1"]).await;
+    browser.durable().await;
 
     let requested = browser
         .call(
@@ -1205,6 +1229,7 @@ async fn an_agent_plans_on_metered_cloud_credits_until_they_run_out() {
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let mut page = Page::create(&browser, SHEETS);
     page.until_sheets(&mut browser, &["Sheet1"]).await;
+    browser.durable().await;
 
     let requested = browser
         .call(
