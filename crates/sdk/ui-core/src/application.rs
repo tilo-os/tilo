@@ -763,6 +763,15 @@ impl AppComponent {
         }
     }
 
+    /// Take the view and action decoders of newly loaded code in place of
+    /// the running ones. The document stays: the new view reads it, and edits
+    /// the new view encodes are decoded and applied by the new code.
+    #[cfg(feature = "native")]
+    pub(crate) fn install_reloaded(&mut self, root: crate::app::DevRoot) {
+        self.root = Some(root.view);
+        self.registry = Some(root.registry);
+    }
+
     /// Return only weak proxies; payload ownership remains with this component.
     pub(crate) fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
         let binding = self.callback_binding();

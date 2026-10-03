@@ -205,6 +205,15 @@ pub(crate) fn build_root<A: ResourceApp>(
     }
 }
 
+/// The decoders of every edit `A`'s document takes: its resource's actions
+/// and History's restores.
+pub(crate) fn action_registry<A: ResourceApp>() -> tilo_actions::ActionRegistry {
+    let mut registry = tilo_actions::ActionRegistry::new();
+    tilo_resource::group::register::<A::Resource>(&mut registry);
+    registry.register::<super::history::HistoryEdit>(super::history::EDIT_TYPE);
+    registry
+}
+
 #[allow(
     clippy::needless_pass_by_value,
     reason = "the toolkit's ComponentFactory signature passes the target owned"
@@ -227,10 +236,7 @@ fn create<A: ResourceApp>(
         .map_err(LaunchError::Record)?
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
     let root = build_root::<A>(reader, Editing::Live(permissions));
-    let mut registry = tilo_actions::ActionRegistry::new();
-    tilo_resource::group::register::<A::Resource>(&mut registry);
-    registry.register::<super::history::HistoryEdit>(super::history::EDIT_TYPE);
-    let mut component = AppComponent::new(context, Box::new(root), registry);
+    let mut component = AppComponent::new(context, Box::new(root), action_registry::<A>());
     component.set_behaviour(A::BEHAVIOUR);
     component
         .register_document_history(super::preview::history_definition::<A>())
