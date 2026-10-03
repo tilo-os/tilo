@@ -1,0 +1,13 @@
+# The typography ratchet for apps-chat: counts may only fall (HIG §9.13).
+# Format: <path relative to the repository root> <pattern> <count>
+# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
+apps/chat/src/app.rs legacy_size_api 2
+apps/chat/src/app.rs literal_font_size 1
+apps/chat/src/paint.rs legacy_size_api 1
+apps/chat/src/render_call.rs font_size_const 3
+apps/chat/src/render_call.rs legacy_size_api 15
+apps/chat/src/render_call.rs literal_font_size 4
+apps/chat/src/render_chat.rs font_size_const 15
+apps/chat/src/render_chat.rs legacy_size_api 66
+apps/chat/src/render_chat.rs literal_font_size 21
+apps/chat/src/render_chat.rs raw_type_step 3
