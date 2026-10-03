@@ -86,7 +86,7 @@ function registry() {
       return release;
     },
     async fetch(url, init = {}) {
-      server.log.push({path: new URL(url).pathname, cache: init.cache, credentials: init.credentials});
+      server.log.push({path: new URL(url).pathname, search: new URL(url).search, cache: init.cache, credentials: init.credentials});
       if (server.held) await server.held;
       const path = new URL(url).pathname;
       if (path === '/entries') {
@@ -151,6 +151,7 @@ test('resolveApps fetches one snapshot, then every thin tapp, then every missing
   const blobs = paths(server).filter(path => path.startsWith('/blobs/'));
   assert.deepEqual(blobs.sort(), [books.module.blake3, writer.module.blake3, hash(font)].map(h => `/blobs/${h}`).sort(), 'the shared font once');
   assert.equal(server.log[0].cache, 'no-cache', 'the snapshot revalidates');
+  assert.equal(server.log[0].search, '?format=compact', 'the snapshot is asked for in its compact form');
   assert.ok(server.log.every(entry => entry.credentials === 'omit'));
 
   assert.equal(first.abi, ABI);

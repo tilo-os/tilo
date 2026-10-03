@@ -3,7 +3,7 @@
 
 use std::cmp::Ordering;
 
-use registry_types::{RegistryTarget, RegistryVersion, SignedRegistrySnapshot};
+use registry_types::{CatalogueSnapshot, RegistryTarget, RegistryVersion};
 use serde::{Deserialize, Serialize};
 
 use crate::VerifyError;
@@ -62,7 +62,7 @@ impl Checkpoint {
 /// replaces the stored one.
 #[derive(Clone, Debug)]
 pub struct VerifiedSnapshot {
-    snapshot: SignedRegistrySnapshot,
+    snapshot: CatalogueSnapshot,
     checkpoint: Checkpoint,
 }
 
@@ -93,8 +93,9 @@ pub struct Selection {
     pub target: RegistryTarget,
 }
 
-/// Verify a `/entries` response against the pinned owner key and the
-/// stored checkpoint.
+/// Verify a `/entries` response, full or compact, against the pinned owner
+/// key and the stored checkpoint. Both forms of one snapshot share its
+/// checkpoint, the full snapshot's hash.
 ///
 /// # Errors
 ///
@@ -113,20 +114,20 @@ pub fn verify_snapshot(
     if bytes.len() > MAX_SNAPSHOT_BYTES {
         return Err(VerifyError::SnapshotTooLarge);
     }
-    let snapshot: SignedRegistrySnapshot = serde_json::from_slice(bytes)
+    let snapshot = CatalogueSnapshot::from_json(bytes)
         .map_err(|error| VerifyError::SnapshotDecode(error.to_string()))?;
-    registry_types::verify_snapshot(&snapshot, owner_pubkey_hex, now_unix)?;
-    let hash = registry_types::snapshot_hash(&snapshot)?;
+    snapshot.verify(owner_pubkey_hex, now_unix)?;
+    let hash = snapshot.checkpoint_hash()?;
     if let Some(old) = checkpoint
-        && !old.admits(snapshot.sequence, &hash)
+        && !old.admits(snapshot.sequence(), &hash)
     {
         return Err(VerifyError::Rollback {
             checkpoint: old.sequence,
-            sequence: snapshot.sequence,
+            sequence: snapshot.sequence(),
         });
     }
     let checkpoint = Checkpoint {
-        sequence: snapshot.sequence,
+        sequence: snapshot.sequence(),
         snapshot_hash_hex: hash,
     };
     Ok(VerifiedSnapshot {
@@ -142,10 +143,10 @@ impl VerifiedSnapshot {
     }
 
     pub fn sequence(&self) -> u64 {
-        self.snapshot.sequence
+        self.snapshot.sequence()
     }
 
-    pub fn snapshot(&self) -> &SignedRegistrySnapshot {
+    pub fn snapshot(&self) -> &CatalogueSnapshot {
         &self.snapshot
     }
 
@@ -157,10 +158,10 @@ impl VerifiedSnapshot {
     /// entry and [`VerifyError::NoCompatibleVersion`] when none of its
     /// versions fits the host.
     pub fn select(&self, package_id: &str, host: &Host<'_>) -> Result<Selection, VerifyError> {
-        let entry = self
-            .snapshot
-            .entries
+        let entries = self.snapshot.entries();
+        let entry = entries
             .iter()
+            .map(|listed| listed.entry)
             .find(|entry| entry.package_id == package_id)
             .ok_or_else(|| VerifyError::NotListed(package_id.to_string()))?;
         let chosen = entry

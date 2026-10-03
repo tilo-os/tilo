@@ -41,10 +41,22 @@ enum Cmd {
     Search { query: String },
     /// Install an app by name, slug, or package id.
     #[command(visible_aliases = ["i", "add"])]
-    Install { app: String },
+    Install {
+        app: String,
+        /// Install this version instead of the newest.
+        #[arg(long)]
+        version: Option<String>,
+    },
     /// Update one app, or every installed app when no name is given.
     #[command(visible_aliases = ["u", "upgrade"])]
     Update { app: Option<String> },
+    /// Go back to an older version of an installed app, keeping its saved state.
+    Rollback {
+        app: String,
+        /// The version to go back to (default: the newest older one).
+        #[arg(long)]
+        to: Option<String>,
+    },
     /// Remove an installed app while keeping its saved state.
     #[command(visible_aliases = ["rm", "uninstall"])]
     Remove { app: String },
@@ -99,7 +111,12 @@ fn main() -> ExitCode {
         }
         Cmd::List { json } => list(json),
         Cmd::Search { query } => search(&query),
-        Cmd::Install { app } => change_one(&app, false),
+        Cmd::Install { app, version: None } => change_one(&app, false),
+        Cmd::Install {
+            app,
+            version: Some(version),
+        } => install_version(&app, &version),
+        Cmd::Rollback { app, to } => rollback(&app, to.as_deref()),
         Cmd::Update { app } => update(app.as_deref()),
         Cmd::Remove { app } => remove(&app),
         Cmd::Repo { cmd } => repo(cmd),
@@ -390,6 +407,110 @@ fn change_app(app: &CatalogueApp, update: bool, installed: Option<&str>) -> Exit
                 if update { "updated" } else { "installed" },
                 app.package_id,
                 app.version
+            );
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("app: {}", error.user_message());
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The offer for `query` and every version its registry has for this machine.
+fn offered_versions(query: &str) -> Result<(CatalogueApp, Vec<CatalogueApp>), String> {
+    let listing = app_cli::all_offers();
+    report_unreachable(&listing.unreachable);
+    let app = app_cli::resolve_offer(&listing.apps, query)?.clone();
+    let versions = app_cli::version_offers(&app.package_id, &app.registry)?;
+    Ok((app, versions))
+}
+
+fn install_version(query: &str, version: &str) -> ExitCode {
+    announce("Finding the app in the Tilo Store…");
+    let (app, versions) = match offered_versions(query) {
+        Ok(found) => found,
+        Err(error) => {
+            eprintln!("app: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let Some(offer) = versions.iter().find(|offer| offer.version == version) else {
+        eprintln!(
+            "app: '{}' has no version {version} for this machine",
+            app.display_name
+        );
+        return ExitCode::FAILURE;
+    };
+    match app_cli::installed_version(&app.package_id) {
+        Ok(None) => change_app(offer, false, None),
+        Ok(Some(installed)) => {
+            eprintln!(
+                "app: '{}' {installed} is already installed; use 'app rollback {} --to {version}' or 'app update {}'",
+                app.display_name, app.package_id, app.package_id
+            );
+            ExitCode::FAILURE
+        }
+        Err(error) => {
+            eprintln!("app: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn rollback(query: &str, to: Option<&str>) -> ExitCode {
+    announce("Finding older versions in the Tilo Store…");
+    let (app, versions) = match offered_versions(query) {
+        Ok(found) => found,
+        Err(error) => {
+            eprintln!("app: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let installed = match app_cli::installed_version(&app.package_id) {
+        Ok(Some(installed)) => installed,
+        Ok(None) => {
+            eprintln!("app: '{}' is not installed", app.display_name);
+            return ExitCode::FAILURE;
+        }
+        Err(error) => {
+            eprintln!("app: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    // Newest first, so the first older one is the previous release.
+    let older = |offer: &&CatalogueApp| {
+        tilo_app_package::version::compare(&offer.version, &installed).is_lt()
+    };
+    let target = match to {
+        Some(version) => versions
+            .iter()
+            .filter(older)
+            .find(|offer| offer.version == version),
+        None => versions.iter().find(older),
+    };
+    let Some(target) = target else {
+        eprintln!(
+            "app: '{}' has no {} older than {installed} for this machine",
+            app.display_name,
+            to.map_or_else(
+                || "version".to_owned(),
+                |version| format!("version {version}")
+            )
+        );
+        return ExitCode::FAILURE;
+    };
+    let mut progress = progress_reporter();
+    let result = app_cli::install::rollback_app_reporting(target, &mut progress);
+    if std::io::stdout().is_terminal() {
+        print!("\r\x1b[2K");
+        let _ = std::io::stdout().flush();
+    }
+    match result {
+        Ok(()) => {
+            println!(
+                "rolled back {} {installed} -> {}",
+                target.package_id, target.version
             );
             ExitCode::SUCCESS
         }
