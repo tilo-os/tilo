@@ -38,12 +38,13 @@ pub mod actions;
 pub mod framework_history;
 mod graphics;
 pub mod resource;
+pub mod target;
 
 pub use graphics::TerminalImagePlacement;
 
 pub use crate::inner::{
-    Attr, CellColor, GridPos, Selection, TermModes, TerminalBackend, TerminalPerformer,
-    TerminalWidget, resolve_login_shell,
+    Attr, CellColor, GridPos, OpenError, Requester, Selection, TermModes, TerminalBackend,
+    TerminalPerformer, TerminalWidget, parse_target_argument, resolve_login_shell,
 };
 
 /// Re-exported so hosts can build a command for [`TerminalWidget::spawn_command`]
@@ -53,7 +54,10 @@ pub use portable_pty::CommandBuilder;
 // Keep the large implementation private while exposing the stable types above.
 mod inner {
     include!("main_body.rs");
+    include!("target_ui.rs");
 }
+
+pub mod sessions;
 
 mod app_widget_impl;
 
@@ -75,6 +79,8 @@ pub fn demo_session_input() -> &'static str {
 
 #[cfg(test)]
 mod framework_history_tests;
+#[cfg(test)]
+mod target_tests;
 #[cfg(test)]
 pub(crate) mod tests;
 

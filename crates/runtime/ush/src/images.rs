@@ -118,6 +118,20 @@ impl DirImages {
     }
 }
 
+/// Where images come from on this device: the package store, or fixture
+/// trees under `TILO_USH_IMAGES` in tests.
+pub fn on_this_device() -> std::sync::Arc<dyn Images> {
+    if let Some(root) = std::env::var_os("TILO_USH_IMAGES") {
+        return std::sync::Arc::new(DirImages::at(PathBuf::from(root)));
+    }
+    match StoreImages::from_env() {
+        Ok(images) => std::sync::Arc::new(images),
+        Err(reason) => std::sync::Arc::new(NoImages(format!(
+            "the package store cannot be opened: {reason}"
+        ))),
+    }
+}
+
 impl Images for DirImages {
     fn tree(&self, id: &PackageId) -> Result<PathBuf, String> {
         let tree = self.root.join(id.to_hex());

@@ -21,6 +21,8 @@ runtime-portal = { path = "../runtime-portal" }
 collab-types = { path = "../../collab/collab-types" }
 # The environment record a guest is built from, and the tool builder seam.
 tilo-environment = { path = "../environment" }
+# Atomic writes of the host-shell decisions.
+tilo-files = { path = "../../platform/tilo-files" }
 tilo-resource = { path = "../../sdk/tilo-resource" }
 # The record is stored as Terminal stores its own records.
 tilo-app-state = { path = "../../system/app-state" }

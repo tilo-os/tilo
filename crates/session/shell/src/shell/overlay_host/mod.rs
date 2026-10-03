@@ -649,6 +649,9 @@ pub struct ShellOverlayHost {
     /// The portal's prompt queue, when the compositor serves portals.
     /// `drain_portal_prompts` empties it onto `chrome.pending_grants`.
     portal_prompts: Option<crate::portal::PromptQueueHandle>,
+    /// Terminal tabs waiting for the person's answer about the device's own
+    /// shell.
+    host_shell_allows: Vec<crate::shell::host_shell_allow::PendingHostShellAllow>,
     /// Owns the portal file chooser's queue, modal state, rendering and
     /// exclusive input routing. Keeping those together prevents the host
     /// from growing another set of loosely-coupled modal fields.
@@ -2058,6 +2061,7 @@ impl ShellOverlayHost {
             sidebar_top_y: SIDEBAR_TOP_OFFSET_PX,
             permission_prompt: None,
             portal_prompts: None,
+            host_shell_allows: Vec::new(),
             file_picker_overlay: FilePickerOverlay::default(),
             portal_dialogs: inputs.portal_dialogs,
             peer_sync_enabled: false,
@@ -4269,6 +4273,7 @@ impl ShellOverlayHost {
     /// has run. The request carries stable resource identity, so opening
     /// Activity does not depend on a file's current path or display label.
     fn drain_app_host_intents(&mut self) {
+        self.host_shell_allows.retain_mut(|pending| !pending.poll());
         let mut intents = Vec::new();
         for &row_ptr in self.group_row_ptrs.values() {
             // SAFETY: `group_row_ptrs` points into `self.content`; `&mut self`
@@ -4309,6 +4314,13 @@ impl ShellOverlayHost {
                             ..crate::shell::chrome_state::ActivityFocus::default()
                         },
                     ));
+                }
+                ui::widget::AppHostIntent::AllowHostShell { reply } => {
+                    let (prompt, pending) = crate::shell::host_shell_allow::prompt(reply);
+                    let mut st = chrome.borrow_mut();
+                    st.pending_grants.push_back(prompt);
+                    st.bump();
+                    self.host_shell_allows.push(pending);
                 }
                 ui::widget::AppHostIntent::OpenDocument {
                     path,
@@ -18700,6 +18712,7 @@ fn capability_label(cap: &Capability) -> String {
         Capability::Screencast { .. } => t("capability-screencast"),
         Capability::RemoteDesktop { .. } => t("capability-remote-desktop"),
         Capability::Print { .. } => t("capability-print"),
+        Capability::HostShell { .. } => t("capability-host-shell"),
         Capability::Network { hosts, .. } => match hosts {
             Some(h) if !h.is_empty() => t_args(
                 "capability-network-hosts",

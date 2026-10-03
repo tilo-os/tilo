@@ -76,6 +76,7 @@ fn the_service_protocol_refuses_the_host_target_answers_garbage_and_never_hangs(
             rows: 24,
             term: None,
             command: Vec::new(),
+            requested_by: ush::host::RequestedBy::Person,
         })
         .expect_err("the host target was served");
         assert!(err.starts_with("not available"), "{err}");
@@ -248,6 +249,7 @@ fn open_default_session(socket: &Path) -> (UnixStream, i32) {
         rows: 30,
         term: Some("xterm-256color".into()),
         command: Vec::new(),
+        requested_by: ush::host::RequestedBy::Person,
     })
     .unwrap();
     request.push(b'\n');
@@ -260,7 +262,10 @@ fn open_default_session(socket: &Path) -> (UnixStream, i32) {
         serde_json::from_str(text.trim()).unwrap_or_else(|e| panic!("bad reply {text:?}: {e}"));
     match &response {
         ServeResponse::Session { environment, .. } => assert_eq!(environment, DEFAULT_RECORD),
-        ServeResponse::Denied { reason } => panic!("the service refused the session: {reason}"),
+        ServeResponse::Denied { reason } | ServeResponse::HostNotAllowed { reason } => {
+            panic!("the service refused the session: {reason}")
+        }
+        ServeResponse::Environments { .. } => panic!("a session request answered with a list"),
     }
     let fd = fd.expect("no pty descriptor arrived with the reply");
     (stream, fd)

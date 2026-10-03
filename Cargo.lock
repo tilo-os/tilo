@@ -13230,6 +13230,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "ush",
  "uuid",
  "walkdir",
  "wayland-client",
@@ -14353,6 +14354,7 @@ version = "0.2.1"
 dependencies = [
  "anyhow",
  "base64",
+ "collab-types",
  "libc",
  "portable-pty",
  "runtime-dylib",
@@ -18154,6 +18156,7 @@ dependencies = [
  "tilo-app-state",
  "tilo-clock",
  "tilo-environment",
+ "tilo-files",
  "tilo-resource",
  "tilo-sandbox-core",
  "tilo-test-env",
