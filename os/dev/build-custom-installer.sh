@@ -182,6 +182,12 @@ else
   # Do not let a stale overlay copy replace the selected base binary.
   rm -f "$INSTALLER_CONTEXT/rootfs/usr/bin/tilo-installer"
 fi
+# Runtime validation must survive removal of build-only /usr/local/bin.
+# These are installer helpers; the selected CI target OCI tree stays unchanged.
+install -Dm0644 "$TILO_OS_DIR/dev/hardware_profile.py" \
+  "$INSTALLER_CONTEXT/rootfs/usr/lib/tilo/hardware_profile.py"
+install -Dm0644 "$TILO_OS_DIR/dev/uki-hardware-profile.py" \
+  "$INSTALLER_CONTEXT/rootfs/usr/lib/tilo/uki_hardware_profile.py"
 install -Dm0755 "$TILO_OS_DIR/dev/uki-cmdline.py" \
   "$INSTALLER_CONTEXT/rootfs/usr/libexec/tilo-uki-cmdline"
 install -Dm0644 "$TILO_OS_DIR/etc/greetd/config.toml" \
