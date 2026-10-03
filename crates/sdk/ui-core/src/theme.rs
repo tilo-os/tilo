@@ -72,10 +72,7 @@ fn tokens_of(document: &ThemeDocument, you: PresenceHue) -> Tokens {
     // gutter preference never shrinks a pointer target.
     tokens.spacing = crate::tokens::Spacing::BASE
         .scaled(clamp_to(document.density.spacing, &ThemeDensity::USABLE));
-    tokens
-        .typography
-        .sans_family
-        .clone_from(&document.type_.face);
+    tokens.typography.set_face(&document.type_.face);
     let size = clamp_to(document.type_.base_size, &ThemeType::USABLE) / ThemeType::BASE_SIZE;
     tokens.typography.scale = tokens.typography.scale.scaled(size);
     let character = clamp_to(document.motion.character, &ThemeMotion::ADMITTED);
@@ -440,6 +437,7 @@ impl Theme {
             forced_colors: admitted && file.forced_colors,
             thick_caret: admitted && file.thick_caret,
             reduce_transparency: admitted && file.reduce_transparency,
+            hyperlegible: admitted && file.hyperlegible,
             text_scale: 1.0,
             ui_scale: 1.0,
             reduce_motion: reduce_motion_override,
@@ -594,14 +592,13 @@ impl Theme {
     /// The one factor the responsive shells multiply an authored,
     /// text-sized breakpoint or pane width by: `ui_scale × text_growth()`.
     ///
-    /// An app authors its shell inputs at 1× (`with_breakpoint(760.0)`,
-    /// `with_sidebar_width(260.0)`) and the shell resolves them against the
-    /// theme in `build_layout`, so at 200 % text a 760 px breakpoint pushes
-    /// at 1520 px — the window that has the room a 760 px window has at 1× —
-    /// without the app multiplying anything. `1.0` on a stock theme, so 1×
-    /// geometry is untouched. A width sized by icons rather than text (a
-    /// rail) follows [`Theme::ui_scale`] alone; the shells expose an
-    /// `icon_*` builder for it.
+    /// `NavShell` grows its metric widths by it, and a painted app's
+    /// `SidebarDrawer` its authored ones (`breakpoint(760.0)`), so at 200 %
+    /// text a 760 px breakpoint pushes at 1520 px — the window that has the
+    /// room a 760 px window has at 1× — without the app multiplying
+    /// anything. `1.0` on a stock theme, so 1× geometry is untouched. A width
+    /// sized by icons rather than text (a rail) follows [`Theme::ui_scale`]
+    /// alone.
     #[must_use]
     pub fn responsive_scale(&self) -> f64 {
         f64::from(self.ui_scale) * f64::from(self.text_growth())

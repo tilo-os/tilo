@@ -59,8 +59,31 @@ pub struct Metrics {
     pub overview_width: f32,
     /// At or above this window width a sidebar docks beside its content;
     /// below it the shell switches to separate screens or an overlay.
-    /// `sidebar_width` plus a content column that still reads.
+    /// `sidebar_width` plus a content column that still reads
+    /// ([`Metrics::content_min_width`]).
     pub compact_breakpoint: f32,
+    /// One row of a navigation list (`NavList`, `paint_nav_row`) at the
+    /// default text scale; it grows with the body line like any shell
+    /// control that carries one line of text.
+    pub nav_row_height: f32,
+    /// The one header row a `NavShell` draws across the top of the window:
+    /// a `min_pointer_target` control in an `s3` inset (32 + 2 × 12).
+    pub header_height: f32,
+    /// A compact icon-over-label navigation rail (`NavList::rail`).
+    pub rail_width: f32,
+    /// The inspector column at the trailing edge of a window.
+    pub inspector_width: f32,
+    /// Narrowest a person can drag a docked sidebar; dragging it below this
+    /// hides it.
+    pub sidebar_min_width: f32,
+    /// Widest a person can drag a docked sidebar.
+    pub sidebar_max_width: f32,
+    /// Narrowest the content column of a window may become before the
+    /// sidebar collapses into a drawer: `compact_breakpoint − sidebar_width`.
+    pub content_min_width: f32,
+    /// Narrowest the detail column beside an overview may become before the
+    /// two become push screens.
+    pub detail_min_width: f32,
 }
 
 impl Metrics {
@@ -85,6 +108,14 @@ impl Metrics {
         drawer_width: 320.0,
         overview_width: 340.0,
         compact_breakpoint: 720.0,
+        nav_row_height: 32.0,
+        header_height: 56.0,
+        rail_width: 76.0,
+        inspector_width: 300.0,
+        sidebar_min_width: 200.0,
+        sidebar_max_width: 420.0,
+        content_min_width: 440.0,
+        detail_min_width: 360.0,
     };
 
     /// The factor a **text-sized** width or breakpoint grows by at a given
@@ -94,8 +125,8 @@ impl Metrics {
     /// two panes still fit side by side are all sized by the text they hold,
     /// so they grow with the text — but never shrink below their authored
     /// 1× geometry, where the rows, hit targets and paddings were designed.
-    /// This is the one rule the responsive shells (`NavSplit`, `NavShell`,
-    /// `AppShell`, `SidebarDrawer`) apply to their inputs
+    /// This is the one rule the responsive shells (`NavShell`,
+    /// `SidebarDrawer`) apply to their inputs
     /// (`crate::Theme::responsive_scale`), so an app never restates it.
     /// A non-finite scale counts as 1×.
     #[must_use]
@@ -131,6 +162,14 @@ impl Metrics {
             drawer_width: self.drawer_width * factor,
             overview_width: self.overview_width * factor,
             compact_breakpoint: self.compact_breakpoint * factor,
+            nav_row_height: self.nav_row_height * factor,
+            header_height: self.header_height * factor,
+            rail_width: self.rail_width * factor,
+            inspector_width: self.inspector_width * factor,
+            sidebar_min_width: self.sidebar_min_width * factor,
+            sidebar_max_width: self.sidebar_max_width * factor,
+            content_min_width: self.content_min_width * factor,
+            detail_min_width: self.detail_min_width * factor,
         }
     }
 }

@@ -279,6 +279,16 @@ impl Button {
         self.tooltip = text;
     }
 
+    /// Change what an icon-only button is announced (and published) as, for
+    /// a control whose meaning flips with state ("Show sidebar" / "Hide
+    /// sidebar").
+    pub fn set_accessible_name(&mut self, name: &str) {
+        if self.accessible_name.as_deref() != Some(name) {
+            self.accessible_name = Some(name.to_owned());
+            self.dirty = true;
+        }
+    }
+
     fn observe_i18n_revision(&mut self) {
         let revision = crate::i18n::I18nManager::revision();
         if revision != self.i18n_revision {
