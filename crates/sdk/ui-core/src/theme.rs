@@ -11,7 +11,7 @@ pub use crate::theme_layers::{
     workspace_temperature_override,
 };
 pub use crate::tokens::contrast::{ContrastFinding, ContrastFloor, Role as ContrastRole};
-use crate::tokens::{Colors, DEFAULT_NEUTRAL_HUE, PresenceHue, Tokens};
+use crate::tokens::{Colors, PresenceHue, Tokens};
 pub use settings_store::day_schedule::{AUTOMATIC_MODE, is_automatic as is_automatic_mode};
 use vello::peniko::Color;
 
@@ -333,15 +333,16 @@ impl Theme {
     /// The same theme in a workspace whose temperature is `hue` (OKLCH
     /// degrees). Only the neutral material's hue moves — never its chroma,
     /// so a palette with chroma 0 (the default dark) shows no temperature
-    /// at all. Presence, status, emphasis and the person's own colour keep
-    /// their hues, and every contrast promise holds at every hue. A
-    /// workspace's temperature comes from [`workspace_hue`].
+    /// at all, and the light palette, pure grey until now, takes its
+    /// chroma at this hue. Presence, status, emphasis and the person's own
+    /// colour keep their hues, and every contrast promise holds at every
+    /// hue. A workspace's temperature comes from [`workspace_hue`].
     #[must_use]
     pub fn with_neutral_hue(mut self, hue: f32) -> Self {
         if !hue.is_finite() || self.document.palette.chroma <= 0.0 {
             return self;
         }
-        self.document.palette.hue = hue.rem_euclid(360.0);
+        self.document.palette.hue = Some(hue.rem_euclid(360.0));
         self.recolour();
         self
     }
@@ -625,13 +626,50 @@ impl Theme {
     }
 }
 
+/// What the host showing a window knows about where, and for whom, it is
+/// shown: the temperature of the workspace the window is in and the colour
+/// of the person sitting at it. The shell resolves both and hands them to
+/// its own chrome and, over the shell-ui channel, to every app window
+/// (`crate::floating_surface::FloatingSurfaceHostMessage::Appearance`). A
+/// window nobody told stays neutral and wears the default colour.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct WindowAppearance {
+    /// The workspace's temperature (OKLCH degrees), `None` while it has
+    /// none: a grey wallpaper, or no shell.
+    pub workspace_hue: Option<f32>,
+    /// The person's own colour ("your colour"), `None` when the host does
+    /// not know who sits here.
+    pub your_colour: Option<PresenceHue>,
+}
+
+impl Theme {
+    /// This theme as the window `appearance` describes sees it: the
+    /// workspace's temperature on the neutrals (nothing on a palette with
+    /// chroma 0, nothing while there is no temperature) and the person's
+    /// colour as focus ring, caret and selection. Both are applied to the
+    /// theme as configured, so a window moving to a neutral workspace loses
+    /// the temperature of the one it left.
+    #[must_use]
+    pub fn in_window(self, appearance: &WindowAppearance) -> Self {
+        let theme = match appearance.workspace_hue {
+            Some(hue) => self.with_neutral_hue(hue),
+            None => self,
+        };
+        match appearance.your_colour {
+            Some(hue) => theme.with_your_colour(hue),
+            None => theme,
+        }
+    }
+}
+
 /// The neutral temperature a workspace takes from its wallpaper (RGBA8
-/// pixels): the image's dominant hue, or [`DEFAULT_NEUTRAL_HUE`] for a
-/// wallpaper with none (a grey photograph, a missing file). Only the hue is
-/// taken — the material never gains chroma from a wallpaper.
+/// pixels): the image's dominant hue, or `None` for a wallpaper with none
+/// (a grey photograph, a missing file), which leaves the material neutral.
+/// Only the hue is taken — the material never gains chroma from a
+/// wallpaper.
 #[must_use]
-pub fn workspace_hue(wallpaper_rgba: &[u8]) -> f32 {
-    crate::color::dominant_hue(wallpaper_rgba).unwrap_or(DEFAULT_NEUTRAL_HUE)
+pub fn workspace_hue(wallpaper_rgba: &[u8]) -> Option<f32> {
+    crate::color::dominant_hue(wallpaper_rgba)
 }
 
 #[cfg(test)]
@@ -646,7 +684,7 @@ mod tests {
         let mut doc = Preset::DarkCool.document();
         doc.id = "quiet-ocean".into();
         doc.name = "Quiet ocean".into();
-        doc.palette.hue = 220.0;
+        doc.palette.hue = Some(220.0);
         doc.density.spacing = spacing;
         doc.type_.face = "Inter".into();
         doc
@@ -773,7 +811,7 @@ mod tests {
             );
             assert_eq!(warm.text_dim, warm.tokens.colors.text_dim);
             assert_eq!(warm.name, "Light");
-            assert!((warm.document.palette.hue - 60.0).abs() < f32::EPSILON);
+            assert_eq!(warm.document.palette.hue, Some(60.0));
             let same = Theme::light().with_neutral_hue(f32::NAN);
             assert_eq!(
                 same.tokens.colors.surfaces.content,
@@ -814,15 +852,33 @@ mod tests {
             let d = (hue(hc.border_focus) - hue(you)).rem_euclid(360.0);
             assert!(d.min(360.0 - d) < 5.0, "high contrast keeps your hue");
         }
-        // phase: a_wallpaper_gives_its_hue_and_a_grey_one_the_default
+        // phase: a_wallpaper_gives_its_hue_and_a_grey_one_none
         {
             let orange: Vec<u8> = [0xE0, 0x80, 0x30, 0xFF].repeat(64);
-            let hue = workspace_hue(&orange);
+            let hue = workspace_hue(&orange).expect("an orange wallpaper has a hue");
             let want = Oklch::from_color(Color::from_rgb8(0xE0, 0x80, 0x30)).h;
             assert!((hue - want).abs() < 6.0, "{hue} vs {want}");
             let grey: Vec<u8> = [0x80, 0x80, 0x80, 0xFF].repeat(64);
-            assert!((workspace_hue(&grey) - DEFAULT_NEUTRAL_HUE).abs() < f32::EPSILON);
-            assert!((workspace_hue(&[]) - DEFAULT_NEUTRAL_HUE).abs() < f32::EPSILON);
+            assert_eq!(workspace_hue(&grey), None);
+            assert_eq!(workspace_hue(&[]), None);
+        }
+        // phase: light_without_a_workspace_is_pure_neutral_in_every_region
+        {
+            let light = Theme::light();
+            for region in [
+                crate::surface::Region::Content,
+                crate::surface::Region::Sidebar,
+                crate::surface::Region::Inspector,
+            ] {
+                let ground = light.region(region);
+                assert!(
+                    ground.r() == ground.g() && ground.g() == ground.b(),
+                    "{region:?} has no cast: {:?}",
+                    [ground.r(), ground.g(), ground.b()]
+                );
+            }
+            let base = light.tokens.colors.surfaces.base;
+            assert!(base.r() == base.g() && base.g() == base.b());
         }
     }
 
@@ -957,7 +1013,7 @@ mod tests {
             });
             let theme = Theme::from_settings_json(&json.to_string()).unwrap();
             assert_eq!(theme.name, "Quiet ocean");
-            assert!((theme.document.palette.hue - 220.0).abs() < f32::EPSILON);
+            assert_eq!(theme.document.palette.hue, Some(220.0));
             assert!(theme.document.palette.dark);
             assert!((theme.tokens.spacing.s3 - 15.0).abs() < 1e-4);
             assert_eq!(theme.tokens.typography.sans_family, "Inter");
@@ -1089,14 +1145,16 @@ mod configured_theme {
             );
         }
 
-        // Case `your_colour_follows_the_identity_section`.
+        // Case `the_configured_theme_does_not_read_the_identity`: the
+        // person's colour reaches a window through its host
+        // (`Theme::in_window`), never through the theme.
         {
             let dir = tempfile::tempdir().expect("temp config dir");
             let settings = dir.path().join("settings.json");
             std::fs::write(&settings, r#"{"identity":{"colour":"teal"}}"#).expect("write");
             assert_eq!(
                 Theme::configured_from(Some(&settings)).tokens.colors.you,
-                PresenceHue::Teal
+                Theme::dark().tokens.colors.you
             );
         }
 
