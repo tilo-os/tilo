@@ -10,7 +10,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use tilo_resource::{Invoke, Resource};
+use tilo_resource::{Effect, Invoke, Resource};
 use ui_core::application::{ApplicationHost, ComponentRunnerInputs, PreparedComponentInputs};
 use ui_core::bound_dispatch::BoundActionAddress;
 use ui_core::headless::FrameHarness;
@@ -72,6 +72,8 @@ pub struct HeadlessApp<A: ResourceApp> {
     instance: u64,
     profile: Profile,
     role: Role,
+    /// The last effect [`Self::effect`] invoked.
+    last_effect: Option<tilo_actions::InvocationId>,
     /// Shared with the host: changing it is a role change the running app
     /// sees, as when the record's owner changes someone's access.
     permissions: Rc<RefCell<PermissionContext>>,
@@ -156,6 +158,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             instance,
             profile,
             role,
+            last_effect: None,
             permissions,
             marker: std::marker::PhantomData,
         })
@@ -287,6 +290,89 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let started = harness.invoke_bound_action(&address, &arguments)?;
         harness.relayout();
         Ok(started.completed())
+    }
+
+    /// Invoke one of the app's effects through the host door, as a button,
+    /// the palette or an agent does, and wait for its answer: what it
+    /// reported at once, or the result of the job it started. Progress the
+    /// job reported is in [`FrameHarness::job_updates`].
+    ///
+    /// # Errors
+    /// Returns the host's refusal or the effect's failure.
+    pub fn effect<E: Effect>(
+        &mut self,
+        effect: &E,
+    ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError> {
+        self.effect_as(effect, false)
+    }
+
+    /// [`Self::effect`] after the caller confirmed it, as the host's
+    /// confirmation prompt does for a destructive effect.
+    ///
+    /// # Errors
+    /// As [`Self::effect`].
+    pub fn effect_confirmed<E: Effect>(
+        &mut self,
+        effect: &E,
+    ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError> {
+        self.effect_as(effect, true)
+    }
+
+    /// What the job of the last [`Self::effect`] reported, in order: its
+    /// progress, then its result.
+    pub fn effect_progress(&mut self) -> Vec<tilo_actions::InvocationUpdate> {
+        let Some(invocation) = self.last_effect else {
+            return Vec::new();
+        };
+        self.harness().job_updates(invocation).to_vec()
+    }
+
+    fn effect_as<E: Effect>(
+        &mut self,
+        effect: &E,
+        confirmed: bool,
+    ) -> Result<tilo_actions::ActionOutput, tilo_actions::DoorError> {
+        let address = BoundActionAddress {
+            instance_id: self.instance,
+            address: tilo_actions::ActionAddress::new(<A::Resource as Resource>::KIND, effect.id()),
+        };
+        let (invocation, started) =
+            self.harness()
+                .start_bound_job(&address, &effect.arguments(), confirmed)?;
+        self.last_effect = Some(invocation);
+        let harness = self.harness();
+        if let Some(output) = started.completed() {
+            harness.relayout();
+            return Ok(output);
+        }
+        let finished = |harness: &FrameHarness| {
+            harness
+                .job_updates(invocation)
+                .iter()
+                .find(|update| update.is_terminal())
+                .cloned()
+        };
+        harness.wait_until(ui_core::time::Duration::from_secs(30), |harness| {
+            finished(harness).is_some()
+        });
+        match finished(harness) {
+            Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => Ok(output),
+            Some(tilo_actions::InvocationUpdate::Failed { error, .. }) => {
+                Err(tilo_actions::DoorError::Failed(error.message))
+            }
+            Some(_) => Err(tilo_actions::DoorError::Failed("cancelled".into())),
+            None => Err(tilo_actions::DoorError::Failed(format!(
+                "`{}` did not finish",
+                effect.id()
+            ))),
+        }
+    }
+
+    /// Run the frame the app runs after an event: edits the views and
+    /// effects submitted are applied, and what they change is drawn.
+    pub fn settle(&mut self) {
+        self.harness()
+            .wait_until(ui_core::time::Duration::ZERO, |_| true);
     }
 
     /// Invoke any published action of the resource by id with JSON

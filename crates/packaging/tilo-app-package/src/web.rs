@@ -240,7 +240,7 @@ pub fn web_target(
                 .ok_or(WebBuildError::AppWithoutRuntime)?,
         ),
         Kind::Runtime => options.provides,
-        Kind::Service | Kind::FormatProvider | Kind::Plugin => {
+        Kind::Service | Kind::FormatProvider | Kind::Plugin | Kind::EnvRuntime | Kind::Tool => {
             return Err(WebBuildError::UnsupportedKind);
         }
     };
