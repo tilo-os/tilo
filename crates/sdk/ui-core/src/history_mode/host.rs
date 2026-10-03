@@ -103,6 +103,9 @@ pub struct HistoryHost {
     /// Whether the closed toolbar offers its own History button. Off where
     /// the host's chrome (a menu bar, the Tilo shell) presents History.
     open_button: bool,
+    /// The live app shows a `history_button` in its own toolbar, so this
+    /// toolbar draws none while History is closed.
+    app_presents_button: bool,
     commands: Rc<RefCell<VecDeque<Command>>>,
     selected: Vec<crate::HistoryEntryId>,
     before: PreviewCanvas,
@@ -226,13 +229,11 @@ impl HistoryHost {
             .with_gap(4.0)
             .with_intrinsic_height()
             .push(Box::new(
-                Row::new()
-                    .push(Box::new(
-                        Button::new("history-open", "History", None)
-                            .fit_content(32.0)
-                            .on_click(move || clicked.set(true)),
-                    ))
-                    .push(Box::new(Text::new(scope.title))),
+                Row::new().push(Box::new(
+                    Button::new("history-open", "History", None)
+                        .fit_content(32.0)
+                        .on_click(move || clicked.set(true)),
+                )),
             ));
         let mut host = Self {
             enclosing_owner: None,
@@ -261,6 +262,7 @@ impl HistoryHost {
             requested_entry: None,
             open: false,
             open_button: true,
+            app_presents_button: false,
             rect: Rect::ZERO,
             chrome_node: None,
             live_node: None,
@@ -1262,12 +1264,6 @@ impl HistoryHost {
     fn rebuild_toolbar(&mut self) {
         #[cfg(test)]
         self.pending_control_callbacks.clear();
-        let title = self
-            .registration
-            .definition
-            .scopes
-            .get(self.active_scope)
-            .map_or("history-mode-title", |scope| scope.title);
         let mut toolbar = Column::new()
             .with_no_padding()
             .with_gap(4.0)
@@ -1278,16 +1274,14 @@ impl HistoryHost {
             return;
         }
         if self.selected.is_empty() {
-            if self.open_button || self.open {
+            if (self.open_button && !self.app_presents_button) || self.open {
                 let clicked = self.open_requested.clone();
                 toolbar = toolbar.push(Box::new(
-                    Row::new()
-                        .push(Box::new(
-                            Button::new("history-open", "history-mode-title", None)
-                                .fit_content(32.0)
-                                .on_click(move || clicked.set(true)),
-                        ))
-                        .push(Box::new(Text::new(title))),
+                    Row::new().push(Box::new(
+                        Button::new("history-open", "history-mode-title", None)
+                            .fit_content(32.0)
+                            .on_click(move || clicked.set(true)),
+                    )),
                 ));
             }
             for review in self.pending_controls.review() {
@@ -1408,7 +1402,7 @@ impl HistoryHost {
                 toolbar = toolbar.push(Box::new(Text::new(failure)));
             }
         } else {
-            let mut header = Row::new().push(Box::new(Text::new(title)));
+            let mut header = Row::new();
             if self.width < 600.0 && !self.activity_page {
                 header = header.push(Box::new(self.command_button(
                     "history-activity",

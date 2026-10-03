@@ -37,7 +37,7 @@ use crate::widget::identity_flow::sheet::{
 use crate::widget::identity_flow::{
     IdentityFlowError, InviteEnvelope, ScreenOutcome, build_attestation_from_invite,
 };
-use crate::widget::modal_frame::ModalAction;
+use crate::widget::modal_dialog::ModalAction;
 use crate::widget::text_input::TextInput;
 
 const TITLE: &str = "Accept channel invite";

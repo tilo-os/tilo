@@ -263,7 +263,7 @@ fn every_input_enters_the_same_history_canvas_without_live_effects() {
             "wide activity sits beside the content"
         );
         if let Ok(directory) = std::env::var("TILO_HISTORY_SHOTS") {
-            driver.render_window_png(&std::path::Path::new(&directory).join("wide.png"));
+            driver.render_png(&std::path::Path::new(&directory).join("wide.png"));
         }
         assert_eq!(driver.state_mut().doc.get_heads(), before);
         driver.state_mut().doc.put(ROOT, "body", "remote").unwrap();
@@ -327,7 +327,7 @@ fn every_input_enters_the_same_history_canvas_without_live_effects() {
             "narrow navigation leaves the canvas usable"
         );
         if let Ok(directory) = std::env::var("TILO_HISTORY_SHOTS") {
-            driver.render_window_png(&std::path::Path::new(&directory).join("narrow.png"));
+            driver.render_png(&std::path::Path::new(&directory).join("narrow.png"));
         }
         driver.click_named("history-activity").unwrap();
         assert!(driver.targets().contains_key("activity_timeline"));
@@ -1246,12 +1246,9 @@ fn the_history_timeline_explains_scopes_and_announces_live_updates() {
         let bounds = node.bounds().unwrap();
         assert!(bounds.x0 >= 0.0 && bounds.x1 <= 390.0 && bounds.y1 <= 650.0);
         if let Ok(directory) = std::env::var("TILO_HISTORY_SHOTS") {
-            driver.render_window_png(
-                &std::path::Path::new(&directory).join("narrow-live-update.png"),
-            );
+            driver.render_png(&std::path::Path::new(&directory).join("narrow-live-update.png"));
             driver.resize((900, 650)).unwrap();
-            driver
-                .render_window_png(&std::path::Path::new(&directory).join("wide-live-update.png"));
+            driver.render_png(&std::path::Path::new(&directory).join("wide-live-update.png"));
         }
         assert!(
             driver

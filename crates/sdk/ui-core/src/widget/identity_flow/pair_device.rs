@@ -49,7 +49,7 @@ use crate::widget::identity_flow::{
     IdentityFlowError, PairingHandshake, PairingPayload, ScreenOutcome, derive_pairing_code,
     format_pairing_code,
 };
-use crate::widget::modal_frame::ModalAction;
+use crate::widget::modal_dialog::ModalAction;
 use crate::widget::text_input::TextInput;
 
 /// The pairing code is exactly six digits, one per input box.

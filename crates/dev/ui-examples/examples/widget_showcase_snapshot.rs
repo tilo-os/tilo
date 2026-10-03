@@ -18,14 +18,12 @@ use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
-use tilo_ui::widget::popover_widget::PopoverSide;
 use tilo_ui::widget::toggle_group::Segment;
 use tilo_ui::widget::toolbar::Orientation as ToolbarOrientation;
 use tilo_ui::widget::tree_view::TreeNode;
 use tilo_ui::widget::{
-    Avatar, Badge, Breadcrumb, ColorPicker, Column, DatePicker, ModalDialog, PopoverWidget,
-    ProgressBar, Row, ScrollAxis, Scrollable, Spinner, Text, TimePicker, ToggleGroup, Toolbar,
-    TreeView, Widget,
+    Avatar, Badge, Breadcrumb, ColorPicker, Column, DatePicker, ModalDialog, Popover, ProgressBar,
+    Row, ScrollAxis, Scrollable, Spinner, Text, TimePicker, ToggleGroup, Toolbar, TreeView, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -234,17 +232,14 @@ fn build_tree_view() -> TreeView<()> {
 }
 
 /// The scrollable column of every widget this scenario showcases. Also
-/// builds (and discards) a `PopoverWidget` and `ModalDialog` to prove they
+/// builds (and discards) a `Popover` and `ModalDialog` to prove they
 /// construct cleanly — see the trailing comment on `row_struct` for why
 /// they aren't actually spliced into the column. Split out of `run` to
 /// keep that under the line cap.
 fn build_root_widget(tree: TreeView<()>) -> Box<dyn Widget> {
-    let popover = PopoverWidget::new(
-        Rect::new(60.0, 60.0, 220.0, 90.0),
-        LabelTile::new("Popover content (always open)"),
-        PopoverSide::Below,
-    )
-    .open(true);
+    let popover = Popover::with_content(LabelTile::new("Popover content (always open)"))
+        .anchored(Rect::new(60.0, 60.0, 220.0, 90.0))
+        .open(true);
 
     let modal = ModalDialog::new(
         "Save your changes?",

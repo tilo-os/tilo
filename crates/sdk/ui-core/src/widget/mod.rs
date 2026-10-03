@@ -2301,7 +2301,7 @@ pub mod canvas_navigation_hint;
 pub use canvas_navigation_hint::{CanvasNavigation, CanvasNavigationHint};
 pub use shortcut_recorder::ShortcutRecorder;
 pub mod context_menu;
-mod floating_surface;
+pub mod floating_surface;
 pub use context_menu::{ContextMenu, MenuItem};
 pub mod data_table;
 mod virtual_table_semantics;
@@ -2355,14 +2355,11 @@ pub mod color_picker;
 pub mod color_swatch;
 pub use color_picker::{ColorPicker, ColorPickerOutcome, ColorSwatch};
 pub use color_swatch::ColorSwatchFace;
-pub mod popover_widget;
-pub use popover_widget::PopoverWidget;
 pub mod popover;
-pub use popover::Popover;
+pub use crate::standalone_history_host::history_button;
+pub use popover::{Popover, PopoverSide};
 pub mod modal_dialog;
-pub use modal_dialog::ModalDialog;
-pub mod modal_frame;
-pub use modal_frame::{ModalAction, ModalEmphasis, ModalFrame, ModalHit, ModalLayout, ModalSpec};
+pub use modal_dialog::{ModalAction, ModalDialog, ModalEmphasis, ModalHit, ModalLayout, ModalSpec};
 pub mod native_view;
 pub use native_view::{
     NativeView, NativeViewAccessibility, NativeViewBackend, NativeViewGeometry, NativeViewHost,
