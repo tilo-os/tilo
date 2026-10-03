@@ -20,6 +20,10 @@
 //!     snapshots/
 //!         <sequence>-<hash>.json     # immutable owner-signed history
 //!     published-snapshot.json        # atomic current channel pointer
+//!     staged-artifacts/
+//!         <blake3>.root              # collected tapp, rebuilt from its thin
+//!                                    # form and payload blobs
+//!         <blake3>.tapp              # collected tapp that does not rebuild
 //!     payload-blobs/
 //!         <blake3>                   # reviewed payload blobs, by content
 //!     thin-packages/
@@ -36,6 +40,7 @@
 //! Every call here is blocking std I/O; the HTTP layer runs them off
 //! the async workers. Mutations serialize through [`SnapshotLock`].
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -129,8 +134,18 @@ impl Storage {
         self.root.join("channel-authorization.json")
     }
 
+    /// A whole staged package.
     fn staged_artifact_path(&self, blake3_hex: &str) -> Result<PathBuf, StorageError> {
-        if blake3_hex.len() != 64 || !blake3_hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        self.staged_path(blake3_hex, "tapp")
+    }
+
+    /// The package root of a staged package kept as blobs and a thin form.
+    fn staged_root_path(&self, blake3_hex: &str) -> Result<PathBuf, StorageError> {
+        self.staged_path(blake3_hex, "root")
+    }
+
+    fn staged_path(&self, blake3_hex: &str, extension: &str) -> Result<PathBuf, StorageError> {
+        if !is_hex_digest(blake3_hex) {
             return Err(StorageError::Encode(
                 "invalid staged artifact digest".into(),
             ));
@@ -138,7 +153,7 @@ impl Storage {
         Ok(self
             .root
             .join("staged-artifacts")
-            .join(format!("{}.tapp", blake3_hex.to_ascii_lowercase())))
+            .join(format!("{}.{extension}", blake3_hex.to_ascii_lowercase())))
     }
 
     /// Load the active root-signed channel authorization.
@@ -219,19 +234,29 @@ impl Storage {
     /// package carry no payload to serve.
     ///
     /// # Errors
-    /// Returns an error if a blob cannot be written durably.
+    /// Returns an error if the registry lock cannot be taken or a blob cannot
+    /// be written durably.
     pub fn save_payload_blobs(&self, tapp_bytes: &[u8]) -> Result<usize, StorageError> {
+        let _lock = self.lock_snapshot()?;
+        Ok(self
+            .store_package(tapp_bytes)?
+            .map_or(0, |stored| stored.blobs.len()))
+    }
+
+    /// Write a package's payload blobs and thin form, returning what was
+    /// decoded, or `None` for bytes that are not a package. Callers hold the
+    /// registry lock, so pruning never sees blobs without their thin package.
+    fn store_package(&self, tapp_bytes: &[u8]) -> Result<Option<StoredPackage>, StorageError> {
         let mut blobs = std::collections::BTreeMap::new();
         let Ok(decoded) = tilo_app_package::tapp::read(tapp_bytes, &mut blobs) else {
-            return Ok(0);
+            return Ok(None);
         };
-        let count = blobs.len();
-        for (hash, bytes) in blobs {
+        for (hash, bytes) in &blobs {
             let path = self
                 .payload_blob_path(&hash.to_hex())
                 .ok_or_else(|| StorageError::Encode("invalid payload blob name".into()))?;
             if !path.exists() {
-                atomic_write(&path, &bytes)?;
+                atomic_write(&path, bytes)?;
             }
         }
         let thin = tilo_app_package::tapp::to_bytes(&decoded.meta, None)
@@ -242,7 +267,10 @@ impl Storage {
         if !path.exists() {
             atomic_write(&path, &thin)?;
         }
-        Ok(count)
+        Ok(Some(StoredPackage {
+            meta: decoded.meta,
+            blobs,
+        }))
     }
 
     /// The thin form of the reviewed package whose signed root hashes to
@@ -387,7 +415,11 @@ impl Storage {
         Ok(Some(bytes))
     }
 
-    /// Store exact package bytes at their BLAKE3-addressed path.
+    /// Stage exact package bytes under their BLAKE3. A package is kept once:
+    /// as its payload blobs plus its thin form, which every reviewed package
+    /// keeps anyway for thin installs, with only its package root recorded
+    /// here. Bytes that cannot be rebuilt exactly from those parts are kept
+    /// whole.
     ///
     /// # Errors
     /// Returns an error for an invalid digest, digest mismatch, path collision,
@@ -399,10 +431,8 @@ impl Storage {
                 "staged artifact bytes do not match digest".into(),
             ));
         }
-        let path = self.staged_artifact_path(blake3_hex)?;
-        if path.exists() {
-            let existing = std::fs::read(&path)
-                .map_err(|error| StorageError::Io(format!("read staged artifact: {error}")))?;
+        let _lock = self.lock_snapshot()?;
+        if let Some(existing) = self.find_staged_artifact(blake3_hex)? {
             if existing == bytes {
                 return Ok(());
             }
@@ -410,8 +440,32 @@ impl Storage {
                 "staged artifact digest path contains different bytes".into(),
             ));
         }
-        atomic_write(&path, bytes)?;
-        self.save_payload_blobs(bytes).map(drop)
+        self.stage(blake3_hex, bytes)
+    }
+
+    /// Write staged bytes in their smallest exact form.
+    fn stage(&self, blake3_hex: &str, bytes: &[u8]) -> Result<(), StorageError> {
+        if self.stage_root(blake3_hex, bytes)? {
+            return Ok(());
+        }
+        atomic_write(&self.staged_artifact_path(blake3_hex)?, bytes)
+    }
+
+    /// Record just the package root when the stored blobs and thin form
+    /// rebuild `bytes` exactly. The blobs and thin package land before the
+    /// root that names them.
+    fn stage_root(&self, blake3_hex: &str, bytes: &[u8]) -> Result<bool, StorageError> {
+        let Some(stored) = self.store_package(bytes)? else {
+            return Ok(false);
+        };
+        let rebuilt = tilo_app_package::tapp::to_bytes(&stored.meta, Some(&stored.blobs))
+            .map_err(|error| StorageError::Encode(format!("rebuild package: {error}")))?;
+        if rebuilt != bytes {
+            return Ok(false);
+        }
+        let root = stored.meta.id.to_hex();
+        atomic_write(&self.staged_root_path(blake3_hex)?, root.as_bytes())?;
+        Ok(true)
     }
 
     /// Load package bytes and re-check their content-addressed path.
@@ -419,15 +473,8 @@ impl Storage {
     /// # Errors
     /// Returns an error for an invalid digest, missing bytes, or content mismatch.
     pub fn load_staged_artifact(&self, blake3_hex: &str) -> Result<Vec<u8>, StorageError> {
-        let path = self.staged_artifact_path(blake3_hex)?;
-        let bytes = std::fs::read(path)
-            .map_err(|error| StorageError::Io(format!("read staged artifact: {error}")))?;
-        if blake3::hash(&bytes).to_hex().to_string() != blake3_hex.to_ascii_lowercase() {
-            return Err(StorageError::Parse(
-                "staged artifact content digest mismatch".into(),
-            ));
-        }
-        Ok(bytes)
+        self.find_staged_artifact(blake3_hex)?
+            .ok_or_else(|| StorageError::Io(format!("staged artifact {blake3_hex} is missing")))
     }
 
     /// Load package bytes previously staged under `blake3_hex`, if any.
@@ -436,11 +483,72 @@ impl Storage {
     /// Returns an error for an invalid digest, unreadable bytes, or content
     /// mismatch.
     pub fn find_staged_artifact(&self, blake3_hex: &str) -> Result<Option<Vec<u8>>, StorageError> {
-        match std::fs::metadata(self.staged_artifact_path(blake3_hex)?) {
-            Ok(_) => self.load_staged_artifact(blake3_hex).map(Some),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(StorageError::Io(format!("stat staged artifact: {error}"))),
+        // Compaction writes the root before it removes the whole package,
+        // so reading in this order always finds one of them.
+        let bytes = if let Some(bytes) =
+            read_if_exists(&self.staged_artifact_path(blake3_hex)?, "staged artifact")?
+        {
+            bytes
+        } else if let Some(root) =
+            read_if_exists(&self.staged_root_path(blake3_hex)?, "staged package root")?
+        {
+            self.rebuild_staged(&root)?
+        } else {
+            return Ok(None);
+        };
+        if !blake3::hash(&bytes)
+            .to_hex()
+            .eq_ignore_ascii_case(blake3_hex)
+        {
+            return Err(StorageError::Parse(
+                "staged artifact content digest mismatch".into(),
+            ));
         }
+        Ok(Some(bytes))
+    }
+
+    /// The full package whose thin form is stored under `root`, with every
+    /// payload blob read back from this registry.
+    fn rebuild_staged(&self, root: &[u8]) -> Result<Vec<u8>, StorageError> {
+        let root = std::str::from_utf8(root)
+            .map_err(|_| StorageError::Parse("staged package root is not text".into()))?;
+        let thin = self.load_thin_package(root)?.ok_or_else(|| {
+            StorageError::Parse(format!("staged package {root} has no thin package"))
+        })?;
+        let decoded =
+            tilo_app_package::tapp::read(thin.as_slice(), &mut tilo_app_package::DiscardBlobs)
+                .map_err(|error| StorageError::Parse(format!("thin package: {error}")))?;
+        tilo_app_package::tapp::to_bytes(&decoded.meta, Some(&StoredBlobs(self)))
+            .map_err(|error| StorageError::Parse(format!("rebuild staged package {root}: {error}")))
+    }
+
+    /// Store every whole staged package that its blobs and thin form rebuild
+    /// exactly as just its package root, and return how many were
+    /// compacted. Each package is converted under the registry lock on its
+    /// own, so serving and publishing interleave with a long compaction.
+    ///
+    /// # Errors
+    /// Returns an error when the staging directory or a staged package cannot
+    /// be read or rewritten.
+    pub fn compact_staged_artifacts(&self) -> Result<usize, StorageError> {
+        let mut compacted: usize = 0;
+        for digest in list_digests(&self.root.join("staged-artifacts"), ".tapp")? {
+            let _lock = self.lock_snapshot()?;
+            let path = self.staged_artifact_path(&digest)?;
+            let Some(bytes) = read_if_exists(&path, "staged artifact")? else {
+                continue;
+            };
+            if !blake3::hash(&bytes).to_hex().eq_ignore_ascii_case(&digest) {
+                return Err(StorageError::Parse(format!(
+                    "staged artifact {digest} does not match its name"
+                )));
+            }
+            if self.stage_root(&digest, &bytes)? {
+                delete_if_exists(&path)?;
+                compacted = compacted.saturating_add(1);
+            }
+        }
+        Ok(compacted)
     }
 
     /// Acquire the registry-wide mutation lock. Promotion selection, pending
@@ -1196,6 +1304,104 @@ impl<'a> SnapshotLock<'a> {
         self.complete(snapshot)
     }
 
+    /// Delete the staged packages that no entry this registry holds or may
+    /// still publish references, then the thin packages and payload blobs
+    /// only they used. An entry counts while it is published, live,
+    /// quarantined, pending, deferred, staged or journalled for promotion.
+    /// Holding the lock keeps every writer of staged bytes out meanwhile.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if registry state cannot be read or a file cannot be
+    /// removed.
+    pub fn prune_unreferenced(&self) -> Result<PruneReport, StorageError> {
+        let storage = self.storage;
+        let mut entries = storage.load_entries()?;
+        entries.extend(load_json_dir::<RegistryEntry>(
+            &storage.root.join("quarantined"),
+            "quarantined entry",
+        )?);
+        for snapshot in [self.current()?, self.pending_transaction()?]
+            .into_iter()
+            .flatten()
+        {
+            entries.extend(snapshot.entries);
+        }
+        let mut submissions = storage.load_pending_submissions()?;
+        submissions.extend(load_json_dir::<PendingSubmission>(
+            &storage.root.join("deferred-pending"),
+            "deferred pending submission",
+        )?);
+        if let Some(staged) = storage.load_staged_promotion()? {
+            submissions.extend(staged.submissions);
+        }
+        if let Some(journal) = storage.load_promotion_transaction()? {
+            submissions.extend(journal.submissions);
+            entries.extend(journal.candidate_snapshot.entries);
+        }
+        entries.extend(submissions.into_iter().map(|pending| pending.change.entry));
+        let mut digests = BTreeSet::new();
+        let mut roots = BTreeSet::new();
+        for version in entries.iter().flat_map(|entry| &entry.versions) {
+            digests.insert(version.tapp_blake3_hex.to_ascii_lowercase());
+            roots.insert(version.tapp_root_hash_hex.to_ascii_lowercase());
+        }
+
+        let mut report = PruneReport::default();
+        let staged_dir = storage.root.join("staged-artifacts");
+        for extension in [".tapp", ".root"] {
+            for digest in list_digests(&staged_dir, extension)? {
+                let path = staged_dir.join(format!("{digest}{extension}"));
+                if !digests.contains(&digest) {
+                    remove_file(&path)?;
+                    report.staged_artifacts = report.staged_artifacts.saturating_add(1);
+                } else if extension == ".root"
+                    && let Some(root) = read_if_exists(&path, "staged package root")?
+                {
+                    roots.insert(String::from_utf8_lossy(&root).to_ascii_lowercase());
+                }
+            }
+        }
+        let thin_dir = storage.root.join("thin-packages");
+        let mut blobs = BTreeSet::new();
+        for root in list_digests(&thin_dir, ".tapp")? {
+            let path = thin_dir.join(format!("{root}.tapp"));
+            if !roots.contains(&root) {
+                remove_file(&path)?;
+                report.thin_packages = report.thin_packages.saturating_add(1);
+                continue;
+            }
+            let Some(thin) = read_if_exists(&path, "thin package")? else {
+                continue;
+            };
+            let decoded =
+                tilo_app_package::tapp::read(thin.as_slice(), &mut tilo_app_package::DiscardBlobs)
+                    .map_err(|error| {
+                        StorageError::Parse(format!("thin package {root}: {error}"))
+                    })?;
+            blobs.extend(
+                decoded
+                    .meta
+                    .payload_hashes()
+                    .into_iter()
+                    .map(|hash| hash.to_hex()),
+            );
+        }
+        let blob_dir = storage.root.join("payload-blobs");
+        for blob in list_digests(&blob_dir, "")? {
+            if !blobs.contains(&blob) {
+                remove_file(&blob_dir.join(&blob))?;
+                report.payload_blobs = report.payload_blobs.saturating_add(1);
+            }
+        }
+        for dir in [staged_dir, thin_dir, blob_dir] {
+            if let Ok(directory) = std::fs::File::open(dir) {
+                let _result = directory.sync_all();
+            }
+        }
+        Ok(report)
+    }
+
     fn complete(&self, snapshot: &SignedRegistrySnapshot) -> Result<(), StorageError> {
         self.validate_transition(snapshot)?;
         self.storage.archive_snapshot(snapshot)?;
@@ -1235,6 +1441,75 @@ impl<'a> SnapshotLock<'a> {
         }
         Ok(())
     }
+}
+
+/// Names in `dir` that are a lowercase BLAKE3 hex digest followed by
+/// `extension`, as the digests. Temporary and foreign files are skipped.
+fn list_digests(dir: &Path, extension: &str) -> Result<Vec<String>, StorageError> {
+    let mut digests = Vec::new();
+    for entry in std::fs::read_dir(dir)
+        .map_err(|error| StorageError::Io(format!("list {}: {error}", dir.display())))?
+    {
+        let entry = entry.map_err(|error| StorageError::Io(error.to_string()))?;
+        let name = entry.file_name();
+        let Some(digest) = name.to_str().and_then(|name| name.strip_suffix(extension)) else {
+            continue;
+        };
+        if is_hex_digest(digest) && digest == digest.to_ascii_lowercase() {
+            digests.push(digest.to_owned());
+        }
+    }
+    Ok(digests)
+}
+
+fn remove_file(path: &Path) -> Result<(), StorageError> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(StorageError::Io(format!(
+            "remove {}: {error}",
+            path.display()
+        ))),
+    }
+}
+
+/// A package written as payload blobs and a thin form.
+struct StoredPackage {
+    meta: tilo_app_package::PackageMeta,
+    blobs: BTreeMap<tilo_app_package::BlobHash, Vec<u8>>,
+}
+
+/// The registry's payload blobs as a source for rebuilding full packages.
+/// Readers verify every blob against its hash.
+struct StoredBlobs<'a>(&'a Storage);
+
+impl tilo_app_package::BlobSource for StoredBlobs<'_> {
+    fn open_blob(
+        &self,
+        hash: &tilo_app_package::BlobHash,
+    ) -> std::io::Result<Option<tilo_app_package::OpenBlob<'_>>> {
+        let Some(path) = self.0.payload_blob_path(&hash.to_hex()) else {
+            return Ok(None);
+        };
+        let file = match std::fs::File::open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        let len = file.metadata()?.len();
+        Ok(Some(tilo_app_package::OpenBlob {
+            len,
+            reader: Box::new(std::io::BufReader::new(file)),
+        }))
+    }
+}
+
+/// What [`SnapshotLock::prune_unreferenced`] removed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct PruneReport {
+    pub staged_artifacts: usize,
+    pub thin_packages: usize,
+    pub payload_blobs: usize,
 }
 
 fn load_json<T: serde::de::DeserializeOwned>(
@@ -1568,6 +1843,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
     fn staged_packages_stay_readable_for_thin_installs() {
         // phase: staging_a_package_keeps_its_payload_blobs_for_thin_installs
         {
@@ -1624,6 +1903,53 @@ mod tests {
             );
             assert!(storage.import_artifact(b"not a package").is_err());
             assert_eq!(storage.load_artifact("../../etc/passwd").unwrap(), None);
+
+            // phase: whole_staged_packages_compact_to_their_root
+            let staged = dir.path().join("staged-artifacts");
+            let root_file = staged.join(format!("{digest}.root"));
+            assert_eq!(std::fs::read_to_string(&root_file).unwrap(), root);
+            std::fs::remove_file(&root_file).unwrap();
+            std::fs::write(staged.join(format!("{digest}.tapp")), &bytes).unwrap();
+            let opaque = b"bytes that are no package".to_vec();
+            let opaque_digest = blake3::hash(&opaque).to_hex().to_string();
+            storage
+                .save_staged_artifact(&opaque_digest, &opaque)
+                .unwrap();
+            assert_eq!(storage.compact_staged_artifacts().unwrap(), 1);
+            assert!(root_file.exists());
+            assert!(!staged.join(format!("{digest}.tapp")).exists());
+            assert_eq!(storage.load_staged_artifact(&digest).unwrap(), bytes);
+            assert_eq!(
+                storage.load_staged_artifact(&opaque_digest).unwrap(),
+                opaque
+            );
+            storage.save_staged_artifact(&digest, &bytes).unwrap();
+            assert!(storage.save_staged_artifact(&digest, &opaque).is_err());
+
+            // phase: a_staged_package_missing_a_blob_fails_closed
+            let blob_file = dir.path().join("payload-blobs").join(&blob);
+            let aside = dir.path().join("blob-aside");
+            std::fs::rename(&blob_file, &aside).unwrap();
+            assert!(storage.load_staged_artifact(&digest).is_err());
+            std::fs::rename(&aside, &blob_file).unwrap();
+
+            // phase: unreferenced_staged_packages_are_pruned_with_their_parts
+            let report = storage
+                .lock_snapshot()
+                .unwrap()
+                .prune_unreferenced()
+                .unwrap();
+            assert_eq!(
+                report,
+                PruneReport {
+                    staged_artifacts: 2,
+                    thin_packages: 2,
+                    payload_blobs: 1,
+                }
+            );
+            assert_eq!(storage.find_staged_artifact(&digest).unwrap(), None);
+            assert_eq!(storage.load_payload_blob(&blob).unwrap(), None);
+            assert_eq!(storage.load_thin_package(&root).unwrap(), None);
         }
         // phase: targetless_single_architecture_staging_remains_readable
         {
