@@ -24,7 +24,7 @@ pub use radii::Radii;
 pub use spacing::{Rhythm, Spacing, SpacingStep};
 pub use syntax_palette::SyntaxPalette;
 pub use terminal_palette::TerminalPalette;
-pub use typography::{FontFamily, REFERENCE_BODY_PX, TextRole, Typography};
+pub use typography::{FontFamily, REFERENCE_BODY_PX, TextRole, Typography, UiFace};
 
 #[derive(Clone, Debug)]
 pub struct Tokens {
