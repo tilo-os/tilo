@@ -16,10 +16,10 @@ everything an agent, a script or a screen reader does:
 
 | Action | What it does |
 | --- | --- |
-| `paint` | a passage of brush strokes in one step |
+| `paint` | a passage of brush strokes in one step, with a brush preset or the eraser |
 | `draw` | shapes (rect, ellipse, polygon, line, SVG path, text, stroke) |
-| `edit-marks` | recolour, move, scale, rotate or re-layer marks by id |
-| `remove-marks`, `arrange` | remove, restack |
+| `edit-marks` | recolour, move, scale, rotate or re-layer marks by id; re-brush, smooth, simplify, extend, split and merge strokes |
+| `remove-marks`, `arrange` | remove (by id, or the strokes a path crosses), restack |
 | `add-layer`, `edit-layer`, `remove-layer` | layers and their media |
 | `select`, `use-selection` | an area: shapes, lasso, marks, magic wand, colour; fill, outline, mask, clear |
 | `combine` | shapes united, subtracted, intersected or excluded into one path |
@@ -27,6 +27,17 @@ everything an agent, a script or a screen reader does:
 | `save-medium`, `remove-medium` | media presets saved in the artwork |
 | `look` | a PNG of the artwork or a region, with an optional coordinate grid |
 | `inspect`, `media`, `history`, `export` | what is on it, what it can use, how it got here |
+
+On a plain layer a stroke is drawn by its brush preset, worked out from the
+stroke mark alone: `pen` (crisp ink, pressure swells the line), `pencil`
+(grainy, pressure darkens it), `marker` (flat, see-through, overlaps
+darken), `airbrush` (soft spray that builds up), `charcoal` (ragged, catching
+the ground's tooth) and `calligraphy` (a broad nib at the stroke's `angle`).
+A stroke's `params` tune its flow, hardness, spacing, smoothing and taper.
+The `eraser` is a mark too: it clears the paint beneath it on its layer,
+plain or painted, and paint laid after it shows; `remove-marks` with `along`
+takes whole strokes instead. A pen tablet's pressure goes into the stroke's
+points; with a mouse the hand's speed stands in for it.
 
 Lettering uses the fonts Tilo ships (`media` lists them), so it looks the
 same on every machine: any weight between the face's lightest and boldest,

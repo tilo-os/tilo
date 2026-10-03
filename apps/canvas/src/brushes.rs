@@ -1,0 +1,874 @@
+//! Brush presets: how a stroke on a plain layer is laid down. Everything is
+//! worked out from the stroke mark itself (its points and their pressure,
+//! its size, colour, preset and dynamics), so every machine draws the same
+//! stroke and editing the mark draws it again.
+//!
+//! Pen, marker, calligraphy and a hard eraser are outlines, crisp at any
+//! zoom. Pencil, charcoal, airbrush and a soft eraser are dabs of paint
+//! stamped along the stroke into pixels fixed to the artwork, where the
+//! ground's tooth catches graphite and charcoal.
+#![allow(
+    clippy::arithmetic_side_effects,
+    reason = "float geometry, and pixel indices bounded by the raster they index"
+)]
+
+use std::collections::BTreeMap;
+
+use tilo_wet_media::StrokePoint as WetPoint;
+use tilo_wet_media::brush::Sample;
+use ui::vello::kurbo::{BezPath, Point, Rect};
+
+use crate::model::{Mark, Shape, Style};
+
+/// What lays a stroke down.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Preset {
+    /// The round ink brush: width follows pressure, ends taper.
+    #[default]
+    Round,
+    /// A technical pen: crisp ink, pressure sets the width.
+    Pen,
+    /// Graphite: grainy, pressure sets how dark.
+    Pencil,
+    /// A felt marker: flat and see-through, overlaps darken.
+    Marker,
+    /// A soft spray that builds up where it passes again.
+    Airbrush,
+    /// Charcoal or chalk: dry, ragged, catches the ground's tooth.
+    Charcoal,
+    /// A broad nib held at an angle: thick across it, thin along it.
+    Calligraphy,
+    /// Takes paint off its layer.
+    Eraser,
+}
+
+/// The dynamics a stroke may set in its `params`, each `0..=1`.
+pub const DYNAMICS: [&str; 5] = ["flow", "hardness", "spacing", "smoothing", "taper"];
+
+/// How a preset handles: its preset values, overridden per stroke.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Dynamics {
+    /// How much paint each touch lays: the marker's ink, the airbrush's
+    /// spray, the pencil's graphite.
+    pub flow: f64,
+    /// How crisp the edge is; a soft brush fades out over its outer part.
+    pub hardness: f64,
+    /// How far apart the dabs of a dabbed brush are, as a share of its size.
+    pub spacing: f64,
+    /// How much the hand's wobble is smoothed out of the path.
+    pub smoothing: f64,
+    /// How long the ends taper, from blunt (0) to long and pointed (1).
+    pub taper: f64,
+}
+
+impl Preset {
+    /// Every preset, in the picker's order.
+    pub const ALL: [Self; 8] = [
+        Self::Round,
+        Self::Pen,
+        Self::Pencil,
+        Self::Marker,
+        Self::Airbrush,
+        Self::Charcoal,
+        Self::Calligraphy,
+        Self::Eraser,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Round => "round",
+            Self::Pen => "pen",
+            Self::Pencil => "pencil",
+            Self::Marker => "marker",
+            Self::Airbrush => "airbrush",
+            Self::Charcoal => "charcoal",
+            Self::Calligraphy => "calligraphy",
+            Self::Eraser => "eraser",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|preset| preset.name() == name)
+    }
+
+    /// The preset a mark is drawn with.
+    pub fn of(style: &Style) -> Self {
+        style
+            .brush
+            .as_deref()
+            .and_then(Self::parse)
+            .unwrap_or_default()
+    }
+
+    /// The presets' names, for a refusal.
+    pub fn names() -> String {
+        Self::ALL.map(Self::name).join(", ")
+    }
+
+    /// The Fluent id of the preset's name.
+    pub fn label(self) -> String {
+        format!("canvas-brush-{}", self.name())
+    }
+
+    fn defaults(self) -> Dynamics {
+        let (flow, hardness, spacing, smoothing, taper) = match self {
+            Self::Round => (1.0, 1.0, 0.1, 0.0, 0.5),
+            Self::Pen => (1.0, 1.0, 0.1, 0.15, 0.25),
+            Self::Pencil => (0.45, 0.7, 0.12, 0.0, 0.15),
+            Self::Marker => (0.7, 0.9, 0.1, 0.1, 0.0),
+            Self::Airbrush => (0.08, 0.0, 0.06, 0.0, 0.0),
+            Self::Charcoal => (0.6, 0.45, 0.1, 0.0, 0.2),
+            Self::Calligraphy => (1.0, 1.0, 0.1, 0.2, 0.2),
+            Self::Eraser => (1.0, 1.0, 0.1, 0.0, 0.0),
+        };
+        Dynamics {
+            flow,
+            hardness,
+            spacing,
+            smoothing,
+            taper,
+        }
+    }
+
+    /// Whether the preset stamps dabs into pixels rather than filling an
+    /// outline.
+    pub fn dabbed(self, dynamics: &Dynamics) -> bool {
+        match self {
+            Self::Pencil | Self::Airbrush | Self::Charcoal => true,
+            Self::Eraser => dynamics.hardness < 0.95,
+            _ => false,
+        }
+    }
+
+    /// How much the ground's tooth shows in what the preset lays.
+    fn grain(self) -> f64 {
+        match self {
+            Self::Pencil => 0.85,
+            Self::Charcoal => 1.0,
+            _ => 0.0,
+        }
+    }
+}
+
+impl Dynamics {
+    /// The dynamics `preset` handles with, as `params` override them.
+    pub fn of(preset: Preset, params: &BTreeMap<String, f64>) -> Self {
+        let mut dynamics = preset.defaults();
+        for (name, field) in [
+            ("flow", &mut dynamics.flow),
+            ("hardness", &mut dynamics.hardness),
+            ("spacing", &mut dynamics.spacing),
+            ("smoothing", &mut dynamics.smoothing),
+            ("taper", &mut dynamics.taper),
+        ] {
+            if let Some(value) = params.get(name) {
+                *field = value.clamp(0.0, 1.0);
+            }
+        }
+        dynamics
+    }
+
+    /// The dynamics a mark is drawn with.
+    pub fn of_mark(mark: &Mark) -> Self {
+        Self::of(Preset::of(&mark.style), &mark.style.params)
+    }
+}
+
+/// The preset as a mark stores it: the round brush is no preset at all.
+pub fn stored(name: &str) -> Option<String> {
+    (!name.is_empty() && name != Preset::Round.name()).then(|| name.to_owned())
+}
+
+/// Why `brush` and `params` cannot draw a stroke on a plain layer, in
+/// words an agent can act on.
+pub fn problem(brush: Option<&str>, params: &BTreeMap<String, f64>, plain: bool) -> Option<String> {
+    if let Some(brush) = brush
+        && !brush.is_empty()
+        && Preset::parse(brush).is_none()
+    {
+        return Some(format!(
+            "brush {brush:?} is not a preset; use one of {}",
+            Preset::names()
+        ));
+    }
+    if !plain {
+        return None;
+    }
+    for (name, value) in params {
+        if !DYNAMICS.contains(&name.as_str()) {
+            return Some(format!(
+                "on a plain layer a stroke's params are {}; {name:?} is a medium's (give the layer a medium)",
+                DYNAMICS.join(", ")
+            ));
+        }
+        if !(0.0..=1.0).contains(value) {
+            return Some(format!("{name} is 0..=1, got {value}"));
+        }
+    }
+    None
+}
+
+fn point_of(point: &[f64]) -> (f64, f64, f64) {
+    (
+        point.first().copied().unwrap_or(0.0),
+        point.get(1).copied().unwrap_or(0.0),
+        point.get(2).copied().unwrap_or(1.0),
+    )
+}
+
+/// `points` with the hand's wobble taken out: each pass pulls every point
+/// toward its neighbours, the ends staying put. `amount` 1 is twelve
+/// passes.
+pub fn smoothed(points: &[Vec<f64>], amount: f64) -> Vec<Vec<f64>> {
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to 0..=12 before the cast"
+    )]
+    let passes = (amount.clamp(0.0, 1.0) * 12.0).round() as usize;
+    let mut points: Vec<(f64, f64, f64)> = points.iter().map(|point| point_of(point)).collect();
+    for _ in 0..passes {
+        if points.len() <= 2 {
+            break;
+        }
+        let before = points.clone();
+        for (index, point) in points.iter_mut().enumerate().skip(1) {
+            let (Some(previous), Some(next)) = (
+                before.get(index.wrapping_sub(1)),
+                before.get(index.saturating_add(1)),
+            ) else {
+                continue;
+            };
+            point.0 = 0.25 * previous.0 + 0.5 * point.0 + 0.25 * next.0;
+            point.1 = 0.25 * previous.1 + 0.5 * point.1 + 0.25 * next.1;
+            point.2 = 0.25 * previous.2 + 0.5 * point.2 + 0.25 * next.2;
+        }
+    }
+    points
+        .into_iter()
+        .map(|(x, y, pressure)| vec![x, y, pressure])
+        .collect()
+}
+
+/// `points` with every point dropped that lies within `tolerance` units of
+/// the line through those kept (Ramer-Douglas-Peucker); the ends stay.
+pub fn simplified(points: &[Vec<f64>], tolerance: f64) -> Vec<Vec<f64>> {
+    kept(points, tolerance)
+        .into_iter()
+        .filter_map(|index| points.get(index).cloned())
+        .collect()
+}
+
+/// The indices of the points [`simplified`] keeps, first to last.
+pub fn kept(points: &[Vec<f64>], tolerance: f64) -> Vec<usize> {
+    if points.len() <= 2 {
+        return (0..points.len()).collect();
+    }
+    let at = |index: usize| {
+        let (x, y, _) = point_of(points.get(index).map_or(&[][..], Vec::as_slice));
+        Point::new(x, y)
+    };
+    let last = points.len() - 1;
+    let mut keep = vec![0, last];
+    let mut spans = vec![(0, last)];
+    while let Some((from, to)) = spans.pop() {
+        let line = ui::vello::kurbo::Line::new(at(from), at(to));
+        let mut worst = (0.0, from);
+        for index in from + 1..to {
+            use ui::vello::kurbo::ParamCurveNearest as _;
+            let distance = line.nearest(at(index), 1e-9).distance_sq.sqrt();
+            if distance > worst.0 {
+                worst = (distance, index);
+            }
+        }
+        if worst.0 > tolerance {
+            keep.push(worst.1);
+            spans.push((from, worst.1));
+            spans.push((worst.1, to));
+        }
+    }
+    keep.sort_unstable();
+    keep
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "stroke coordinates are bounded artwork units"
+)]
+fn narrow(value: f64) -> f32 {
+    value as f32
+}
+
+/// The stroke as evenly spaced samples `spacing` units apart, after its
+/// smoothing.
+fn samples(points: &[Vec<f64>], spacing: f64, smoothing: f64) -> Vec<Sample> {
+    let points: Vec<WetPoint> = smoothed(points, smoothing)
+        .iter()
+        .map(|point| {
+            let (x, y, pressure) = point_of(point);
+            WetPoint::new(narrow(x), narrow(y), narrow(pressure))
+        })
+        .collect();
+    tilo_wet_media::brush::smooth(&points, narrow(spacing))
+}
+
+fn smoothstep(edge0: f64, edge1: f64, x: f64) -> f64 {
+    if edge1 <= edge0 {
+        return if x >= edge1 { 1.0 } else { 0.0 };
+    }
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// How wide the stroke is `distance` along a `total` long stroke: the ends
+/// thin over a length set by `taper`.
+fn tapered(distance: f64, total: f64, size: f64, taper: f64) -> f64 {
+    if taper <= 0.0 {
+        return 1.0;
+    }
+    let length = (taper * size * 5.0).min(total * 0.45).max(1e-6);
+    let start = smoothstep(0.0, length, distance);
+    let end = smoothstep(0.0, length, total - distance);
+    0.08 + 0.92 * start.min(end)
+}
+
+/// A stroke worked out for drawing: its samples and how wide it is at
+/// each.
+struct Laid {
+    samples: Vec<Sample>,
+    /// Half the width at each sample, in units.
+    half: Vec<f64>,
+}
+
+fn sample_point(sample: &Sample) -> Point {
+    Point::new(f64::from(sample.x), f64::from(sample.y))
+}
+
+/// How a preset turns pressure into width: the share of `size` at
+/// pressure `p`.
+fn width_of(preset: Preset, p: f64) -> f64 {
+    match preset {
+        Preset::Round | Preset::Pen => 0.3 + 0.7 * p,
+        Preset::Pencil => 0.75 + 0.25 * p,
+        Preset::Marker => 0.88 + 0.12 * p,
+        Preset::Airbrush => 1.0,
+        Preset::Charcoal => 0.6 + 0.4 * p,
+        Preset::Calligraphy => 0.5 + 0.5 * p,
+        Preset::Eraser => 0.45 + 0.55 * p,
+    }
+}
+
+fn lay(points: &[Vec<f64>], size: f64, preset: Preset, dynamics: &Dynamics) -> Laid {
+    let spacing = if preset.dabbed(dynamics) {
+        (dynamics.spacing.max(0.02) * size).max(0.2)
+    } else {
+        (size * 0.08).clamp(0.2, 2.0)
+    };
+    let samples = samples(points, spacing, dynamics.smoothing);
+    let total = samples.last().map_or(0.0, |last| f64::from(last.distance));
+    let half = samples
+        .iter()
+        .map(|sample| {
+            let p = f64::from(sample.pressure).clamp(0.0, 1.0);
+            (size
+                * 0.5
+                * width_of(preset, p)
+                * tapered(f64::from(sample.distance), total, size, dynamics.taper))
+            .max(0.15)
+        })
+        .collect();
+    Laid { samples, half }
+}
+
+/// The closed outline of a line of width `2 * half` along `samples`, with
+/// round ends.
+fn outline(samples: &[Sample], half: &[f64]) -> BezPath {
+    let mut path = BezPath::new();
+    let radius = |index: usize| half.get(index).copied().unwrap_or(0.5);
+    let (Some(first), Some(last)) = (samples.first(), samples.last()) else {
+        return path;
+    };
+    if samples.len() == 1 {
+        return ui::vello::kurbo::Shape::to_path(
+            &ui::vello::kurbo::Circle::new(sample_point(first), radius(0)),
+            0.1,
+        );
+    }
+    let normal = |sample: &Sample| (-f64::from(sample.ty), f64::from(sample.tx));
+    let side = |sign: f64| {
+        samples
+            .iter()
+            .enumerate()
+            .map(move |(index, sample)| {
+                let (nx, ny) = normal(sample);
+                sample_point(sample) + (nx * sign * radius(index), ny * sign * radius(index))
+            })
+            .collect::<Vec<Point>>()
+    };
+    let left = side(1.0);
+    let right = side(-1.0);
+    let cap = |sample: &Sample, r: f64, from_left: bool| -> Vec<Point> {
+        let (nx, ny) = normal(sample);
+        // Around the end from one side to the other, the long way round
+        // the front of the stroke.
+        let base = ny.atan2(nx) + if from_left { 0.0 } else { std::f64::consts::PI };
+        (1..8)
+            .map(|step| {
+                let angle = base - std::f64::consts::PI * f64::from(step) / 8.0;
+                sample_point(sample) + (r * angle.cos(), r * angle.sin())
+            })
+            .collect()
+    };
+    let mut ring: Vec<Point> = left;
+    ring.extend(cap(last, radius(samples.len() - 1), true));
+    ring.extend(right.into_iter().rev());
+    ring.extend(cap(first, radius(0), false));
+    for (index, point) in ring.into_iter().enumerate() {
+        if index == 0 {
+            path.move_to(point);
+        } else {
+            path.line_to(point);
+        }
+    }
+    path.close_path();
+    path
+}
+
+/// A broad nib held at `angle` degrees dragged along the stroke: a quad
+/// between each pair of samples, every one wound the same way so they
+/// join, and a hairline where the nib runs along its edge.
+fn nib(laid: &Laid, angle: f64, size: f64) -> BezPath {
+    let (sin, cos) = angle.to_radians().sin_cos();
+    let mut path = BezPath::new();
+    let ends = |index: usize| {
+        let sample = laid.samples.get(index)?;
+        let half = laid.half.get(index).copied()?;
+        let centre = sample_point(sample);
+        Some((
+            centre + (cos * half, sin * half),
+            centre - (cos * half, sin * half),
+        ))
+    };
+    for index in 1..laid.samples.len() {
+        let (Some((a, b)), Some((c, d))) = (ends(index - 1), ends(index)) else {
+            continue;
+        };
+        let mut quad = [a, c, d, b];
+        let area: f64 = quad
+            .iter()
+            .zip(quad.iter().cycle().skip(1))
+            .map(|(p, q)| p.x * q.y - q.x * p.y)
+            .sum();
+        if area < 0.0 {
+            quad.reverse();
+        }
+        for (corner, at) in quad.into_iter().enumerate() {
+            if corner == 0 {
+                path.move_to(at);
+            } else {
+                path.line_to(at);
+            }
+        }
+        path.close_path();
+    }
+    let hair: Vec<f64> = laid
+        .half
+        .iter()
+        .map(|half| (half * 0.12).max(size * 0.03))
+        .collect();
+    let hairline = outline(&laid.samples, &hair);
+    path.extend(wound_positive(hairline).elements().iter().copied());
+    path
+}
+
+/// `path` wound counter-clockwise in y-down units (positive shoelace), so
+/// it adds to, never cuts out of, what it is filled with.
+fn wound_positive(path: BezPath) -> BezPath {
+    let area = ui::vello::kurbo::Shape::area(&path);
+    if area >= 0.0 {
+        path
+    } else {
+        path.reverse_subpaths()
+    }
+}
+
+/// The outline a stroke drawn with an outline preset fills, in the mark's
+/// own units; for a dabbed preset, the region its dabs cover.
+pub fn silhouette(points: &[Vec<f64>], size: f64, style: &Style) -> BezPath {
+    let preset = Preset::of(style);
+    let dynamics = Dynamics::of(preset, &style.params);
+    let laid = lay(points, size, preset, &dynamics);
+    if preset == Preset::Calligraphy {
+        nib(&laid, style.angle.unwrap_or(45.0), size)
+    } else {
+        outline(&laid.samples, &laid.half)
+    }
+}
+
+/// How see-through a preset's outline is laid, before the mark's opacity:
+/// a marker's ink is.
+pub fn ink_alpha(style: &Style) -> f64 {
+    let preset = Preset::of(style);
+    match preset {
+        Preset::Marker => Dynamics::of(preset, &style.params).flow,
+        _ => 1.0,
+    }
+}
+
+/// The blend a preset mixes with when the mark names none: a marker's
+/// overlaps darken.
+pub fn default_blend(style: &Style) -> Option<&'static str> {
+    (Preset::of(style) == Preset::Marker).then_some("multiply")
+}
+
+/// A dabbed stroke as pixels: straight-alpha RGBA, `scale` pixels to a
+/// unit, its top-left at `origin` in the mark's own units.
+#[derive(Clone, Debug)]
+pub struct Dabs {
+    pub pixels: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+    pub origin: Point,
+    pub scale: f64,
+}
+
+/// The most pixels one dabbed stroke may take; a larger one is laid more
+/// coarsely.
+const MAX_PIXELS: f64 = 6.0e6;
+
+/// What a dabbed stroke is laid with.
+pub struct DabInput<'a> {
+    pub points: &'a [Vec<f64>],
+    pub size: f64,
+    pub style: &'a Style,
+    /// Pixels per unit wanted.
+    pub scale: f64,
+    /// The paint's colour, `[r, g, b]`.
+    pub rgb: [u8; 3],
+    /// The ground's tooth at a point of the artwork, `0..=1`, mean a half.
+    pub tooth: &'a dyn Fn(Point) -> f64,
+    /// The mark's own units to the artwork's.
+    pub to_artwork: ui::vello::kurbo::Affine,
+}
+
+/// Stamp a dabbed preset's dabs along the stroke.
+pub fn dab(input: &DabInput<'_>) -> Option<Dabs> {
+    let preset = Preset::of(input.style);
+    let dynamics = Dynamics::of(preset, &input.style.params);
+    let laid = lay(input.points, input.size, preset, &dynamics);
+    let reach = laid.half.iter().copied().fold(0.0, f64::max) + 1.0;
+    let mut bounds: Option<Rect> = None;
+    for sample in &laid.samples {
+        let around = Rect::from_center_size(sample_point(sample), (reach * 2.0, reach * 2.0));
+        bounds = Some(bounds.map_or(around, |bounds| bounds.union(around)));
+    }
+    let bounds = bounds?;
+    let scale = input
+        .scale
+        .max(0.05)
+        .min((MAX_PIXELS / bounds.area().max(1e-6)).sqrt());
+    let mut grid = Grid::new(bounds, scale);
+    let tip = Tip {
+        soft: 1.0 - dynamics.hardness.clamp(0.0, 1.0),
+        ragged: if preset == Preset::Charcoal {
+            0.35
+        } else {
+            0.0
+        },
+        spray: preset == Preset::Airbrush,
+    };
+    for (index, sample) in laid.samples.iter().enumerate() {
+        let p = f64::from(sample.pressure).clamp(0.0, 1.0);
+        let flow = match preset {
+            Preset::Pencil => dynamics.flow * p.powf(1.4),
+            Preset::Charcoal => dynamics.flow * (0.35 + 0.65 * p),
+            Preset::Airbrush => dynamics.flow * (0.2 + 0.8 * p),
+            _ => dynamics.flow,
+        };
+        let half = laid.half.get(index).copied().unwrap_or(0.5);
+        grid.stamp(sample, half, flow, &tip);
+    }
+    let pixels = grid.coloured(preset, input);
+    Some(Dabs {
+        pixels,
+        width: u32::try_from(grid.width).ok()?,
+        height: u32::try_from(grid.height).ok()?,
+        origin: grid.origin,
+        scale: grid.scale,
+    })
+}
+
+/// How one dab touches the paper.
+struct Tip {
+    /// The share of the radius the edge fades over.
+    soft: f64,
+    /// How unevenly the edge breaks up, as dry charcoal does.
+    ragged: f64,
+    /// A spray: dense in the middle, thinning all the way out.
+    spray: bool,
+}
+
+/// The paint a dabbed stroke lays, `0..=1` per pixel.
+struct Grid {
+    cover: Vec<f32>,
+    width: usize,
+    height: usize,
+    origin: Point,
+    scale: f64,
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "pixel extents are bounded by MAX_PIXELS"
+)]
+impl Grid {
+    fn new(bounds: Rect, scale: f64) -> Self {
+        let width = (bounds.width() * scale).ceil().max(1.0) as usize;
+        let height = (bounds.height() * scale).ceil().max(1.0) as usize;
+        Self {
+            cover: vec![0.0; width * height],
+            width,
+            height,
+            origin: bounds.origin(),
+            scale,
+        }
+    }
+
+    /// One dab `half` units wide around `sample`, laying `flow` of paint
+    /// over what is there.
+    fn stamp(&mut self, sample: &Sample, half: f64, flow: f64, tip: &Tip) {
+        let radius = half * self.scale;
+        // Never softer than a pixel, so a fine pencil stays smooth.
+        let edge = (tip.soft * radius).max(1.0);
+        let centre = (sample_point(sample) - self.origin) * self.scale;
+        let x0 = (centre.x - radius - 1.0).floor().max(0.0) as usize;
+        let y0 = (centre.y - radius - 1.0).floor().max(0.0) as usize;
+        let x1 = ((centre.x + radius + 1.0).ceil().max(0.0) as usize).min(self.width);
+        let y1 = ((centre.y + radius + 1.0).ceil().max(0.0) as usize).min(self.height);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let dx = x as f64 + 0.5 - centre.x;
+                let dy = y as f64 + 0.5 - centre.y;
+                let distance = dx.hypot(dy);
+                let touch = if tip.spray {
+                    let t = (distance / radius.max(1e-6)).min(1.0);
+                    (1.0 - t * t).powi(2)
+                } else {
+                    let mut reach = radius;
+                    if tip.ragged > 0.0 {
+                        let angle = dy.atan2(dx);
+                        let along = f64::from(sample.distance) * 0.7;
+                        reach *= 1.0
+                            - tip.ragged * noise(along + angle.cos() * 2.0, angle.sin() * 2.0, 11);
+                    }
+                    1.0 - smoothstep(reach - edge, reach, distance)
+                };
+                if touch > 0.0
+                    && let Some(value) = self.cover.get_mut(y * self.width + x)
+                {
+                    let laid = (flow * touch) as f32;
+                    *value += laid * (1.0 - *value);
+                }
+            }
+        }
+    }
+
+    /// The paint as straight-alpha RGBA, the ground's tooth catching it
+    /// where the preset has grain.
+    fn coloured(&self, preset: Preset, input: &DabInput<'_>) -> Vec<u8> {
+        let grain = preset.grain();
+        let fill = if preset == Preset::Charcoal {
+            0.85
+        } else {
+            1.05
+        };
+        let mut pixels = vec![0_u8; self.cover.len() * 4];
+        for (index, value) in self.cover.iter().enumerate() {
+            if *value <= 0.0 {
+                continue;
+            }
+            let laid = f64::from(*value);
+            let alpha = if grain > 0.0 {
+                let local = self.origin
+                    + ui::vello::kurbo::Vec2::new(
+                        ((index % self.width) as f64 + 0.5) / self.scale,
+                        ((index / self.width) as f64 + 0.5) / self.scale,
+                    );
+                let at = input.to_artwork * local;
+                // Light pressure touches only the tooth's peaks; pressing
+                // harder fills the valleys too.
+                let tooth = (input.tooth)(at) * 0.6 + noise(at.x / 1.1, at.y / 1.1, 7) * 0.4;
+                let threshold = 1.0 - laid * fill;
+                let caught = smoothstep(threshold - 0.2, threshold + 0.2, tooth);
+                laid * (1.0 - grain + grain * caught)
+            } else {
+                laid
+            };
+            let byte = (alpha.clamp(0.0, 1.0) * 255.0).round() as u8;
+            if let Some(pixel) = pixels.get_mut(index * 4..index * 4 + 4) {
+                pixel.copy_from_slice(&[input.rgb[0], input.rgb[1], input.rgb[2], byte]);
+            }
+        }
+        pixels
+    }
+}
+
+/// A `SplitMix64` hash of `value`.
+fn mix(value: u64) -> u64 {
+    let mut z = value.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "lattice coordinates are hashed; wrapping far from the origin is harmless"
+)]
+fn lattice(x: f64, y: f64, seed: u64) -> f64 {
+    let xi = (x as i64).cast_unsigned();
+    let yi = (y as i64).cast_unsigned();
+    (mix(seed ^ mix(xi ^ mix(yi))) >> 11) as f64 / (1_u64 << 53) as f64
+}
+
+/// Smooth lattice noise in `0..=1`, fixed to the artwork.
+fn noise(x: f64, y: f64, seed: u64) -> f64 {
+    let (x0, y0) = (x.floor(), y.floor());
+    let tx = smoothstep(0.0, 1.0, x - x0);
+    let ty = smoothstep(0.0, 1.0, y - y0);
+    let corner = |dx: f64, dy: f64| lattice(x0 + dx, y0 + dy, seed);
+    let top = corner(0.0, 0.0) + (corner(1.0, 0.0) - corner(0.0, 0.0)) * tx;
+    let bottom = corner(0.0, 1.0) + (corner(1.0, 1.0) - corner(0.0, 1.0)) * tx;
+    top + (bottom - top) * ty
+}
+
+/// The stroke `points` of a stroke mark, with its size.
+pub fn stroke_of(mark: &Mark) -> Option<(&[Vec<f64>], f64)> {
+    match &mark.shape {
+        Shape::Stroke { points, size, .. } => Some((points.as_slice(), *size)),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ui::vello::kurbo::Shape as _;
+
+    use super::*;
+
+    fn line(pressure: f64) -> Vec<Vec<f64>> {
+        (0..=20)
+            .map(|step| vec![f64::from(step) * 10.0, 50.0, pressure])
+            .collect()
+    }
+
+    fn style(brush: &str) -> Style {
+        Style {
+            brush: stored(brush),
+            ..Style::default()
+        }
+    }
+
+    fn darkness(dabs: &Dabs) -> f64 {
+        dabs.pixels
+            .chunks_exact(4)
+            .map(|pixel| f64::from(pixel[3]))
+            .sum::<f64>()
+    }
+
+    fn flat(_: Point) -> f64 {
+        0.5
+    }
+
+    fn laid(brush: &str, pressure: f64) -> Dabs {
+        let points = line(pressure);
+        let style = style(brush);
+        dab(&DabInput {
+            points: &points,
+            size: 6.0,
+            style: &style,
+            scale: 2.0,
+            rgb: [20, 20, 20],
+            tooth: &flat,
+            to_artwork: ui::vello::kurbo::Affine::IDENTITY,
+        })
+        .expect("laid")
+    }
+
+    #[test]
+    fn presets_round_trip_by_name_and_round_is_stored_as_none() {
+        for preset in Preset::ALL {
+            assert_eq!(Preset::parse(preset.name()), Some(preset));
+        }
+        assert_eq!(stored("round"), None);
+        assert_eq!(stored(""), None);
+        assert_eq!(stored("pencil").as_deref(), Some("pencil"));
+        assert!(problem(Some("crayon"), &BTreeMap::new(), true).is_some());
+        let medium = BTreeMap::from([("load".to_owned(), 0.3)]);
+        assert!(problem(Some("pen"), &medium, true).is_some());
+        assert!(problem(Some("pen"), &medium, false).is_none());
+    }
+
+    #[test]
+    fn pencil_pressure_sets_darkness_not_width() {
+        let light = laid("pencil", 0.2);
+        let firm = laid("pencil", 1.0);
+        assert!(darkness(&firm) > darkness(&light) * 2.5);
+        // Within a pixel or two the same width either way.
+        assert!(light.height.abs_diff(firm.height) <= 2);
+    }
+
+    #[test]
+    fn pen_pressure_sets_width() {
+        let thin = silhouette(&line(0.1), 8.0, &style("pen"));
+        let wide = silhouette(&line(1.0), 8.0, &style("pen"));
+        assert!(wide.bounding_box().height() > thin.bounding_box().height() * 1.8);
+    }
+
+    #[test]
+    fn the_same_stroke_lays_the_same_pixels() {
+        assert_eq!(laid("charcoal", 0.7).pixels, laid("charcoal", 0.7).pixels);
+    }
+
+    #[test]
+    fn a_calligraphy_nib_is_thick_across_its_angle_and_thin_along_it() {
+        let across = Style {
+            angle: Some(90.0),
+            ..style("calligraphy")
+        };
+        let along = Style {
+            angle: Some(0.0),
+            ..style("calligraphy")
+        };
+        let thick = silhouette(&line(1.0), 10.0, &across)
+            .bounding_box()
+            .height();
+        let thin = silhouette(&line(1.0), 10.0, &along).bounding_box().height();
+        assert!(thick > thin * 3.0, "{thick} vs {thin}");
+    }
+
+    #[test]
+    fn smoothing_and_simplifying_keep_the_ends() {
+        let wobbly: Vec<Vec<f64>> = (0..40)
+            .map(|step| {
+                let y = if step % 2 == 0 { 3.0 } else { -3.0 };
+                vec![f64::from(step) * 5.0, y, 1.0]
+            })
+            .collect();
+        let smooth = smoothed(&wobbly, 1.0);
+        assert_eq!(smooth.first(), Some(&vec![0.0, 3.0, 1.0]));
+        assert!(
+            smooth
+                .iter()
+                .skip(3)
+                .take(30)
+                .all(|point| point[1].abs() < 1.0)
+        );
+        let fewer = simplified(&smooth, 1.5);
+        assert!(fewer.len() < 6, "{}", fewer.len());
+        assert_eq!(fewer.last(), smooth.last());
+    }
+}
