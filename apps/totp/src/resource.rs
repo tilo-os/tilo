@@ -77,6 +77,12 @@ impl ResourceApp for TotpShell {
     const TITLE: &'static str = "Authenticator";
     const ICON: Option<&'static str> = Some("totp");
     const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    // The window shows secrets: captures, recordings and remote viewers get
+    // a placeholder in every launch, not only in a standalone build.
+    const BEHAVIOUR: ui::application::ComponentBehaviour = ui::application::ComponentBehaviour {
+        capture_protected: true,
+        ..ui::application::ComponentBehaviour::DEFAULT
+    };
 
     fn view(cx: &mut ViewCx<Totp>) -> Element {
         cx.surface(AuthenticatorApp::new())
@@ -156,7 +162,15 @@ impl ActionSink {
 
 /// Live launch with capture protection for one-time codes.
 pub fn launch_spec() -> ui::launch::LaunchSpec {
-    // Window title / capture protection live in main.rs via configure_app
-    // (native App only). The browser mounts the definition without that path.
     ui::framework::launch_spec::<TotpShell>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_launch_withholds_the_codes_window_from_captures() {
+        const { assert!(<TotpShell as ResourceApp>::BEHAVIOUR.capture_protected) };
+    }
 }

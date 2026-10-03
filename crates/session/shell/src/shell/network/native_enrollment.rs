@@ -9,7 +9,7 @@ use crate::{
 #[derive(Default)]
 pub(super) struct State {
     owner: Mutex<Option<NativeWorkspaceOwner>>,
-    attempts: Mutex<std::collections::HashMap<u64, enrollment_driver::Attempt>>,
+    pub(super) attempts: Mutex<std::collections::HashMap<u64, enrollment_driver::Attempt>>,
 }
 impl ShellNetwork {
     pub(crate) fn native_owner(&self) -> Result<NativeWorkspaceOwner, String> {
