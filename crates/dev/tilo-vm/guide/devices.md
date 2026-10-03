@@ -66,9 +66,17 @@ work on a device too, beside the device's session.
   shows its free space.
 - **Your worktree on a builder of the device's architecture**
   (`--builder host` with `TILO_VM_CARGO`): any cargo drop-in that builds for
-  aarch64 and leaves the outputs in this worktree's target dir. The layer's
-  target and rustc are read from the binary it built, and the device refuses
-  any other architecture.
+  aarch64 and leaves the binaries in the target dir `cargo metadata` names
+  (set `CARGO_TARGET_DIR` to where the drop-in puts them). The layer's target
+  and rustc are read from the binary it built, and the device refuses any
+  other architecture. With rcargo's ARM builder, for example:
+
+  ```sh
+  printf '#!/bin/sh\nexec env RCARGO_CONFIG=$HOME/.config/rcargo/arm.toml rcargo --fetch release/shell "$@"\n' > ~/.local/bin/cargo-arm-shell
+  chmod +x ~/.local/bin/cargo-arm-shell
+  CARGO_TARGET_DIR=$PWD/target/aarch64 TILO_VM_CARGO=cargo-arm-shell \
+    tilo-vm swap --slot device shell --builder host
+  ```
 - **Your worktree on the device** (`--builder vm`, the default when the
   device's image can build): it works, but a board compiles a release shell
   for hours. Use it on a fast aarch64 machine, or for small components.
