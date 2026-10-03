@@ -11,7 +11,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use ui::icons::Icon;
-use ui::search::{CatalogSearchProvider, FieldWeight, SearchCatalog, SearchRecord, SearchResult};
+use ui::search::{
+    CatalogSearchProvider, Facet, FieldWeight, SearchCatalog, SearchQuery, SearchRecord,
+    SearchResult,
+};
 
 use crate::model::{Contact, ContactId, ContactStore, normalize_text};
 
@@ -48,6 +51,8 @@ struct RefreshPublicationHook {
 #[derive(Default)]
 struct ContactSearchLookup {
     contacts: BTreeMap<ContactId, String>,
+    /// Each contact's groups as they are spelled, for the group facet.
+    memberships: BTreeMap<ContactId, Vec<String>>,
     groups: BTreeMap<String, String>,
     /// Logical group identity -> observed display spellings and their counts.
     /// This is compact metadata, not a second contact projection.
@@ -102,6 +107,7 @@ impl ContactSearchProvider {
         for contact in &store.contacts {
             let result = contact_result(contact);
             lookup.contacts.insert(contact.id, contact.display_name());
+            lookup.memberships.insert(contact.id, memberships(contact));
             rows.push(contact_record(contact, result));
         }
         let mut ignored_affected_groups = BTreeSet::new();
@@ -263,12 +269,17 @@ impl ContactSearchProvider {
 
         if let Some(before) = before {
             snapshot.lookup.contacts.remove(&before.id);
+            snapshot.lookup.memberships.remove(&before.id);
         }
         if let Some(after) = after {
             snapshot
                 .lookup
                 .contacts
                 .insert(after.id, after.display_name());
+            snapshot
+                .lookup
+                .memberships
+                .insert(after.id, memberships(after));
         }
         for (key, resource, group) in group_updates {
             if let Some(variants) = next_variants.remove(&key) {
@@ -316,6 +327,19 @@ impl ContactSearchProvider {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 }
+
+/// A contact's groups as they are spelled.
+fn memberships(contact: &Contact) -> Vec<String> {
+    contact
+        .groups
+        .iter()
+        .map(|group| group.value.trim().to_owned())
+        .filter(|group| !group.is_empty())
+        .collect()
+}
+
+/// The search facet that narrows hits to the people in a group.
+const GROUP_FACET: &str = "group";
 
 fn update_group_variants(
     variants: &mut BTreeMap<String, BTreeMap<String, usize>>,
@@ -431,6 +455,55 @@ fn group_record(resource: String, group: &str) -> SearchRecord {
 impl CatalogSearchProvider for ContactSearchProvider {
     fn provider_name(&self) -> &str {
         CONTACT_KIND
+    }
+
+    /// Groups narrow a search to the people in them (`group:Work`).
+    fn facets(&self) -> Vec<Facet> {
+        let snapshot = self
+            .snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut groups: Vec<&String> = snapshot.lookup.groups.values().collect();
+        groups.sort_by_key(|group| normalize_text(group));
+        let facet = groups
+            .into_iter()
+            .fold(Facet::new(GROUP_FACET, "Group"), |facet, group| {
+                facet.value(group.clone(), group.clone())
+            });
+        drop(snapshot);
+        vec![facet]
+    }
+
+    fn admits(&self, hit: &SearchResult, query: &SearchQuery) -> bool {
+        if query.filter_values(GROUP_FACET).next().is_none() {
+            return true;
+        }
+        let Some(address) = hit.action_address() else {
+            return false;
+        };
+        let snapshot = self
+            .snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let admitted = if let Some(raw) = address.resource.strip_prefix("contacts.contact:") {
+            raw.parse::<ContactId>().ok().is_some_and(|id| {
+                let groups: Vec<&str> = snapshot
+                    .lookup
+                    .memberships
+                    .get(&id)
+                    .map(|groups| groups.iter().map(String::as_str).collect())
+                    .unwrap_or_default();
+                query.admits(GROUP_FACET, &groups)
+            })
+        } else {
+            snapshot
+                .lookup
+                .groups
+                .get(&address.resource)
+                .is_some_and(|group| query.admits(GROUP_FACET, &[group.as_str()]))
+        };
+        drop(snapshot);
+        admitted
     }
 
     fn catalog(&self) -> Option<SearchCatalog> {
@@ -626,6 +699,37 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A group facet narrows hits to the people in that group.
+    #[test]
+    fn the_group_facet_narrows_hits_to_its_members() {
+        let store = store_with_samples();
+        let provider = ContactSearchProvider::new(&store);
+        let facets = CatalogSearchProvider::facets(&provider);
+        let groups = &facets[0];
+        assert_eq!(groups.key, GROUP_FACET);
+        assert!(groups.values.iter().any(|value| value.value == "Friends"));
+
+        let query = SearchQuery::parse("group:friends", &facets);
+        let page = provider.search_page(&query, None, 64, 64);
+        let titles: Vec<&str> = page
+            .results
+            .iter()
+            .filter(|hit| hit.title != "Group: Friends")
+            .map(|hit| hit.title.as_str())
+            .collect();
+        assert_eq!(titles.len(), 2, "{titles:?}");
+        for hit in &titles {
+            let contact = store
+                .contacts
+                .iter()
+                .find(|contact| contact.display_name() == *hit)
+                .unwrap();
+            assert!(contact.groups.iter().any(|group| group.value == "Friends"));
+        }
+        let everyone = provider.search_page(&SearchQuery::new(""), None, 64, 64);
+        assert!(everyone.results.len() > page.results.len());
     }
 
     /// Results address the exported open action; the empty query browses contacts and groups; group hits resolve lazily.
