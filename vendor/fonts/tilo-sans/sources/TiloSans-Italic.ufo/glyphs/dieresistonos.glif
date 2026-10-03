@@ -1,0 +1,10 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<glyph name="dieresistonos" format="2">
+  <advance width="516"/>
+  <unicode hex="0385"/>
+  <outline>
+    <component base="dotaccentcomb"/>
+    <component base="dotaccentcomb" xOffset="303"/>
+    <component base="tonos" xOffset="139" yOffset="34"/>
+  </outline>
+</glyph>

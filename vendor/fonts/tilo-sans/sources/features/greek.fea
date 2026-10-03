@@ -1,0 +1,4 @@
+# Greek: the question mark (a semicolon in form) follows the capitals under `case`.
+feature case {
+sub questiongreek by semicolon.case;
+} case;

@@ -5565,11 +5565,17 @@
     </dict>
     <key>public.kern1.KO_T</key>
     <dict>
+      <key>eta</key>
+      <integer>-64</integer>
+      <key>etatonos</key>
+      <integer>-64</integer>
       <key>m</key>
       <integer>-64</integer>
       <key>n</key>
       <integer>-64</integer>
       <key>p</key>
+      <integer>-64</integer>
+      <key>pi</key>
       <integer>-64</integer>
       <key>public.kern2.KO_A</key>
       <integer>-54</integer>
@@ -5823,11 +5829,17 @@
     </dict>
     <key>public.kern1.KO_V</key>
     <dict>
+      <key>eta</key>
+      <integer>-22</integer>
+      <key>etatonos</key>
+      <integer>-22</integer>
       <key>m</key>
       <integer>-22</integer>
       <key>n</key>
       <integer>-22</integer>
       <key>p</key>
+      <integer>-22</integer>
+      <key>pi</key>
       <integer>-22</integer>
       <key>public.kern2.KO_A</key>
       <integer>-48</integer>
@@ -5958,11 +5970,17 @@
     </dict>
     <key>public.kern1.KO_W</key>
     <dict>
+      <key>eta</key>
+      <integer>-16</integer>
+      <key>etatonos</key>
+      <integer>-16</integer>
       <key>m</key>
       <integer>-16</integer>
       <key>n</key>
       <integer>-16</integer>
       <key>p</key>
+      <integer>-16</integer>
+      <key>pi</key>
       <integer>-16</integer>
       <key>public.kern2.KO_A</key>
       <integer>-34</integer>
