@@ -12,7 +12,7 @@
 //!     800x600 responsive layout).
 //!   * `--scenario NAME`    — stage a specific surface for the frame:
 //!     `file`, `format`, `more`, `docsettings`, `editing`,
-//!     `pointmode`, `summary`, `multiselect`, `tabmenu`, `tabcolour`,
+//!     `pointmode`, `summary`, `multiselect`, `tabmenu`, `tabcolour`, `tabrename`,
 //!     `commandpalette`, `loading`, `error`, `conflict`, `reducedmotion`.
 //!
 //! The shots path always seeds the sample workbook and disables on-disk
@@ -62,6 +62,7 @@ const SCENARIOS: &[&str] = &[
     "multiselect",
     "tabmenu",
     "tabcolour",
+    "tabrename",
     "fbarselect",
     "commandpalette",
     "fillseries",
