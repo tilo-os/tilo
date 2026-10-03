@@ -1,0 +1,8 @@
+# The app-paint ratchet for apps-camera: counts may only fall (HIG §9.13).
+# Format: <path relative to the repository root> <pattern> <count>
+# Regenerate: UPDATE_RATCHET_BASELINES=1 RATCHET_SCOPE=<dir> cargo test -p tilo-ui --test it do_not_grow
+apps/camera/src/app.rs desktop_ground 3
+apps/camera/src/app.rs ramp_slot 16
+apps/camera/src/app.rs raw_paint 2
+apps/camera/src/model.rs glyph_icon 2
+apps/camera/src/paint.rs raw_paint 19
