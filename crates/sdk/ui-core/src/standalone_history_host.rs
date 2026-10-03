@@ -318,9 +318,6 @@ impl StandaloneHistoryHost {
             .map_or(0, |session| session.selection().len())
     }
 
-    /// The host's own chrome presents History and Search: drop the in-window
-    /// buttons. Their actions stay, reachable from that chrome.
-    #[cfg(any(feature = "native", test))]
     /// Whether the app places a [`history_button`] in its own toolbar. The
     /// window then draws no History button of its own; the button's action
     /// is the same.
@@ -328,6 +325,9 @@ impl StandaloneHistoryHost {
         self.app_presents_button = presents;
     }
 
+    /// The host's own chrome presents History and Search: drop the in-window
+    /// buttons. Their actions stay, reachable from that chrome.
+    #[cfg(any(feature = "native", test))]
     pub(crate) fn remove_in_window_controls(&mut self) {
         let had_toolbar = self.toolbar.take().is_some();
         let had_search = self.search.take().is_some();
