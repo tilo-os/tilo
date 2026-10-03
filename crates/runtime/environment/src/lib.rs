@@ -23,6 +23,7 @@
     )
 )]
 
+use std::collections::BTreeMap;
 use std::path::{Component, Path};
 use std::str::FromStr;
 
@@ -44,14 +45,16 @@ pub const DEFAULT_RECORD: &str = "default";
 /// The name a freshly created default environment carries.
 pub const DEFAULT_NAME: &str = "Default";
 
-/// One environment.
+/// One environment. Architecture-neutral: a node uses the images for its own
+/// architecture, so an environment made on an `x86_64` laptop opens on an
+/// `aarch64` relay.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Environment {
     /// What the person calls it.
     pub name: String,
-    /// The `env-runtime` image (`tapp:<hex>`): the base of `/usr` and `/etc`.
-    pub runtime: String,
-    /// Tool images built for [`Self::runtime`], topmost last.
+    /// The `env-runtime` release: the base of `/usr` and `/etc`.
+    pub runtime: RuntimeRef,
+    /// Tools built for [`Self::runtime`], topmost last.
     pub tools: Vec<ToolRef>,
     /// `FsPath` (and `NetHost`) grants, subject [`RUNTIME_APP_ID`].
     pub grants: Json<Vec<CapOverride>>,
@@ -59,15 +62,28 @@ pub struct Environment {
     pub home: HomePolicy,
 }
 
-/// A tool image in an environment.
+/// An `env-runtime` release and its image per architecture.
+#[derive(
+    Model, Default, Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema,
+)]
+pub struct RuntimeRef {
+    /// The release, e.g. `2026.10`: the same userland on every architecture.
+    pub release: String,
+    /// The `env-runtime` image (`tapp:<hex>`) per architecture
+    /// (`x86_64`, `aarch64`).
+    pub images: BTreeMap<String, String>,
+}
+
+/// A tool in an environment and its image per architecture.
 #[derive(
     Model, Default, Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, JsonSchema,
 )]
 pub struct ToolRef {
-    /// The tool image (`tapp:<hex>`).
-    pub id: String,
     /// What the person asked for, e.g. `["pandoc"]`.
     pub packages: Vec<String>,
+    /// The tool image (`tapp:<hex>`) per architecture, built for the
+    /// runtime's image of that architecture.
+    pub images: BTreeMap<String, String>,
 }
 
 /// What happens to an environment's home when a session ends.
@@ -84,32 +100,54 @@ pub enum HomePolicy {
 impl Environment {
     /// Add tool.
     ///
-    /// Appends a tool image built for this environment's runtime. Adding an
-    /// image the environment already has changes nothing.
+    /// Records the image built for `packages` on `arch`: a new tool, or the
+    /// image an existing tool was missing for that architecture.
     #[action]
     pub fn add_tool(
         &mut self,
-        #[param("Tool image")] id: String,
         #[param("Packages it provides")] packages: Vec<String>,
+        #[param("Architecture")] arch: String,
+        #[param("Tool image")] image: String,
     ) -> Result<(), String> {
-        parse_image(&id)?;
-        if packages.iter().all(|p| p.trim().is_empty()) {
+        parse_image(&image)?;
+        check_arch(&arch)?;
+        let packages: Vec<String> = packages
+            .into_iter()
+            .map(|p| p.trim().to_owned())
+            .filter(|p| !p.is_empty())
+            .collect();
+        if packages.is_empty() {
             return Err("a tool provides at least one package".into());
         }
-        if self.tools.iter().any(|tool| tool.id == id) {
+        if let Some(tool) = self
+            .tools
+            .iter_mut()
+            .find(|tool| same_packages(&tool.packages, &packages))
+        {
+            tool.images.insert(arch, image);
             return Ok(());
         }
-        self.tools.push(ToolRef { id, packages });
+        self.tools.push(ToolRef {
+            packages,
+            images: BTreeMap::from([(arch, image)]),
+        });
         Ok(())
     }
 
     /// Remove tool.
     #[action(destructive)]
-    pub fn remove_tool(&mut self, #[param("Tool image")] id: String) -> Result<(), String> {
+    pub fn remove_tool(
+        &mut self,
+        #[param("Packages it provides")] packages: Vec<String>,
+    ) -> Result<(), String> {
         let before = self.tools.len();
-        self.tools.retain(|tool| tool.id != id);
+        self.tools
+            .retain(|tool| !same_packages(&tool.packages, &packages));
         if self.tools.len() == before {
-            return Err(format!("{id} is not in this environment"));
+            return Err(format!(
+                "no tool provides exactly {} in this environment",
+                packages.join(", ")
+            ));
         }
         Ok(())
     }
@@ -143,26 +181,32 @@ impl Environment {
 
     /// Set runtime.
     ///
-    /// Switches to another `env-runtime` together with every tool rebuilt for
-    /// it, in one step: a tool is never mounted on a runtime it was not built
-    /// for.
+    /// Switches to another `env-runtime` release together with every tool
+    /// rebuilt for it, in one step: a tool is never mounted on a runtime it
+    /// was not built for.
     #[action]
     pub fn set_runtime(
         &mut self,
-        #[param("Runtime image")] runtime: String,
+        #[param("Runtime release")] runtime: RuntimeRef,
         #[param("Tools rebuilt for it")] tools: Vec<ToolRef>,
     ) -> Result<(), String> {
-        parse_image(&runtime)?;
-        for tool in &tools {
-            parse_image(&tool.id)?;
+        check_images(&runtime.images)?;
+        if runtime.release.trim().is_empty() {
+            return Err("a runtime names its release".into());
         }
-        if tools.len() != self.tools.len() {
-            return Err(format!(
-                "this environment has {} tools and {} were rebuilt; every tool moves \
-                 to the new runtime or the runtime does not change",
-                self.tools.len(),
-                tools.len()
-            ));
+        for tool in &tools {
+            check_images(&tool.images)?;
+        }
+        let rebuilt_all = tools.len() == self.tools.len()
+            && self.tools.iter().all(|old| {
+                tools
+                    .iter()
+                    .any(|new| same_packages(&old.packages, &new.packages))
+            });
+        if !rebuilt_all {
+            return Err(
+                "every tool moves to the new runtime, or the runtime does not change".into(),
+            );
         }
         self.runtime = runtime;
         self.tools = tools;
@@ -191,34 +235,32 @@ impl Environment {
         tilo_resource::Fields::write_fields(self, doc, &automerge::ROOT)
     }
 
-    /// A new environment on `runtime` with nothing added and nothing granted.
-    pub fn new(name: &str, runtime: &PackageId) -> Self {
+    /// A new environment on the runtime `release`, whose image for `arch` is
+    /// `image`, with nothing added and nothing granted.
+    pub fn new(name: &str, release: &str, arch: &str, image: &PackageId) -> Self {
         Self {
             name: name.to_owned(),
-            runtime: runtime.to_string(),
+            runtime: RuntimeRef {
+                release: release.to_owned(),
+                images: BTreeMap::from([(arch.to_owned(), image.to_string())]),
+            },
             ..Self::default()
         }
     }
 
-    /// The runtime image.
+    /// The runtime image for `arch`.
     ///
     /// # Errors
-    /// Returns the reason when the stored id is not a `tapp:<hex>` id.
-    pub fn runtime_id(&self) -> Result<PackageId, String> {
-        parse_image(&self.runtime)
-    }
-
-    /// The tool images, topmost first — the order their trees stack over the
-    /// runtime.
-    ///
-    /// # Errors
-    /// Returns the reason when a stored id is not a `tapp:<hex>` id.
-    pub fn tool_ids_topmost_first(&self) -> Result<Vec<PackageId>, String> {
-        self.tools
-            .iter()
-            .rev()
-            .map(|t| parse_image(&t.id))
-            .collect()
+    /// Returns the reason when the release has no image for `arch` or the
+    /// stored id is not a `tapp:<hex>` id.
+    pub fn runtime_image(&self, arch: &str) -> Result<PackageId, String> {
+        let id = self.runtime.images.get(arch).ok_or_else(|| {
+            format!(
+                "runtime release {} has no image for {arch}",
+                self.runtime.release
+            )
+        })?;
+        parse_image(id)
     }
 
     /// The tool that provides `package`, if one does.
@@ -227,6 +269,59 @@ impl Environment {
             .iter()
             .find(|tool| tool.packages.iter().any(|p| p == package))
     }
+}
+
+impl ToolRef {
+    /// The tool's image for `arch`: `None` when it has not been built there
+    /// yet.
+    ///
+    /// # Errors
+    /// Returns the reason when the stored id is not a `tapp:<hex>` id.
+    pub fn image(&self, arch: &str) -> Result<Option<PackageId>, String> {
+        self.images.get(arch).map(|id| parse_image(id)).transpose()
+    }
+}
+
+/// The architecture this node runs, as the record names it.
+pub fn host_arch() -> &'static str {
+    if cfg!(target_arch = "aarch64") {
+        "aarch64"
+    } else {
+        "x86_64"
+    }
+}
+
+/// The architectures an image may be recorded for — the spelling of
+/// `tilo_app_package::manifest::Arch`.
+pub const ARCHES: &[&str] = &["x86_64", "aarch64"];
+
+fn check_arch(arch: &str) -> Result<(), String> {
+    if ARCHES.contains(&arch) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{arch:?} is not an architecture images are built for"
+        ))
+    }
+}
+
+fn check_images(images: &BTreeMap<String, String>) -> Result<(), String> {
+    if images.is_empty() {
+        return Err("an image is recorded for at least one architecture".into());
+    }
+    for (arch, id) in images {
+        check_arch(arch)?;
+        parse_image(id)?;
+    }
+    Ok(())
+}
+
+/// Whether two package lists name the same packages, in any order.
+pub fn same_packages(a: &[String], b: &[String]) -> bool {
+    let set = |list: &[String]| -> std::collections::BTreeSet<String> {
+        list.iter().map(|p| p.trim().to_owned()).collect()
+    };
+    set(a) == set(b)
 }
 
 /// Parse an image id as the record stores it.
@@ -427,44 +522,57 @@ mod tests {
 
     fn replica() -> Replica<Environment> {
         let mut doc = tilo_resource::Doc::new();
-        Environment::new("Work", &image(1))
+        Environment::new("Work", "2026.10", "x86_64", &image(1))
             .write_record(&mut doc)
             .unwrap();
         doc.commit();
         Replica::from_doc(doc)
     }
 
+    fn add(packages: &[&str], arch: &str, id: PackageId) -> tilo_resource::Invoke<Environment> {
+        Environment::ADD_TOOL.with((
+            packages.iter().map(|p| (*p).to_owned()).collect(),
+            arch.to_owned(),
+            id.to_string(),
+        ))
+    }
+
     #[test]
-    fn tools_are_added_once_and_removed_by_image() {
+    fn tools_carry_one_image_per_architecture() {
         let mut r = replica();
-        r.apply(Environment::ADD_TOOL.with((image(2).to_string(), vec!["pandoc".into()])))
-            .unwrap();
-        r.apply(Environment::ADD_TOOL.with((image(2).to_string(), vec!["pandoc".into()])))
-            .unwrap();
-        r.apply(Environment::ADD_TOOL.with((image(3).to_string(), vec!["jq".into()])))
-            .unwrap();
+        r.apply(add(&["pandoc"], "x86_64", image(2))).unwrap();
+        r.apply(add(&["pandoc"], "aarch64", image(3))).unwrap();
+        r.apply(add(&["jq"], "x86_64", image(4))).unwrap();
         let env = r.state().unwrap();
         assert_eq!(
             env.tools.len(),
             2,
-            "adding the same image twice adds it once"
+            "a second architecture's build is the same tool"
         );
-        assert_eq!(env.tool_providing("jq").unwrap().id, image(3).to_string());
-        assert_eq!(
-            env.tool_ids_topmost_first().unwrap(),
-            vec![image(3), image(2)],
-            "the newest tool stacks on top"
-        );
+        let pandoc = env.tool_providing("pandoc").unwrap();
+        assert_eq!(pandoc.image("x86_64").unwrap(), Some(image(2)));
+        assert_eq!(pandoc.image("aarch64").unwrap(), Some(image(3)));
+        let jq = env.tool_providing("jq").unwrap();
+        assert_eq!(jq.image("aarch64").unwrap(), None, "not built there yet");
+        assert_eq!(env.runtime_image("x86_64").unwrap(), image(1));
+        assert!(env.runtime_image("aarch64").is_err());
 
+        assert!(r.apply(add(&["pandoc"], "x86_64", image(2))).is_ok());
         assert!(
-            r.apply(Environment::ADD_TOOL.with(("pandoc".into(), vec!["pandoc".into()])))
-                .is_err(),
-            "a tool is an image id, not a package name"
+            r.apply(Environment::ADD_TOOL.with((
+                vec!["pandoc".into()],
+                "x86_64".into(),
+                "pandoc".into()
+            )))
+            .is_err(),
+            "a tool image is an image id, not a package name"
         );
-        r.apply(Environment::REMOVE_TOOL.with(image(2).to_string()))
+        assert!(r.apply(add(&["pandoc"], "riscv", image(5))).is_err());
+
+        r.apply(Environment::REMOVE_TOOL.with(vec!["pandoc".into()]))
             .unwrap();
         assert!(
-            r.apply(Environment::REMOVE_TOOL.with(image(2).to_string()))
+            r.apply(Environment::REMOVE_TOOL.with(vec!["pandoc".into()]))
                 .is_err()
         );
         assert_eq!(r.state().unwrap().tools.len(), 1);
@@ -523,21 +631,25 @@ mod tests {
     #[test]
     fn the_runtime_moves_only_with_every_tool_and_names_stay_non_empty() {
         let mut r = replica();
-        r.apply(Environment::ADD_TOOL.with((image(2).to_string(), vec!["git".into()])))
-            .unwrap();
+        r.apply(add(&["git"], "x86_64", image(2))).unwrap();
+        let release = RuntimeRef {
+            release: "2027.04".into(),
+            images: BTreeMap::from([("x86_64".into(), image(9).to_string())]),
+        };
         assert!(
-            r.apply(Environment::SET_RUNTIME.with((image(9).to_string(), Vec::new())))
+            r.apply(Environment::SET_RUNTIME.with((release.clone(), Vec::new())))
                 .is_err(),
             "switching without the rebuilt tool would mount it on a runtime it was not built for"
         );
         let rebuilt = ToolRef {
-            id: image(8).to_string(),
             packages: vec!["git".into()],
+            images: BTreeMap::from([("x86_64".into(), image(8).to_string())]),
         };
-        r.apply(Environment::SET_RUNTIME.with((image(9).to_string(), vec![rebuilt.clone()])))
+        r.apply(Environment::SET_RUNTIME.with((release, vec![rebuilt.clone()])))
             .unwrap();
         let env = r.state().unwrap();
-        assert_eq!(env.runtime_id().unwrap(), image(9));
+        assert_eq!(env.runtime.release, "2027.04");
+        assert_eq!(env.runtime_image("x86_64").unwrap(), image(9));
         assert_eq!(env.tools, vec![rebuilt]);
 
         assert!(r.apply(Environment::RENAME.with("  ".into())).is_err());

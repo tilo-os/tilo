@@ -29,6 +29,8 @@ durable-store = { path = "../../system/durable-store" }
 package-store = { path = "../../packaging/package-store", features = ["store"] }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 semver.workspace = true
+# This device's key signs the tool images its builder makes.
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 # Landlock ruleset installation and seccomp deny-list compilation, shared
 # with the application launcher.
 tilo-sandbox-core = { path = "../../system/sandbox-core" }

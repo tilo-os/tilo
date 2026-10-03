@@ -18157,6 +18157,7 @@ dependencies = [
  "tilo-resource",
  "tilo-sandbox-core",
  "tilo-test-env",
+ "tilo-user-identity",
  "tilo-xdg-paths",
  "tracing",
  "tracing-subscriber",
