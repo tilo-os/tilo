@@ -195,9 +195,12 @@ def upsilon(m):
 def chi(m):
     w = m.width("x")
     sb = 24 * m.wf + (m.S - 80) * 0.1
-    # x's arms, measured horizontally
-    xb = m.bounds("x", 0)
-    dw = (m.S * 1.0) / math.cos(math.atan((w - 2 * sb) / (X - DESC)))
+    # the weight of x's long stroke, measured across it, carried onto χ's
+    # longer, steeper diagonals (horizontal width alone would make χ heavier)
+    c = m.c("x", 0)
+    bl, br, tl = c[0], c[1], c[4]
+    weight = (br[0] - bl[0]) * math.cos(math.atan((bl[0] - tl[0]) / (tl[1] - bl[1])))
+    dw = weight / math.cos(math.atan((w - 2 * sb) / (X - DESC)))
     a = poly((sb, X), (sb + dw, X), (w - sb, DESC), (w - sb - dw, DESC))
     b = poly((w - sb - dw, X), (w - sb, X), (sb + dw, DESC), (sb, DESC))
     return spec(round(w), [a, b], anchors={"top": (w / 2, X)})

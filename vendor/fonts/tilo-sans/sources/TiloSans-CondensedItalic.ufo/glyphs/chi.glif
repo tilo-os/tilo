@@ -6,14 +6,14 @@
   <outline>
     <contour>
       <point x="75" y="510" type="line"/>
-      <point x="187" y="-205" type="line"/>
+      <point x="199" y="-205" type="line"/>
       <point x="263" y="-205" type="line"/>
-      <point x="152" y="510" type="line"/>
+      <point x="140" y="510" type="line"/>
     </contour>
     <contour>
-      <point x="352" y="510" type="line"/>
+      <point x="364" y="510" type="line"/>
       <point x="-90" y="-205" type="line"/>
-      <point x="-13" y="-205" type="line"/>
+      <point x="-25" y="-205" type="line"/>
       <point x="428" y="510" type="line"/>
     </contour>
   </outline>
