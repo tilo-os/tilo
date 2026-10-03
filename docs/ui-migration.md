@@ -204,7 +204,7 @@ and presence palette. There is no accent colour any more: nothing in
 | `QueryInk::accented(text, placeholder, accent)` | `QueryInk::of(&theme.tokens.colors)` (caret and selection in your colour) |
 | `palette.surface_radius_px()` (`CommandPalette`) | `CommandPalette::surface_radius_px(theme)` (the panel radius) |
 | `ui::presence::PEER_PALETTE` (24 entries), `user_color` returning Tailwind colours | 12 entries, the dark presence palette; `user_color` is an identity, paint it with `colors.presence.of_rgb(user_color(id))` |
-| `Theme::configured()` reading the person's colour | it reads `identity.colour`; an app does nothing |
+| `Theme::configured()` reading the person's colour | the window's host applies it (`Theme::in_window`, see [Window appearance](#window-appearance)); an app does nothing |
 | `elevation.e0` … `elevation.e4` | `elevation.floating` for anything floating (menu, popover, palette, sheet, quick settings, toast, tooltip, dragged object); **no shadow** for a window tile, a card, a bar or a selected control: delete the `surface::shadow` call |
 | `radii.sm` (4) | `radii.detail` (progress track, badge, sparkline clip, caret) |
 | `radii.md` (8), `radii.lg` (12) | `radii.control` (8) for a button, field, segmented track or a tile inside a panel; `radii.item` (6) for a selected row or a segment thumb |
@@ -364,8 +364,8 @@ set it themselves.
 
 ### The UI face
 
-The system UI face is Instrument Sans; Greek and Cyrillic fall back to faces
-matched to its x-height and weight (Geologica, Onest), Vietnamese to Noto Sans
+The system UI face is Tilo Sans, which sets Latin, Vietnamese and Greek;
+Cyrillic falls back to Onest, matched to its x-height and weight
 ([Script fallbacks](typography.md#script-fallbacks)). A theme or the
 accessibility layer may choose the built-in `Hyperlegible` face instead. Code
 never names a family: `TextRole` picks sans, serif (`Reading`) or mono
@@ -645,6 +645,8 @@ Selection forks:
 | `chrome::selection_tier_on(theme, state, ground)` | Now one surface step of `ground` (`SELECTION_MIN_STEP`, ΔL 0.06, on every ground). |
 | `SidebarDrawer::paint_panel(scene, transform, theme) -> Theme` | A painted app's sidebar or inspector panel, docked or floating. |
 | `HostShortcut::Sidebar` | Ctrl+Shift+L / ⌘⇧L: show or hide the sidebar in every app. |
+| The window's History control in the header row | Put there by the host where the app has History: `Icon::History` at the trailing edge, on while History shows. `NavGeometry::history` is its rect. |
+| `Button::toggled(on)`, `set_toggled(on)`, `is_toggled()`; `ButtonFace::toggled(on)` | A toggle button: on, a Plain glyph stands on the selection lift and is announced as a pressed toggle. |
 | `Icon::PanelLeft`, `Icon::PanelRight` | The sidebar and inspector toggles. |
 | `theme.tokens.metrics.{header_height, nav_row_height, rail_width, inspector_width, sidebar_min_width, sidebar_max_width, content_min_width, detail_min_width}` | The shell metrics (HIG §9.6). |
 
@@ -1317,7 +1319,6 @@ clock. HIG §7c is the rule; this section is the mechanical part.
 | `ui::overlay::scrim::vertical_fade(scene, t, rect, FadeEdge::Top / Bottom, strength, theme)` | One smooth gradient under text on media. |
 | `theme.tokens.colors.media.{letterbox, scrim, ink, ink_dim}` | Media colours, the same in every theme. |
 | `ui::icons::Icon::TriangleAlert` | Warning icon (the `BannerKind::Warning` default). |
-| `ui::widget::history_button()` | The History button for an app's own toolbar; the window then draws no History bar. |
 | `ui::clock::{local_now, today, CAPTURE_LOCAL_TIME}` | Local date and time; pinned to 30 June 2026, 10:42 in captures. |
 | `FrameHarness::settle_for_capture(bound)` | Run frames until no animation runs and no image load is in flight. |
 | `ui::image_store::loads_in_flight()` | Image loads in flight across every store. |
@@ -1425,10 +1426,18 @@ and `draw_pill`, and draws its arrows with `ui::icons::Icon::ChevronLeft` /
 
 ### History
 
-- Toolbar apps (logs, themes, weather and any app with its own header row):
-  put `ui::widget::history_button()` into that row (trailing group). The
-  window then draws no History bar; delete any top padding or band the app
-  added under the bar.
+History is one window control: a Plain `Icon::History` button named
+"History", which the framework puts at the trailing edge of the `NavShell`
+header row and which reads as on while History shows. Apps place nothing.
+
+| Before | After |
+|---|---|
+| `ui::widget::history_button()` in an app's toolbar | Delete it. Build the window with `NavShell`; its header row holds History. |
+| A "History" text button, menu item or glyph an app or shell draws itself | Delete it; the shortcut, the palette and the header row's control are the doors. |
+| Top padding or a band an app added under the window's History bar | Delete it. An app with a `NavShell` has no bar; any other app's bar is the framework's. |
+
+- An app without a header row (a single canvas or form) keeps the window's
+  History bar: the same glyph at its trailing edge, nothing else.
 - `HistoryScopeDefinition::title` is a short noun ("Notebook", "Saved
   places"). Delete descriptions and developer notes from it: "(not
   recorded)", "(forecasts are not recorded)", "Process output (not
@@ -1462,7 +1471,12 @@ and `draw_pill`, and draws its arrows with `ui::icons::Icon::ChevronLeft` /
    `let mut scene = frame.draw(&mut root); frame.draw_overlay(&mut root, &mut scene); frame.write_png(&scene, out);`
    (`ui::launch::render_widget_png` does all three).
 6. Light shots through a remote cargo drop-in: pass `--theme light` (the
-   environment is not forwarded).
+   environment is not forwarded). A shot is neutral, as a window without a
+   shell is; `--workspace-hue DEGREES` and `--your-colour NAME` show it as
+   the shell would in a workspace ([Window appearance](#window-appearance)).
+7. History mode: pass `--history` with `--shots` or `--responsive-matrix`;
+   the capture opens History first (`FrameHarness::open_history`), as the
+   History shortcut does.
 
 ### What to delete in an app
 
@@ -1602,6 +1616,31 @@ writers of the appearance state.
 | `day_schedule::AUTOMATIC_THEME` (`"Automatic"`) | `day_schedule::AUTOMATIC_MODE` (`"automatic"`), read from `appearance.mode` |
 | `backdrop::FLOATING_TINT_ALPHA` | `surfaces.material_opacity` (a theme role) |
 | A primary label resolved from `Color::WHITE` | `colors.intent.on_inverted` |
+| `DEFAULT_NEUTRAL_HUE` (hue 255 as every palette's fallback) | none: `Palette::hue` is `Option<f32>`; `None` (the light, dark and high-contrast presets) is pure grey until the window's workspace gives it a hue |
+| `ui::workspace_hue(..) -> f32` | `-> Option<f32>`, `None` for a wallpaper without a hue |
+| `ThemeLayerStack::{workspace_hue, your_colour}` | `ThemeLayerStack::window: WindowAppearance`, set by the host that shows the window |
+| `Theme::configured` applying `identity.colour` | the host applies the colour (`Theme::in_window`); the shell sends it to each app window, a standalone app reads the stored choice once |
+| `collaboration::Collaborator::color: [f32; 3]` | `Collaborator::colour: Option<PresenceHue>` (packed on the roster wire with `Collaborator::packed_colour`) |
+
+### Window appearance
+
+Where and for whom a window is shown is not part of its theme:
+`ui::WindowAppearance { workspace_hue, your_colour }`, applied over any
+theme with `Theme::in_window`. Apps do nothing to receive it. The shell
+sends it over the app's shell-ui connection
+(`FloatingSurfaceHostMessage::Appearance`) and `App` applies it on every
+rebuild (`App::set_window_appearance`, `App::window_appearance`), so the
+temperature and the person's colour survive settings and contrast changes.
+A host that embeds windows itself (a test harness, another shell) calls
+`App::set_window_appearance` directly.
+
+A capture shows a window without a shell, neutral and in the default
+colour. To show it in a workspace, pass what the shell would send:
+
+```bash
+cargo run -p <pkg> --bin <bin> -- --shots target/look/<dir>/warm.png \
+  --viewport 1280x800 --theme light --workspace-hue 60 --your-colour violet
+```
 
 ### Settings > Appearance
 
