@@ -129,7 +129,7 @@ impl HostIdentity {
         let Ok(registry_store) = crate::registry::IdentityRegistryStore::from_env() else {
             return (fallback_cert, fallback_revocations);
         };
-        let Ok(registry) = registry_store.load_reconciled() else {
+        let Ok(registry) = registry_store.load_reconciled_cached() else {
             return (fallback_cert, fallback_revocations);
         };
         let selected = registry.workspace_identities.iter().find_map(|(room, id)| {

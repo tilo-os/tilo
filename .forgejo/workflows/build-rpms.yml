@@ -17,6 +17,7 @@ on:
       - os/base-snapshot.env
       - os/Containerfile.rpms
       - os/dev/verify-rpm-snapshot-signatures.sh
+      - os/scripts/verify-no-cisco-openh264.sh
       - os/dev/layer-rpm-snapshot.py
       - os/dev/rpm-snapshot-fingerprint.py
       - os/dev/resolve-rpm-snapshot.sh

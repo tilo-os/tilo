@@ -16018,6 +16018,7 @@ name = "tilo-relay"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "blake3",
  "bounded-command",
  "bytes",
@@ -18159,6 +18160,7 @@ dependencies = [
  "tilo-resource",
  "tilo-sandbox-core",
  "tilo-test-env",
+ "tilo-user-identity",
  "tilo-xdg-paths",
  "tracing",
  "tracing-subscriber",
