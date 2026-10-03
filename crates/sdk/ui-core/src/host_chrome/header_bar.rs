@@ -288,7 +288,7 @@ impl Widget for HeaderBar {
             let mut style = style.clone();
             style.size.width = taffy::Dimension::percent(1.0);
             style.size.height = taffy::Dimension::length(theme.tokens.metrics.bar_height);
-            style.padding = crate::chrome::bar_padding(theme);
+            style.padding = crate::widget::toolbar::band_padding(theme);
             let _ = taffy.set_style(node, style);
         }
         node
@@ -313,7 +313,7 @@ impl Widget for HeaderBar {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        crate::chrome::paint_bar(scene, transform, theme, self.rect);
+        crate::widget::toolbar::paint_band(scene, transform, theme, self.rect);
         self.row.draw(scene, transform, text, theme, presence);
         self.menu.layout_within(text, theme);
     }

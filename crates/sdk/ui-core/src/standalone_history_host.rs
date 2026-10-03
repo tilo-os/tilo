@@ -811,7 +811,7 @@ impl StandaloneHistoryHost {
                         width: Dimension::percent(1.0),
                         height: Dimension::auto(),
                     },
-                    padding: crate::chrome::bar_padding(theme),
+                    padding: crate::widget::toolbar::band_padding(theme),
                     gap: Size {
                         width: taffy::LengthPercentage::length(theme.gap_standard),
                         height: taffy::LengthPercentage::length(0.0),
@@ -979,7 +979,7 @@ impl StandaloneHistoryHost {
     ) -> Result<(), HistoryHostError> {
         self.refresh(context)?;
         if self.toolbar.is_some() {
-            crate::chrome::paint_bar(scene, transform, theme, self.bar_rect);
+            crate::widget::toolbar::paint_band(scene, transform, theme, self.bar_rect);
         }
         for button in self.in_window_controls_mut() {
             button.draw(scene, transform, text, theme, presence);

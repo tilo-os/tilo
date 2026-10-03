@@ -33,7 +33,7 @@ impl HistoryHost {
             && let Ok(style) = tree.style(toolbar)
         {
             let mut style = style.clone();
-            style.padding = crate::chrome::bar_padding(theme);
+            style.padding = crate::widget::toolbar::band_padding(theme);
             let _ = tree.set_style(toolbar, style);
         }
         self.toolbar_node = Some(toolbar);
@@ -237,7 +237,7 @@ impl Widget for HistoryHost {
         presence: &PresenceCtx,
     ) {
         if self.has_toolbar_controls() {
-            crate::chrome::paint_bar(scene, transform, theme, self.toolbar.get_rect());
+            crate::widget::toolbar::paint_band(scene, transform, theme, self.toolbar.get_rect());
         }
         self.toolbar.draw(scene, transform, text, theme, presence);
         if self.show_timeline() && !self.timeline_available() {
