@@ -305,26 +305,6 @@ impl Checkbox {
             );
         }
 
-        // Focus ring wins; the accent-filled checked box is self-defining
-        // (like a Primary button) and takes no rest edge.
-        let edge = if face.interact.focused {
-            Some((2.0, theme.tokens.colors.intent.you))
-        } else if face.checked {
-            None
-        } else {
-            Some((1.0, crate::surface::edge_on(box_color)))
-        };
-        if let Some((width, color)) = edge {
-            // Rest edge and focus ring share one half-pixel-inset outline.
-            scene.stroke(
-                &Stroke::new(width),
-                transform,
-                color,
-                None,
-                &crate::surface::edge_outline(rect, radius),
-            );
-        }
-
         if face.checked {
             let mut path = BezPath::new();
             path.move_to(Point::new(
@@ -356,6 +336,28 @@ impl Checkbox {
 
         if face.interact.disabled {
             scene.pop_layer();
+        }
+
+        // Focus ring wins; the accent-filled checked box is self-defining
+        // (like a Primary button) and takes no rest edge. The edge is drawn
+        // outside the disabled layer: a disabled box keeps its bounds at full
+        // strength (HIG §9.5), or an unchecked one vanishes on a light ground.
+        let edge = if face.interact.focused {
+            Some((2.0, theme.tokens.colors.intent.you))
+        } else if face.checked {
+            None
+        } else {
+            Some((1.0, crate::surface::edge_on(box_color)))
+        };
+        if let Some((width, color)) = edge {
+            // Rest edge and focus ring share one half-pixel-inset outline.
+            scene.stroke(
+                &Stroke::new(width),
+                transform,
+                color,
+                None,
+                &crate::surface::edge_outline(rect, radius),
+            );
         }
     }
 }
@@ -735,6 +737,41 @@ mod tests {
             assert_eq!(square.center(), rect.center());
             assert!(rect.contains(square.origin()));
         }
+    }
+
+    /// A disabled box dims its face but keeps its edge at full strength
+    /// (HIG §9.5): an unchecked white box on a light ground would otherwise
+    /// vanish.
+    #[test]
+    fn a_disabled_box_keeps_its_edge_at_full_strength() {
+        use crate::offscreen::OffscreenRenderer;
+        let theme = Theme::light();
+        let rect = Rect::new(8.0, 8.0, 32.0, 32.0);
+        let render = |disabled: bool| {
+            let mut scene = Scene::new();
+            Checkbox::paint(
+                &mut scene,
+                Affine::IDENTITY,
+                &theme,
+                &CheckboxFace::new(rect, false).disabled(disabled),
+            );
+            OffscreenRenderer::new(40, 40).render(&scene, theme.tokens.colors.surfaces.content)
+        };
+        let (rest, disabled) = (render(false), render(true));
+        // The outermost pixel column of the box is its edge.
+        let rest_edge = OffscreenRenderer::sample(&rest, 40, 8, 20);
+        let disabled_edge = OffscreenRenderer::sample(&disabled, 40, 8, 20);
+        let ground = OffscreenRenderer::sample(&rest, 40, 2, 20);
+        let delta = |a: (u8, u8, u8, u8), b: (u8, u8, u8, u8)| {
+            a.0.abs_diff(b.0)
+                .max(a.1.abs_diff(b.1))
+                .max(a.2.abs_diff(b.2))
+        };
+        assert!(
+            delta(rest_edge, disabled_edge) <= 4,
+            "disabled edge {disabled_edge:?} vs rest edge {rest_edge:?}"
+        );
+        assert!(delta(disabled_edge, ground) >= delta(rest_edge, ground).saturating_sub(4));
     }
 
     #[test]
