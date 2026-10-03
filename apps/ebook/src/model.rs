@@ -480,7 +480,7 @@ impl CompositionStyle {
 
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Book => "Book",
+            Self::Book => "Justified",
             Self::Ragged => "Ragged",
         }
     }
@@ -509,9 +509,9 @@ impl ReadMode {
 
     pub fn label(self) -> &'static str {
         match self {
-            ReadMode::Paged => "Page",
+            ReadMode::Paged => "Pages",
             ReadMode::Continuous => "Scroll",
-            ReadMode::TwoUp => "Spread",
+            ReadMode::TwoUp => "Two pages",
         }
     }
     pub fn as_str(self) -> &'static str {
