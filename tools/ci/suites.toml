@@ -1206,3 +1206,7 @@ reason = "its fake persistence workers need Node 24's worker messaging; the ci-f
 [[unrequired]]
 suite = "crates/browser/tilo-browser-runtime/web/transfer-staging.test.mjs"
 reason = "its fake persistence workers need Node 24's worker messaging; the ci-fast image's nodejs is Node 22"
+
+[[unrequired]]
+suite = "os/tests/probe_installer_code_refresh_mounts.py"
+reason = "explicit root private-mount-namespace integration entrypoint; run with unshare -m on the development host, failing if privileges or isolation are absent; hermetic transaction and protocol cases run in test_installer_code_refresh.py"
