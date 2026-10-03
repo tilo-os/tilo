@@ -2,7 +2,10 @@
 """An isolated session for testing what an agent experiences in a Tilo app.
 
 The agent's only door is the ordinary one: `tilo-runtime-mcp` over the app's
-published actions. This script only sets up and tears down what is around it:
+published actions, and the app's window as a person uses it: the `computer`
+tool with `app_id` clicks, drags, types and scrolls in the window, in the
+window's pixels, and answers with what the window then shows. This script
+only sets up and tears down what is around it:
 
   start APP   a headless Tilo compositor as the only display (nothing appears
               on your desktop), a private home and runtime profile, and
