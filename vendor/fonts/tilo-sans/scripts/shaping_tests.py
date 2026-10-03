@@ -18,9 +18,10 @@ italic:
                letter's top, the dot below its bottom, and stay over its ink
   greek        tonos and dialytika letters NFC = NFD; the ano teleia form of
                U+00B7 after a Greek letter, the centred dot after a space
-  il           ss13 turns I and l (and their accented forms) into the
-               distinct forms, cv01 only I, cv02 only l, zero the slashed
-               zero; in fonts/default/ these features do nothing
+  il           ss13 turns I and l (and their accented forms, and Greek Ι Ϊ Ί
+               and Cyrillic І Ї) into the distinct forms, cv01 only I,
+               cv02 only l, zero the slashed zero; in fonts/default/ these
+               features do nothing
   cyrillic     locl: Bulgarian (bg) and Serbian/Macedonian (sr, mk) forms
                in fonts/full/; fonts/default/ has no Cyrillic at all
   default      the default font shapes every Latin, Vietnamese and Greek
@@ -199,9 +200,12 @@ def main() -> int:
             fail(f"il full {key}: cv01 -> {glyphs(f, 'Il', {'cv01': True})}")
         if glyphs(f, "Il", {"cv02": True}) != ["I", "l.ss13"]:
             fail(f"il full {key}: cv02 -> {glyphs(f, 'Il', {'cv02': True})}")
-        for ch in "ĨỈỊ":
+        # every capital I shape, in every script, and every precomposed I and l
+        for ch in "IÍÌÎÏĪĮİĨỈỊĲlĺľļłΙΪΊІЇ":
             if not glyphs(f, ch, {"ss13": True})[0].endswith(".ss13"):
                 fail(f"il full {key}: {ch} has no ss13 form")
+        if not glyphs(f, "Ϊ", {"ss13": True, "ss01": True})[0].endswith(".ss01.ss13"):
+            fail(f"il full {key}: Ϊ with ss01 and ss13 -> {glyphs(f, 'Ϊ', {'ss13': True, 'ss01': True})}")
         if glyphs(d, "Il0", {"ss13": True, "zero": True, "cv01": True}) != glyphs(d, "Il0"):
             fail(f"il default {key}: ss13/zero/cv01 still change glyphs in the default font")
         # Cyrillic locl
