@@ -321,6 +321,11 @@ suites = [
 ]
 
 [[group]]
+name = "vm-acceptance"
+inputs = ["scripts/vm-acceptance/"]
+suites = ["scripts/vm-acceptance/test_apps.py"]
+
+[[group]]
 name = "perf-tools"
 inputs = ["scripts/perf/", "apps/settings/src/categories.rs"]
 suites = [
