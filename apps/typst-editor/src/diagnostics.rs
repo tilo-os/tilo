@@ -61,8 +61,8 @@ fn location(d: &Diagnostic) -> Option<String> {
 }
 
 impl DiagnosticsPanel {
-    #[cfg(test)]
-    pub(crate) fn history_test_row_rect(&self, row: usize) -> Rect {
+    /// Where row `row` is now, scrolled: it may lie outside the visible list.
+    pub(crate) fn row_rect(&self, row: usize) -> Rect {
         let top = self.list_rect().y0 + self.heights.iter().take(row).sum::<f64>() - self.scroll_y;
         Rect::new(
             self.rect.x0,
@@ -70,6 +70,33 @@ impl DiagnosticsPanel {
             self.rect.x1,
             top + self.heights.get(row).copied().unwrap_or(0.0),
         )
+    }
+
+    /// One accessibility node per listed problem, so a reader can reach each
+    /// and jump to it. A row scrolled out of view keeps its node, without an
+    /// area.
+    pub fn accessibility(&self) -> Vec<ui::a11y::AccessNode> {
+        let list = self.list_rect();
+        self.diags
+            .iter()
+            .enumerate()
+            .map(|(index, d)| {
+                let meta = location(d);
+                let mut face = self.face(d);
+                if let Some(meta) = meta.as_deref() {
+                    face = face.meta(meta);
+                }
+                let shown = self.row_rect(index).intersect(list);
+                face.accessibility(
+                    if shown.area() > 0.0 {
+                        shown
+                    } else {
+                        Rect::ZERO
+                    },
+                    format!("typst.problem.{index}"),
+                )
+            })
+            .collect()
     }
 
     pub fn new() -> Self {
@@ -226,11 +253,11 @@ impl DiagnosticsPanel {
         self.diags.get(i).and_then(|d| d.line)
     }
 
-    /// The header's summary of what the list holds.
+    /// The header's summary of what the list holds; empty when it holds nothing.
     fn summary(&self) -> String {
         let (errs, warns) = (self.error_count(), self.warning_count());
         match (errs, warns) {
-            (0, 0) => "None".to_string(),
+            (0, 0) => String::new(),
             (e, 0) => plural(e, "error", "errors"),
             (0, w) => plural(w, "warning", "warnings"),
             (e, w) => format!(
@@ -279,14 +306,16 @@ impl DiagnosticsPanel {
             None,
         );
         let summary = self.summary();
-        ctx.text_role_in_band(
-            &summary,
-            TextRole::Caption,
-            theme.text_dim,
-            header.x0 + gutter + title_w + gutter,
-            header,
-            None,
-        );
+        if !summary.is_empty() {
+            ctx.text_role_in_band(
+                &summary,
+                TextRole::Caption,
+                theme.text_dim,
+                header.x0 + gutter + title_w + gutter,
+                header,
+                None,
+            );
+        }
 
         let list = self.list_rect();
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &list);

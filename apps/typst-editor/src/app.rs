@@ -140,11 +140,15 @@ struct Frame {
 }
 
 impl Frame {
-    fn of(theme: &Theme, control_h: f64) -> Self {
+    /// `control_h` is the height of one control and `status_line_h` of one
+    /// line of status text, both measured at the current text scale.
+    fn of(theme: &Theme, control_h: f64, status_line_h: f64) -> Self {
         let metrics = &theme.tokens.metrics;
         Self {
             bar_h: control_h + 2.0 * f64::from(theme.tokens.spacing.s1),
-            status_h: ui::chrome::status_bar::height(theme),
+            // The bar grows with the text, so its readouts are never clipped.
+            status_h: ui::chrome::status_bar::height(theme)
+                .max(status_line_h + 2.0 * f64::from(theme.tokens.spacing.s2)),
             handle_w: f64::from(theme.tokens.spacing.s3),
             compact_w: f64::from(metrics.compact_breakpoint),
         }
@@ -365,7 +369,11 @@ impl TypstApp {
             demo_stale: false,
             demo_documents: false,
             chrome: Chrome::new(),
-            frame: Frame::of(&theme, f64::from(theme.tokens.metrics.min_pointer_target)),
+            frame: Frame::of(
+                &theme,
+                f64::from(theme.tokens.metrics.min_pointer_target),
+                0.0,
+            ),
             status: ui::StatusBubble::new(),
             compile_feedback: false,
             rect: Rect::ZERO,
@@ -1224,7 +1232,14 @@ impl TypstApp {
     /// Measure the chrome in `theme` and re-fit everything that follows from
     /// it: the panes, the panel's rows, and where each control sits.
     fn refresh_frame(&mut self, tr: &mut TextRenderer, theme: &Theme) {
-        let frame = Frame::of(theme, Chrome::control_height(tr, theme));
+        let status_line = tr
+            .measure_style("Ag", None, &theme.text(ui::tokens::TextRole::Caption))
+            .1;
+        let frame = Frame::of(
+            theme,
+            Chrome::control_height(tr, theme),
+            f64::from(status_line),
+        );
         let text_k = f64::from(tr.text_scale()).max(f64::from(f32::EPSILON));
         self.preview.apply_theme(theme);
         let panel_before = self.diagnostics.preferred_height();
@@ -1745,12 +1760,16 @@ impl Widget for TypstApp {
             })
             .with_semantic_key("typst.preview")
             .with_hashed_key("typst.preview");
+        let mut children = vec![source, preview];
+        if self.show_diagnostics {
+            children.extend(self.diagnostics.accessibility());
+        }
         Some(
             AccessNode::new(Role::Document)
                 .with_name("Typst editor")
                 .with_description("Editable Typst source with a live document preview")
                 .with_state(AccessState::new().focusable(true))
-                .with_children(vec![source, preview]),
+                .with_children(children),
         )
     }
 
@@ -1762,6 +1781,23 @@ impl Widget for TypstApp {
         path: &ModelPath,
     ) -> bool {
         let (doc, _) = ui::doc::document(doc, path);
+        // A listed problem: activating it jumps to where it is.
+        if let Some(index) = target
+            .strip_prefix("typst.problem.")
+            .and_then(|index| index.parse::<usize>().ok())
+        {
+            return match action {
+                ui::a11y::Action::Focus => true,
+                ui::a11y::Action::Activate => {
+                    self.perform_resource_operation(
+                        crate::actions::TypstOperation::GoToDiagnostic { index },
+                        doc,
+                    );
+                    true
+                }
+                _ => false,
+            };
+        }
         if target != "typst.source" {
             return false;
         }

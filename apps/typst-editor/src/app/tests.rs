@@ -896,7 +896,7 @@ fn preview_zoom_and_diagnostics_respond_to_input() {
 
         for (i, d) in diags.iter().enumerate() {
             let Some(line) = d.line else { continue };
-            let row = app.diagnostics.history_test_row_rect(i);
+            let row = app.diagnostics.row_rect(i);
             let p = Point::new(row.x0 + 40.0, row.center().y);
             send(&mut app, &mut doc, &cursor(p));
             assert!(
@@ -1021,6 +1021,45 @@ fn accessibility_exposes_editor_state_and_toolbar_controls() {
             app.chrome.toolbar_names().iter().any(|name| name == "Save"),
             "the toolbar names its commands"
         );
+
+        // Case `listed_problems_are_reachable_and_jump_to_their_line`:
+        // Each problem the panel lists is an accessibility node whose
+        // activation moves the caret to the line it names.
+        {
+            let mut app = TypstApp::with_demo_documents();
+            app.apply_demo_scenario("errors");
+            let mut doc = AutoCommit::new();
+            app.sync(&mut doc, &ROOT);
+            app.layout_in(Rect::new(0.0, 0.0, 1280.0, 720.0));
+            render_once(&mut app);
+            let tree = app.accessibility().expect("Typst semantics");
+            let rows: Vec<_> = tree
+                .children
+                .iter()
+                .filter(|node| node.role == ui::a11y::Role::ListItem)
+                .collect();
+            assert_eq!(rows.len(), app.diagnostics.diags().len());
+            assert!(
+                rows.iter().all(|row| row.bounds.is_some()),
+                "each row says where it is"
+            );
+            let target = rows
+                .iter()
+                .find(|row| {
+                    row.name
+                        .as_deref()
+                        .is_some_and(|name| name.contains("undefined_value"))
+                })
+                .and_then(|row| row.action_target.clone())
+                .expect("the error row");
+            assert!(app.perform_semantic_action(
+                &target,
+                &ui::a11y::Action::Activate,
+                &mut doc,
+                &ROOT
+            ));
+            assert_eq!(app.caret_line_col().0, 5, "the error is on line 5");
+        }
 
         // Focusing the source from assistive technology brings the editor
         // into view in a narrow window; nothing else is a painted control.
