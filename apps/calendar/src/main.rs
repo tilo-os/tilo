@@ -542,7 +542,8 @@ fn render_shot_to_png(
         frame.layout(widget.as_mut())?;
     }
 
-    let scene = frame.draw(widget.as_mut());
+    let mut scene = frame.draw(widget.as_mut());
+    frame.draw_overlay(widget.as_mut(), &mut scene);
     frame.write_png(&scene, out);
     println!("calendar: wrote shot to {}", out.display());
     Ok(())

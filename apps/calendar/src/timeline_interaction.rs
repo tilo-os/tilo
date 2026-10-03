@@ -7,7 +7,7 @@
 
 use crate::input_context::InputContext;
 use chrono::{Datelike, NaiveDate};
-use vello::kurbo::{Affine, Circle, Point, Rect};
+use vello::kurbo::{Point, Rect};
 use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
@@ -15,14 +15,11 @@ use ui::dnd::DRAG_START_THRESHOLD_PX;
 use ui::paint::PaintCtx;
 
 use crate::date;
-use crate::draw_util::{fill_rect, fill_round, hairline, stroke_line, stroke_round};
+use crate::draw_util::{disc, hairline, line_height, stroke_line, text_centered, text_in_band};
 use crate::model::{Id, Palette};
-use crate::timeline_viewport::{
-    TIMELINE_DAY_TEXT, TIMELINE_HOUR_TEXT, TIMELINE_STRIP_TEXT, TIMELINE_SUBTITLE_TEXT,
-    TIMELINE_TITLE_TEXT, TIMELINE_WEEKDAY_TEXT, TimelineGeom, TimelineViewport,
-};
+use crate::timeline_viewport::{TimelineGeom, TimelineType, TimelineViewport};
 use ui::surface::card;
-use ui::tokens::colors::over;
+use ui::tokens::colors::SMALL_TEXT_MIN_CONTRAST;
 
 pub(super) const TIMELINE_SNAP_MIN: i64 = 15;
 
@@ -397,16 +394,16 @@ impl TimelineInteraction {
         model: &TimelineRenderModel<'_, '_>,
     ) -> Vec<(Rect, TimelineEffect)> {
         let theme = ctx.theme;
-        let colors = &theme.tokens.colors;
+        let ground = theme.tokens.colors.surfaces.content;
         let mut hits = Vec::new();
-        ctx.fill_rect(area, colors.surfaces.base);
+        let ty = TimelineType::of(theme);
 
         let geom = self.geometry(area);
-        Self::draw_headers(ctx, area, model, geom, &mut hits);
+        Self::draw_headers(ctx, &ty, area, model, geom, &mut hits);
         hairline(
             ctx.scene,
             ctx.transform,
-            colors.surfaces.base,
+            ground,
             Point::new(area.x0, geom.body_top),
             Point::new(geom.grid_right, geom.body_top),
         );
@@ -419,9 +416,9 @@ impl TimelineInteraction {
             ctx.transform,
             &body,
         );
-        self.draw_grid(ctx, area, model, geom);
-        self.draw_events(ctx, area, model, &mut hits);
-        self.draw_drag_ghost(ctx, area, model, geom);
+        self.draw_grid(ctx, &ty, area, model, geom);
+        self.draw_events(ctx, &ty, area, model, &mut hits);
+        self.draw_drag_ghost(ctx, &ty, area, model, geom);
         ctx.scene.pop_layer();
         self.viewport.draw(ctx.scene, ctx.transform, theme);
         hits
@@ -429,88 +426,97 @@ impl TimelineInteraction {
 
     fn draw_headers(
         ctx: &mut PaintCtx<'_>,
+        ty: &TimelineType,
         area: Rect,
         model: &TimelineRenderModel<'_, '_>,
         geom: TimelineGeom,
         hits: &mut Vec<(Rect, TimelineEffect)>,
     ) {
-        let (scene, transform, text, theme) =
-            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let theme = ctx.theme;
         let colors = &theme.tokens.colors;
+        let sp = &theme.tokens.spacing;
+        let (s1, s2) = (f64::from(sp.s1), f64::from(sp.s2));
         let grid_x0 = area.x0 + geom.gutter;
         let col_w = Self::column_width(area, model.days.len(), geom);
         // Weekday label, then the day number directly beneath it: both rows
         // come from the measured lines the header height was solved from.
-        let weekday_h = f64::from(text.measure("Mon", TIMELINE_WEEKDAY_TEXT, None).1);
-        let weekday_y = area.y0 + f64::from(theme.tokens.spacing.s2);
+        let weekday_h = line_height(ctx, &ty.weekday);
+        let day_h = line_height(ctx, &ty.day);
+        let weekday_y = area.y0 + s2;
         let day_y = weekday_y + weekday_h;
-        let strip_text_h = f64::from(text.measure("Ag", TIMELINE_STRIP_TEXT, None).1);
         for (index, day) in model.days.iter().enumerate() {
             let x0 = grid_x0 + col_w * index as f64;
             let header = Rect::new(x0, area.y0, x0 + col_w, area.y0 + geom.head_h);
             let is_today = *day == model.today;
             let weekend = day.weekday().num_days_from_monday() >= 5;
-            if is_today {
-                fill_rect(scene, transform, header, colors.accent[5].with_alpha(0.10));
-            }
-            text.draw_text(
-                scene,
-                date::WEEKDAY_SHORT
-                    .get(day.weekday().num_days_from_monday() as usize)
-                    .copied()
-                    .unwrap_or(""),
-                TIMELINE_WEEKDAY_TEXT,
+            let text_x = x0 + s2;
+            let weekday = date::WEEKDAY_SHORT
+                .get(day.weekday().num_days_from_monday() as usize)
+                .copied()
+                .unwrap_or("");
+            ctx.text(
+                weekday,
+                &ty.weekday,
                 if weekend {
                     colors.text_dim
                 } else {
-                    colors.neutral[7]
+                    colors.text_primary
                 },
-                transform * Affine::translate((x0 + 10.0, weekday_y)),
+                Point::new(text_x, weekday_y),
                 None,
             );
-            text.draw_text(
-                scene,
-                &format!("{}", day.day()),
-                TIMELINE_DAY_TEXT,
-                if is_today {
-                    colors.accent[5]
-                } else {
-                    colors.neutral[9]
-                },
-                transform * Affine::translate((x0 + 10.0, day_y)),
-                None,
-            );
+            let number = day.day().to_string();
+            if is_today {
+                // Today's number stands on the inverted disc, as in the
+                // month grid.
+                let number_w = f64::from(ctx.text.measure_style(&number, None, &ty.day).0);
+                let side = day_h.max(number_w + s2);
+                let disc = Rect::new(text_x - s1, day_y, text_x - s1 + side, day_y + day_h);
+                ctx.fill_round(disc, day_h / 2.0, colors.intent.inverted);
+                text_centered(ctx, &number, &ty.day, colors.intent.on_inverted, disc);
+            } else {
+                ctx.text(
+                    &number,
+                    &ty.day,
+                    if weekend {
+                        colors.text_dim
+                    } else {
+                        colors.text_primary
+                    },
+                    Point::new(text_x, day_y),
+                    None,
+                );
+            }
             hits.push((header, TimelineEffect::OpenDay(*day)));
 
             let strip = Rect::new(
-                x0 + 2.0,
-                area.y0 + geom.head_h + 2.0,
-                x0 + col_w - 2.0,
-                area.y0 + geom.head_h + geom.allday_h - 2.0,
+                x0 + geom.block_inset,
+                area.y0 + geom.head_h + s1,
+                x0 + col_w - geom.block_inset,
+                area.y0 + geom.head_h + geom.allday_h - s1,
             );
             if let Some(event) = model
                 .events
                 .iter()
                 .find(|event| event.day == *day && event.all_day)
             {
-                let strip_fill = event.color.color(theme);
-                card(scene, transform, strip, 4.0, strip_fill);
-                let line = text.elide_to_width(
-                    event.title,
-                    TIMELINE_STRIP_TEXT,
-                    ui::num::f32_of_f64(strip.width() - 12.0),
+                let fill = event.color.color(theme);
+                card(
+                    ctx.scene,
+                    ctx.transform,
+                    strip,
+                    f64::from(theme.tokens.radii.detail),
+                    fill,
                 );
-                text.draw_text(
-                    scene,
-                    &line,
-                    TIMELINE_STRIP_TEXT,
-                    ui::widget::Avatar::initial_ink(strip_fill),
-                    transform
-                        * Affine::translate((
-                            strip.x0 + 6.0,
-                            strip.y0 + (strip.height() - strip_text_h) / 2.0,
-                        )),
-                    None,
+                let ink = colors.on_surface_at(fill, SMALL_TEXT_MIN_CONTRAST).ink;
+                text_in_band(
+                    ctx,
+                    event.title,
+                    &ty.strip,
+                    ink,
+                    strip.x0 + s1 + s1 / 2.0,
+                    strip,
+                    strip.width() - 3.0 * s1,
                 );
                 hits.push((strip, TimelineEffect::Select(event.id)));
             }
@@ -520,13 +526,16 @@ impl TimelineInteraction {
     fn draw_grid(
         &self,
         ctx: &mut PaintCtx<'_>,
+        ty: &TimelineType,
         area: Rect,
         model: &TimelineRenderModel<'_, '_>,
         geom: TimelineGeom,
     ) {
-        let (scene, transform, text, theme) =
-            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let theme = ctx.theme;
         let colors = &theme.tokens.colors;
+        let ground = colors.surfaces.content;
+        let s1 = f64::from(theme.tokens.spacing.s1);
+        let s3 = f64::from(theme.tokens.spacing.s3);
         let grid_x0 = area.x0 + geom.gutter;
         let col_w = Self::column_width(area, model.days.len(), geom);
         let offset = f64::from(self.offset_y());
@@ -535,19 +544,18 @@ impl TimelineInteraction {
         for hour in 0..=24 {
             let y = y_at(f64::from(hour) * 60.0);
             hairline(
-                scene,
-                transform,
-                colors.surfaces.base,
+                ctx.scene,
+                ctx.transform,
+                ground,
                 Point::new(grid_x0, y),
                 Point::new(geom.grid_right, y),
             );
             if hour < 24 {
-                text.draw_text(
-                    scene,
+                ctx.text(
                     &format!("{hour:02}:00"),
-                    TIMELINE_HOUR_TEXT,
+                    &ty.hour,
                     colors.text_dim,
-                    transform * Affine::translate((area.x0 + 12.0, y + 2.0)),
+                    Point::new(area.x0 + s3, y + s1 / 2.0),
                     None,
                 );
             }
@@ -555,9 +563,9 @@ impl TimelineInteraction {
         for index in 0..=model.days.len() {
             let x = grid_x0 + col_w * index as f64;
             hairline(
-                scene,
-                transform,
-                colors.surfaces.base,
+                ctx.scene,
+                ctx.transform,
+                ground,
                 Point::new(x, body.y0),
                 Point::new(x, body.y1),
             );
@@ -565,38 +573,37 @@ impl TimelineInteraction {
         if let Some((now_day, now_min)) = model.now
             && let Some(index) = model.days.iter().position(|day| *day == now_day)
         {
+            // The current time is live state: the status colour, a rule
+            // across today's column with a dot where it starts.
             let y = y_at(now_min as f64);
             let x0 = grid_x0 + col_w * index as f64;
+            let live = colors.semantic.danger;
             stroke_line(
-                scene,
-                transform,
-                colors.semantic.danger,
+                ctx.scene,
+                ctx.transform,
+                live,
                 Point::new(x0, y),
                 Point::new(x0 + col_w, y),
-                2.0,
+                s1 / 2.0,
             );
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.semantic.danger,
-                None,
-                &Circle::new(Point::new(x0, y), 3.5),
-            );
+            disc(ctx, Point::new(x0, y), s1, live);
         }
     }
 
     fn draw_events(
         &self,
         ctx: &mut PaintCtx<'_>,
+        ty: &TimelineType,
         area: Rect,
         model: &TimelineRenderModel<'_, '_>,
         hits: &mut Vec<(Rect, TimelineEffect)>,
     ) {
-        let (scene, transform, text, theme) =
-            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let theme = ctx.theme;
         let geom = self.geometry(area);
         let body = geom.body(area.x0, area.x1);
         let colors = &theme.tokens.colors;
+        let s1 = f64::from(theme.tokens.spacing.s1);
+        let radius = f64::from(theme.tokens.radii.item);
         let moving_id = self.moving_id();
         for (index, day) in model.days.iter().enumerate() {
             for event in model
@@ -613,71 +620,69 @@ impl TimelineInteraction {
                     event.end_min,
                 );
                 let color = event.color.color(theme);
-                // The block is a wash of the calendar colour resolved onto the
-                // grid, so its own edge can be derived from it (HIG §9.5).
-                card(
-                    scene,
-                    transform,
-                    block,
-                    6.0,
-                    over(colors.surfaces.base, color, 0.22),
-                );
-                fill_round(
-                    scene,
-                    transform,
-                    Rect::new(block.x0, block.y0, block.x0 + 3.0, block.y1),
-                    2.0,
+                // The block is a wash of the calendar colour over the grid,
+                // with the colour itself as a bar down its leading edge.
+                let tinted = colors.tinted_chip_on(
+                    colors.surfaces.content,
                     color,
+                    0.22,
+                    SMALL_TEXT_MIN_CONTRAST,
                 );
-                scene.push_layer(
+                card(ctx.scene, ctx.transform, block, radius, tinted.fill);
+                ctx.scene.push_layer(
                     Fill::NonZero,
                     vello::peniko::BlendMode::default(),
                     1.0,
-                    transform,
-                    &block,
+                    ctx.transform,
+                    &vello::kurbo::RoundedRect::from_rect(block, radius),
                 );
-                let text_width = block.width() - 20.0;
-                let title = text.elide_to_width(
+                ctx.fill_rect(
+                    Rect::new(block.x0, block.y0, block.x0 + s1, block.y1),
+                    color,
+                );
+                let text_x = block.x0 + 2.0 * s1;
+                let text_w = block.x1 - s1 - text_x;
+                let title = ctx.text.elide_to_width_style(
                     event.title,
-                    TIMELINE_TITLE_TEXT,
-                    ui::num::f32_of_f64(text_width),
+                    ui::num::f32_of_f64(text_w.max(0.0)),
+                    &ty.title,
                 );
-                // The subtitle starts where the measured title line ends, and
-                // only appears when both lines fit inside the block's padding.
-                let title_h = f64::from(text.measure(&title, TIMELINE_TITLE_TEXT, None).1);
-                let subtitle_h = f64::from(text.measure("Ag", TIMELINE_SUBTITLE_TEXT, None).1);
-                let block_pad = f64::from(theme.tokens.spacing.s1);
-                text.draw_text(
-                    scene,
+                // The time line only appears when both lines fit inside the
+                // block's padding.
+                let title_h = line_height(ctx, &ty.title);
+                let subtitle_h = line_height(ctx, &ty.subtitle);
+                ctx.text(
                     &title,
-                    TIMELINE_TITLE_TEXT,
-                    colors.neutral[9],
-                    transform * Affine::translate((block.x0 + 10.0, block.y0 + block_pad)),
+                    &ty.title,
+                    tinted.ink,
+                    Point::new(text_x, block.y0 + s1),
                     None,
                 );
-                if block.height() > 2.0 * block_pad + title_h + subtitle_h {
-                    let subtitle = format!(
-                        "{}–{} {}",
+                if block.height() > 2.0 * s1 + title_h + subtitle_h {
+                    let time = format!(
+                        "{}–{}",
                         fmt_event_min(event.start_min),
-                        fmt_event_min(event.end_min),
-                        event.location
+                        fmt_event_min(event.end_min)
                     );
-                    let subtitle = text.elide_to_width(
+                    let subtitle = if event.location.is_empty() {
+                        time
+                    } else {
+                        format!("{time}, {}", event.location)
+                    };
+                    let subtitle = ctx.text.elide_to_width_style(
                         &subtitle,
-                        TIMELINE_SUBTITLE_TEXT,
-                        ui::num::f32_of_f64(text_width),
+                        ui::num::f32_of_f64(text_w.max(0.0)),
+                        &ty.subtitle,
                     );
-                    text.draw_text(
-                        scene,
+                    ctx.text(
                         &subtitle,
-                        TIMELINE_SUBTITLE_TEXT,
-                        colors.text_dim,
-                        transform
-                            * Affine::translate((block.x0 + 10.0, block.y0 + block_pad + title_h)),
+                        &ty.subtitle,
+                        tinted.ink,
+                        Point::new(text_x, block.y0 + s1 + title_h),
                         None,
                     );
                 }
-                scene.pop_layer();
+                ctx.scene.pop_layer();
                 let visible = block.intersect(body);
                 if visible.width() > 0.0 && visible.height() > 0.0 {
                     hits.push((visible, TimelineEffect::Select(event.id)));
@@ -689,17 +694,17 @@ impl TimelineInteraction {
     fn draw_drag_ghost(
         &self,
         ctx: &mut PaintCtx<'_>,
+        ty: &TimelineType,
         area: Rect,
         model: &TimelineRenderModel<'_, '_>,
         geom: TimelineGeom,
     ) {
-        let (scene, transform, text, theme) =
-            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let theme = ctx.theme;
         let colors = &theme.tokens.colors;
         let Some(preview) = self.preview(area, model.days) else {
             return;
         };
-        let (column, start_min, end_min, title, fill, stroke) = match preview {
+        let (column, start_min, end_min, title, fill, edge) = match preview {
             TimelineEffect::Create {
                 day,
                 start_min,
@@ -708,13 +713,14 @@ impl TimelineInteraction {
                 let Some(column) = model.days.iter().position(|item| *item == day) else {
                     return;
                 };
+                // A new event being drawn is your own selection.
                 (
                     column,
                     start_min,
                     end_min,
                     model.untitled,
-                    colors.accent[5].with_alpha(0.28),
-                    colors.accent[5],
+                    colors.intent.selection_tint,
+                    colors.intent.you,
                 )
             }
             TimelineEffect::Move {
@@ -730,66 +736,73 @@ impl TimelineInteraction {
                     return;
                 };
                 let color = event.color.color(theme);
+                let tinted = colors.tinted_chip_on(
+                    colors.surfaces.content,
+                    color,
+                    0.4,
+                    SMALL_TEXT_MIN_CONTRAST,
+                );
                 (
                     column,
                     start_min,
                     start_min + dur_min,
                     event.title,
-                    color.with_alpha(0.55),
+                    tinted.fill,
                     color,
                 )
             }
             TimelineEffect::Select(_) | TimelineEffect::OpenDay(_) => return,
         };
+        let s1 = f64::from(theme.tokens.spacing.s1);
+        let radius = f64::from(theme.tokens.radii.item);
         let block = self.block_rect(area, model.days.len(), geom, column, start_min, end_min);
-        fill_round(scene, transform, block, 6.0, fill);
-        stroke_round(scene, transform, block, 6.0, stroke, 1.5);
-        scene.push_layer(
+        ctx.fill_round(block, radius, fill);
+        ctx.stroke_round(block, radius, edge, s1 / 2.0);
+        ctx.scene.push_layer(
             Fill::NonZero,
             vello::peniko::BlendMode::default(),
             1.0,
-            transform,
+            ctx.transform,
             &block,
         );
-        let title = text.elide_to_width(
+        let ink = theme.text_primary;
+        let text_x = block.x0 + 2.0 * s1;
+        let title = ctx.text.elide_to_width_style(
             title,
-            TIMELINE_TITLE_TEXT,
-            ui::num::f32_of_f64(block.width() - 16.0),
+            ui::num::f32_of_f64((block.x1 - s1 - text_x).max(0.0)),
+            &ty.title,
         );
-        let title_h = f64::from(text.measure(&title, TIMELINE_TITLE_TEXT, None).1);
-        let subtitle_h = f64::from(text.measure("Ag", TIMELINE_SUBTITLE_TEXT, None).1);
-        let block_pad = f64::from(theme.tokens.spacing.s1);
-        text.draw_text(
-            scene,
+        let title_h = line_height(ctx, &ty.title);
+        let subtitle_h = line_height(ctx, &ty.subtitle);
+        ctx.text(
             &title,
-            TIMELINE_TITLE_TEXT,
-            colors.neutral[9],
-            transform * Affine::translate((block.x0 + 8.0, block.y0 + block_pad)),
+            &ty.title,
+            ink,
+            Point::new(text_x, block.y0 + s1),
             None,
         );
-        if block.height() > block_pad + title_h + subtitle_h {
-            text.draw_text(
-                scene,
-                &format!("{} – {}", fmt_min(start_min), fmt_min(end_min)),
-                TIMELINE_SUBTITLE_TEXT,
-                colors.text_dim,
-                transform * Affine::translate((block.x0 + 8.0, block.y0 + block_pad + title_h)),
+        if block.height() > s1 + title_h + subtitle_h {
+            ctx.text(
+                &format!("{}–{}", fmt_min(start_min), fmt_min(end_min)),
+                &ty.subtitle,
+                ink,
+                Point::new(text_x, block.y0 + s1 + title_h),
                 None,
             );
         }
-        scene.pop_layer();
+        ctx.scene.pop_layer();
     }
 
-    /// Geometry at the viewport's text scale, so paint, hit-testing and drag
-    /// mapping all read one description of the header / strip / body bands.
+    /// Geometry at the viewport's measured type, so paint, hit-testing and
+    /// drag mapping all read one description of the header / strip / body.
     fn geometry(&self, area: Rect) -> TimelineGeom {
-        TimelineViewport::geometry_for(area, self.viewport.text_scale(), self.viewport.spacing())
+        TimelineViewport::geometry_for(area, &self.viewport.tokens())
     }
 
-    /// Forward the theme's text scale so header, strip and block heights grow
+    /// Measure the theme's type so header, strip and block heights grow
     /// with the type they carry. Called from the app's layout pass.
-    pub fn set_layout_tokens(&mut self, text_scale: f32, spacing: &ui::tokens::spacing::Spacing) {
-        self.viewport.set_layout_tokens(text_scale, spacing);
+    pub fn set_layout_theme(&mut self, theme: &ui::theme::Theme) {
+        self.viewport.set_layout_theme(theme);
     }
 
     fn column_width(area: Rect, days_len: usize, geom: TimelineGeom) -> f64 {

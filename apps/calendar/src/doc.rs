@@ -1213,7 +1213,8 @@ fn read_occurrence_overrides(doc: &AutoCommit, event: &ObjId) -> Vec<OccurrenceO
 }
 
 fn parse_dt(s: &str) -> NaiveDateTime {
-    NaiveDateTime::parse_from_str(s, DT_FMT).unwrap_or_else(|_| chrono::Local::now().naive_local())
+    NaiveDateTime::parse_from_str(s, DT_FMT)
+        .unwrap_or_else(|_| ui::clock::local_now().naive_local())
 }
 
 fn parse_opt_id(s: &str) -> Option<Id> {
