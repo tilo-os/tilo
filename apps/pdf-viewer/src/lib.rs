@@ -150,6 +150,34 @@ pub fn app_root_sign() -> Box<dyn Widget> {
     Box::new(app)
 }
 
+/// Screenshot-only: the Signatures panel composing a typed signature.
+pub fn app_root_sign_type() -> Box<dyn Widget> {
+    let mut app = PdfApp::sample();
+    app.arm_shots_sign_type();
+    Box::new(app)
+}
+
+/// Screenshot-only: the review panel on its Contents tab.
+pub fn app_root_contents() -> Box<dyn Widget> {
+    let mut app = PdfApp::sample();
+    app.arm_shots_panel(app::SidebarTab::Outline);
+    Box::new(app)
+}
+
+/// Screenshot-only: the Highlight tool armed with its colour popover open.
+pub fn app_root_marker_colours() -> Box<dyn Widget> {
+    let mut app = PdfApp::sample();
+    app.arm_shots_marker_colours();
+    Box::new(app)
+}
+
+/// Screenshot-only: marked-up pages whose review has no comments yet.
+pub fn app_root_no_comments() -> Box<dyn Widget> {
+    let mut app = PdfApp::sample();
+    app.arm_shots_no_comments();
+    Box::new(app)
+}
+
 /// Screenshot-only: open `path` (a real PDF) with a live page-rail reorder drag
 /// staged, so a still frame shows the left sidebar mid-reorder.
 pub fn app_root_reorder_demo(path: Option<&std::path::Path>) -> Box<dyn Widget> {
