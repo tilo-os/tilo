@@ -143,11 +143,13 @@ pub(crate) fn refresh_bound_controls(
             .flat_map(|snapshot| snapshot.resources.iter().cloned())
             .filter_map(|resource| filter_resource(binding, resource))
             .collect::<Vec<_>>();
-        let allowed = tilo_actions::door::survey(&resources)
+        let mut allowed: std::collections::HashSet<_> = tilo_actions::door::survey(&resources)
             .into_iter()
             .filter(|descriptor| descriptor.contract.availability.is_available())
             .map(|descriptor| descriptor.address)
             .collect();
+        // A component's host — its window or the shell — opens search.
+        allowed.insert(crate::search::search_address());
         crate::widget::controls::refresh_control_action_availability(widget, &allowed);
         None
     };
@@ -2034,6 +2036,10 @@ pub struct CallbackBinding {
     pub(crate) control_domain: crate::control_custody::WeakControlDomain,
     pub(crate) queued_controls:
         Rc<RefCell<std::collections::VecDeque<tilo_actions::ControlInvocation>>>,
+    /// Searches the component asked the host to open, drained as host
+    /// intents by the shell that presents search.
+    pub(crate) search_requests:
+        Rc<RefCell<std::collections::VecDeque<crate::search::SearchRequest>>>,
     #[allow(
         dead_code,
         reason = "binding retains original authority for the following typed-action provenance task"
@@ -2726,6 +2732,7 @@ pub(crate) fn with_owned_record_action<R>(
         lifetime_id: uuid::Uuid::new_v4(),
         control_domain: crate::control_custody::WeakControlDomain::default(),
         queued_controls: Rc::new(RefCell::new(std::collections::VecDeque::new())),
+        search_requests: Rc::default(),
         instance_id,
         app_id: app_id.to_string(),
         records: records.clone(),
@@ -2743,6 +2750,20 @@ pub(crate) fn with_owned_record_action<R>(
 }
 
 impl CallbackBinding {
+    /// Queue a search for the host presenting this component. Only the
+    /// latest request matters: an older one the host has not shown yet is
+    /// replaced.
+    pub(crate) fn request_search(&self, request: crate::search::SearchRequest) {
+        let mut requests = self.search_requests.borrow_mut();
+        requests.clear();
+        requests.push_back(request);
+    }
+
+    /// The search this component asked for, once.
+    pub(crate) fn take_search_request(&self) -> Option<crate::search::SearchRequest> {
+        self.search_requests.borrow_mut().pop_front()
+    }
+
     pub(crate) fn broker_route(&self) -> Option<crate::collaboration::RouteSpec> {
         let (_, app, _) = self.records.canonical_namespace()?;
         if app != self.app_id {

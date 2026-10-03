@@ -2472,8 +2472,12 @@ pub use toggle_group::{SegmentedFace, SegmentedStyle, ToggleGroup, segment_color
 // widget tree.
 pub mod empty_state;
 pub use empty_state::{EmptyState, EmptyStateContent};
+pub mod find_bar;
+pub use find_bar::{
+    FindBar, FindMatch, FindMode, FindOptions, FindScope, Findable, paint_find_match, with_findable,
+};
 pub mod search_field;
-pub use search_field::SearchField;
+pub use search_field::{FilterCount, Filterable, Filtered, SearchField, apply_filter, sync_filter};
 pub mod search_results;
 pub use search_results::SearchResultsView;
 pub mod stat_tile;
