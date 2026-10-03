@@ -9,13 +9,14 @@
 //! query happened to match one of those words.
 
 use automerge::AutoCommit;
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::{Arc, Mutex, RwLock};
 use tilo_actions::{ActionAddress, Resource};
-use ui::icons::Icon;
+use tilo_content::ContentStore;
+use ui::icons::{AppImage, AppImageSource, Icon};
 use ui::search::{
-    CatalogSearchProvider, DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT,
-    SearchCatalog, SearchCatalogError, SearchCursor, SearchResult,
+    CatalogSearchProvider, Facet, SearchCatalog, SearchCatalogError, SearchQuery, SearchResult,
+    SearchRow,
 };
 
 use crate::actions::{
@@ -46,6 +47,52 @@ pub struct PhotosSearchProvider {
 struct ProviderState {
     catalog: SearchCatalog,
     seeds: HashMap<String, MaterializationSeed>,
+    /// The people, places and tags a search can be narrowed to, and whether
+    /// a photo holds recognized text or is a favorite.
+    facets: Vec<Facet>,
+    /// Where photo hits read their thumbnails from; `None` shows hits
+    /// without one.
+    content: Option<ContentStore>,
+}
+
+/// Facet keys of a photo hit.
+const FACET_PERSON: &str = "person";
+const FACET_PLACE: &str = "place";
+const FACET_TAG: &str = "tag";
+const FACET_HAS: &str = "has";
+
+/// A photo hit's thumbnail, decoded from the content store the first time
+/// the palette paints it and kept for the next frames.
+struct PhotoThumbnail {
+    key: String,
+    image: crate::model::OpenImage,
+    content: ContentStore,
+    decoded: Mutex<Option<(u32, Option<vello::peniko::ImageData>)>>,
+}
+
+impl AppImageSource for PhotoThumbnail {
+    fn key(&self) -> &str {
+        &self.key
+    }
+
+    fn pixels(&self, device_px: u32) -> Option<vello::peniko::ImageData> {
+        let mut decoded = self
+            .decoded
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((size, pixels)) = decoded.as_ref()
+            && *size == device_px
+        {
+            return pixels.clone();
+        }
+        let pixels = crate::doc::bytes_of(&self.image, &self.content)
+            .and_then(|bytes| crate::pixels::decode(&bytes))
+            .map(|rgba| {
+                crate::pixels::to_peniko(&crate::pixels::thumbnail(&rgba, device_px, device_px))
+            });
+        *decoded = Some((device_px, pixels.clone()));
+        pixels
+    }
 }
 
 /// Compact authoritative data retained for exact materialisation. Crucially,
@@ -148,6 +195,8 @@ impl PhotosSearchProvider {
             state: Arc::new(RwLock::new(ProviderState {
                 catalog: SearchCatalog::new(PHOTO_SEARCH_KIND),
                 seeds: HashMap::new(),
+                facets: Vec::new(),
+                content: None,
             })),
         }
     }
@@ -177,6 +226,14 @@ impl PhotosSearchProvider {
         self.replace_from_library(&library)
     }
 
+    /// Read photo hit thumbnails from `content`.
+    pub fn set_content(&self, content: ContentStore) {
+        self.state
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .content = Some(content);
+    }
+
     /// Resolve one resource from the retained document generation without a
     /// CRDT walk. The widget uses this for agent/history lookups, including
     /// hashed metadata views whose labels cannot safely be reversed from ids.
@@ -189,51 +246,6 @@ impl PhotosSearchProvider {
             .get(id)?
             .clone();
         Some(seed.materialize())
-    }
-
-    /// One bounded page of canonical photograph ids matching the same
-    /// filename, metadata, OCR and description index used by system search.
-    /// The in-app timeline consumes these pages incrementally instead of
-    /// rebuilding and scanning a lowercase string for every photo on every
-    /// frame.
-    pub(crate) fn photo_matches_page(
-        &self,
-        query: &str,
-        cursor: Option<&SearchCursor>,
-    ) -> (Vec<String>, Option<SearchCursor>, usize) {
-        let state = self
-            .state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let page = state.catalog.query_page(
-            query,
-            cursor,
-            DEFAULT_SEARCH_CANDIDATE_LIMIT,
-            DEFAULT_SEARCH_RESULT_LIMIT,
-        );
-        let ids = page
-            .results
-            .iter()
-            .filter_map(SearchResult::action_address)
-            .filter(|address| {
-                matches!(
-                    state.seeds.get(&address.resource),
-                    Some(MaterializationSeed::Photo(_))
-                )
-            })
-            .map(|address| address.resource)
-            .collect();
-        drop(state);
-        (ids, page.next, page.inspected)
-    }
-
-    pub(crate) fn generation(&self) -> u64 {
-        self.state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .catalog
-            .stats()
-            .generation
     }
 
     #[cfg(test)]
@@ -306,10 +318,7 @@ impl PhotosSearchProvider {
             crate::strings::tr("photos-timeline"),
             ActionAddress::new("photos.timeline", "open"),
         )
-        .with_subtitle(format!(
-            "{} photographs · chronological",
-            library.photos.len()
-        ))
+        .with_subtitle(crate::app::count_photos(library.photos.len()))
         .with_icon(Icon::Image);
         insert(
             "photos.timeline".to_owned(),
@@ -327,7 +336,7 @@ impl PhotosSearchProvider {
             let id = timeline_month_resource_id(month);
             let result =
                 SearchResult::for_action(PHOTO_SEARCH_KIND, month, ActionAddress::new(&id, "open"))
-                    .with_subtitle(format!("Timeline month · {count} photographs"))
+                    .with_subtitle(crate::app::count_photos(*count))
                     .with_icon(Icon::Image);
             insert(
                 id.clone(),
@@ -343,7 +352,7 @@ impl PhotosSearchProvider {
             let id = timeline_day_resource_id(day);
             let result =
                 SearchResult::for_action(PHOTO_SEARCH_KIND, day, ActionAddress::new(&id, "open"))
-                    .with_subtitle(format!("Timeline day · {count} photographs"))
+                    .with_subtitle(crate::app::count_photos(*count))
                     .with_icon(Icon::Image);
             insert(
                 id.clone(),
@@ -370,7 +379,10 @@ impl PhotosSearchProvider {
             "Places",
             ActionAddress::new("photos.places", "open"),
         )
-        .with_subtitle(format!("Offline map · {located_count} located photographs"))
+        .with_subtitle(format!(
+            "{} with a place",
+            crate::app::count_photos(located_count)
+        ))
         .with_icon(Icon::Image);
         insert(
             "photos.places".to_owned(),
@@ -400,17 +412,58 @@ impl PhotosSearchProvider {
                 count: library.albums.len(),
             },
         );
+        let content = self
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .content
+            .clone();
+        let mut facet_people = BTreeSet::new();
+        let mut facet_places = BTreeMap::new();
+        let mut facet_tags = BTreeSet::new();
         for photo in &library.photos {
+            facet_people.extend(photo.people.iter().cloned());
+            facet_tags.extend(photo.tags.iter().cloned());
+            if let Some(location) = photo
+                .location
+                .as_ref()
+                .filter(|location| location.is_valid())
+            {
+                facet_places.insert(location.place_key(), location.display_name());
+            }
+            let byline = photo
+                .captured_at
+                .as_deref()
+                .map(crate::app::date_label)
+                .or_else(|| {
+                    photo
+                        .location
+                        .as_ref()
+                        .map(crate::model::PhotoLocation::display_name)
+                })
+                .unwrap_or_else(|| {
+                    crate::app::dimensions_label(photo.image.width, photo.image.height)
+                });
+            let mut row = SearchRow::media(&photo.image.name).byline(byline);
+            if let Some(content) = &content {
+                row = row.thumbnail(AppImage::new(PhotoThumbnail {
+                    key: format!("photos:{}", photo.id),
+                    image: photo.image.clone(),
+                    content: content.clone(),
+                    decoded: Mutex::new(None),
+                }));
+            }
             let result = SearchResult::for_action(
                 PHOTO_SEARCH_KIND,
                 &photo.image.name,
                 ActionAddress::new(&photo.id, "open"),
             )
             .with_subtitle(format!(
-                "{} x {} pixels",
-                photo.image.width, photo.image.height
+                "{} pixels",
+                crate::app::dimensions_label(photo.image.width, photo.image.height)
             ))
-            .with_icon(Icon::Image);
+            .with_icon(Icon::Image)
+            .with_row(row);
             // Omit repeated kind/action boilerplate: it creates huge shared
             // postings in a large library without helping find a photograph.
             let searchable = format!(
@@ -449,7 +502,7 @@ impl PhotosSearchProvider {
                 &album.name,
                 ActionAddress::new(&album.id, "open"),
             )
-            .with_subtitle(format!("{} photographs", album.photo_ids.len()))
+            .with_subtitle(crate::app::count_photos(album.photo_ids.len()))
             .with_icon(Icon::Image);
             let searchable = format!(
                 "{}\0photos.album\0{} photographs\0open\0remove",
@@ -475,7 +528,7 @@ impl PhotosSearchProvider {
                 &label,
                 ActionAddress::new(&id, "open"),
             )
-            .with_subtitle(format!("Place · {count} photographs · offline map"))
+            .with_subtitle(crate::app::count_photos(count))
             .with_icon(Icon::Image);
             insert(
                 id.clone(),
@@ -491,7 +544,7 @@ impl PhotosSearchProvider {
                 &folder,
                 ActionAddress::new(&id, "open"),
             )
-            .with_subtitle(format!("Folder · {count} photographs"))
+            .with_subtitle(format!("Folder with {}", crate::app::count_photos(count)))
             .with_icon(Icon::Folder);
             insert(
                 id.clone(),
@@ -510,7 +563,7 @@ impl PhotosSearchProvider {
                 &person,
                 ActionAddress::new(&id, "open"),
             )
-            .with_subtitle(format!("Person · {count} photographs"))
+            .with_subtitle(crate::app::count_photos(count))
             .with_icon(Icon::Image);
             insert(
                 id.clone(),
@@ -526,7 +579,7 @@ impl PhotosSearchProvider {
             let id = tag_resource_id(&tag);
             let result =
                 SearchResult::for_action(PHOTO_SEARCH_KIND, &tag, ActionAddress::new(&id, "open"))
-                    .with_subtitle(format!("Tag · {count} photographs"))
+                    .with_subtitle(format!("Tag on {}", crate::app::count_photos(count)))
                     .with_icon(Icon::Image);
             insert(
                 id.clone(),
@@ -542,7 +595,7 @@ impl PhotosSearchProvider {
                 &object,
                 ActionAddress::new(&id, "open"),
             )
-            .with_subtitle(format!("Object · {count} photographs"))
+            .with_subtitle(crate::app::count_photos(count))
             .with_icon(Icon::Image);
             insert(
                 id.clone(),
@@ -558,7 +611,7 @@ impl PhotosSearchProvider {
             let id = pet_resource_id(&pet);
             let result =
                 SearchResult::for_action(PHOTO_SEARCH_KIND, &pet, ActionAddress::new(&id, "open"))
-                    .with_subtitle(format!("Pet · {count} photographs"))
+                    .with_subtitle(crate::app::count_photos(count))
                     .with_icon(Icon::Image);
             insert(
                 id.clone(),
@@ -571,6 +624,30 @@ impl PhotosSearchProvider {
             .iter()
             .map(|(id, (_, _, seed))| (id.clone(), seed.clone()))
             .collect();
+        let mut facets = Vec::new();
+        if !facet_people.is_empty() {
+            facets.push(facet_people.iter().fold(
+                Facet::new(FACET_PERSON, crate::strings::tr("photos-people")),
+                |facet, person| facet.value(person.clone(), person.clone()),
+            ));
+        }
+        if !facet_places.is_empty() {
+            facets.push(facet_places.iter().fold(
+                Facet::new(FACET_PLACE, crate::strings::tr("photos-places")),
+                |facet, (key, label)| facet.value(key.clone(), label.clone()),
+            ));
+        }
+        if !facet_tags.is_empty() {
+            facets.push(facet_tags.iter().fold(
+                Facet::new(FACET_TAG, crate::strings::tr("photos-tags")),
+                |facet, tag| facet.value(tag.clone(), tag.clone()),
+            ));
+        }
+        facets.push(
+            Facet::new(FACET_HAS, "Has")
+                .value("text", "Text in the photo")
+                .value("favorite", crate::strings::tr("photos-favorites")),
+        );
 
         // Build postings, grams, and tokens without holding the public
         // snapshot lock. A large import must not turn Ctrl+K or an exact
@@ -596,6 +673,7 @@ impl PhotosSearchProvider {
         catalog.advance_after(state.catalog.stats().generation)?;
         state.catalog = catalog;
         state.seeds = seeds;
+        state.facets = facets;
         drop(state);
         Ok(())
     }
@@ -660,6 +738,55 @@ impl CatalogSearchProvider for PhotosSearchProvider {
             .any(|action| action.id == address.action)
             .then_some(resource)
     }
+
+    fn facets(&self) -> Vec<Facet> {
+        self.state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .facets
+            .clone()
+    }
+
+    /// A narrowed search finds photos: a photo passes when it shows the
+    /// chosen people, at the chosen places, with the chosen tags.
+    fn admits(&self, hit: &SearchResult, query: &SearchQuery) -> bool {
+        if query.filters().is_empty() {
+            return true;
+        }
+        let seed = self
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .seeds
+            .get(&hit.anchor())
+            .cloned();
+        let Some(MaterializationSeed::Photo(photo)) = seed else {
+            return false;
+        };
+        let people: Vec<&str> = photo.people.iter().map(String::as_str).collect();
+        let tags: Vec<&str> = photo.tags.iter().map(String::as_str).collect();
+        let place = photo
+            .location
+            .as_ref()
+            .filter(|location| location.is_valid())
+            .map(crate::model::PhotoLocation::place_key);
+        let places: Vec<&str> = place.iter().map(String::as_str).collect();
+        let mut has = Vec::new();
+        if photo.favorite {
+            has.push("favorite");
+        }
+        if photo
+            .analysis
+            .as_ref()
+            .is_some_and(|analysis| !analysis.ocr_text.trim().is_empty())
+        {
+            has.push("text");
+        }
+        query.admits(FACET_PERSON, &people)
+            && query.admits(FACET_PLACE, &places)
+            && query.admits(FACET_TAG, &tags)
+            && query.admits(FACET_HAS, &has)
+    }
 }
 
 #[cfg(test)]
@@ -673,8 +800,8 @@ mod tests {
     };
     use tilo_actions::ActionAddress;
 
-    use ui::search::SearchProvider;
     use ui::search::testing::assert_late_hit_reachable;
+    use ui::search::{DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchProvider};
 
     fn open_doc(name: &str) -> AutoCommit {
         let mut doc = AutoCommit::new();
@@ -768,7 +895,8 @@ mod tests {
                     crate::actions::timeline_day_resource_id("2026-09-07"),
                 ),
             ] {
-                let page = provider.search_page(query, None, usize::MAX, usize::MAX);
+                let page =
+                    provider.search_page(&SearchQuery::new(query), None, usize::MAX, usize::MAX);
                 assert!(page.results.len() <= DEFAULT_SEARCH_RESULT_LIMIT);
                 assert!(page.inspected <= DEFAULT_SEARCH_CANDIDATE_LIMIT);
                 let address = page
@@ -829,10 +957,6 @@ mod tests {
                     });
                 assert!(provider.resolve_action_resource(&address).is_some());
             }
-            let (ids, next, inspected) = provider.photo_matches_page("invoice 42", None);
-            assert_eq!(ids, [library.photos[0].id.clone()]);
-            assert!(next.is_none());
-            assert!(inspected <= DEFAULT_SEARCH_CANDIDATE_LIMIT);
         }
     }
 
@@ -840,10 +964,20 @@ mod tests {
     fn search_pages_and_caller_limits_are_bounded_and_target_exported_actions() {
         let doc = open_doc("harbour.png");
         let provider = PhotosSearchProvider::new(&doc).unwrap();
-        assert!(provider.search_page("", None, 0, 1).results.is_empty());
-        assert!(provider.search_page("", None, 1, 0).results.is_empty());
+        assert!(
+            provider
+                .search_page(&SearchQuery::new(""), None, 0, 1)
+                .results
+                .is_empty()
+        );
+        assert!(
+            provider
+                .search_page(&SearchQuery::new(""), None, 1, 0)
+                .results
+                .is_empty()
+        );
 
-        let page = provider.search_page("harbour", None, 1, 1);
+        let page = provider.search_page(&SearchQuery::new("harbour"), None, 1, 1);
         assert_eq!(page.inspected, 1);
         assert_eq!(page.results.len(), 1);
         let address = page.results[0].action_address().unwrap();
@@ -861,7 +995,8 @@ mod tests {
             let doc = open_doc("harbour.png");
             let provider = PhotosSearchProvider::new(&doc).unwrap();
             assert!(provider.search_limited("", usize::MAX).len() <= DEFAULT_SEARCH_RESULT_LIMIT);
-            let page = provider.search_page("harbour", None, usize::MAX, usize::MAX);
+            let page =
+                provider.search_page(&SearchQuery::new("harbour"), None, usize::MAX, usize::MAX);
             assert!(page.results.len() <= DEFAULT_SEARCH_RESULT_LIMIT);
             assert!(page.inspected <= DEFAULT_SEARCH_CANDIDATE_LIMIT);
             let address = page.results[0].action_address().unwrap();
@@ -944,7 +1079,7 @@ mod tests {
             PhotosDoc::set_library(&mut doc, &library);
             let hit = PhotosSearchProvider::new(&doc)
                 .unwrap()
-                .search_page("NEEDLE-夏", None, 2, 1)
+                .search_page(&SearchQuery::new("NEEDLE-夏"), None, 2, 1)
                 .results
                 .pop()
                 .expect("late album remains searchable outside the contextual snapshot");
@@ -1013,10 +1148,12 @@ mod tests {
                     )));
             }
             PhotosDoc::set_library(&mut doc, &library);
-            let page =
-                PhotosSearchProvider::new(&doc)
-                    .unwrap()
-                    .search_page("NEEDLE-夏", None, 2, 1);
+            let page = PhotosSearchProvider::new(&doc).unwrap().search_page(
+                &SearchQuery::new("NEEDLE-夏"),
+                None,
+                2,
+                1,
+            );
             assert_eq!(page.results.len(), 1);
             assert!(page.inspected <= 2, "query work exceeded its hard budget");
             assert_eq!(page.results[0].title, "旅行-needle-夏.png");
@@ -1050,7 +1187,7 @@ mod tests {
                 3_000,
             );
             assert_eq!(provider.stats().records, expected_records);
-            let page = provider.search_page("needle-夏", None, 2, 1);
+            let page = provider.search_page(&SearchQuery::new("needle-夏"), None, 2, 1);
             assert_eq!(page.results, vec![hit.clone()]);
             assert!(page.inspected <= 2);
             let address = hit.action_address().unwrap();
@@ -1083,7 +1220,7 @@ mod tests {
         {
             let mut doc = open_doc("before.png");
             let provider = PhotosSearchProvider::new(&doc).unwrap();
-            let first = provider.search_page("", None, 1, 1);
+            let first = provider.search_page(&SearchQuery::new(""), None, 1, 1);
             let cursor = first.next.expect("the library has another browse row");
             let address = provider.search("before")[0].action_address().unwrap();
 

@@ -70,13 +70,14 @@ splash-budget   = 250
 
 # The installed-image acceptance client discovers these controls through the
 # real AT-SPI D-Bus endpoint. Activating Library must replace the viewer canvas
-# with the actual library surface; "All photos" is deliberately absent before
-# that transition, so a successful callback without a UI change cannot pass.
+# with the actual library surface; its "New album" command is deliberately
+# absent before that transition, so a successful callback without a UI change
+# cannot pass.
 [accessibility.atspi_acceptance]
 root = "Photos"
 required = ["Open", "Library"]
 action = "Library"
-after_action = ["All photos"]
+after_action = ["New album"]
 
 # File types offered by the decoder.
 [providers]
