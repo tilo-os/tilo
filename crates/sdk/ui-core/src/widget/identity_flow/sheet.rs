@@ -39,7 +39,7 @@ use winit::event::MouseScrollDelta;
 use winit::keyboard::{Key, NamedKey};
 
 use crate::paint::PaintCtx;
-use crate::text_render::{TextRenderer, TextStyle};
+use crate::text_render::{TextKind, TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::checkbox::{Checkbox, CheckboxFace};
@@ -228,12 +228,12 @@ impl Role {
         }
     }
 
-    /// The resolved style: the theme role, with tabular figures for the
-    /// pairing code.
+    /// The resolved style: the theme role; the pairing code is a secret
+    /// someone compares character by character.
     pub(super) fn style(self, theme: &Theme) -> TextStyle {
         let style = theme.text(self.text_role());
         if self == Role::Code {
-            style.numeric()
+            style.with_kind(TextKind::Secret)
         } else {
             style
         }

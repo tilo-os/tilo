@@ -92,8 +92,11 @@ pub fn material_tint_from_norm(norm: f32) -> f32 {
     lerp(TINT_MIN, TINT_MAX, norm)
 }
 
-/// Fonts offered by the typography dropdown.
-pub const FONTS: [&str; 5] = [
+/// Fonts offered by the typography dropdown: the built-in UI faces by
+/// name, then other families.
+pub const FONTS: [&str; 7] = [
+    "Default",
+    "Hyperlegible",
     "Inter",
     "JetBrains Mono",
     "IBM Plex Sans",
@@ -107,6 +110,9 @@ pub const FONTS: [&str; 5] = [
 /// visible change even when the exact face isn't installed); anything else
 /// targets the named family, falling back to the system sans face.
 pub fn font_choice(name: &str) -> FontChoice {
+    if let Some(face) = ui::UiFace::from_name(name) {
+        return FontChoice::Named(face.family().to_string());
+    }
     let lower = name.to_ascii_lowercase();
     if lower.contains("mono") {
         FontChoice::Monospace
@@ -362,7 +368,7 @@ impl ThemeSpec {
     pub fn to_theme(&self) -> Theme {
         if let Some(mut t) = builtin_theme(&self.id) {
             t.name.clone_from(&self.name);
-            t.tokens.typography.sans_family.clone_from(&self.font);
+            t.tokens.typography.set_face(&self.font);
             return t;
         }
 
@@ -438,7 +444,7 @@ impl ThemeSpec {
             info: rgb_of(t.tokens.colors.semantic.info),
             radius_norm: inv_lerp(RADIUS_MIN, RADIUS_MAX, t.tokens.radii.md),
             spacing_norm: inv_lerp(SPACING_MIN, SPACING_MAX, t.tokens.spacing.s3),
-            font: t.tokens.typography.sans_family.clone(),
+            font: t.tokens.typography.face_name(),
             motion_scale: motion_scale_of(t),
             material_scale: material_scale_of(t),
             icon_scale: icon_scale_of(t),
@@ -670,6 +676,10 @@ mod tests {
             assert_eq!(font_choice("JetBrains Mono"), FontChoice::Monospace);
             assert_eq!(font_choice("Source Serif"), FontChoice::Serif);
             assert_eq!(font_choice("Inter"), FontChoice::Named("Inter".to_string()));
+            assert_eq!(
+                font_choice("Hyperlegible"),
+                FontChoice::Named(ui::UI_HYPERLEGIBLE_FAMILY.to_string())
+            );
             assert_eq!(
                 font_choice("Roboto"),
                 FontChoice::Named("Roboto".to_string())
