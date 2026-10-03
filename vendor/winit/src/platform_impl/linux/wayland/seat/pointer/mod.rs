@@ -174,7 +174,17 @@ impl PointerHandler for WinitState {
                     // Get the current phase.
                     let mut pointer_data = pointer.winit_data().inner.lock().unwrap();
 
-                    let has_discrete_scroll = horizontal.discrete != 0 || vertical.discrete != 0;
+                    // A seat of version 8 or later reports wheel notches as
+                    // `axis_value120` alone, with no `axis_discrete`.
+                    let notches = |axis: &sctk::seat::pointer::AxisScroll| {
+                        if axis.value120 != 0 {
+                            axis.value120 as f32 / 120.0
+                        } else {
+                            axis.discrete as f32
+                        }
+                    };
+                    let has_discrete_scroll =
+                        notches(&horizontal) != 0.0 || notches(&vertical) != 0.0;
 
                     // Figure out what to do about start/ended phases here.
                     //
@@ -198,10 +208,7 @@ impl PointerHandler for WinitState {
                     // the discrete values if they are present.
                     let delta = if has_discrete_scroll {
                         // NOTE: Wayland sign convention is the inverse of winit.
-                        MouseScrollDelta::LineDelta(
-                            (-horizontal.discrete) as f32,
-                            (-vertical.discrete) as f32,
-                        )
+                        MouseScrollDelta::LineDelta(-notches(&horizontal), -notches(&vertical))
                     } else {
                         // NOTE: Wayland sign convention is the inverse of winit.
                         MouseScrollDelta::PixelDelta(

@@ -12,7 +12,7 @@ vello_tip=851c465d7a9a005c0d3bf1c8fca696369be79776
 
 winit_branch=vendor-upstream/winit-0.30.13
 winit_base=9b9d3bf5398c77c3ec8575c4279f01d2ddcc1d59
-winit_tip=2be6b107fa58689376d4ec40fedf8b69723a02de
+winit_tip=b7e4ec10aaece4ce2a6c06264507e6fa722b0240
 
 resolve_ref() {
     local branch=$1
